@@ -1,0 +1,14 @@
+#Python cache
+__pycache__/
+*.__pycache__
+
+#VSC
+.vscode/
+
+#Environments
+env/
+venv/
+.conda/
+
+#OS Junk
+.DS_Store
