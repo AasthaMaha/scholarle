@@ -1,0 +1,20 @@
+#Python cache
+__pycache__/
+*.__pycache__
+
+#VSC
+.vscode/
+
+#Environments
+env/
+venv/
+.conda/
+
+#Local inputs, outputs, and vector databases
+documents/
+outputs/
+chroma_db_kb/
+chroma_db_rfp/
+
+#OS Junk
+.DS_Store
