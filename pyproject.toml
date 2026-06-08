@@ -1,0 +1,12 @@
+[project]
+name = "proposal-ai"
+version = "0.1.0"
+dependencies = [
+  "langchain",
+  "langgraph",
+  "openai",
+  "chromadb",
+  "tiktoken",
+  "pydantic",
+  "streamlit",
+]
