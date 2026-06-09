@@ -9,7 +9,7 @@ __pycache__/
 env/
 venv/
 .conda/
-.env/
+
 
 #Local inputs, outputs, and vector databases
 documents/
