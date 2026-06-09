@@ -1,0 +1,2 @@
+invalid type: string "Student Profile â€” Maya Thompson\n\nAcademics:\n- Senior at Lincoln High School\n- GPA: 3.8 (unweighted)\n- Relevant coursework: AP Computer Science A, AP Calculus AB, AP Physics 1\n\nActivities and Leadership:\n- Founder and president of the school Coding Club (2 years), grew membership\n  from 6 to 34 students\nE,
+    UNIQUE (tenant_id, name) -- Ensure that a tenant h
