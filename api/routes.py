@@ -1,69 +1,18 @@
 # api/routes.py
-"""
-<<<<<<< Updated upstream
-Basic API route placeholder for ScholarlE Engen.
+"""API layer for ScholarlE Engen, exposing the coaching pipeline."""
 
-This is a thin, framework-agnostic placeholder that exposes the existing
-LangGraph pipeline as a single callable entry point. It can later be wired to
-FastAPI / Flask / etc. without changing the backend structure.
-"""
-
-from rag.ingest import ingest_documents
-=======
-API layer for ScholarlE Engen — exposes the LangGraph coaching pipeline.
-"""
-
-from typing import Any, Dict, Optional
+from typing import Dict, Optional
 
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pydantic import BaseModel, Field
+from fastapi import HTTPException
 
->>>>>>> Stashed changes
-from rag.store import ChromaStore
-from graph.builder import build_graph
 from config import settings
+from rag.store import ChromaStore
+from graph.builder import build_application_graph
 
 
-<<<<<<< Updated upstream
-def run_application_pipeline(opportunity_text: str, student_draft: str = "") -> dict:
-    """
-    Run the coaching pipeline for a single request.
-
-    Args:
-        opportunity_text: the opportunity prompt text.
-        student_draft: the student's draft to be coached / scored.
-
-    Returns:
-        The final pipeline state (including scores, feedback, and the
-        assembled application package).
-    """
-    profile_docs = ingest_documents(settings.student_profile_path)
-    profile_store = ChromaStore(
-        documents=profile_docs,
-        persist_directory=settings.profile_vector_db_path,
-    )
-
-    graph = build_graph(profile_store)
-
-    result = graph.invoke({
-        "opportunity_text": opportunity_text,
-        "student_profile_docs": profile_docs,
-        "student_draft": student_draft,
-    })
-
-    return result
-
-
-# TODO: wire this placeholder to a web framework, e.g.:
-#
-#   from fastapi import FastAPI
-#   app = FastAPI()
-#
-#   @app.post("/coach")
-#   def coach(opportunity_text: str, student_draft: str = ""):
-#       return run_application_pipeline(opportunity_text, student_draft)
-=======
 class AnalyzeRequest(BaseModel):
     cv_text: str = Field(..., min_length=1)
     essay_text: str = Field(..., min_length=1)
@@ -95,21 +44,15 @@ def _build_opportunity_text(
 def run_application_pipeline(
     opportunity_text: str,
     student_draft: str,
-    profile_text: Optional[str] = None,
+    profile_text: str,
     previous_readiness: Optional[Dict[str, int]] = None,
     draft_number: int = 1,
 ) -> dict:
-    if profile_text and profile_text.strip():
-        profile_docs = _text_to_chunks(profile_text, "uploaded_cv")
-    else:
-        from rag.ingest import ingest_documents
-
-        profile_docs = ingest_documents(settings.student_profile_path)
-
+    profile_docs = _text_to_chunks(profile_text, "uploaded_cv")
     profile_store = ChromaStore(documents=profile_docs, ephemeral=True)
 
     try:
-        graph = build_graph(profile_store)
+        graph = build_application_graph(profile_store)
         return graph.invoke({
             "opportunity_text": opportunity_text,
             "student_profile_docs": profile_docs,
@@ -122,6 +65,15 @@ def run_application_pipeline(
 
 
 def analyze_application(request: AnalyzeRequest) -> dict:
+    if not settings.openai_api_key:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Missing OPENAI_API_KEY. Add a .env file in the project root "
+                "with OPENAI_API_KEY=your_key, then restart the server."
+            ),
+        )
+
     opportunity_text = _build_opportunity_text(
         request.scholarship_name,
         request.scholarship_type,
@@ -149,4 +101,3 @@ def analyze_application(request: AnalyzeRequest) -> dict:
         "revision_priorities": result.get("revision_priorities", []),
         "draft_number": result.get("draft_number", request.draft_number),
     }
->>>>>>> Stashed changes

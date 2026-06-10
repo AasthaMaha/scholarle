@@ -1,21 +1,13 @@
 # nodes/score_application.py
 
-<<<<<<< Updated upstream
-from llm.client import llm
-from utils.parsing import safe_json_parse
-
-MISSING_NOTICE = (
-    "Missing from student profile. Ask the student for this information "
-    "before using it."
-=======
 from nodes.scoring.agents import (
+    _shared_context,
+    _word_count,
     run_authenticity_writing_agent,
     run_competitiveness_agent,
     run_coverage_agent,
     run_final_judge,
     run_revision_agent,
-    _shared_context,
-    _word_count,
 )
 from nodes.scoring.metrics import (
     METRIC_KEYS,
@@ -24,129 +16,17 @@ from nodes.scoring.metrics import (
     compute_authenticity_score,
     compute_final_score,
     metric_detail,
->>>>>>> Stashed changes
 )
 
 
 def score_application(state):
-    """
-<<<<<<< Updated upstream
-    Coach and score the student's draft against the opportunity.
-
-    This is a COACHING step, not a ghostwriting step. It evaluates the draft
-    and gives actionable feedback. It must never invent student facts
-    (awards, grades, schools, internships, leadership roles, stories, metrics).
-    """
-    opportunity_analysis = state.get("opportunity_analysis", {})
-    profile_chunks = state.get("retrieved_profile_chunks", [])
-    draft = state.get("student_draft", "") or ""
-
-    profile_text = "\n\n".join(profile_chunks) if profile_chunks else "(no profile evidence retrieved)"
-
-    if not draft.strip():
-        empty_scores = {
-            "prompt_alignment": 0,
-            "authenticity": 0,
-            "clarity": 0,
-            "specificity": 0,
-            "leadership_impact": 0,
-            "writing_quality": 0,
-            "competitiveness": 0,
-            "overall_score": 0,
-        }
-        return {
-            "scores": empty_scores,
-            "feedback": (
-                "No student draft was provided, so it cannot be scored yet. "
-                + MISSING_NOTICE
-            ),
-        }
-
-    prompt = f"""
-You are a supportive but honest application coach for scholarships, college
-applications, and internships.
-
-Score the STUDENT DRAFT below on a 1-10 scale for each criterion, then give
-coaching FEEDBACK. You are coaching the student to improve their own writing,
-NOT rewriting it for them.
-
-GROUNDING RULES (very important):
-- Only reference facts found in the OPPORTUNITY, PROFILE EVIDENCE, or STUDENT DRAFT.
-- Never invent awards, grades, schools, internships, leadership roles,
-  personal stories, or metrics.
-- If the draft would be stronger with information that is not present, do not
-  make it up. Instead tell the student exactly what to add, using this phrase:
-  "{MISSING_NOTICE}"
-
-SCORING CRITERIA (1-10 each):
-- prompt_alignment: how well the draft answers what the opportunity asks
-- authenticity: genuine, personal voice
-- clarity: easy to follow
-- specificity: concrete details vs. vague generalities
-- leadership_impact: demonstrated initiative / impact
-- writing_quality: grammar, structure, flow
-- competitiveness: how competitive this would be for the opportunity
-- overall_score: holistic 1-10
-
-OPPORTUNITY ANALYSIS:
-{opportunity_analysis}
-
-PROFILE EVIDENCE (authoritative, from the student's uploaded documents):
-{profile_text}
-
-STUDENT DRAFT:
-{draft}
-
-Return ONLY valid JSON in exactly this shape:
-{{
-  "prompt_alignment": <number>,
-  "authenticity": <number>,
-  "clarity": <number>,
-  "specificity": <number>,
-  "leadership_impact": <number>,
-  "writing_quality": <number>,
-  "competitiveness": <number>,
-  "overall_score": <number>,
-  "feedback": "<actionable coaching feedback as a string>"
-}}
-"""
-
-    result = llm.generate(prompt)
-    data = safe_json_parse(result)
-
-    scores = {
-        "prompt_alignment": data.get("prompt_alignment", 0),
-        "authenticity": data.get("authenticity", 0),
-        "clarity": data.get("clarity", 0),
-        "specificity": data.get("specificity", 0),
-        "leadership_impact": data.get("leadership_impact", 0),
-        "writing_quality": data.get("writing_quality", 0),
-        "competitiveness": data.get("competitiveness", 0),
-        "overall_score": data.get("overall_score", 0),
-    }
-
-    return {
-        "scores": scores,
-        "feedback": data.get("feedback", ""),
-    }
-=======
-    Multi-agent scoring pipeline (combined agents + final judge).
-
-    Agents (4 LLM calls + 1 judge):
-      1. Coverage — evidence + requirement coverage
-      2. Authenticity & Writing — authenticity + tone + grammar + length
-      3. Competitiveness
-      4. Revision impact forecast
-      5. Final ScholarlE judge
-    """
+    """Multi-agent scoring pipeline for a student's application draft."""
     opportunity_text = state.get("opportunity_text", "")
     student_draft = state.get("student_draft", "")
     profile_chunks = state.get("retrieved_profile_chunks", [])
     opportunity_analysis = state.get("opportunity_analysis", {})
 
-    profile_text = (
-        "\n\n".join(profile_chunks) if profile_chunks else "(none retrieved)"
-    )
+    profile_text = "\n\n".join(profile_chunks) if profile_chunks else "(none retrieved)"
     context = _shared_context(
         opportunity_text,
         profile_text,
@@ -161,19 +41,13 @@ Return ONLY valid JSON in exactly this shape:
     revision = run_revision_agent(coverage, authenticity_writing, competitiveness)
 
     evidence_score = clamp_score(coverage.get("evidence_coverage_score", 0))
-    requirement_score = clamp_score(
-        coverage.get("overall_requirement_coverage_score", 0)
-    )
+    requirement_score = clamp_score(coverage.get("overall_requirement_coverage_score", 0))
     authenticity_score = compute_authenticity_score(authenticity_writing)
     tone_score = clamp_score(authenticity_writing.get("tone_score", 0))
     grammar_score = clamp_score(authenticity_writing.get("grammar_score", 0))
     length_score = clamp_score(authenticity_writing.get("length_score", 0))
-    competitiveness_score = clamp_score(
-        competitiveness.get("competitiveness_score", 0)
-    )
-    ai_likeness_score = clamp_score(
-        authenticity_writing.get("generic_phrase_penalty", 0)
-    )
+    competitiveness_score = clamp_score(competitiveness.get("competitiveness_score", 0))
+    ai_likeness_score = clamp_score(authenticity_writing.get("generic_phrase_penalty", 0))
 
     writing_readiness = round((tone_score + grammar_score + length_score) / 3)
     computed_final = compute_final_score(
@@ -257,24 +131,21 @@ Return ONLY valid JSON in exactly this shape:
     )
     numeric_scores["estimated_tier"] = competitiveness.get("estimated_tier", "")
 
-    agent_reports = {
-        "coverage": coverage,
-        "authenticity_writing": authenticity_writing,
-        "competitiveness": competitiveness,
-        "revision": revision,
-        "judge": judge,
-    }
-
     revision_priorities = judge.get("top_revision_priorities") or [
-        item.get("action", "")
-        for item in revision.get("ranked_revision_actions", [])[:3]
+        item.get("action", "") for item in revision.get("ranked_revision_actions", [])[:3]
     ]
 
     return {
         "scores": numeric_scores,
         "metric_details": metric_details,
         "feedback": judge.get("final_coaching_message", ""),
-        "agent_reports": agent_reports,
+        "agent_reports": {
+            "coverage": coverage,
+            "authenticity_writing": authenticity_writing,
+            "competitiveness": competitiveness,
+            "revision": revision,
+            "judge": judge,
+        },
         "revision_priorities": revision_priorities,
         "score_breakdown": judge.get("score_breakdown", computed_breakdown),
     }
@@ -312,27 +183,26 @@ def _authenticity_suggestion(report: dict) -> str:
         return f"Support or remove unsupported claims: {unsupported[0]}"
     generic = report.get("generic_phrases") or []
     if generic:
-        return f"Replace generic phrasing such as: \"{generic[0]}\""
+        return f"Replace generic phrasing such as: {generic[0]!r}"
     return report.get("revision_advice", "")
 
 
 def _ai_likeness_feedback(report: dict) -> str:
     phrases = report.get("generic_phrases") or []
     if phrases:
-        return f"Generic or AI-like phrasing detected: \"{phrases[0]}\""
+        return f"Generic or AI-like phrasing detected: {phrases[0]!r}"
     return "Writing sounds personal with few generic template phrases."
 
 
 def _ai_likeness_suggestion(report: dict) -> str:
     phrases = report.get("generic_phrases") or []
     if len(phrases) > 1:
-        return f"Rewrite phrases like \"{phrases[1]}\" with a detail only you would know."
+        return f"Rewrite phrases like {phrases[1]!r} with a detail only you would know."
     if phrases:
-        return f"Replace \"{phrases[0]}\" with a specific moment from your experience."
+        return f"Replace {phrases[0]!r} with a specific moment from your experience."
     return "Keep using concrete, personal details from your profile."
 
 
 def _competitiveness_suggestion(report: dict) -> str:
     changes = report.get("top_changes") or []
     return changes[0] if changes else report.get("reason", "")
->>>>>>> Stashed changes
