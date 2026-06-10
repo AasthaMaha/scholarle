@@ -2,14 +2,22 @@ from rag.ingest import ingest_documents
 from rag.store import ChromaStore
 from graph.builder import build_graph
 from config import settings
+<<<<<<< Updated upstream
 from outputs.writer import save
+=======
+<<<<<<< Updated upstream
+>>>>>>> Stashed changes
 import shutil
+=======
+>>>>>>> Stashed changes
 import os
 
 
-def reset_vector_db(path):
+def load_text(path):
     if os.path.exists(path):
-        shutil.rmtree(path)
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    return ""
 
 
 def main():
@@ -24,17 +32,27 @@ def main():
     reset_vector_db(settings.rfp_vector_db_path)
     reset_vector_db(settings.kb_vector_db_path)
 
+<<<<<<< Updated upstream
     # STEP 3B — Build separate stores
     print("Building vector stores...")
     rfp_store = ChromaStore(
         documents=rfp_docs,
         persist_directory=settings.rfp_vector_db_path
     )
+=======
+<<<<<<< Updated upstream
+    print("Resetting vector store...")
+    reset_vector_db(settings.profile_vector_db_path)
+>>>>>>> Stashed changes
 
     kb_store = ChromaStore(
         documents=kb_docs,
         persist_directory=settings.kb_vector_db_path
     )
+=======
+    print("Building student profile vector store...")
+    profile_store = ChromaStore(documents=profile_docs, ephemeral=True)
+>>>>>>> Stashed changes
 
     print("Building graph...")
     graph = build_graph(rfp_store, kb_store)
@@ -43,10 +61,21 @@ def main():
     rfp_text = "\n\n".join([doc.page_content for doc in rfp_docs])
 
     print("Running pipeline...\n")
+<<<<<<< Updated upstream
     result = graph.invoke({
         "rfp_text": rfp_text,
         "rfp_docs": rfp_docs
     })
+=======
+    try:
+        result = graph.invoke({
+            "opportunity_text": opportunity_text,
+            "student_profile_docs": profile_docs,
+            "student_draft": student_draft,
+        })
+    finally:
+        profile_store.close()
+>>>>>>> Stashed changes
 
     print("\n===== FINAL PROPOSAL =====\n")
     print(result["final_proposal"][:2000])

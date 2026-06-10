@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ScholarlE Engen</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- VIEW: LOGIN -->
+<div id="view-login" class="view active">
+  <div class="login-card">
+    <div class="logo"><span class="l-sch">ScholarlE</span> <span class="l-eng">Engen</span></div>
+    <p class="login-tagline">Turn your experiences into winning scholarships</p>
+
+    <div class="field">
+      <label for="in-name">Full name</label>
+      <input type="text" id="in-name" placeholder="Jordan Rivera" autocomplete="name">
+      <div class="field-error" id="err-name">Please enter your name</div>
+    </div>
+    <div class="field">
+      <label for="in-email">Email</label>
+      <input type="email" id="in-email" placeholder="jordan@email.com" autocomplete="email">
+      <div class="field-error" id="err-email">Please enter a valid email</div>
+    </div>
+
+    <button class="btn-primary" id="btn-login">Get started →</button>
+  </div>
+</div>
+
+<!-- VIEW: APP -->
+<div id="view-app" class="view">
+  <div class="topbar">
+    <div class="logo"><span class="l-sch">ScholarlE</span> <span class="l-eng">Engen</span></div>
+    <div class="user-chip">
+      <span id="chip-email"></span>
+      <span class="avatar" id="chip-avatar">JR</span>
+    </div>
+  </div>
+
+  <div class="workspace">
+    <div class="column">
+      <div class="col-head-row">
+        <div>
+          <h2 class="column-head">Student input</h2>
+          <p class="column-sub">Paste your materials and add the scholarship details.</p>
+        </div>
+        <button class="btn-ghost" id="btn-example" title="Fill every field with a sample application for testing">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m13 2-3 7h5l-3 7"></path><path d="M19 9V5a2 2 0 0 0-2-2H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h4"></path></svg>
+          Load example
+        </button>
+      </div>
+
+      <div class="panel">
+        <p class="panel-title"><span class="step-no">1</span> Your profile</p>
+        <div class="pill-row">
+          <span class="ro-pill" id="pill-name">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"></circle><path d="M4 21c0-4 4-6 8-6s8 2 8 6"></path></svg>
+            <span></span>
+          </span>
+          <span class="ro-pill" id="pill-email">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"></rect><path d="m3 7 9 6 9-6"></path></svg>
+            <span></span>
+          </span>
+        </div>
+
+        <div class="field">
+          <label class="field-label" for="in-cv">CV / Résumé text</label>
+          <textarea id="in-cv" class="doc-area" rows="5" placeholder="Paste the text of your CV / résumé here…"></textarea>
+          <div class="ta-meta" id="meta-cv"></div>
+        </div>
+        <div class="field" style="margin-bottom:8px;">
+          <label class="field-label" for="in-essay">Essay / SOP text</label>
+          <textarea id="in-essay" class="doc-area" rows="6" placeholder="Paste the text of your essay or statement of purpose here…"></textarea>
+          <div class="ta-meta" id="meta-essay"></div>
+        </div>
+        <div class="field-error" id="err-uploads">Please paste both your CV and essay text</div>
+      </div>
+
+      <div class="panel">
+        <p class="panel-title"><span class="step-no">2</span> Scholarship details</p>
+        <div class="field">
+          <label class="field-label" for="in-scholarship">Scholarship name</label>
+          <input type="text" id="in-scholarship" placeholder="e.g. Engen Leadership Award 2026">
+        </div>
+        <div class="field">
+          <label class="field-label" for="in-type">Scholarship type</label>
+          <select id="in-type">
+            <option value="" disabled selected>Select a category…</option>
+            <option>Merit-based</option>
+            <option>Need-based</option>
+            <option>Identity-based</option>
+            <option>Research &amp; Fellowship</option>
+          </select>
+        </div>
+        <div class="field" style="margin-bottom:8px;">
+          <label class="field-label" for="in-prompt">Scholarship prompt / requirements</label>
+          <textarea id="in-prompt" rows="5" placeholder="Paste scholarship prompt or requirements..."></textarea>
+        </div>
+        <div class="field-error" id="err-details" style="margin-bottom:10px;">Please fill in all scholarship details</div>
+        <div class="field-error" id="err-api" style="margin-bottom:10px;"></div>
+        <button class="btn-primary" id="btn-analyse">
+          <span class="btn-icon">✦</span>
+          <span class="btn-text">Get coaching</span>
+        </button>
+      </div>
+
+      <p class="left-foot" id="left-foot" style="display:none;">Edit your draft and get coaching again to track your progress.</p>
+    </div>
+
+    <div class="column">
+      <h2 class="column-head">Your coaching plan</h2>
+      <p class="column-sub">Actionable guidance from your scholarship advisor — not just a grade.</p>
+
+      <div class="empty-state" id="empty-state">
+        <div class="es-icon">
+          <svg width="46" height="46" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"></path><rect x="7" y="11" width="3" height="6"></rect><rect x="12" y="7" width="3" height="10"></rect><rect x="17" y="13" width="3" height="4"></rect></svg>
+        </div>
+        <h3>No coaching yet</h3>
+        <p>Fill in your details on the left and click Get coaching</p>
+      </div>
+
+      <div id="results" style="display:none;"></div>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

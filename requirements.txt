@@ -4,4 +4,15 @@ openai
 chromadb
 tiktoken
 pydantic
+<<<<<<< Updated upstream
 streamlit
+=======
+python-dotenv
+<<<<<<< Updated upstream
+streamlit
+=======
+streamlit
+fastapi
+uvicorn[standard]
+>>>>>>> Stashed changes
+>>>>>>> Stashed changes

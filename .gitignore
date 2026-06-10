@@ -14,8 +14,16 @@ venv/
 #Local inputs, outputs, and vector databases
 documents/
 outputs/
+<<<<<<< Updated upstream
 chroma_db_kb/
 chroma_db_rfp/
+<<<<<<< Updated upstream
+=======
+=======
+>>>>>>> Stashed changes
+chroma_db_opportunity/
+chroma_db_profile/
+>>>>>>> Stashed changes
 
 #OS Junk
 .DS_Store

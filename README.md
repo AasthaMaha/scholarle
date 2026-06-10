@@ -1,239 +1,136 @@
-# Proposal AI System — Architecture Overview
+# ScholarlE Engen — Backend (Prototype)
 
 ## Overview
 
-This system is a **modular AI pipeline for generating government proposals** using:
+ScholarlE Engen is an AI-powered coaching platform for **scholarships, college
+applications, and internships**. This backend is a modular AI pipeline built
+with:
 
 * Retrieval-Augmented Generation (RAG)
-* Structured prompt templates
 * A node-based workflow (LangGraph)
 * A shared state object for orchestration
 
-The goal is to produce **grounded, structured, and reusable proposal outputs** while minimizing hallucinations.
+The goal is to **coach students** on their own application drafts — analyzing the
+opportunity, grounding feedback in the student's real profile, scoring the
+draft, and assembling a coaching package. It coaches; it does **not** ghostwrite,
+and it never invents student facts.
 
 ---
 
-## Core Concepts
+## Workflow
 
-### 1. Dual RAG System (Source of Truth)
-
-The system separates information into two distinct sources:
-
-```
-documents/
-├── rfp_docs/          # Requirements, instructions, source material
-└── knowledge_base/    # Internal capabilities, past performance, etc.
-```
-
-Each is:
-
-1. Ingested
-2. Chunked
-3. Embedded
-4. Stored in a vector database (Chroma)
-
-This enables:
-
-* **RFP understanding** (what is required)
-* **Knowledge grounding** (what we can say)
-
----
-
-### 2. Vector Stores (Chroma)
-
-Two independent vector databases are used:
-
-* `rfp_store` → requirement documents
-* `kb_store` → internal knowledge
-
-Each query retrieves relevant chunks:
-
-```
-User Input / Requirements
-        ↓
-Vector Search (similarity)
-        ↓
-Relevant Context Chunks
-```
-
-These chunks are the **only authoritative content** used for generation.
-
----
-
-### 3. Prompt Templates
-
-Templates define how each section of the proposal is generated.
-
-Each template includes:
-
-* Purpose
-* Required inputs
-* Subsections
-* Instructions
-* Constraints (e.g., “do not hallucinate”)
-
-Templates are used to construct structured prompts dynamically.
-
----
-
-### 4. Nodes (AI Agents)
-
-Each node represents a **single responsibility step** in the pipeline.
-
-Examples:
-
-* `analyze` → extract requirements from RFP
-* `retrieve` → gather relevant context from RAG
-* `generate` → create proposal sections
-* `review` → critique output
-* `score` → evaluate proposal quality
-* `assemble` → combine into final output
-
-Each node:
-
-* receives the current state
-* performs an LLM-driven task
-* returns updates to the state
-
----
-
-### 5. Shared State Object
-
-The system uses a centralized state:
-
-```python
-ProposalState
-```
-
-This acts as the **data backbone** of the pipeline.
-
-It stores:
-
-* Inputs (RFP text, documents)
-* Extracted requirements
-* Retrieved context
-* Generated sections
-* Evaluation scores
-* Final proposal output
-
-Each node reads from and writes to this state.
-
----
-
-### 6. Workflow Graph (LangGraph)
-
-The pipeline is orchestrated as a directed graph:
-
-```
-analyze
-   ↓
-compliance
-   ↓
-retrieve
-   ↓
-generate
-   ↓
-review
-   ↓
-score
-   ↓
-assemble
-   ↓
+```text
+analyze_opportunity
+    ↓
+retrieve_profile
+    ↓
+score_application
+    ↓
+assemble_package
+    ↓
 END
 ```
 
-This provides:
-
-* Deterministic execution
-* Clear data flow
-* Easy debugging and extension
-
----
-
-### 7. Execution Flow
-
-1. Load and ingest documents
-2. Build vector stores
-3. Initialize graph
-4. Invoke graph with input state
-5. Nodes execute sequentially
-6. Final state contains:
-
-   * Proposal text
-   * Evaluation metrics
+| Node | Responsibility |
+| --- | --- |
+| `analyze_opportunity` | Extract opportunity type, requirements, deadlines, and evaluation themes as JSON |
+| `retrieve_profile` | Retrieve relevant student profile chunks from the vector store (only uploaded info) |
+| `score_application` | Score the student draft and give grounded coaching feedback |
+| `assemble_package` | Build a markdown coaching package and save it to `outputs/` |
 
 ---
 
-### 8. Output
+## Project Structure
 
-The final output includes:
-
-* Generated proposal sections
-* Combined final proposal
-* Structured evaluation scores (completeness, clarity, strength, hallucination penalty)
-
-Optionally:
-
-* Saved to file
-* Exported to other formats (e.g., LaTeX)
-
----
-
-## Key Design Principles
-
-### Grounded Generation
-
-All outputs should be based on retrieved context, not model memory.
-
-### Separation of Concerns
-
-Each node does one thing well.
-
-### Deterministic Orchestration
-
-No agent loops or randomness—clear execution path.
-
-### Extensibility
-
-New nodes (e.g., illustration, formatting) can be added without breaking the system.
-
----
-
-## Mental Model
-
-Think of the system as:
-
-```
-RFP → Understand → Retrieve Evidence → Generate → Critique → Score → Assemble
+```text
+.
+├── app.py                  # Entry point / pipeline runner
+├── config.py               # Settings + .env loading
+├── graph/
+│   └── builder.py          # LangGraph wiring
+├── state/
+│   └── application_state.py # ApplicationState (shared state)
+├── nodes/
+│   ├── analyze_opportunity.py
+│   ├── retrieve_profile.py
+│   ├── score_application.py
+│   └── assemble_package.py
+├── rag/
+│   ├── ingest.py           # Load + chunk .txt documents
+│   ├── store.py            # Chroma vector store
+│   └── retrieve.py         # Similarity retrieval
+├── llm/
+│   └── client.py           # LLM client
+├── utils/
+│   └── parsing.py          # safe JSON parsing
+├── outputs/
+│   └── writer.py           # Save markdown output
+├── api/
+│   └── routes.py           # API entry-point placeholder
+└── documents/
+    ├── opportunities/      # Opportunity prompt(s) (.txt)
+    ├── student_profile/    # Student profile documents (.txt)
+    └── student_draft.txt   # The draft to coach / score
 ```
 
-Where:
+---
 
-* RAG = memory
-* Templates = instructions
-* Nodes = workers
-* State = shared workspace
-* Graph = workflow
+## Setup
+
+1. Create / activate your environment, then install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+2. Add a `.env` file at the project root with your OpenAI key:
+
+```text
+OPENAI_API_KEY=sk-...
+```
+
+(`.env` is git-ignored.)
 
 ---
 
-## Future Extensions
+## Usage
 
-* Add a node that recommends graphics or illustrations
-* Add an option to format proposal for LaTeX editors (e.g. escape special characters)
-* Requirement-level traceability
-* Automatically regenerate the proposal if the score is poor (<7)
-* Add pdf, docx extraction
+1. Put the opportunity prompt(s) in `documents/opportunities/` (`.txt`).
+2. Put the student's profile documents in `documents/student_profile/` (`.txt`).
+3. Put the student's draft in `documents/student_draft.txt`.
+4. Run:
+
+```bash
+python app.py
+```
+
+The final coaching package is written to:
+
+```text
+outputs/final_application_package.md
+```
+
+---
+
+## Grounding Rules
+
+The system only uses information from:
+
+1. The opportunity prompt
+2. The student profile documents
+3. The student draft
+
+It never invents awards, grades, schools, internships, leadership roles,
+personal stories, or metrics. When information is missing, it responds:
+
+> Missing from student profile. Ask the student for this information before
+> using it.
 
 ---
 
-## Summary
+## Notes
 
-This system is not just a prompt—it is a **structured AI application framework** that:
-
-* Grounds outputs in real data
-* Enforces consistency through templates
-* Orchestrates logic through a graph
-* Produces reusable, evaluatable proposal artifacts
-
----
+* Only `.txt` document ingestion is supported in this prototype.
+* The profile vector store is rebuilt on each run.
+* `api/routes.py` is a placeholder that exposes the pipeline as a single
+  callable, ready to be wired to FastAPI / Flask later.

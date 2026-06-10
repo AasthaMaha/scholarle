@@ -1,12 +1,18 @@
 [project]
-name = "proposal-ai"
+name = "scholarle-engen"
 version = "0.1.0"
 dependencies = [
   "langchain",
+  "langchain-community",
+  "langchain-openai",
+  "langchain-text-splitters",
   "langgraph",
   "openai",
   "chromadb",
   "tiktoken",
   "pydantic",
+  "python-dotenv",
   "streamlit",
+  "fastapi",
+  "uvicorn[standard]",
 ]
