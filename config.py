@@ -1,9 +1,9 @@
 # config.py
 from dataclasses import dataclass
-from dotenv import load_dotenv
+#from dotenv import load_dotenv
 import os
 
-load_dotenv()
+#load_dotenv()
 
 @dataclass
 class Settings:
