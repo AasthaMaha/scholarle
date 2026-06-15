@@ -131,6 +131,7 @@ personal stories, or metrics. When information is missing, it responds:
 ## Notes
 
 * Only `.txt` document ingestion is supported in this prototype.
-* The profile vector store is rebuilt on each run.
+* Profile vector stores are persisted by profile content and reused when the
+  same uploaded profile is analyzed again.
 * `api/routes.py` is a placeholder that exposes the pipeline as a single
   callable, ready to be wired to FastAPI / Flask later.
