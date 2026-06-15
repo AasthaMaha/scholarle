@@ -16,6 +16,7 @@ class Settings:
     # Separate vector DBs
     rfp_vector_db_path: str = "./chroma_db_rfp"
     kb_vector_db_path: str = "./chroma_db_kb"
+    profile_vector_db_path: str = "./chroma_db_profile"
 
     # Document locations
     rfp_docs_path: str = "./documents/rfp_docs"

@@ -1,6 +1,8 @@
 # api/routes.py
 """API layer for ScholarlE Engen, exposing the coaching pipeline."""
 
+import hashlib
+from pathlib import Path
 from typing import Dict, Optional
 
 from langchain_core.documents import Document
@@ -41,6 +43,15 @@ def _build_opportunity_text(
     )
 
 
+def _profile_store_path(profile_text: str) -> Path:
+    profile_hash = hashlib.sha256(profile_text.strip().encode("utf-8")).hexdigest()[:16]
+    return Path(settings.profile_vector_db_path) / profile_hash
+
+
+def _has_existing_chroma_store(path: Path) -> bool:
+    return (path / "chroma.sqlite3").exists()
+
+
 def run_application_pipeline(
     opportunity_text: str,
     student_draft: str,
@@ -49,7 +60,12 @@ def run_application_pipeline(
     draft_number: int = 1,
 ) -> dict:
     profile_docs = _text_to_chunks(profile_text, "uploaded_cv")
-    profile_store = ChromaStore(documents=profile_docs, ephemeral=True)
+    profile_store_path = _profile_store_path(profile_text)
+    profile_store_path.parent.mkdir(parents=True, exist_ok=True)
+    profile_store = ChromaStore(
+        documents=None if _has_existing_chroma_store(profile_store_path) else profile_docs,
+        persist_directory=str(profile_store_path),
+    )
 
     try:
         graph = build_application_graph(profile_store)
