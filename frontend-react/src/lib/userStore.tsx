@@ -89,7 +89,21 @@ export type ActiveScholarship = {
   name?: string;
   type?: string;
   url?: string;
+  awardAmount?: string;
+  applicationDeadline?: string;
   description?: string;
+  minimumGpa?: string;
+  enrollmentLevel?: string;
+  citizenshipRequirement?: string;
+  financialNeedRequirement?: string;
+  locationRequirement?: string;
+  eligibleMajors?: string;
+  otherEligibilityRules?: string;
+  requiredDocumentTypes?: string[];
+  otherRequiredMaterials?: string;
+  essayPrompts?: string;
+  additionalNotes?: string;
+  fullText?: string;
 };
 
 export type AnalysisScore = {
@@ -133,6 +147,7 @@ export type UserProfile = {
   pronouns?: string;
   location?: string;
   nationality?: string;
+  citizenshipStatus?: string;
   raceEthnicity?: string;
   hispanicLatino?: string;
   identity?: string[];

@@ -98,7 +98,7 @@ function isProfileComplete(user: UserProfile | null) {
   return !!(
     user?.pronouns?.trim() &&
     user.location?.trim() &&
-    user.nationality?.trim() &&
+    user.citizenshipStatus?.trim() &&
     user.hispanicLatino &&
     user.raceEthnicity &&
     user.careerGoal?.trim() &&
@@ -530,13 +530,17 @@ function StepProfile({ error }: { error: string }) {
   }
 
   const raceOptions = [
-    "American Indian or Alaska Native (Not Hispanic or Latino) (United States of America)",
-    "Asian (Not Hispanic or Latino) (United States of America)",
-    "Black or African American (Not Hispanic or Latino) (United States of America)",
-    "Native Hawaiian or Other Pacific Islander (Not Hispanic or Latino) (United States of America)",
-    "Not Specified (United States of America)",
-    "Two or More Races (Not Hispanic or Latino) (United States of America)",
-    "White (Not Hispanic or Latino) (United States of America)",
+    "American Indian or Alaska Native",
+    "Asian",
+    "Black or African American",
+    "Native Hawaiian or Other Pacific Islander",
+    "Prefer not to say",
+    "Two or More Races",
+    "White",
+  ];
+  const citizenshipOptions = [
+    "A-U.S. Citizen, U.S. National, Permanent Resident (Green Card Holder), Refugee, or Asylee",
+    "B-International Student or Other Visa Status (F-1, J-1, H-4, TN, DACA, TPS, etc.)",
   ];
 
   return (
@@ -564,7 +568,12 @@ function StepProfile({ error }: { error: string }) {
         <div className="grid sm:grid-cols-2 gap-3 mt-3">
           <Input label="Pronouns" value={user?.pronouns ?? ""} onChange={(v) => set("pronouns", v)} placeholder="she/her, he/him, they/them…" />
           <Input label="Location" value={user?.location ?? ""} onChange={(v) => set("location", v)} placeholder="City, State" />
-          <Input label="Nationality" value={user?.nationality ?? ""} onChange={(v) => set("nationality", v)} placeholder="e.g. American, Mexican, Nigerian…" />
+          <Select
+            label="Citizenship / Residency Status"
+            value={user?.citizenshipStatus ?? ""}
+            onChange={(v) => set("citizenshipStatus", v)}
+            options={citizenshipOptions}
+          />
           <Select
             label="Are you of Hispanic or Latino descent?"
             value={user?.hispanicLatino ?? ""}
@@ -921,7 +930,7 @@ function StepDiscovery() {
   if (user?.educationLevel) qs.push({ q: "Education level", a: eduLevelLabel(user.educationLevel) });
   if (major) qs.push({ q: "Major / focus", a: major });
   if (user?.location) qs.push({ q: "Location", a: user.location });
-  if (user?.nationality) qs.push({ q: "Nationality", a: user.nationality });
+  if (user?.citizenshipStatus) qs.push({ q: "Citizenship / Residency Status", a: user.citizenshipStatus });
   if (user?.raceEthnicity) qs.push({ q: "Race / ethnicity", a: user.raceEthnicity });
   if (user?.hispanicLatino) qs.push({ q: "Hispanic / Latino?", a: user.hispanicLatino });
   if (user?.firstGen) qs.push({ q: "First-generation?", a: "Yes" });
@@ -1143,10 +1152,49 @@ function MatchRing({ score }: { score: number }) {
 function StepImport() {
   const { user, updateProfile } = useUser();
   const scholarship = user?.activeScholarship ?? {};
-  const isReady = !!scholarship.name && !!scholarship.type && !!scholarship.description;
+  const requiredMaterialOptions = [
+    "Resume / CV",
+    "Transcript",
+    "Personal Statement",
+    "Essay",
+    "Recommendation Letter(s)",
+    "FAFSA Submission",
+    "Financial Information",
+    "Portfolio",
+    "Research Proposal",
+    "Proof of Enrollment",
+    "Community Service Verification",
+    "Video Submission",
+  ];
+  const hasEligibilityDetails = !!(
+    scholarship.minimumGpa ||
+    scholarship.enrollmentLevel ||
+    scholarship.citizenshipRequirement ||
+    scholarship.financialNeedRequirement ||
+    scholarship.locationRequirement ||
+    scholarship.eligibleMajors ||
+    scholarship.otherEligibilityRules
+  );
+  const hasStructuredDetails = !!(
+    scholarship.description ||
+    hasEligibilityDetails ||
+    scholarship.requiredDocumentTypes?.length ||
+    scholarship.otherRequiredMaterials ||
+    scholarship.essayPrompts ||
+    scholarship.fullText
+  );
+  const isReady = !!scholarship.name && !!scholarship.type && hasStructuredDetails;
 
   function updateScholarship(patch: ActiveScholarship) {
     updateProfile({ activeScholarship: { ...scholarship, ...patch } });
+  }
+
+  function toggleRequiredMaterial(material: string, checked: boolean) {
+    const current = scholarship.requiredDocumentTypes ?? [];
+    const next = checked
+      ? Array.from(new Set([...current, material]))
+      : current.filter((item) => item !== material);
+    updateScholarship({ requiredDocumentTypes: next });
   }
 
   return (
@@ -1176,13 +1224,144 @@ function StepImport() {
             placeholder="https://... or source name"
             className="sm:col-span-2"
           />
+          <Input
+            label="Award amount"
+            value={scholarship.awardAmount ?? ""}
+            onChange={(awardAmount) => updateScholarship({ awardAmount })}
+            placeholder="$5,000"
+          />
+          <Input
+            label="Application deadline"
+            value={scholarship.applicationDeadline ?? ""}
+            onChange={(applicationDeadline) => updateScholarship({ applicationDeadline })}
+            type="date"
+          />
         </div>
         <Textarea
-          label="Eligibility, required materials, deadline, and essay prompt"
+          label="Scholarship description"
           value={scholarship.description ?? ""}
           onChange={(description) => updateScholarship({ description })}
-          placeholder="Paste the scholarship page text, prompt, requirements, deadlines, and material list."
-          rows={9}
+          placeholder="Summarize what the scholarship is for and who sponsors it."
+          rows={4}
+        />
+      </Card>
+
+      <Card>
+        <SectionLabel>Eligibility Requirements</SectionLabel>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Use the structured fields for requirements that can be compared directly against the student profile.
+        </p>
+        <div className="mt-4 grid sm:grid-cols-2 gap-3">
+          <Select
+            label="Minimum GPA"
+            value={scholarship.minimumGpa ?? ""}
+            onChange={(minimumGpa) => updateScholarship({ minimumGpa })}
+            options={["No minimum listed", "2.5+", "3.0+", "3.25+", "3.5+", "4.0", "Other"]}
+          />
+          <Select
+            label="Enrollment Level"
+            value={scholarship.enrollmentLevel ?? ""}
+            onChange={(enrollmentLevel) => updateScholarship({ enrollmentLevel })}
+            options={[
+              "High school senior",
+              "Undergraduate student",
+              "Graduate student",
+              "Community college student",
+              "Transfer student",
+              "Other",
+            ]}
+          />
+          <Select
+            label="Citizenship / Residency Status"
+            value={scholarship.citizenshipRequirement ?? ""}
+            onChange={(citizenshipRequirement) => updateScholarship({ citizenshipRequirement })}
+            options={[
+              "U.S. Citizen / National",
+              "Permanent Resident",
+              "Refugee / Asylee",
+              "DACA Recipient",
+              "International Student",
+              "Other",
+            ]}
+          />
+          <Select
+            label="Financial Need Requirement"
+            value={scholarship.financialNeedRequirement ?? ""}
+            onChange={(financialNeedRequirement) => updateScholarship({ financialNeedRequirement })}
+            options={["Not specified", "Required", "Preferred", "FAFSA required", "Pell Grant eligible"]}
+          />
+          <Select
+            label="Location / Residency Requirement"
+            value={scholarship.locationRequirement ?? ""}
+            onChange={(locationRequirement) => updateScholarship({ locationRequirement })}
+            options={[
+              "No location restriction",
+              "U.S. resident",
+              "State resident required",
+              "City/county resident required",
+              "Other",
+            ]}
+            className="sm:col-span-2"
+          />
+        </div>
+        <Textarea
+          label="Eligible Majors / Fields of Study"
+          value={scholarship.eligibleMajors ?? ""}
+          onChange={(eligibleMajors) => updateScholarship({ eligibleMajors })}
+          placeholder="Paste major or field-of-study requirements exactly as listed by the scholarship, such as 'Open to all majors,' 'STEM majors only,' or 'Computer Science, Cybersecurity, Information Systems.'"
+          rows={4}
+        />
+        <Textarea
+          label="Other Eligibility Rules"
+          value={scholarship.otherEligibilityRules ?? ""}
+          onChange={(otherEligibilityRules) => updateScholarship({ otherEligibilityRules })}
+          placeholder="Paste any extra eligibility rules that do not fit above, such as leadership, community service, identity-based eligibility, military status, employer affiliation, or special circumstances."
+          rows={4}
+        />
+      </Card>
+
+      <Card>
+        <SectionLabel>Application materials</SectionLabel>
+        <div className="mt-4 grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {requiredMaterialOptions.map((material) => (
+            <label key={material} className="inline-flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-sm">
+              <input
+                type="checkbox"
+                checked={!!scholarship.requiredDocumentTypes?.includes(material)}
+                onChange={(e) => toggleRequiredMaterial(material, e.target.checked)}
+                className="size-4 accent-[oklch(0.32_0.09_270)]"
+              />
+              <span>{material}</span>
+            </label>
+          ))}
+        </div>
+        <Textarea
+          label="Other Required Materials"
+          value={scholarship.otherRequiredMaterials ?? ""}
+          onChange={(otherRequiredMaterials) => updateScholarship({ otherRequiredMaterials })}
+          placeholder="Paste any additional required documents or materials not listed above."
+          rows={4}
+        />
+        <Textarea
+          label="Essay prompt(s)"
+          value={scholarship.essayPrompts ?? ""}
+          onChange={(essayPrompts) => updateScholarship({ essayPrompts })}
+          placeholder="Paste each essay or short-answer prompt here."
+          rows={5}
+        />
+        <Textarea
+          label="Additional notes"
+          value={scholarship.additionalNotes ?? ""}
+          onChange={(additionalNotes) => updateScholarship({ additionalNotes })}
+          placeholder="Optional notes about selection criteria, recommender deadlines, submission portal details, or anything else."
+          rows={3}
+        />
+        <Textarea
+          label="Paste full scholarship text (optional)"
+          value={scholarship.fullText ?? ""}
+          onChange={(fullText) => updateScholarship({ fullText })}
+          placeholder="Optional: paste the full scholarship page text if you want Scholar-E to analyze everything together."
+          rows={6}
         />
       </Card>
 
@@ -1206,6 +1385,27 @@ function StepImport() {
 function StepRequirementsAndFit() {
   const { user } = useUser();
   const scholarship = user?.activeScholarship;
+  const eligibilitySummary = [
+    scholarship?.minimumGpa && `Minimum GPA: ${scholarship.minimumGpa}`,
+    scholarship?.enrollmentLevel && `Enrollment level: ${scholarship.enrollmentLevel}`,
+    scholarship?.citizenshipRequirement && `Citizenship/residency: ${scholarship.citizenshipRequirement}`,
+    scholarship?.financialNeedRequirement && `Financial need: ${scholarship.financialNeedRequirement}`,
+    scholarship?.locationRequirement && `Location/residency: ${scholarship.locationRequirement}`,
+    scholarship?.eligibleMajors && `Eligible majors/fields: ${scholarship.eligibleMajors}`,
+    scholarship?.otherEligibilityRules && `Other rules: ${scholarship.otherEligibilityRules}`,
+  ].filter(Boolean).join("\n");
+  const requiredMaterialsSummary = [
+    scholarship?.requiredDocumentTypes?.length && scholarship.requiredDocumentTypes.join(", "),
+    scholarship?.otherRequiredMaterials && `Other: ${scholarship.otherRequiredMaterials}`,
+  ].filter(Boolean).join("\n");
+  const scholarshipSummary = [
+    scholarship?.awardAmount && `Award amount: ${scholarship.awardAmount}`,
+    scholarship?.applicationDeadline && `Deadline: ${scholarship.applicationDeadline}`,
+    scholarship?.description,
+    eligibilitySummary && `Eligibility:\n${eligibilitySummary}`,
+    requiredMaterialsSummary && `Required materials:\n${requiredMaterialsSummary}`,
+    scholarship?.essayPrompts && `Essay prompt(s): ${scholarship.essayPrompts}`,
+  ].filter(Boolean).join("\n\n");
   const analysis = user?.lastAnalysis;
   const readiness = analysis?.readiness_index ?? {};
   const dims = Object.entries(readiness)
@@ -1224,8 +1424,8 @@ function StepRequirementsAndFit() {
     <div className="space-y-6">
       <Card className="bg-secondary/40">
         <div className="text-sm font-medium">{scholarship?.name || "Scholarship opportunity"}</div>
-        <p className="mt-2 text-foreground/90 font-display italic text-lg">
-          "{scholarship?.description || "Paste scholarship requirements in the import step, then run the coach from the essay step."}"
+        <p className="mt-2 whitespace-pre-wrap text-foreground/90 font-display italic text-lg">
+          "{scholarshipSummary || "Add scholarship requirements in the import step, then run the coach from the essay step."}"
         </p>
       </Card>
 
@@ -1330,7 +1530,7 @@ function StepEssayOutline() {
       <Card className="bg-secondary/40">
         <div className="text-xs uppercase tracking-widest text-muted-foreground">Essay prompt</div>
         <p className="mt-2 font-display italic text-lg">
-          "{user?.activeScholarship?.description || "Paste the scholarship prompt in the import step to tailor this outline."}"
+          "{user?.activeScholarship?.essayPrompts || "Paste the scholarship prompt in the import step to tailor this outline."}"
         </p>
       </Card>
 
@@ -1464,7 +1664,7 @@ function StepEssayUpload() {
       <Card className="bg-secondary/40">
         <div className="text-xs uppercase tracking-widest text-muted-foreground">Essay prompt</div>
         <p className="mt-2 font-display italic text-lg">
-          "{user?.activeScholarship?.description || "Paste the scholarship prompt in the import step."}"
+          "{user?.activeScholarship?.essayPrompts || "Paste the scholarship prompt in the import step."}"
         </p>
         <p className="mt-2 text-xs text-muted-foreground">
           Paste your draft below — or upload a PDF and we'll pull the text out for you.
@@ -1938,7 +2138,22 @@ function StepFinalCheck() {
   const hasDoc = (kind: string) => docs.some((doc) => doc.kind.toLowerCase().includes(kind));
   const checklist = [
     { item: "Student profile created", done: !!user?.educationLevel },
-    { item: "Scholarship requirements imported", done: !!user?.activeScholarship?.description },
+    {
+      item: "Scholarship requirements imported",
+      done: !!(
+        user?.activeScholarship?.minimumGpa ||
+        user?.activeScholarship?.enrollmentLevel ||
+        user?.activeScholarship?.citizenshipRequirement ||
+        user?.activeScholarship?.financialNeedRequirement ||
+        user?.activeScholarship?.locationRequirement ||
+        user?.activeScholarship?.eligibleMajors ||
+        user?.activeScholarship?.otherEligibilityRules ||
+        user?.activeScholarship?.requiredDocumentTypes?.length ||
+        user?.activeScholarship?.otherRequiredMaterials ||
+        user?.activeScholarship?.essayPrompts ||
+        user?.activeScholarship?.fullText
+      ),
+    },
     { item: "Resume uploaded or identified", done: hasDoc("resume") },
     { item: "Transcript uploaded or identified", done: hasDoc("transcript") },
     { item: "Recommendation letter uploaded or identified", done: hasDoc("recommendation") },

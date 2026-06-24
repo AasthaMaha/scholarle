@@ -45,7 +45,7 @@ function Header() {
           <span className="font-display font-semibold text-lg tracking-tight">Scholar-E</span>
         </div>
         <nav className="hidden md:flex items-center gap-7 text-sm text-muted-foreground">
-          <a href="#how" className="hover:text-foreground">How it works</a>
+          <a href="#demo" className="hover:text-foreground">How it works</a>
           <a href="#pillars" className="hover:text-foreground">What we deliver</a>
           <a href="#demo" className="hover:text-foreground">Student Demo</a>
         </nav>
@@ -123,7 +123,7 @@ function Hero() {
             {isAuthenticated ? "Continue your journey →" : "Create your account →"}
           </Link>
           <a
-            href="#how"
+            href="#demo"
             className="inline-flex items-center gap-2 rounded-full border border-border bg-card px-6 py-3 text-sm font-medium hover:bg-accent"
           >
             See how it works
