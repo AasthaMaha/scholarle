@@ -1,6 +1,11 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useUser } from "@/lib/userStore";
+import {
+  googleStartUrl,
+  loginAccount,
+  registerAccount,
+} from "@/lib/api/auth";
 
 export const Route = createFileRoute("/auth")({
   head: () => ({
@@ -14,22 +19,57 @@ export const Route = createFileRoute("/auth")({
 
 function AuthPage() {
   const navigate = useNavigate();
-  const { signIn } = useUser();
+  const {
+    user,
+    authToken,
+    isAuthenticated,
+    setAuthenticatedUser,
+    refreshCurrentUser,
+  } = useUser();
   const [mode, setMode] = useState<"signup" | "login">("signup");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [status, setStatus] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  function handleSubmit(e: React.FormEvent) {
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("google_connected") === "1") {
+      refreshCurrentUser()
+        .then(() => setStatus("Google account connected."))
+        .catch(() => setError("Google connected, but the current user could not be refreshed."));
+      window.history.replaceState({}, "", "/auth");
+    }
+  }, [refreshCurrentUser]);
+
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!email) return;
-    signIn(email, mode === "signup" ? name || email.split("@")[0] : undefined);
-    navigate({ to: "/journey" });
+    setError("");
+    setStatus("");
+    setIsSubmitting(true);
+    try {
+      const result =
+        mode === "signup"
+          ? await registerAccount({ name: name || email.split("@")[0], email, password })
+          : await loginAccount({ email, password });
+      setAuthenticatedUser(result.user, result.access_token);
+      navigate({ to: "/journey" });
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setIsSubmitting(false);
+    }
   }
 
   function handleGoogle() {
-    signIn("you@gmail.com", "Google User");
-    navigate({ to: "/journey" });
+    setError("");
+    if (!authToken) {
+      setError("Create an account or log in before connecting Google.");
+      return;
+    }
+    window.location.href = googleStartUrl(authToken);
   }
 
   return (
@@ -67,10 +107,16 @@ function AuthPage() {
 
           <button
             onClick={handleGoogle}
+            disabled={!isAuthenticated}
             className="mt-6 w-full inline-flex items-center justify-center gap-3 rounded-full border border-border bg-card px-4 py-3 text-sm font-medium hover:bg-accent"
           >
-            <GoogleIcon /> Continue with Google
+            <GoogleIcon /> {user?.googleEmail ? `Connected: ${user.googleEmail}` : "Connect Google account"}
           </button>
+          {!isAuthenticated && (
+            <p className="mt-2 text-xs text-muted-foreground text-center">
+              Log in first, then connect your Google account.
+            </p>
+          )}
 
           <div className="my-5 flex items-center gap-3 text-xs text-muted-foreground">
             <div className="h-px flex-1 bg-border" />
@@ -112,11 +158,23 @@ function AuthPage() {
 
             <button
               type="submit"
+              disabled={isSubmitting}
               className="w-full rounded-full bg-primary text-primary-foreground px-4 py-3 text-sm font-medium hover:opacity-90"
             >
-              {mode === "signup" ? "Create account & start" : "Sign in"} →
+              {isSubmitting ? "Working..." : mode === "signup" ? "Create account & start" : "Sign in"} →
             </button>
           </form>
+
+          {error && (
+            <p className="mt-4 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+              {error}
+            </p>
+          )}
+          {status && (
+            <p className="mt-4 rounded-lg border border-success/30 bg-success/10 p-3 text-sm text-success">
+              {status}
+            </p>
+          )}
 
           <div className="mt-5 text-sm text-muted-foreground text-center">
             {mode === "signup" ? "Already have an account?" : "New to Scholar-E?"}{" "}
@@ -128,9 +186,11 @@ function AuthPage() {
             </button>
           </div>
 
-          <p className="mt-6 text-[11px] text-muted-foreground text-center">
-            Prototype mode — any email and password are accepted.
-          </p>
+          {user?.googleEmail && (
+            <p className="mt-6 text-[11px] text-muted-foreground text-center">
+              Google connected as {user.googleEmail}.
+            </p>
+          )}
         </div>
       </div>
     </div>

@@ -7,6 +7,11 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import {
+  AUTH_TOKEN_KEY,
+  fetchCurrentUser,
+  type AuthUser,
+} from "@/lib/api/auth";
 
 export type EducationLevel = "high_school" | "undergrad" | "grad" | "phd";
 
@@ -120,8 +125,10 @@ export type AnalysisResult = {
 
 export type UserProfile = {
   // account
+  id?: number;
   name: string;
   email: string;
+  googleEmail?: string | null;
   // universal
   pronouns?: string;
   location?: string;
@@ -158,6 +165,9 @@ export type UserProfile = {
 type Ctx = {
   user: UserProfile | null;
   isAuthenticated: boolean;
+  authToken: string | null;
+  setAuthenticatedUser: (authUser: AuthUser, token: string) => void;
+  refreshCurrentUser: () => Promise<void>;
   signIn: (email: string, name?: string) => void;
   signOut: () => void;
   updateProfile: (patch: Partial<UserProfile>) => void;
@@ -169,15 +179,36 @@ const UserContext = createContext<Ctx | null>(null);
 
 export function UserProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<UserProfile | null>(null);
+  const [authToken, setAuthToken] = useState<string | null>(null);
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
     try {
       const raw = typeof window !== "undefined" ? localStorage.getItem(STORAGE_KEY) : null;
+      const token = typeof window !== "undefined" ? localStorage.getItem(AUTH_TOKEN_KEY) : null;
       if (raw) setUser(JSON.parse(raw));
+      if (token) setAuthToken(token);
     } catch {}
     setHydrated(true);
   }, []);
+
+  useEffect(() => {
+    if (!hydrated || !authToken) return;
+    fetchCurrentUser(authToken)
+      .then((authUser) => {
+        setUser((prev) => ({
+          ...(prev ?? {}),
+          id: authUser.id,
+          name: authUser.name,
+          email: authUser.email,
+          googleEmail: authUser.google_email ?? null,
+        }));
+      })
+      .catch(() => {
+        localStorage.removeItem(AUTH_TOKEN_KEY);
+        setAuthToken(null);
+      });
+  }, [hydrated, authToken]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -187,6 +218,31 @@ export function UserProvider({ children }: { children: ReactNode }) {
     } catch {}
   }, [user, hydrated]);
 
+  const setAuthenticatedUser = useCallback((authUser: AuthUser, token: string) => {
+    localStorage.setItem(AUTH_TOKEN_KEY, token);
+    setAuthToken(token);
+    setUser((prev) => ({
+      ...(prev ?? {}),
+      id: authUser.id,
+      email: authUser.email,
+      name: authUser.name,
+      googleEmail: authUser.google_email ?? null,
+    }));
+  }, []);
+
+  const refreshCurrentUser = useCallback(async () => {
+    const token = authToken ?? localStorage.getItem(AUTH_TOKEN_KEY);
+    if (!token) return;
+    const authUser = await fetchCurrentUser(token);
+    setUser((prev) => ({
+      ...(prev ?? {}),
+      id: authUser.id,
+      email: authUser.email,
+      name: authUser.name,
+      googleEmail: authUser.google_email ?? null,
+    }));
+  }, [authToken]);
+
   const signIn = useCallback((email: string, name?: string) => {
     setUser((prev) => ({
       ...(prev ?? {}),
@@ -195,15 +251,28 @@ export function UserProvider({ children }: { children: ReactNode }) {
     }));
   }, []);
 
-  const signOut = useCallback(() => setUser(null), []);
+  const signOut = useCallback(() => {
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+    setAuthToken(null);
+    setUser(null);
+  }, []);
 
   const updateProfile = useCallback((patch: Partial<UserProfile>) => {
     setUser((prev) => ({ ...(prev ?? { name: "", email: "" }), ...patch }));
   }, []);
 
   const value = useMemo<Ctx>(
-    () => ({ user, isAuthenticated: !!user?.email, signIn, signOut, updateProfile }),
-    [user, signIn, signOut, updateProfile],
+    () => ({
+      user,
+      isAuthenticated: !!authToken && !!user?.email,
+      authToken,
+      setAuthenticatedUser,
+      refreshCurrentUser,
+      signIn,
+      signOut,
+      updateProfile,
+    }),
+    [user, authToken, setAuthenticatedUser, refreshCurrentUser, signIn, signOut, updateProfile],
   );
 
   return <UserContext.Provider value={value}>{children}</UserContext.Provider>;

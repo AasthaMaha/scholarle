@@ -11,6 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from api.routes import AnalyzeRequest, analyze_application
+from backend_auth.database import init_db
+from backend_auth.routes import router as auth_router
 
 ROOT = Path(__file__).resolve().parent
 FRONTEND = ROOT / "frontend"
@@ -25,6 +27,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(auth_router)
+
+
+@app.on_event("startup")
+def startup() -> None:
+    init_db()
 
 
 @app.get("/")

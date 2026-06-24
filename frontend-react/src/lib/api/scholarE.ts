@@ -29,7 +29,9 @@ export function profileToText(user: UserProfile | null) {
     user.hispanicLatino && `Hispanic/Latino descent: ${user.hispanicLatino}`,
     user.firstGen && "First-generation college student",
     user.pellEligible && "Pell Grant eligible",
-    user.identity?.length && `Identity/context: ${user.identity.join(", ")}`,
+    user.identity && user.identity.length > 0
+      ? `Identity/context: ${user.identity.join(", ")}`
+      : undefined,
     user.careerGoal && `Career goal: ${user.careerGoal}`,
     user.educationLevel && `Education level: ${user.educationLevel}`,
     user.highSchool && `High school profile:\n${JSON.stringify(user.highSchool, null, 2)}`,
@@ -37,15 +39,20 @@ export function profileToText(user: UserProfile | null) {
     user.graduate && `Graduate profile:\n${JSON.stringify(user.graduate, null, 2)}`,
     user.optional && `Optional context:\n${JSON.stringify(user.optional, null, 2)}`,
     user.prompts && `Story prompt answers:\n${JSON.stringify(user.prompts, null, 2)}`,
-    user.documents?.length &&
-      `Uploaded/identified documents:\n${user.documents
-        .map((doc) => `- ${doc.kind}: ${doc.name}`)
-        .join("\n")}`,
+    user.documents && user.documents.length > 0
+      ? `Uploaded/identified documents:\n${user.documents
+          .map((doc) => `- ${doc.kind}: ${doc.name}`)
+          .join("\n")}`
+      : undefined,
   ]);
 }
 
 export function buildAnalyzePayload(user: UserProfile | null): AnalyzePayload {
   const scholarship = user?.activeScholarship;
+  const previousReadiness: Record<string, number> = {};
+  Object.entries(user?.lastAnalysis?.readiness_index ?? {}).forEach(([key, value]) => {
+    if (typeof value?.score === "number") previousReadiness[key] = value.score;
+  });
 
   return {
     cv_text: profileToText(user),
@@ -56,13 +63,7 @@ export function buildAnalyzePayload(user: UserProfile | null): AnalyzePayload {
       scholarship?.url && `Scholarship URL/source: ${scholarship.url}`,
       scholarship?.description,
     ]),
-    previous_readiness: user?.lastAnalysis?.readiness_index
-      ? Object.fromEntries(
-          Object.entries(user.lastAnalysis.readiness_index)
-            .filter(([, value]) => typeof value?.score === "number")
-            .map(([key, value]) => [key, value.score]),
-        )
-      : {},
+    previous_readiness: previousReadiness,
     draft_number: (user?.drafts?.length ?? 0) + 1,
   };
 }

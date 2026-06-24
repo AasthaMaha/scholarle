@@ -13,6 +13,7 @@ import {
   analyzeApplication,
   buildAnalyzePayload,
 } from "@/lib/api/scholarE";
+import { googleStartUrl } from "@/lib/api/auth";
 import {
   Tooltip,
   TooltipContent,
@@ -35,9 +36,10 @@ export const Route = createFileRoute("/journey")({
 });
 
 function Journey() {
-  const { isAuthenticated } = useUser();
+  const { isAuthenticated, user } = useUser();
   const navigate = useNavigate();
   const [stepIdx, setStepIdx] = useState(0);
+  const [profileError, setProfileError] = useState("");
 
   useEffect(() => {
     if (!isAuthenticated) navigate({ to: "/auth" });
@@ -58,8 +60,18 @@ function Journey() {
   }
 
   const step = journeySteps[stepIdx];
-  const goNext = () => setStepIdx((i) => Math.min(i + 1, journeySteps.length - 1));
-  const goPrev = () => setStepIdx((i) => Math.max(i - 1, 0));
+  const goNext = () => {
+    if (step.slug === "profile" && !isProfileComplete(user)) {
+      setProfileError("Fill out the required fields");
+      return;
+    }
+    setProfileError("");
+    setStepIdx((i) => Math.min(i + 1, journeySteps.length - 1));
+  };
+  const goPrev = () => {
+    setProfileError("");
+    setStepIdx((i) => Math.max(i - 1, 0));
+  };
 
   return (
     <TooltipProvider delayDuration={150}>
@@ -71,7 +83,7 @@ function Journey() {
             <div className="mx-auto max-w-5xl px-6 md:px-10 py-10">
               <StepHeader step={step} />
               <div className="mt-8">
-                <StepBody slug={step.slug} goNext={goNext} />
+                <StepBody slug={step.slug} goNext={goNext} profileError={profileError} />
               </div>
               <Nav stepIdx={stepIdx} onNext={goNext} onPrev={goPrev} />
             </div>
@@ -79,6 +91,18 @@ function Journey() {
         </div>
       </div>
     </TooltipProvider>
+  );
+}
+
+function isProfileComplete(user: UserProfile | null) {
+  return !!(
+    user?.pronouns?.trim() &&
+    user.location?.trim() &&
+    user.nationality?.trim() &&
+    user.hispanicLatino &&
+    user.raceEthnicity &&
+    user.careerGoal?.trim() &&
+    user.educationLevel
   );
 }
 
@@ -242,10 +266,18 @@ function Nav({ stepIdx, onNext, onPrev }: { stepIdx: number; onNext: () => void;
   );
 }
 
-function StepBody({ slug, goNext }: { slug: string; goNext: () => void }) {
+function StepBody({
+  slug,
+  goNext,
+  profileError,
+}: {
+  slug: string;
+  goNext: () => void;
+  profileError: string;
+}) {
   switch (slug) {
     case "land": return <StepLand />;
-    case "profile": return <StepProfile />;
+    case "profile": return <StepProfile error={profileError} />;
     case "discovery": return <StepDiscovery />;
     case "opportunities": return <StepOpportunities onAnalyze={goNext} />;
     case "import": return <StepImport />;
@@ -355,20 +387,36 @@ function StepLand() {
 
 
 function SidebarUser() {
-  const { user } = useUser();
+  const { user, authToken } = useUser();
   const subtitle =
     user?.educationLevel
       ? eduLevelLabel(user.educationLevel)
       : "Complete your profile →";
   return (
-    <div className="flex items-center gap-3">
-      <div className="size-10 rounded-full bg-primary text-primary-foreground grid place-items-center font-display">
-        {toInitials(user?.name)}
+    <div className="space-y-3">
+      <div className="flex items-center gap-3">
+        <div className="size-10 rounded-full bg-primary text-primary-foreground grid place-items-center font-display">
+          {toInitials(user?.name)}
+        </div>
+        <div className="min-w-0">
+          <div className="text-sm font-medium truncate">{user?.name || "Your account"}</div>
+          <div className="text-xs text-muted-foreground truncate">{subtitle}</div>
+        </div>
       </div>
-      <div className="min-w-0">
-        <div className="text-sm font-medium truncate">{user?.name || "Your account"}</div>
-        <div className="text-xs text-muted-foreground truncate">{subtitle}</div>
-      </div>
+      {user?.googleEmail ? (
+        <div className="rounded-lg bg-success/10 px-3 py-2 text-xs text-success">
+          Google connected: {user.googleEmail}
+        </div>
+      ) : (
+        <button
+          onClick={() => {
+            if (authToken) window.location.href = googleStartUrl(authToken);
+          }}
+          className="w-full rounded-full border border-border bg-card px-3 py-2 text-xs hover:bg-accent"
+        >
+          Connect Google account
+        </button>
+      )}
     </div>
   );
 }
@@ -446,7 +494,7 @@ const EXTENDED_CONTEXT_GROUPS: { group: string; options: string[] }[] = [
 
 /* ---------------- Step 2: Profile (with materials before story prompts) ---------------- */
 
-function StepProfile() {
+function StepProfile({ error }: { error: string }) {
   const { user, updateProfile } = useUser();
   const level = user?.educationLevel;
   const [showExtended, setShowExtended] = useState(false);
@@ -505,8 +553,14 @@ function StepProfile() {
         </div>
       </Card>
 
+      {error && (
+        <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm font-medium text-destructive">
+          {error}
+        </div>
+      )}
+
       <Card>
-        <SectionLabel>About you</SectionLabel>
+        <SectionLabel>About you *</SectionLabel>
         <div className="grid sm:grid-cols-2 gap-3 mt-3">
           <Input label="Pronouns" value={user?.pronouns ?? ""} onChange={(v) => set("pronouns", v)} placeholder="she/her, he/him, they/them…" />
           <Input label="Location" value={user?.location ?? ""} onChange={(v) => set("location", v)} placeholder="City, State" />
@@ -567,7 +621,7 @@ function StepProfile() {
       </Card>
 
       <Card>
-        <SectionLabel>Education level</SectionLabel>
+        <SectionLabel>Education level *</SectionLabel>
         <p className="text-xs text-muted-foreground mt-1">
           We use this to ask only the questions that apply to you.
         </p>
@@ -604,7 +658,7 @@ function StepProfile() {
 
       {/* Materials/document vault moved here, before Story Prompts */}
       <Card>
-        <SectionLabel>Upload materials</SectionLabel>
+        <SectionLabel>Upload Materials (Optional)</SectionLabel>
         <p className="text-xs text-muted-foreground mt-1">
           Build your document vault so each application can reuse them.
         </p>
@@ -628,7 +682,7 @@ function StepProfile() {
           </div>
         )}
         <div className="mt-5 grid sm:grid-cols-2 gap-3">
-          {["Resume", "Transcript", "Recommendation letter", "Other"].map((k) => (
+          {["Resume", "Transcript", "Recommendation letter", "Past Personal Application Essays"].map((k) => (
             <label key={k} className="rounded-xl border-2 border-dashed border-border p-4 text-sm cursor-pointer hover:bg-accent">
               <div className="text-xs uppercase tracking-widest text-muted-foreground">Upload</div>
               <div className="font-medium mt-1">{k}</div>

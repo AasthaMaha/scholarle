@@ -43,9 +43,6 @@ function Header() {
         <div className="flex items-center gap-2">
           <LogoMark />
           <span className="font-display font-semibold text-lg tracking-tight">Scholar-E</span>
-          <span className="ml-2 text-[10px] uppercase tracking-widest text-muted-foreground border border-border rounded px-1.5 py-0.5">
-            SEIP MVP
-          </span>
         </div>
         <nav className="hidden md:flex items-center gap-7 text-sm text-muted-foreground">
           <a href="#how" className="hover:text-foreground">How it works</a>
@@ -305,7 +302,7 @@ function Footer() {
       <div className="mx-auto max-w-7xl px-6 py-10 flex flex-col md:flex-row items-center justify-between gap-4 text-xs text-muted-foreground">
         <div className="flex items-center gap-2">
           <LogoMark />
-          <span>Scholar-E · Rice SEIP Summer 2026 · Prototype</span>
+          <span>Scholar-E</span>
         </div>
         <div>A coach, not a ghostwriter.</div>
       </div>

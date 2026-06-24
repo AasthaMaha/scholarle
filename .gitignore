@@ -21,6 +21,9 @@ chroma_db_kb/
 chroma_db_rfp/
 chroma_db_opportunity/
 chroma_db_profile/
+scholar_e.db
+*.sqlite
+*.sqlite3
 
 # OS junk
 .DS_Store

@@ -91,6 +91,37 @@ OPENAI_API_KEY=sk-...
 
 (`.env` is git-ignored.)
 
+### Authentication Setup
+
+Scholar-E uses PostgreSQL or SQLite for account data. ChromaDB is only used for
+AI retrieval and profile/document embeddings.
+
+Add these values to `.env`:
+
+```text
+DATABASE_URL=sqlite:///./scholar_e.db
+JWT_SECRET_KEY=replace-with-a-long-random-secret
+FRONTEND_URL=http://127.0.0.1:8080
+
+GOOGLE_CLIENT_ID=your-google-client-id
+GOOGLE_CLIENT_SECRET=your-google-client-secret
+GOOGLE_REDIRECT_URI=http://127.0.0.1:8000/auth/google/callback
+```
+
+The backend creates these auth tables automatically on startup:
+
+* `users`: `id`, `name`, `email`, `hashed_password`, `created_at`
+* `google_accounts`: `id`, `user_id`, `google_email`, `access_token`,
+  `refresh_token`, `expires_at`, `created_at`
+
+Passwords are hashed with bcrypt/passlib and are never stored as plain text.
+
+For Google OAuth, configure the same redirect URI in Google Cloud Console:
+
+```text
+http://127.0.0.1:8000/auth/google/callback
+```
+
 ---
 
 ## Usage
