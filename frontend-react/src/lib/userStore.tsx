@@ -7,11 +7,6 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import {
-  AUTH_TOKEN_KEY,
-  fetchCurrentUser,
-  type AuthUser,
-} from "@/lib/api/auth";
 
 export type EducationLevel = "high_school" | "undergrad" | "grad" | "phd";
 
@@ -113,6 +108,28 @@ export type AnalysisScore = {
   delta?: number;
 };
 
+export type EligibilityStatus = "met" | "not_met" | "missing";
+
+export type EligibilityRow = {
+  requirement?: string;
+  category?: string;
+  student_value?: string;
+  status?: EligibilityStatus;
+  explanation?: string;
+  action_needed?: string;
+};
+
+export type EligibilityMatrix = {
+  rows?: EligibilityRow[];
+  violations?: EligibilityRow[];
+  missing_info?: EligibilityRow[];
+  violation_count?: number;
+  missing_count?: number;
+  met_count?: number;
+  overall?: "eligible" | "not_eligible" | "incomplete";
+  summary?: string;
+};
+
 export type AnalysisResult = {
   coaching_brief?: {
     recommended_action?: string;
@@ -129,9 +146,19 @@ export type AnalysisResult = {
   };
   reviewer_comments?: Array<{ persona?: string; comment?: string }>;
   coaching_reports?: Record<string, Record<string, string>>;
+  eligibility_matrix?: EligibilityMatrix;
   feedback?: string;
   section_coaching?: Record<string, unknown>;
   opportunity_analysis?: Record<string, unknown>;
+  critique?: {
+    verdict?: string;
+    confidence?: number;
+    grounding_pass?: boolean;
+    guardrail_pass?: boolean;
+    issues?: string[];
+    revision_guidance?: string;
+    attempt?: number;
+  };
   final_application_package?: string;
   revision_priorities?: string[];
   draft_number?: number;
@@ -142,7 +169,6 @@ export type UserProfile = {
   id?: number;
   name: string;
   email: string;
-  googleEmail?: string | null;
   // universal
   pronouns?: string;
   location?: string;
@@ -169,7 +195,7 @@ export type UserProfile = {
   essayDraft?: string;
   // scholarship currently being analyzed
   activeScholarship?: ActiveScholarship;
-  // latest result returned by the Python/FastAPI backend
+  // latest result returned by the Scholar-E AI coach
   lastAnalysis?: AnalysisResult;
   // versioned drafts
   drafts?: EssayDraft[];
@@ -179,115 +205,40 @@ export type UserProfile = {
 
 type Ctx = {
   user: UserProfile | null;
-  isAuthenticated: boolean;
-  authToken: string | null;
-  setAuthenticatedUser: (authUser: AuthUser, token: string) => void;
-  refreshCurrentUser: () => Promise<void>;
-  signIn: (email: string, name?: string) => void;
-  signOut: () => void;
   updateProfile: (patch: Partial<UserProfile>) => void;
+  resetProfile: () => void;
 };
 
-const STORAGE_KEY = "scholar-e:user";
+// Legacy key — older builds persisted the profile here and re-hydrated it on
+// load, which made fields appear pre-filled. We now keep the profile in memory
+// only, so the app always starts empty and fields are filled solely via the
+// "Load example" button (or by the user typing).
+const LEGACY_STORAGE_KEY = "scholar-e:user";
 
 const UserContext = createContext<Ctx | null>(null);
 
 export function UserProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<UserProfile | null>(null);
-  const [authToken, setAuthToken] = useState<string | null>(null);
-  const [hydrated, setHydrated] = useState(false);
 
+  // One-time cleanup of any profile saved by older builds so reopening the app
+  // never shows stale pre-filled data.
   useEffect(() => {
     try {
-      const raw = typeof window !== "undefined" ? localStorage.getItem(STORAGE_KEY) : null;
-      const token = typeof window !== "undefined" ? localStorage.getItem(AUTH_TOKEN_KEY) : null;
-      if (raw) setUser(JSON.parse(raw));
-      if (token) setAuthToken(token);
+      if (typeof window !== "undefined") localStorage.removeItem(LEGACY_STORAGE_KEY);
     } catch {}
-    setHydrated(true);
-  }, []);
-
-  useEffect(() => {
-    if (!hydrated || !authToken) return;
-    fetchCurrentUser(authToken)
-      .then((authUser) => {
-        setUser((prev) => ({
-          ...(prev ?? {}),
-          id: authUser.id,
-          name: authUser.name,
-          email: authUser.email,
-          googleEmail: authUser.google_email ?? null,
-        }));
-      })
-      .catch(() => {
-        localStorage.removeItem(AUTH_TOKEN_KEY);
-        setAuthToken(null);
-      });
-  }, [hydrated, authToken]);
-
-  useEffect(() => {
-    if (!hydrated) return;
-    try {
-      if (user) localStorage.setItem(STORAGE_KEY, JSON.stringify(user));
-      else localStorage.removeItem(STORAGE_KEY);
-    } catch {}
-  }, [user, hydrated]);
-
-  const setAuthenticatedUser = useCallback((authUser: AuthUser, token: string) => {
-    localStorage.setItem(AUTH_TOKEN_KEY, token);
-    setAuthToken(token);
-    setUser((prev) => ({
-      ...(prev ?? {}),
-      id: authUser.id,
-      email: authUser.email,
-      name: authUser.name,
-      googleEmail: authUser.google_email ?? null,
-    }));
-  }, []);
-
-  const refreshCurrentUser = useCallback(async () => {
-    const token = authToken ?? localStorage.getItem(AUTH_TOKEN_KEY);
-    if (!token) return;
-    const authUser = await fetchCurrentUser(token);
-    setUser((prev) => ({
-      ...(prev ?? {}),
-      id: authUser.id,
-      email: authUser.email,
-      name: authUser.name,
-      googleEmail: authUser.google_email ?? null,
-    }));
-  }, [authToken]);
-
-  const signIn = useCallback((email: string, name?: string) => {
-    setUser((prev) => ({
-      ...(prev ?? {}),
-      email,
-      name: name ?? prev?.name ?? email.split("@")[0],
-    }));
-  }, []);
-
-  const signOut = useCallback(() => {
-    localStorage.removeItem(AUTH_TOKEN_KEY);
-    setAuthToken(null);
-    setUser(null);
   }, []);
 
   const updateProfile = useCallback((patch: Partial<UserProfile>) => {
     setUser((prev) => ({ ...(prev ?? { name: "", email: "" }), ...patch }));
   }, []);
 
+  const resetProfile = useCallback(() => {
+    setUser(null);
+  }, []);
+
   const value = useMemo<Ctx>(
-    () => ({
-      user,
-      isAuthenticated: !!authToken && !!user?.email,
-      authToken,
-      setAuthenticatedUser,
-      refreshCurrentUser,
-      signIn,
-      signOut,
-      updateProfile,
-    }),
-    [user, authToken, setAuthenticatedUser, refreshCurrentUser, signIn, signOut, updateProfile],
+    () => ({ user, updateProfile, resetProfile }),
+    [user, updateProfile, resetProfile],
   );
 
   return <UserContext.Provider value={value}>{children}</UserContext.Provider>;

@@ -8,12 +8,5 @@ chromadb
 tiktoken
 pydantic
 python-dotenv
-streamlit
 fastapi
 uvicorn[standard]
-sqlalchemy
-passlib[bcrypt]
-bcrypt<5
-PyJWT
-httpx
-email-validator

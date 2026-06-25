@@ -1,218 +1,252 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useUser } from "@/lib/userStore";
-import {
-  googleStartUrl,
-  loginAccount,
-  registerAccount,
-} from "@/lib/api/auth";
 
 export const Route = createFileRoute("/auth")({
   head: () => ({
     meta: [
       { title: "Sign in · Scholar-E" },
-      { name: "description", content: "Create your Scholar-E account or sign in to walk through the journey." },
+      {
+        name: "description",
+        content: "Sign in or create your Scholar-E account to start your scholarship journey.",
+      },
     ],
   }),
   component: AuthPage,
 });
 
+type Mode = "signin" | "create";
+
+// Demo values used by the autofill button on the create-account form. These are
+// only for demonstration — they pre-fill the form so reviewers can try the flow
+// without typing real details.
+const DEMO = {
+  name: "Maya Rodriguez",
+  email: "maya.rodriguez@example.edu",
+  password: "demo-password",
+};
+
 function AuthPage() {
-  const navigate = useNavigate();
-  const {
-    user,
-    authToken,
-    isAuthenticated,
-    setAuthenticatedUser,
-    refreshCurrentUser,
-  } = useUser();
-  const [mode, setMode] = useState<"signup" | "login">("signup");
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  const [status, setStatus] = useState("");
-  const [isSubmitting, setIsSubmitting] = useState(false);
-
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get("google_connected") === "1") {
-      refreshCurrentUser()
-        .then(() => setStatus("Google account connected."))
-        .catch(() => setError("Google connected, but the current user could not be refreshed."));
-      window.history.replaceState({}, "", "/auth");
-    }
-  }, [refreshCurrentUser]);
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setError("");
-    setStatus("");
-    setIsSubmitting(true);
-    try {
-      const result =
-        mode === "signup"
-          ? await registerAccount({ name: name || email.split("@")[0], email, password })
-          : await loginAccount({ email, password });
-      setAuthenticatedUser(result.user, result.access_token);
-      navigate({ to: "/journey" });
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setIsSubmitting(false);
-    }
-  }
-
-  function handleGoogle() {
-    setError("");
-    if (!authToken) {
-      setError("Create an account or log in before connecting Google.");
-      return;
-    }
-    window.location.href = googleStartUrl(authToken);
-  }
+  const [mode, setMode] = useState<Mode>("signin");
 
   return (
     <div className="min-h-screen grid lg:grid-cols-2">
-      <div className="hidden lg:flex flex-col justify-between p-12 bg-primary text-primary-foreground">
-        <Link to="/" className="flex items-center gap-2">
-          <div className="size-8 rounded-lg bg-primary-foreground text-primary grid place-items-center font-display font-bold">
-            S<span className="text-gold">e</span>
+      <AsidePanel />
+      <div className="flex flex-col">
+        <header className="flex items-center justify-between px-6 h-16 border-b border-border/60">
+          <Link to="/" className="flex items-center gap-2">
+            <div className="size-8 rounded-lg bg-primary text-primary-foreground grid place-items-center font-display font-bold">
+              S<span className="text-gold">e</span>
+            </div>
+            <span className="font-display font-semibold tracking-tight">Scholar-E</span>
+          </Link>
+          <Link to="/journey" className="text-sm text-muted-foreground hover:text-foreground">
+            Continue as guest →
+          </Link>
+        </header>
+
+        <div className="flex-1 grid place-items-center px-6 py-12">
+          <div className="w-full max-w-md">
+            <div className="inline-flex rounded-full border border-border bg-card p-1 text-sm">
+              <button
+                type="button"
+                onClick={() => setMode("signin")}
+                className={`rounded-full px-4 py-1.5 transition-colors ${
+                  mode === "signin"
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                Sign in
+              </button>
+              <button
+                type="button"
+                onClick={() => setMode("create")}
+                className={`rounded-full px-4 py-1.5 transition-colors ${
+                  mode === "create"
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                Create account
+              </button>
+            </div>
+
+            <div className="mt-6">
+              {mode === "signin" ? <SignInForm /> : <CreateAccountForm />}
+            </div>
+
+            <p className="mt-6 text-center text-xs text-muted-foreground">
+              No verification required for this demo — your details are saved
+              locally on this device only.
+            </p>
           </div>
-          <span className="font-display font-semibold text-lg">Scholar-E</span>
-        </Link>
-        <div>
-          <h1 className="font-display text-4xl md:text-5xl leading-tight text-balance">
-            Win scholarships <span className="italic">in your own voice.</span>
-          </h1>
-          <p className="mt-4 text-primary-foreground/80 max-w-md">
-            Create an account to walk through the full 17-step Scholar-E journey as yourself —
-            your profile, your essay, your applications.
-          </p>
-        </div>
-        <div className="text-xs text-primary-foreground/60">A coach, not a ghostwriter.</div>
-      </div>
-
-      <div className="flex items-center justify-center p-8">
-        <div className="w-full max-w-md">
-          <Link to="/" className="text-xs text-muted-foreground hover:text-foreground">← Back to home</Link>
-          <h2 className="font-display text-3xl mt-4">
-            {mode === "signup" ? "Create your account" : "Welcome back"}
-          </h2>
-          <p className="text-sm text-muted-foreground mt-1">
-            {mode === "signup"
-              ? "It only takes a moment — we don't ask for anything you don't need."
-              : "Sign in to continue your scholarship journey."}
-          </p>
-
-          <button
-            onClick={handleGoogle}
-            disabled={!isAuthenticated}
-            className="mt-6 w-full inline-flex items-center justify-center gap-3 rounded-full border border-border bg-card px-4 py-3 text-sm font-medium hover:bg-accent"
-          >
-            <GoogleIcon /> {user?.googleEmail ? `Connected: ${user.googleEmail}` : "Connect Google account"}
-          </button>
-          {!isAuthenticated && (
-            <p className="mt-2 text-xs text-muted-foreground text-center">
-              Log in first, then connect your Google account.
-            </p>
-          )}
-
-          <div className="my-5 flex items-center gap-3 text-xs text-muted-foreground">
-            <div className="h-px flex-1 bg-border" />
-            or use email
-            <div className="h-px flex-1 bg-border" />
-          </div>
-
-          <form onSubmit={handleSubmit} className="space-y-3">
-            {mode === "signup" && (
-              <Field label="Full name">
-                <input
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="Jordan Chen"
-                  className="w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm"
-                />
-              </Field>
-            )}
-            <Field label="Email">
-              <input
-                type="email"
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@university.edu"
-                className="w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm"
-              />
-            </Field>
-            <Field label="Password">
-              <input
-                type="password"
-                required
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
-                className="w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm"
-              />
-            </Field>
-
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className="w-full rounded-full bg-primary text-primary-foreground px-4 py-3 text-sm font-medium hover:opacity-90"
-            >
-              {isSubmitting ? "Working..." : mode === "signup" ? "Create account & start" : "Sign in"} →
-            </button>
-          </form>
-
-          {error && (
-            <p className="mt-4 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
-              {error}
-            </p>
-          )}
-          {status && (
-            <p className="mt-4 rounded-lg border border-success/30 bg-success/10 p-3 text-sm text-success">
-              {status}
-            </p>
-          )}
-
-          <div className="mt-5 text-sm text-muted-foreground text-center">
-            {mode === "signup" ? "Already have an account?" : "New to Scholar-E?"}{" "}
-            <button
-              onClick={() => setMode(mode === "signup" ? "login" : "signup")}
-              className="text-primary font-medium hover:underline"
-            >
-              {mode === "signup" ? "Sign in" : "Create an account"}
-            </button>
-          </div>
-
-          {user?.googleEmail && (
-            <p className="mt-6 text-[11px] text-muted-foreground text-center">
-              Google connected as {user.googleEmail}.
-            </p>
-          )}
         </div>
       </div>
     </div>
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function AsidePanel() {
+  return (
+    <aside className="hidden lg:flex flex-col justify-between bg-primary text-primary-foreground p-12">
+      <Link to="/" className="flex items-center gap-2">
+        <div className="size-9 rounded-lg bg-primary-foreground/15 grid place-items-center font-display font-bold">
+          S<span className="text-gold">e</span>
+        </div>
+        <span className="font-display font-semibold text-lg tracking-tight">Scholar-E</span>
+      </Link>
+      <div>
+        <h1 className="font-display text-4xl leading-tight text-balance">
+          Win scholarships <span className="italic text-gold">in your own voice.</span>
+        </h1>
+        <p className="mt-4 text-primary-foreground/80 max-w-sm">
+          Create your account to save your profile, track applications, and get
+          AI coaching on your real essays — we never write them for you.
+        </p>
+      </div>
+      <div className="text-xs text-primary-foreground/70">A coach, not a ghostwriter.</div>
+    </aside>
+  );
+}
+
+function Field({
+  label,
+  type = "text",
+  value,
+  onChange,
+  placeholder,
+  autoComplete,
+}: {
+  label: string;
+  type?: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  autoComplete?: string;
+}) {
   return (
     <label className="block">
-      <span className="text-xs font-medium text-muted-foreground">{label}</span>
-      <div className="mt-1">{children}</div>
+      <span className="text-sm font-medium">{label}</span>
+      <input
+        type={type}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        autoComplete={autoComplete}
+        className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-primary/40"
+      />
     </label>
   );
 }
 
-function GoogleIcon() {
+function SignInForm() {
+  const { user, updateProfile } = useUser();
+  const navigate = useNavigate();
+  const [email, setEmail] = useState(user?.email ?? "");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+
+  function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!email.trim()) {
+      setError("Enter the email you used for your profile.");
+      return;
+    }
+    // No authentication — we just record who is using the app and continue.
+    updateProfile({
+      email: email.trim(),
+      name: user?.name || nameFromEmail(email),
+    });
+    navigate({ to: "/journey" });
+  }
+
   return (
-    <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden>
-      <path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.17-1.84H9v3.49h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.92c1.71-1.57 2.68-3.89 2.68-6.63z"/>
-      <path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.26c-.81.54-1.84.86-3.04.86-2.34 0-4.32-1.58-5.03-3.7H.96v2.32A9 9 0 0 0 9 18z"/>
-      <path fill="#FBBC05" d="M3.97 10.71A5.41 5.41 0 0 1 3.68 9c0-.59.1-1.17.29-1.71V4.96H.96A9 9 0 0 0 0 9c0 1.45.35 2.83.96 4.04l3.01-2.33z"/>
-      <path fill="#EA4335" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.58C13.46.89 11.43 0 9 0A9 9 0 0 0 .96 4.96l3.01 2.33C4.68 5.16 6.66 3.58 9 3.58z"/>
-    </svg>
+    <form onSubmit={submit} className="space-y-4 rounded-2xl border border-border bg-card p-6">
+      <div>
+        <h2 className="font-display text-2xl">Welcome back</h2>
+        <p className="text-sm text-muted-foreground mt-1">Sign in to continue your journey.</p>
+      </div>
+      <Field label="Email" type="email" value={email} onChange={setEmail} placeholder="you@school.edu" autoComplete="email" />
+      <Field label="Password" type="password" value={password} onChange={setPassword} placeholder="••••••••" autoComplete="current-password" />
+      {error && <p className="text-sm text-destructive">{error}</p>}
+      <button
+        type="submit"
+        className="w-full rounded-full bg-primary text-primary-foreground py-2.5 text-sm font-medium hover:opacity-90"
+      >
+        Sign in →
+      </button>
+    </form>
   );
+}
+
+function CreateAccountForm() {
+  const { updateProfile } = useUser();
+  const navigate = useNavigate();
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [error, setError] = useState("");
+
+  function fillDemo() {
+    setName(DEMO.name);
+    setEmail(DEMO.email);
+    setPassword(DEMO.password);
+    setConfirm(DEMO.password);
+    setError("");
+  }
+
+  function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!name.trim() || !email.trim()) {
+      setError("Add your name and email to create your account.");
+      return;
+    }
+    if (password !== confirm) {
+      setError("Passwords do not match.");
+      return;
+    }
+    // No authentication — store the account locally and continue.
+    updateProfile({ name: name.trim(), email: email.trim() });
+    navigate({ to: "/journey" });
+  }
+
+  return (
+    <form onSubmit={submit} className="space-y-4 rounded-2xl border border-border bg-card p-6">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="font-display text-2xl">Create your account</h2>
+          <p className="text-sm text-muted-foreground mt-1">Start building your scholarship profile.</p>
+        </div>
+        <button
+          type="button"
+          onClick={fillDemo}
+          className="shrink-0 rounded-full border border-gold/40 bg-gold/10 px-3 py-1.5 text-xs font-medium hover:bg-gold/20"
+        >
+          Fill demo details
+        </button>
+      </div>
+      <Field label="Full name" value={name} onChange={setName} placeholder="Maya Rodriguez" autoComplete="name" />
+      <Field label="Email" type="email" value={email} onChange={setEmail} placeholder="you@school.edu" autoComplete="email" />
+      <Field label="Password" type="password" value={password} onChange={setPassword} placeholder="Create a password" autoComplete="new-password" />
+      <Field label="Confirm password" type="password" value={confirm} onChange={setConfirm} placeholder="Re-enter password" autoComplete="new-password" />
+      {error && <p className="text-sm text-destructive">{error}</p>}
+      <button
+        type="submit"
+        className="w-full rounded-full bg-primary text-primary-foreground py-2.5 text-sm font-medium hover:opacity-90"
+      >
+        Create account →
+      </button>
+    </form>
+  );
+}
+
+function nameFromEmail(email: string) {
+  const local = email.split("@")[0] ?? "";
+  return local
+    .split(/[._-]+/)
+    .filter(Boolean)
+    .map((p) => p[0]?.toUpperCase() + p.slice(1))
+    .join(" ");
 }

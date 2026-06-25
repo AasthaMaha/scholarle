@@ -1,24 +1,15 @@
 # server.py
 """
-FastAPI server for ScholarlE Engen MVP prototype.
-Serves ScholarlE Engen.html and exposes POST /api/analyze.
+FastAPI server for Scholar-E MVP.
+Exposes POST /api/analyze and auth routes for frontend-react.
 """
-
-from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
 
 from api.routes import AnalyzeRequest, analyze_application
-from backend_auth.database import init_db
-from backend_auth.routes import router as auth_router
 
-ROOT = Path(__file__).resolve().parent
-FRONTEND = ROOT / "frontend"
-HTML_FILE = FRONTEND / "ScholarlE Engen.html"
-
-app = FastAPI(title="ScholarlE Engen", version="0.1.0")
+app = FastAPI(title="Scholar-E", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -28,27 +19,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(auth_router)
 
-
-@app.on_event("startup")
-def startup() -> None:
-    init_db()
-
-
-@app.get("/")
-def index():
-    return FileResponse(HTML_FILE)
-
-
-@app.get("/styles.css")
-def styles():
-    return FileResponse(FRONTEND / "styles.css", media_type="text/css")
-
-
-@app.get("/app.js")
-def app_js():
-    return FileResponse(FRONTEND / "app.js", media_type="application/javascript")
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
 
 @app.post("/api/analyze")

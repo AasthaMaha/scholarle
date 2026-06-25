@@ -1,6 +1,8 @@
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { useMemo, useState } from "react";
 import { journeySteps } from "@/lib/persona";
+import { loadExampleProfile } from "@/lib/loadExample";
+import { CoachRunButton } from "@/components/CoachRunButton";
 import {
   useUser,
   initials as toInitials,
@@ -9,11 +11,6 @@ import {
   type EssayDraft,
   type ActiveScholarship,
 } from "@/lib/userStore";
-import {
-  analyzeApplication,
-  buildAnalyzePayload,
-} from "@/lib/api/scholarE";
-import { googleStartUrl } from "@/lib/api/auth";
 import {
   Tooltip,
   TooltipContent,
@@ -36,27 +33,29 @@ export const Route = createFileRoute("/journey")({
 });
 
 function Journey() {
-  const { isAuthenticated, user } = useUser();
-  const navigate = useNavigate();
+  const { user, updateProfile, resetProfile } = useUser();
   const [stepIdx, setStepIdx] = useState(0);
   const [profileError, setProfileError] = useState("");
+  const [exampleStatus, setExampleStatus] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!isAuthenticated) navigate({ to: "/auth" });
-  }, [isAuthenticated, navigate]);
-
-  if (!isAuthenticated) {
-    return (
-      <div className="min-h-screen grid place-items-center p-8 text-center">
-        <div>
-          <h1 className="font-display text-2xl">Sign in to start your journey</h1>
-          <p className="text-sm text-muted-foreground mt-2">Redirecting you to create your account…</p>
-          <Link to="/auth" className="mt-4 inline-flex rounded-full bg-primary text-primary-foreground px-5 py-2 text-sm">
-            Go to sign in →
-          </Link>
-        </div>
-      </div>
+  function handleLoadExample() {
+    updateProfile(
+      loadExampleProfile({
+        name: user?.name,
+        email: user?.email,
+        id: user?.id,
+      }),
     );
+    setExampleStatus("Example loaded — jump to Upload Essay Draft to run the AI coach.");
+    const essayStepIdx = journeySteps.findIndex((s) => s.slug === "essay-upload");
+    if (essayStepIdx >= 0) setStepIdx(essayStepIdx);
+  }
+
+  function handleClearAll() {
+    resetProfile();
+    setStepIdx(0);
+    setProfileError("");
+    setExampleStatus(null);
   }
 
   const step = journeySteps[stepIdx];
@@ -78,9 +77,21 @@ function Journey() {
       <div className="min-h-screen flex">
         <Sidebar activeIdx={stepIdx} onSelect={setStepIdx} />
         <div className="flex-1 flex flex-col min-w-0">
-          <TopBar step={step} onNext={goNext} onPrev={goPrev} stepIdx={stepIdx} />
+          <TopBar
+            step={step}
+            onNext={goNext}
+            onPrev={goPrev}
+            stepIdx={stepIdx}
+            onLoadExample={handleLoadExample}
+            onClearAll={handleClearAll}
+          />
           <main className="flex-1 overflow-y-auto">
             <div className="mx-auto max-w-5xl px-6 md:px-10 py-10">
+              {exampleStatus && (
+                <div className="mb-4 rounded-xl border border-gold/30 bg-gold/10 px-4 py-3 text-sm text-foreground/90">
+                  {exampleStatus}
+                </div>
+              )}
               <StepHeader step={step} />
               <div className="mt-8">
                 <StepBody slug={step.slug} goNext={goNext} profileError={profileError} />
@@ -182,11 +193,15 @@ function TopBar({
   onNext,
   onPrev,
   stepIdx,
+  onLoadExample,
+  onClearAll,
 }: {
   step: (typeof journeySteps)[number];
   onNext: () => void;
   onPrev: () => void;
   stepIdx: number;
+  onLoadExample: () => void;
+  onClearAll: () => void;
 }) {
   const pct = ((stepIdx + 1) / journeySteps.length) * 100;
   return (
@@ -201,6 +216,33 @@ function TopBar({
           </div>
           <div className="text-sm font-medium truncate">{step.title}</div>
         </div>
+        <div className="flex items-center gap-2">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={onLoadExample}
+                className="rounded-full border border-border bg-card px-3 py-1.5 text-sm hover:bg-accent"
+              >
+                Load example
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>
+              Fill profile, scholarship, and essay with a sample application for testing
+            </TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={onClearAll}
+                className="rounded-full border border-border bg-card px-3 py-1.5 text-sm hover:bg-accent"
+              >
+                Clear all
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>Reset every field and return to step 1</TooltipContent>
+          </Tooltip>
         <div className="hidden md:flex items-center gap-2">
           <button
             onClick={onPrev}
@@ -216,6 +258,7 @@ function TopBar({
           >
             Next →
           </button>
+        </div>
         </div>
       </div>
       <div className="h-1 bg-secondary">
@@ -387,7 +430,7 @@ function StepLand() {
 
 
 function SidebarUser() {
-  const { user, authToken } = useUser();
+  const { user } = useUser();
   const subtitle =
     user?.educationLevel
       ? eduLevelLabel(user.educationLevel)
@@ -399,24 +442,10 @@ function SidebarUser() {
           {toInitials(user?.name)}
         </div>
         <div className="min-w-0">
-          <div className="text-sm font-medium truncate">{user?.name || "Your account"}</div>
+          <div className="text-sm font-medium truncate">{user?.name || "Your profile"}</div>
           <div className="text-xs text-muted-foreground truncate">{subtitle}</div>
         </div>
       </div>
-      {user?.googleEmail ? (
-        <div className="rounded-lg bg-success/10 px-3 py-2 text-xs text-success">
-          Google connected: {user.googleEmail}
-        </div>
-      ) : (
-        <button
-          onClick={() => {
-            if (authToken) window.location.href = googleStartUrl(authToken);
-          }}
-          className="w-full rounded-full border border-border bg-card px-3 py-2 text-xs hover:bg-accent"
-        >
-          Connect Google account
-        </button>
-      )}
     </div>
   );
 }
@@ -1368,9 +1397,9 @@ function StepImport() {
       <Card className={isReady ? "bg-success/10 border-success/30" : "bg-secondary/40"}>
         <div className="flex items-center justify-between">
           <div>
-            <div className="font-medium">{isReady ? "Ready for backend analysis" : "Add the required scholarship details"}</div>
+            <div className="font-medium">{isReady ? "Ready for analysis" : "Add the required scholarship details"}</div>
             <div className="text-xs text-muted-foreground mt-1">
-              The next analysis call will send these details to the Python FastAPI backend.
+              The next analysis will compare these details against your profile.
             </div>
           </div>
           <Pill tone={isReady ? "success" : "warn"}>{isReady ? "ready" : "incomplete"}</Pill>
@@ -1381,6 +1410,140 @@ function StepImport() {
 }
 
 /* ---------------- Step 6: Requirements + Fit combined ---------------- */
+
+const ELIGIBILITY_STATUS_META: Record<
+  string,
+  { label: string; icon: string; row: string; badge: string }
+> = {
+  met: {
+    label: "Met",
+    icon: "✓",
+    row: "border-success/40 bg-success/5",
+    badge: "bg-success/15 text-success",
+  },
+  not_met: {
+    label: "Not met",
+    icon: "✕",
+    row: "border-destructive/50 bg-destructive/10",
+    badge: "bg-destructive/15 text-destructive",
+  },
+  missing: {
+    label: "Needs info",
+    icon: "!",
+    row: "border-warning/50 bg-warning/10",
+    badge: "bg-warning/20 text-foreground",
+  },
+};
+
+function EligibilityMatrixCard({
+  matrix,
+}: {
+  matrix?: import("@/lib/userStore").EligibilityMatrix;
+}) {
+  const rows = matrix?.rows ?? [];
+  if (!rows.length) {
+    return (
+      <Card>
+        <div className="text-xs uppercase tracking-widest text-muted-foreground">
+          Requirements comparison matrix
+        </div>
+        <p className="mt-2 text-sm text-muted-foreground">
+          {matrix?.summary ||
+            "Add the scholarship's eligibility rules and required documents in the import step, then run the coach to see how your profile compares."}
+        </p>
+      </Card>
+    );
+  }
+
+  const violations = matrix?.violation_count ?? rows.filter((r) => r.status === "not_met").length;
+  const missing = matrix?.missing_count ?? rows.filter((r) => r.status === "missing").length;
+  const met = matrix?.met_count ?? rows.filter((r) => r.status === "met").length;
+
+  return (
+    <Card>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div className="text-xs uppercase tracking-widest text-muted-foreground">
+            Requirements comparison matrix
+          </div>
+          <p className="text-sm text-muted-foreground mt-1">
+            How your profile compares against every requirement Scholar-E found.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Pill tone="success">{met} met</Pill>
+          {missing > 0 && <Pill tone="warn">{missing} to fill in</Pill>}
+          {violations > 0 && <Pill tone="danger">{violations} not met</Pill>}
+        </div>
+      </div>
+
+      {(violations > 0 || missing > 0) && (
+        <div
+          className={`mt-4 rounded-xl border p-4 text-sm ${
+            violations > 0
+              ? "border-destructive/40 bg-destructive/10"
+              : "border-warning/40 bg-warning/10"
+          }`}
+        >
+          <div className="font-medium">
+            {violations > 0
+              ? `${violations} requirement${violations > 1 ? "s are" : " is"} not met`
+              : `${missing} requirement${missing > 1 ? "s need" : " needs"} more information`}
+          </div>
+          <p className="mt-1 text-muted-foreground">
+            {violations > 0
+              ? "Review the highlighted rows below — these may make you ineligible unless addressed."
+              : "Fill in the highlighted rows below so Scholar-E can confirm your eligibility."}
+          </p>
+        </div>
+      )}
+
+      <div className="mt-4 space-y-2">
+        {rows.map((row, i) => {
+          const meta = ELIGIBILITY_STATUS_META[row.status ?? "missing"] ?? ELIGIBILITY_STATUS_META.missing;
+          return (
+            <div key={`${row.requirement}-${i}`} className={`rounded-xl border p-3 ${meta.row}`}>
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className={`text-[11px] rounded-full px-2 py-0.5 ${meta.badge}`}>
+                      <span className="font-mono">{meta.icon}</span> {meta.label}
+                    </span>
+                    {row.category && (
+                      <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
+                        {row.category}
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-1.5 text-sm font-medium">{row.requirement}</div>
+                  {row.explanation && (
+                    <div className="text-xs text-muted-foreground mt-0.5">{row.explanation}</div>
+                  )}
+                </div>
+                <div className="shrink-0 text-right">
+                  <div className="text-[10px] uppercase tracking-widest text-muted-foreground">Your profile</div>
+                  <div className="text-sm">{row.student_value || "Not provided"}</div>
+                </div>
+              </div>
+              {row.status !== "met" && row.action_needed && (
+                <div className="mt-2 rounded-lg bg-background/60 border border-border px-3 py-2 text-xs">
+                  <span className="font-medium">What to fill in: </span>
+                  {row.action_needed}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {matrix?.summary && (
+        <p className="mt-4 text-sm text-muted-foreground border-t border-border pt-3">
+          {matrix.summary}
+        </p>
+      )}
+    </Card>
+  );
+}
 
 function StepRequirementsAndFit() {
   const { user } = useUser();
@@ -1431,13 +1594,16 @@ function StepRequirementsAndFit() {
 
       {!analysis && (
         <Card>
-          <div className="font-medium">No backend analysis yet</div>
+          <div className="font-medium">No analysis yet</div>
           <p className="mt-1 text-sm text-muted-foreground">
-            Continue to the essay step and click “Send to AI Coach for evaluation.” The Python backend will analyze scholarship fit,
-            retrieve profile evidence, evaluate the draft, and return readiness scores here.
+            Run the AI coach from step 8 (Upload Essay Draft) first. Scholar-E will analyze
+            scholarship fit, compare your profile against every requirement, and return readiness
+            scores here.
           </p>
         </Card>
       )}
+
+      {!!analysis && <EligibilityMatrixCard matrix={analysis.eligibility_matrix} />}
 
       {!!analysis && (
         <div className="grid md:grid-cols-3 gap-6">
@@ -1485,9 +1651,44 @@ function StepRequirementsAndFit() {
       {!!analysis && Object.keys(opportunityAnalysis).length > 0 && (
         <Card>
           <div className="text-xs uppercase tracking-widest text-muted-foreground">Backend opportunity analysis</div>
-          <pre className="mt-3 whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">
-            {JSON.stringify(opportunityAnalysis, null, 2)}
-          </pre>
+          <div className="mt-4 grid sm:grid-cols-2 gap-4 text-sm">
+            {!!opportunityAnalysis.opportunity_type && (
+              <div>
+                <div className="text-xs text-muted-foreground">Type</div>
+                <div className="font-medium">{String(opportunityAnalysis.opportunity_type)}</div>
+              </div>
+            )}
+            {Array.isArray(opportunityAnalysis.deadlines) && opportunityAnalysis.deadlines.length > 0 && (
+              <div>
+                <div className="text-xs text-muted-foreground">Deadlines</div>
+                <ul className="mt-1 list-disc pl-4 space-y-0.5">
+                  {(opportunityAnalysis.deadlines as string[]).map((d) => (
+                    <li key={d}>{d}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {Array.isArray(opportunityAnalysis.requirements) && opportunityAnalysis.requirements.length > 0 && (
+              <div className="sm:col-span-2">
+                <div className="text-xs text-muted-foreground">Requirements</div>
+                <ul className="mt-1 list-disc pl-4 space-y-0.5">
+                  {(opportunityAnalysis.requirements as string[]).map((r) => (
+                    <li key={r}>{r}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {Array.isArray(opportunityAnalysis.evaluation_themes) && opportunityAnalysis.evaluation_themes.length > 0 && (
+              <div className="sm:col-span-2">
+                <div className="text-xs text-muted-foreground">Evaluation themes</div>
+                <ul className="mt-1 list-disc pl-4 space-y-0.5">
+                  {(opportunityAnalysis.evaluation_themes as string[]).map((t) => (
+                    <li key={t}>{t}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
         </Card>
       )}
     </div>
@@ -1574,7 +1775,6 @@ function StepEssayUpload() {
   const wordCount = draft.trim() ? draft.trim().split(/\s+/).length : 0;
   const [pdfStatus, setPdfStatus] = useState<string | null>(null);
   const [analysisStatus, setAnalysisStatus] = useState<string | null>(null);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
 
   async function handlePdf(file: File) {
     setPdfStatus(`Extracting text from ${file.name}…`);
@@ -1627,36 +1827,14 @@ function StepEssayUpload() {
   function saveAsDraft() {
     const prev = user?.drafts ?? [];
     const nextVersion = (prev[prev.length - 1]?.version ?? 0) + 1;
-    const score = mockScoreForDraft(draft);
     const newDraft: EssayDraft = {
       id: crypto.randomUUID(),
       version: nextVersion,
       content: draft,
       wordCount,
-      score,
       savedAt: new Date().toISOString(),
     };
     updateProfile({ drafts: [...prev, newDraft] });
-  }
-
-  async function sendToCoach() {
-    const payload = buildAnalyzePayload(user);
-    if (!payload.cv_text || !payload.essay_text || !payload.scholarship_name || !payload.scholarship_type || !payload.prompt) {
-      setAnalysisStatus("Add your profile, scholarship details, and essay draft before running the AI coach.");
-      return;
-    }
-
-    setIsAnalyzing(true);
-    setAnalysisStatus("Sending to the Python AI backend...");
-    try {
-      const result = await analyzeApplication(payload);
-      updateProfile({ lastAnalysis: result });
-      setAnalysisStatus("Analysis complete. Continue to Application Evaluation to review your scores.");
-    } catch (error) {
-      setAnalysisStatus((error as Error).message || "Analysis failed.");
-    } finally {
-      setIsAnalyzing(false);
-    }
   }
 
   return (
@@ -1710,30 +1888,22 @@ function StepEssayUpload() {
           >
             Save as new draft
           </button>
-          <button
+          <CoachRunButton
+            label={
+              wordCount < 30
+                ? "Write at least a paragraph to send to the coach"
+                : "Send to AI Coach for evaluation →"
+            }
+            loadingLabel="Analyzing…"
             disabled={wordCount < 30}
-            onClick={sendToCoach}
+            onStatus={setAnalysisStatus}
             className="flex-1 rounded-full bg-primary text-primary-foreground py-2 text-sm font-medium hover:opacity-90 disabled:opacity-40"
-          >
-            {isAnalyzing
-              ? "Analyzing with Python backend..."
-              : wordCount < 30
-              ? "Write at least a paragraph to send to the coach"
-              : "Send to AI Coach for evaluation →"}
-          </button>
+          />
         </div>
         {analysisStatus && <p className="mt-3 text-xs text-muted-foreground">{analysisStatus}</p>}
       </Card>
     </div>
   );
-}
-
-function mockScoreForDraft(text: string): number {
-  // crude deterministic mock — longer + more varied draft = higher score
-  const wc = text.trim() ? text.trim().split(/\s+/).length : 0;
-  const variety = new Set(text.toLowerCase().match(/\w+/g) ?? []).size;
-  const base = Math.min(95, 40 + Math.round(wc / 12) + Math.round(variety / 8));
-  return Math.max(45, Math.min(95, base));
 }
 
 /* ---------------- Step 9: Application Evaluation (combined eval + scores) ---------------- */
@@ -1757,19 +1927,20 @@ function StepScores() {
     .map(([key, entry]) => ({
       name: key.replace(/_/g, " "),
       score: entry.score ?? 0,
-      description: entry.coaching || entry.level || "Reviewed by the Scholar-E backend.",
+      description: entry.coaching || entry.level || "Reviewed by the Scholar-E coach.",
     }));
   const overall = cats.length
     ? Math.round(cats.reduce((a, c) => a + c.score, 0) / cats.length)
     : 0;
   const [open, setOpen] = useState<string | null>(null);
   const stages = [
-    "Reading prompt and rubric",
-    "Cross-referencing your profile",
-    "Scoring clarity, specificity, leadership, storytelling, impact",
-    "Checking alignment with sponsor values",
-    "Generating actionable highlights",
+    "Analyzer + Retriever agents",
+    "Strategy / discovery / narrative agents",
+    "Reviewer simulation agent",
+    "Combiner agent synthesis",
+    "Critic agent quality check",
   ];
+  const critique = analysis?.critique;
 
   return (
     <div className="space-y-6">
@@ -1777,7 +1948,7 @@ function StepScores() {
         <Card>
           <div className="font-medium">No evaluation yet</div>
           <p className="mt-1 text-sm text-muted-foreground">
-            Go back to “Upload Essay Draft” and send your draft to the AI coach. Scores here will come from the Python backend.
+            Run the AI coach from step 8 (Upload Essay Draft) first. Your scores will appear here.
           </p>
         </Card>
       )}
@@ -1790,7 +1961,7 @@ function StepScores() {
           <div>
             <div className="font-medium">Scholar-E Coach evaluated your essay</div>
             <div className="text-xs text-muted-foreground">
-              Draft {analysis.draft_number ?? 1} evaluated by FastAPI, LangGraph, Chroma retrieval, and OpenAI.
+              Draft {analysis.draft_number ?? 1} evaluated by the Scholar-E AI coaching agents.
             </div>
           </div>
         </div>
@@ -1803,6 +1974,40 @@ function StepScores() {
           ))}
         </div>
       </Card>
+
+      {critique && Object.keys(critique).length > 0 && (
+        <Card>
+          <div className="flex items-center justify-between">
+            <div className="text-xs uppercase tracking-widest text-muted-foreground">
+              Critic agent quality check
+            </div>
+            <Pill tone={critique.verdict === "needs_revision" ? "warn" : "success"}>
+              {critique.verdict === "needs_revision" ? "Revised by critic" : "Approved"}
+            </Pill>
+          </div>
+          <div className="mt-3 grid sm:grid-cols-3 gap-3 text-sm">
+            <div>
+              <div className="text-xs text-muted-foreground">Confidence</div>
+              <div className="font-display text-2xl">{critique.confidence ?? "—"}</div>
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground">Grounding</div>
+              <div className="font-medium">{critique.grounding_pass === false ? "Fail" : "Pass"}</div>
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground">Review passes</div>
+              <div className="font-medium">{critique.attempt ?? 1}</div>
+            </div>
+          </div>
+          {(critique.issues?.length ?? 0) > 0 && (
+            <ul className="mt-3 list-disc pl-5 text-sm text-muted-foreground space-y-1">
+              {critique.issues!.map((issue) => (
+                <li key={issue}>{issue}</li>
+              ))}
+            </ul>
+          )}
+        </Card>
+      )}
 
       <Card className="grid md:grid-cols-3 gap-6 items-center">
         <div className="md:col-span-1 text-center">
@@ -1843,6 +2048,23 @@ function StepScores() {
         </div>
       </Card>
 
+      {analysis.growth_report?.has_previous_draft && (
+        <Card>
+          <div className="text-xs uppercase tracking-widest text-muted-foreground">Growth across drafts</div>
+          <p className="mt-2 text-sm">{analysis.growth_report.growth_message}</p>
+          {(analysis.growth_report.improvements?.length ?? 0) > 0 && (
+            <ul className="mt-3 space-y-2 text-sm">
+              {analysis.growth_report.improvements!.map((item) => (
+                <li key={item} className="flex gap-2">
+                  <span className="text-success shrink-0">↑</span>
+                  <span>{item}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+      )}
+
       <Card>
         <div className="text-xs uppercase tracking-widest text-muted-foreground">Top three things to fix</div>
         <ol className="mt-3 space-y-3 text-sm">
@@ -1872,9 +2094,18 @@ function StepHighlights() {
   const analysis = user?.lastAnalysis;
   const priorities = analysis?.revision_priorities ?? [];
   const reviewers = analysis?.reviewer_comments ?? [];
+  const reports = analysis?.coaching_reports ?? {};
+  const sectionCoaching = analysis?.section_coaching ?? {};
   const draft = user?.essayDraft ?? "";
+  const [showSections, setShowSections] = useState(false);
+  const [showPackage, setShowPackage] = useState(false);
+
+  const strategy = reports.strategy as Record<string, string> | undefined;
+  const discovery = reports.discovery as Record<string, string> | undefined;
+  const narrative = reports.narrative as Record<string, string> | undefined;
 
   return (
+    <div className="space-y-6">
     <div className="grid lg:grid-cols-5 gap-6">
       <Card className="lg:col-span-3">
         <div className="text-xs uppercase tracking-widest text-muted-foreground flex items-center justify-between">
@@ -1898,7 +2129,7 @@ function StepHighlights() {
         <div className="mt-4 text-sm">
           {analysis?.coaching_brief?.coach_message ||
             analysis?.feedback ||
-            "Send your draft to the AI coach to receive revision guidance from the Python backend."}
+            "Send your draft to the AI coach to receive revision guidance."}
         </div>
         {priorities.length > 0 && (
           <div className="mt-5">
@@ -1930,6 +2161,88 @@ function StepHighlights() {
         )}
       </Card>
     </div>
+
+    {!analysis && (
+      <Card>
+        <p className="text-sm text-muted-foreground">
+          Run the AI coach from step 8 first to receive strategy, narrative, and reviewer feedback.
+        </p>
+      </Card>
+    )}
+
+    {!!analysis && (strategy || discovery || narrative) && (
+      <div className="grid md:grid-cols-3 gap-4">
+        {strategy && (
+          <Card>
+            <div className="text-xs uppercase tracking-widest text-muted-foreground">Opportunity strategy</div>
+            <p className="mt-2 text-sm">{strategy.strategic_insight}</p>
+            {strategy.reflection_vs_story_ratio && (
+              <p className="mt-2 text-xs text-muted-foreground">{strategy.reflection_vs_story_ratio}</p>
+            )}
+          </Card>
+        )}
+        {discovery && (
+          <Card>
+            <div className="text-xs uppercase tracking-widest text-muted-foreground">Experience discovery</div>
+            <p className="mt-2 text-sm">{discovery.coaching_message}</p>
+            {discovery.recommended_experience_to_feature && (
+              <p className="mt-2 text-xs text-muted-foreground">
+                Feature: {discovery.recommended_experience_to_feature}
+              </p>
+            )}
+          </Card>
+        )}
+        {narrative && (
+          <Card>
+            <div className="text-xs uppercase tracking-widest text-muted-foreground">Narrative coach</div>
+            <p className="mt-2 text-sm">{narrative.overall_narrative_coaching}</p>
+            {narrative.biggest_narrative_gap && (
+              <p className="mt-2 text-xs text-muted-foreground">Gap: {narrative.biggest_narrative_gap}</p>
+            )}
+          </Card>
+        )}
+      </div>
+    )}
+
+    {Object.keys(sectionCoaching).length > 0 && (
+      <Card>
+        <button
+          type="button"
+          onClick={() => setShowSections((v) => !v)}
+          className="w-full text-left text-xs uppercase tracking-widest text-muted-foreground"
+        >
+          Section-by-section coaching {showSections ? "▲" : "▼"}
+        </button>
+        {showSections && (
+          <div className="mt-4 space-y-4">
+            {Object.entries(sectionCoaching).map(([name, feedback]) => (
+              <div key={name}>
+                <div className="text-sm font-medium">{name}</div>
+                <p className="mt-1 text-sm text-muted-foreground whitespace-pre-wrap">{String(feedback)}</p>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+    )}
+
+    {analysis?.final_application_package && (
+      <Card>
+        <button
+          type="button"
+          onClick={() => setShowPackage((v) => !v)}
+          className="w-full text-left text-xs uppercase tracking-widest text-muted-foreground"
+        >
+          Full coaching package {showPackage ? "▲" : "▼"}
+        </button>
+        {showPackage && (
+          <pre className="mt-4 max-h-96 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-foreground/80">
+            {analysis.final_application_package}
+          </pre>
+        )}
+      </Card>
+    )}
+    </div>
   );
 }
 
@@ -1945,14 +2258,12 @@ function StepRevise() {
   function addDraft() {
     if (!current.trim()) return;
     const nextVersion = (drafts[drafts.length - 1]?.version ?? 0) + 1;
-    const score = mockScoreForDraft(current);
     const wc = current.trim() ? current.trim().split(/\s+/).length : 0;
     const next: EssayDraft = {
       id: crypto.randomUUID(),
       version: nextVersion,
       content: current,
       wordCount: wc,
-      score,
       savedAt: new Date().toISOString(),
     };
     updateProfile({ drafts: [...drafts, next] });
@@ -2000,9 +2311,7 @@ function StepRevise() {
                 >
                   <div className="flex items-center justify-between">
                     <div className="font-display text-lg">Draft v{d.version}</div>
-                    <Pill tone={d.score && d.score >= 80 ? "success" : "warn"}>
-                      Score {d.score ?? "—"}
-                    </Pill>
+                    <Pill tone="info">pending re-review</Pill>
                   </div>
                   <div className="text-xs text-muted-foreground mt-1">
                     {d.wordCount} words · saved {new Date(d.savedAt).toLocaleString()}
@@ -2034,7 +2343,7 @@ function StepRevise() {
         </pre>
         {opened && (
           <div className="mt-3 text-xs text-muted-foreground">
-            Score: <span className="font-mono">{opened.score}</span> · {opened.wordCount} words
+            Run step 12 to get an AI score · {opened.wordCount} words
           </div>
         )}
       </Card>
@@ -2045,28 +2354,13 @@ function StepRevise() {
 /* ---------------- Step 12: Resubmit — with improvement tips ---------------- */
 
 function StepResubmit() {
-  const { user, updateProfile } = useUser();
+  const { user } = useUser();
   const [status, setStatus] = useState<string | null>(null);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
   const tips = user?.lastAnalysis?.revision_priorities ?? [
     "Revise the draft using the feedback from the previous step.",
     "Add evidence from your profile where the scholarship asks for fit.",
     "Run the AI coach again to compare the new draft with the prior review.",
   ];
-
-  async function resubmit() {
-    setIsAnalyzing(true);
-    setStatus("Sending revised draft to the Python backend...");
-    try {
-      const result = await analyzeApplication(buildAnalyzePayload(user));
-      updateProfile({ lastAnalysis: result });
-      setStatus("New backend review complete. Scores and feedback have been updated.");
-    } catch (error) {
-      setStatus((error as Error).message || "Resubmission failed.");
-    } finally {
-      setIsAnalyzing(false);
-    }
-  }
 
   return (
     <div className="space-y-6">
@@ -2078,16 +2372,16 @@ function StepResubmit() {
               {user?.activeScholarship?.name || "Current scholarship"} · {user?.essayDraft?.trim().split(/\s+/).filter(Boolean).length ?? 0} words
             </div>
           </div>
-          <Pill tone="info">backend review</Pill>
+          <Pill tone="info">AI coach review</Pill>
         </div>
         <div className="mt-5">
-          <button
-            onClick={resubmit}
-            disabled={isAnalyzing || !user?.essayDraft?.trim()}
+          <CoachRunButton
+            label="Get coaching again"
+            loadingLabel="Reviewing revised draft..."
+            disabled={!user?.essayDraft?.trim()}
+            onStatus={setStatus}
             className="rounded-full bg-primary text-primary-foreground px-5 py-2 text-sm hover:opacity-90 disabled:opacity-40"
-          >
-            {isAnalyzing ? "Reviewing revised draft..." : "Run another AI review"}
-          </button>
+          />
           {status && <p className="mt-3 text-xs text-muted-foreground">{status}</p>}
         </div>
       </Card>
@@ -2117,23 +2411,11 @@ function StepResubmit() {
   );
 }
 
-function ScoreDelta({ label, before, after }: { label: string; before: number; after: number }) {
-  return (
-    <div className="rounded-xl border border-border p-4">
-      <div className="text-xs text-muted-foreground">{label}</div>
-      <div className="mt-2 flex items-baseline gap-2">
-        <div className="text-muted-foreground line-through font-mono text-sm">{before}</div>
-        <div className="font-display text-2xl text-success">{after}</div>
-        <div className="text-xs text-success">+{after - before}</div>
-      </div>
-    </div>
-  );
-}
-
 /* ---------------- Step 13: Final Check ---------------- */
 
 function StepFinalCheck() {
   const { user } = useUser();
+  const analysis = user?.lastAnalysis;
   const docs = user?.documents ?? [];
   const hasDoc = (kind: string) => docs.some((doc) => doc.kind.toLowerCase().includes(kind));
   const checklist = [
@@ -2156,11 +2438,20 @@ function StepFinalCheck() {
     },
     { item: "Resume uploaded or identified", done: hasDoc("resume") },
     { item: "Transcript uploaded or identified", done: hasDoc("transcript") },
-    { item: "Recommendation letter uploaded or identified", done: hasDoc("recommendation") },
+    { item: "Recommendation letter uploaded or identified", done: hasDoc("recommendation") || hasDoc("rec") },
     { item: "Essay draft added", done: !!user?.essayDraft?.trim() },
-    { item: "AI backend review completed", done: !!user?.lastAnalysis },
+    { item: "AI coach review completed", done: !!analysis },
   ];
+  const blockers = [
+    ...(analysis?.revision_priorities ?? []).slice(0, 3),
+    ...checklist.filter((c) => !c.done).map((c) => c.item),
+  ].filter((item, i, arr) => arr.indexOf(item) === i);
   const done = checklist.filter((x) => x.done).length;
+  const readiness = analysis?.readiness_index ?? {};
+  const lowDims = Object.entries(readiness)
+    .filter(([, entry]) => typeof entry?.score === "number" && (entry.score ?? 0) < 70)
+    .map(([key, entry]) => `${key.replace(/_/g, " ")} (${entry.score}/100)`);
+
   return (
     <div className="space-y-6">
       <Card>
@@ -2191,16 +2482,27 @@ function StepFinalCheck() {
         </ul>
       </Card>
 
-      <Card className="bg-warning/10 border-warning/30">
-        <div className="text-sm font-medium">Two blockers before you submit:</div>
-        <ul className="mt-2 list-disc pl-5 text-sm text-foreground/80 space-y-1">
-          <li>Email your second recommender a reminder about their letter.</li>
-          <li>Confirm your mailing address in the sponsor's applicant portal.</li>
-        </ul>
-        <button className="mt-4 rounded-full bg-primary text-primary-foreground px-5 py-2 text-sm">
-          Email recommender (template ready)
-        </button>
-      </Card>
+      {blockers.length > 0 ? (
+        <Card className="bg-warning/10 border-warning/30">
+          <div className="text-sm font-medium">
+            {blockers.length} item{blockers.length === 1 ? "" : "s"} to address before you submit:
+          </div>
+          <ul className="mt-2 list-disc pl-5 text-sm text-foreground/80 space-y-1">
+            {blockers.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+          {lowDims.length > 0 && (
+            <p className="mt-3 text-xs text-muted-foreground">
+              Lowest readiness dimensions: {lowDims.join(", ")}
+            </p>
+          )}
+        </Card>
+      ) : (
+        <Card className="bg-success/10 border-success/30">
+          <div className="text-sm font-medium text-success">Ready to submit — all checks passed.</div>
+        </Card>
+      )}
     </div>
   );
 }

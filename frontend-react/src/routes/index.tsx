@@ -1,5 +1,4 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useUser, initials } from "@/lib/userStore";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -36,7 +35,6 @@ function Landing() {
 }
 
 function Header() {
-  const { isAuthenticated, user, signOut } = useUser();
   return (
     <header className="border-b border-border/60 backdrop-blur sticky top-0 z-30 bg-background/70">
       <div className="mx-auto max-w-7xl px-6 h-16 flex items-center justify-between">
@@ -50,40 +48,18 @@ function Header() {
           <a href="#demo" className="hover:text-foreground">Student Demo</a>
         </nav>
         <div className="flex items-center gap-2">
-          {isAuthenticated ? (
-            <>
-              <Link
-                to="/journey"
-                className="hidden sm:inline-flex items-center gap-2 rounded-full bg-primary text-primary-foreground px-4 py-2 text-sm font-medium hover:opacity-90"
-              >
-                Continue →
-              </Link>
-              <div className="flex items-center gap-2 rounded-full border border-border bg-card pl-1 pr-3 py-1">
-                <div className="size-7 rounded-full bg-primary text-primary-foreground grid place-items-center text-xs font-display">
-                  {initials(user?.name)}
-                </div>
-                <span className="text-xs">{user?.name}</span>
-                <button onClick={signOut} className="text-[11px] text-muted-foreground hover:text-foreground">
-                  Sign out
-                </button>
-              </div>
-            </>
-          ) : (
-            <>
-              <Link
-                to="/auth"
-                className="text-sm text-muted-foreground hover:text-foreground px-3 py-2"
-              >
-                Log in
-              </Link>
-              <Link
-                to="/auth"
-                className="inline-flex items-center gap-2 rounded-full bg-primary text-primary-foreground px-4 py-2 text-sm font-medium hover:opacity-90"
-              >
-                Sign up →
-              </Link>
-            </>
-          )}
+          <Link
+            to="/auth"
+            className="hidden sm:inline-flex items-center rounded-full px-4 py-2 text-sm font-medium text-foreground/80 hover:text-foreground"
+          >
+            Sign in
+          </Link>
+          <Link
+            to="/auth"
+            className="inline-flex items-center gap-2 rounded-full bg-primary text-primary-foreground px-4 py-2 text-sm font-medium hover:opacity-90"
+          >
+            Create account →
+          </Link>
         </div>
       </div>
     </header>
@@ -99,7 +75,6 @@ function LogoMark() {
 }
 
 function Hero() {
-  const { isAuthenticated } = useUser();
   return (
     <section className="mx-auto max-w-7xl px-6 pt-20 pb-16 grid lg:grid-cols-12 gap-12 items-center">
       <div className="lg:col-span-7">
@@ -117,10 +92,10 @@ function Hero() {
         </p>
         <div className="mt-8 flex flex-wrap gap-3">
           <Link
-            to={isAuthenticated ? "/journey" : "/auth"}
+            to="/journey"
             className="inline-flex items-center gap-2 rounded-full bg-primary text-primary-foreground px-6 py-3 text-sm font-medium shadow-sm hover:opacity-90"
           >
-            {isAuthenticated ? "Continue your journey →" : "Create your account →"}
+            Start your journey →
           </Link>
           <a
             href="#demo"
@@ -188,7 +163,6 @@ function HeroCard() {
 }
 
 function StudentDemo() {
-  const { isAuthenticated } = useUser();
   return (
     <section id="demo" className="mx-auto max-w-7xl px-6 py-20">
       <div className="rounded-3xl border border-border bg-card p-8 md:p-12 grid md:grid-cols-12 gap-8 items-center">
@@ -198,14 +172,14 @@ function StudentDemo() {
             Walk through the journey <span className="italic">as yourself</span>.
           </h2>
           <p className="text-sm text-muted-foreground">
-            Create an account, fill in your real profile, paste your real essay — and see exactly
+            Fill in your real profile, paste your real essay — and see exactly
             what your scholarship workflow will feel like.
           </p>
         </div>
         <div className="md:col-span-8 grid sm:grid-cols-3 gap-3">
           {[
-            { t: "Create your account", d: "Email + password, or sign in with Google." },
             { t: "Build your profile", d: "Branching questions based on your education level — plus optional context like resume, societies, sports, articles, and projects." },
+            { t: "Import a scholarship", d: "Add the scholarship details and prompt you want to apply for." },
             { t: "Personalized Coaching", d: "Get clarity, specificity, and impact coaching on your real essay — you keep authorship." },
           ].map((s, i) => (
             <div key={s.t} className="rounded-2xl border border-border bg-secondary/40 p-5">
@@ -216,10 +190,10 @@ function StudentDemo() {
           ))}
           <div className="sm:col-span-3 flex items-center justify-end">
             <Link
-              to={isAuthenticated ? "/journey" : "/auth"}
+              to="/journey"
               className="inline-flex items-center gap-2 rounded-full bg-primary text-primary-foreground px-5 py-2.5 text-sm font-medium hover:opacity-90"
             >
-              {isAuthenticated ? "Continue your journey →" : "Start the Student Demo →"}
+              Start the Student Demo →
             </Link>
           </div>
         </div>
@@ -271,7 +245,6 @@ function Pillars() {
 }
 
 function CTA() {
-  const { isAuthenticated } = useUser();
   return (
     <section id="how" className="mx-auto max-w-7xl px-6 py-20">
       <div className="rounded-3xl bg-primary text-primary-foreground p-10 md:p-14 grid md:grid-cols-12 gap-8 items-center">
@@ -280,15 +253,15 @@ function CTA() {
             Start now.
           </h2>
           <p className="mt-4 text-primary-foreground/80 max-w-2xl">
-            Create your account, build your profile, and walk through the full scholarship workflow.
+            Build your profile and walk through the full scholarship workflow.
           </p>
         </div>
         <div className="md:col-span-4 md:text-right">
           <Link
-            to={isAuthenticated ? "/journey" : "/auth"}
+            to="/journey"
             className="inline-flex items-center gap-2 rounded-full bg-gold text-gold-foreground px-6 py-3 text-sm font-semibold hover:opacity-90"
           >
-            {isAuthenticated ? "Enter the journey →" : "Create account →"}
+            Enter the journey →
           </Link>
         </div>
       </div>

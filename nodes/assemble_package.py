@@ -1,9 +1,6 @@
 # nodes/assemble_package.py
 
 from nodes.coaching.readiness import READINESS_DIMENSIONS, READINESS_LABELS
-from outputs.writer import save
-
-OUTPUT_PATH = "outputs/final_application_package.md"
 
 
 def _format_analysis(analysis):
@@ -61,6 +58,33 @@ def _format_readiness_index(readiness):
             f"{entry.get('coaching', '-')} |"
         )
     return "\n".join(rows)
+
+
+def _format_eligibility_matrix(matrix):
+    if not matrix or not matrix.get("rows"):
+        return "_No eligibility comparison available._"
+
+    status_label = {"met": "✅ Met", "not_met": "❌ Not met", "missing": "⚠️ Missing"}
+    rows = [
+        "| Requirement | Category | Your profile | Status | What to do |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for row in matrix["rows"]:
+        status = status_label.get(row.get("status"), row.get("status", "-"))
+        action = row.get("action_needed") or "-"
+        rows.append(
+            f"| {row.get('requirement', '-')} | {row.get('category', '-')} | "
+            f"{row.get('student_value', '-')} | {status} | {action} |"
+        )
+
+    summary = matrix.get("summary", "")
+    violations = matrix.get("violation_count", 0)
+    missing = matrix.get("missing_count", 0)
+    header = (
+        f"**Overall:** {matrix.get('overall', 'incomplete')} — "
+        f"{violations} requirement(s) not met, {missing} needing more info.\n\n"
+    )
+    return header + ("\n".join(rows)) + (f"\n\n{summary}" if summary else "")
 
 
 def _format_reviewer_comments(comments):
@@ -128,6 +152,24 @@ def _format_section_coaching(section_coaching):
     )
 
 
+def _format_critique(critique):
+    if not critique:
+        return "_No critic review available._"
+
+    issues = critique.get("issues") or []
+    issues_block = (
+        "\n".join(f"  - {i}" for i in issues) if issues else "  - _None found_"
+    )
+    return (
+        f"- **Verdict:** {critique.get('verdict', 'approved')}\n"
+        f"- **Confidence:** {critique.get('confidence', '-')}\n"
+        f"- **Grounding check:** {'pass' if critique.get('grounding_pass', True) else 'fail'}\n"
+        f"- **Guardrail check:** {'pass' if critique.get('guardrail_pass', True) else 'fail'}\n"
+        f"- **Review passes:** {critique.get('attempt', 1)}\n"
+        f"- **Issues:**\n{issues_block}"
+    )
+
+
 def assemble_package(state):
     profile_chunks = state.get("retrieved_profile_chunks", [])
     evidence = (
@@ -145,6 +187,10 @@ def assemble_package(state):
 ## Application Readiness Index
 
 {_format_readiness_index(state.get('readiness_index', {}))}
+
+## Eligibility & Requirements Matrix
+
+{_format_eligibility_matrix(state.get('eligibility_matrix', {}))}
 
 ## Growth Across Drafts
 
@@ -169,7 +215,10 @@ def assemble_package(state):
 ## Section-by-Section Coaching
 
 {_format_section_coaching(state.get('section_coaching', {}))}
+
+## Quality Check (Critic Agent)
+
+{_format_critique(state.get('critique', {}))}
 """
 
-    save(package, filename=OUTPUT_PATH)
     return {"final_application_package": package}

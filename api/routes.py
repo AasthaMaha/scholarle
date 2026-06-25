@@ -16,13 +16,13 @@ from graph.builder import build_application_graph
 
 
 class AnalyzeRequest(BaseModel):
-    cv_text: str = Field(..., min_length=1)
-    essay_text: str = Field(..., min_length=1)
-    scholarship_name: str = Field(..., min_length=1)
-    scholarship_type: str = Field(..., min_length=1)
-    prompt: str = Field(..., min_length=1)
+    cv_text: str = Field(..., min_length=1, max_length=50000)
+    essay_text: str = Field(..., min_length=1, max_length=20000)
+    scholarship_name: str = Field(..., min_length=1, max_length=500)
+    scholarship_type: str = Field(..., min_length=1, max_length=200)
+    prompt: str = Field(..., min_length=1, max_length=10000)
     previous_readiness: Optional[Dict[str, int]] = None
-    draft_number: int = Field(default=1, ge=1)
+    draft_number: int = Field(default=1, ge=1, le=50)
 
 
 def _text_to_chunks(text: str, source: str) -> list:
@@ -62,9 +62,11 @@ def run_application_pipeline(
     profile_docs = _text_to_chunks(profile_text, "uploaded_cv")
     profile_store_path = _profile_store_path(profile_text)
     profile_store_path.parent.mkdir(parents=True, exist_ok=True)
+    has_existing = _has_existing_chroma_store(profile_store_path)
     profile_store = ChromaStore(
-        documents=None if _has_existing_chroma_store(profile_store_path) else profile_docs,
+        documents=None if has_existing else profile_docs,
         persist_directory=str(profile_store_path),
+        ephemeral=not has_existing,
     )
 
     try:
@@ -110,9 +112,11 @@ def analyze_application(request: AnalyzeRequest) -> dict:
         "growth_report": result.get("growth_report", {}),
         "reviewer_comments": result.get("reviewer_comments", []),
         "coaching_reports": result.get("coaching_reports", {}),
+        "eligibility_matrix": result.get("eligibility_matrix", {}),
         "feedback": result.get("feedback", ""),
         "section_coaching": result.get("section_coaching", {}),
         "opportunity_analysis": result.get("opportunity_analysis", {}),
+        "critique": result.get("critique", {}),
         "final_application_package": result.get("final_application_package", ""),
         "revision_priorities": result.get("revision_priorities", []),
         "draft_number": result.get("draft_number", request.draft_number),
