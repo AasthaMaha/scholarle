@@ -15,4 +15,6 @@ dependencies = [
   "streamlit",
   "fastapi",
   "uvicorn[standard]",
+  "pypdf",
+  "python-multipart",
 ]

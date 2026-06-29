@@ -2,17 +2,20 @@
 """API layer for ScholarlE Engen, exposing the coaching pipeline."""
 
 import hashlib
+import io
 from pathlib import Path
 from typing import Dict, Optional
 
+import pypdf
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pydantic import BaseModel, Field
-from fastapi import HTTPException
+from fastapi import HTTPException, UploadFile
 
 from config import settings
 from rag.store import ChromaStore
 from graph.builder import build_application_graph
+from graph.profile_builder import build_profile_extraction_graph
 
 
 class AnalyzeRequest(BaseModel):
@@ -23,6 +26,18 @@ class AnalyzeRequest(BaseModel):
     prompt: str = Field(..., min_length=1, max_length=10000)
     previous_readiness: Optional[Dict[str, int]] = None
     draft_number: int = Field(default=1, ge=1, le=50)
+
+
+class ProfileAutofillResponse(BaseModel):
+    name: str = ""
+    email: str = ""
+    location: str = ""
+    careerGoal: str = ""
+    educationLevel: str = ""
+    highSchool: dict = Field(default_factory=dict)
+    undergrad: dict = Field(default_factory=dict)
+    graduate: dict = Field(default_factory=dict)
+    optional: dict = Field(default_factory=dict)
 
 
 def _text_to_chunks(text: str, source: str) -> list:
@@ -50,6 +65,22 @@ def _profile_store_path(profile_text: str) -> Path:
 
 def _has_existing_chroma_store(path: Path) -> bool:
     return (path / "chroma.sqlite3").exists()
+
+
+def extract_text_from_pdf(file_bytes: bytes) -> str:
+    try:
+        reader = pypdf.PdfReader(io.BytesIO(file_bytes))
+        page_text = []
+        for page in reader.pages:
+            text = page.extract_text()
+            if text:
+                page_text.append(text)
+        return "\n".join(page_text).strip()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Failed to parse PDF text: {str(exc)}",
+        ) from exc
 
 
 def run_application_pipeline(
@@ -121,3 +152,35 @@ def analyze_application(request: AnalyzeRequest) -> dict:
         "revision_priorities": result.get("revision_priorities", []),
         "draft_number": result.get("draft_number", request.draft_number),
     }
+
+
+async def autofill_profile_from_resume(file: UploadFile) -> dict:
+    if not settings.openai_api_key:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Missing OPENAI_API_KEY. Add a .env file in the project root "
+                "with OPENAI_API_KEY=your_key, then restart the server."
+            ),
+        )
+
+    if file.content_type != "application/pdf":
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported file format. Please upload a PDF.",
+        )
+
+    file_bytes = await file.read()
+    raw_resume_text = extract_text_from_pdf(file_bytes)
+    if not raw_resume_text:
+        raise HTTPException(
+            status_code=422,
+            detail="The uploaded PDF appears to be empty or unreadable.",
+        )
+
+    graph = build_profile_extraction_graph()
+    result = graph.invoke({"resume_text": raw_resume_text})
+    response = ProfileAutofillResponse(**result)
+    if hasattr(response, "model_dump"):
+        return response.model_dump()
+    return response.dict()

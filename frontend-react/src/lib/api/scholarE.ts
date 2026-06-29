@@ -12,6 +12,18 @@ export type AnalyzePayload = {
   draft_number?: number;
 };
 
+export type ResumeAutofillResult = {
+  name: string;
+  email: string;
+  location: string;
+  careerGoal: string;
+  educationLevel: "" | "high_school" | "undergrad" | "grad" | "phd";
+  highSchool: Record<string, string>;
+  undergrad: Record<string, string>;
+  graduate: Record<string, string>;
+  optional: Record<string, string>;
+};
+
 function compact(parts: Array<string | undefined | null | false>) {
   return parts.filter(Boolean).join("\n\n");
 }
@@ -97,4 +109,22 @@ export async function analyzeApplication(payload: AnalyzePayload): Promise<Analy
   }
 
   return data as AnalysisResult;
+}
+
+export async function autofillProfileFromResume(file: File): Promise<ResumeAutofillResult> {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const response = await fetch(`${API_BASE}/api/profile/autofill-resume`, {
+    method: "POST",
+    body: formData,
+  });
+
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    const detail = data?.detail;
+    throw new Error(typeof detail === "string" ? detail : "Resume extraction failed.");
+  }
+
+  return data as ResumeAutofillResult;
 }

@@ -4,10 +4,10 @@ FastAPI server for Scholar-E MVP.
 Exposes POST /api/analyze and auth routes for frontend-react.
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routes import AnalyzeRequest, analyze_application
+from api.routes import AnalyzeRequest, analyze_application, autofill_profile_from_resume
 
 app = FastAPI(title="Scholar-E", version="0.1.0")
 
@@ -29,6 +29,16 @@ def health():
 def analyze(request: AnalyzeRequest):
     try:
         return analyze_application(request)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/profile/autofill-resume")
+async def autofill_resume(file: UploadFile = File(...)):
+    try:
+        return await autofill_profile_from_resume(file)
     except HTTPException:
         raise
     except Exception as exc:

@@ -1,8 +1,10 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
+import { FileUp, PencilLine } from "lucide-react";
 import { journeySteps } from "@/lib/persona";
 import { loadExampleProfile } from "@/lib/loadExample";
 import { CoachRunButton } from "@/components/CoachRunButton";
+import { autofillProfileFromResume } from "@/lib/api/scholarE";
 import {
   useUser,
   initials as toInitials,
@@ -17,6 +19,13 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 export const Route = createFileRoute("/journey")({
   head: () => ({
@@ -502,6 +511,15 @@ function GlossaryCheck({
   );
 }
 
+function compactObject<T extends Record<string, unknown>>(value: T | undefined) {
+  return Object.fromEntries(
+    Object.entries(value ?? {}).filter(([, entry]) => {
+      if (typeof entry === "string") return entry.trim().length > 0;
+      return entry !== undefined && entry !== null;
+    }),
+  );
+}
+
 const EXTENDED_CONTEXT_GROUPS: { group: string; options: string[] }[] = [
   { group: "Financial Need", options: ["Pell Grant eligible", "FAFSA completed", "Low-income background"] },
   { group: "Student Background", options: ["First-generation college student", "Student with disability", "Foster care experience", "Student with dependents"] },
@@ -516,6 +534,15 @@ function StepProfile({ error }: { error: string }) {
   const { user, updateProfile } = useUser();
   const level = user?.educationLevel;
   const [showExtended, setShowExtended] = useState(false);
+  const [resumeStatus, setResumeStatus] = useState("");
+  const [resumeError, setResumeError] = useState("");
+  const [profileStartMode, setProfileStartMode] = useState<"resume" | "manual" | null>(
+    user?.optional?.resumeFileName ? "resume" : user?.educationLevel ? "manual" : null,
+  );
+  const [showStartDialog, setShowStartDialog] = useState(
+    !user?.educationLevel && !user?.optional?.resumeFileName,
+  );
+  const startResumeInputRef = useRef<HTMLInputElement | null>(null);
 
   function set<K extends keyof UserProfile>(key: K, value: UserProfile[K]) {
     updateProfile({ [key]: value } as Partial<UserProfile>);
@@ -545,6 +572,46 @@ function StepProfile({ error }: { error: string }) {
   }
   function removeDoc(name: string) {
     updateProfile({ documents: docs.filter((d) => d.name !== name) });
+  }
+
+  async function handleResumeUpload(file: File) {
+    setResumeStatus("Reading resume...");
+    setResumeError("");
+    setProfileStartMode("resume");
+    try {
+      const profile = await autofillProfileFromResume(file);
+      const nextLevel = profile.educationLevel || user?.educationLevel;
+      updateProfile({
+        name: profile.name || user?.name || "",
+        email: profile.email || user?.email || "",
+        location: profile.location || user?.location,
+        careerGoal: profile.careerGoal || user?.careerGoal,
+        educationLevel: (nextLevel || undefined) as EducationLevel | undefined,
+        highSchool: {
+          ...(user?.highSchool ?? {}),
+          ...compactObject(profile.highSchool),
+        },
+        undergrad: {
+          ...(user?.undergrad ?? {}),
+          ...compactObject(profile.undergrad),
+        },
+        graduate: {
+          ...(user?.graduate ?? {}),
+          ...compactObject(profile.graduate),
+        },
+        optional: {
+          ...(user?.optional ?? {}),
+          ...compactObject(profile.optional),
+          resumeFileName: file.name,
+        },
+        documents: [...docs, { name: file.name, kind: "Resume" }],
+      });
+      setResumeStatus("");
+      setShowStartDialog(false);
+    } catch (err) {
+      setResumeError(err instanceof Error ? err.message : "Resume extraction failed.");
+      setResumeStatus("");
+    }
   }
 
   const raceOptions = [
@@ -579,28 +646,6 @@ function StepProfile({ error }: { error: string }) {
       ))}
     </div>
   );
-  const uploadResumeCard = (
-    <Card>
-      <SectionLabel>Upload Resume</SectionLabel>
-      <p className="text-xs text-muted-foreground mt-1">
-        Upload Resume to fill fields automatically
-      </p>
-      {uploadedDocsList}
-      <label className="mt-5 block rounded-xl border-2 border-dashed border-border p-4 text-sm cursor-pointer hover:bg-accent">
-        <div className="text-xs uppercase tracking-widest text-muted-foreground">Upload</div>
-        <div className="font-medium mt-1">Resume</div>
-        <input
-          type="file"
-          accept=".pdf,.doc,.docx,.png,.jpg"
-          onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (f) addDoc("Resume", f);
-          }}
-          className="mt-2 text-xs"
-        />
-      </label>
-    </Card>
-  );
   const uploadMaterialsCard = (
     <Card>
       <SectionLabel>Upload Materials (Optional)</SectionLabel>
@@ -630,6 +675,66 @@ function StepProfile({ error }: { error: string }) {
 
   return (
     <div className="space-y-6">
+      <Dialog open={showStartDialog} onOpenChange={setShowStartDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="font-display text-2xl">Start your profile</DialogTitle>
+            <DialogDescription>
+              Use your resume to fill in many of the fields for creating students profile
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid gap-3 pt-2">
+            <button
+              type="button"
+              onClick={() => startResumeInputRef.current?.click()}
+              disabled={!!resumeStatus}
+              className="flex w-full items-center gap-3 rounded-lg border border-border bg-primary px-4 py-3 text-left text-sm font-medium text-primary-foreground hover:opacity-90"
+            >
+              <FileUp className="size-5 shrink-0" />
+              <span>Autofill with Resume</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setProfileStartMode("manual");
+                setResumeError("");
+                setShowStartDialog(false);
+              }}
+              disabled={!!resumeStatus}
+              className="flex w-full items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-left text-sm font-medium hover:bg-accent"
+            >
+              <PencilLine className="size-5 shrink-0" />
+              <span>Apply Manually</span>
+            </button>
+          </div>
+
+          {(resumeStatus || resumeError) && (
+            <div
+              className={`rounded-lg border px-3 py-2 text-xs ${
+                resumeError
+                  ? "border-destructive/30 bg-destructive/10 text-destructive"
+                  : "border-success/30 bg-success/10 text-success"
+              }`}
+            >
+              {resumeError || resumeStatus}
+            </div>
+          )}
+
+          <input
+            ref={startResumeInputRef}
+            type="file"
+            accept="application/pdf,.pdf"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) void handleResumeUpload(f);
+              e.currentTarget.value = "";
+            }}
+          />
+        </DialogContent>
+      </Dialog>
+
       <Card>
         <div className="flex items-center gap-3">
           <div className="size-12 rounded-2xl bg-primary text-primary-foreground grid place-items-center font-display text-xl">
@@ -640,6 +745,15 @@ function StepProfile({ error }: { error: string }) {
             <div className="text-sm text-muted-foreground">{user?.email}</div>
           </div>
         </div>
+        <p className="mt-4 text-xs text-muted-foreground">
+          {profileStartMode === "resume"
+            ? "Review and edit the fields filled from your resume."
+            : "Fill out the fields below to build your student profile."}
+        </p>
+        <div className="mt-4 grid sm:grid-cols-2 gap-3">
+          <Input label="Full name" value={user?.name ?? ""} onChange={(v) => set("name", v)} placeholder="Maya Rodriguez" />
+          <Input label="Email" value={user?.email ?? ""} onChange={(v) => set("email", v)} placeholder="you@school.edu" type="email" />
+        </div>
       </Card>
 
       {error && (
@@ -647,8 +761,6 @@ function StepProfile({ error }: { error: string }) {
           {error}
         </div>
       )}
-
-      {uploadResumeCard}
 
       <Card>
         <SectionLabel>About you *</SectionLabel>
