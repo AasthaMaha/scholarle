@@ -3,8 +3,14 @@
 
 import hashlib
 import io
+import re
+from html import unescape
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Dict, Optional
+from urllib.error import URLError
+from urllib.parse import parse_qs, quote_plus, unquote, urlparse
+from urllib.request import Request, urlopen
 
 import pypdf
 from langchain_core.documents import Document
@@ -15,6 +21,7 @@ from fastapi import HTTPException, UploadFile
 from config import settings
 from rag.store import ChromaStore
 from graph.builder import build_application_graph
+from graph.opportunity_builder import build_opportunity_extraction_graph
 from graph.profile_builder import build_profile_extraction_graph
 
 
@@ -38,6 +45,49 @@ class ProfileAutofillResponse(BaseModel):
     undergrad: dict = Field(default_factory=dict)
     graduate: dict = Field(default_factory=dict)
     optional: dict = Field(default_factory=dict)
+
+
+class OpportunityExtractRequest(BaseModel):
+    scholarship_name: str = Field(default="", max_length=500)
+    scholarship_url: str = Field(default="", max_length=2000)
+    additional_notes: str = Field(default="", max_length=12000)
+
+
+class OpportunityExtractResponse(BaseModel):
+    name: str = ""
+    organization: str = ""
+    type: str = ""
+    country: str = ""
+    officialWebsite: str = ""
+    url: str = ""
+    applicationOpens: str = ""
+    awardAmount: str = ""
+    applicationDeadline: str = ""
+    notificationDate: str = ""
+    programStart: str = ""
+    programEnd: str = ""
+    currentStatus: str = ""
+    description: str = ""
+    minimumGpa: str = ""
+    enrollmentLevel: str = ""
+    citizenshipRequirement: str = ""
+    financialNeedRequirement: str = ""
+    locationRequirement: str = ""
+    eligibleMajors: str = ""
+    otherEligibilityRules: str = ""
+    requiredDocumentTypes: list[str] = Field(default_factory=list)
+    otherRequiredMaterials: str = ""
+    essayPrompts: str = ""
+    eligibilityRequirements: list[str] = Field(default_factory=list)
+    requiredApplicationMaterials: list[str] = Field(default_factory=list)
+    benefits: list[str] = Field(default_factory=list)
+    selectionCriteria: list[str] = Field(default_factory=list)
+    applicationProcess: list[str] = Field(default_factory=list)
+    missingInformation: list[str] = Field(default_factory=list)
+    requirements: list[dict] = Field(default_factory=list)
+    requirementsPreview: str = ""
+    fullText: str = ""
+    sourceUrls: list[str] = Field(default_factory=list)
 
 
 def _text_to_chunks(text: str, source: str) -> list:
@@ -81,6 +131,130 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
             status_code=422,
             detail=f"Failed to parse PDF text: {str(exc)}",
         ) from exc
+
+
+class _ReadableTextParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self._skip_depth = 0
+        self.parts = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in {"script", "style", "noscript", "svg"}:
+            self._skip_depth += 1
+        if tag in {"p", "br", "div", "li", "tr", "h1", "h2", "h3", "h4"}:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag):
+        if tag in {"script", "style", "noscript", "svg"} and self._skip_depth:
+            self._skip_depth -= 1
+        if tag in {"p", "div", "li", "tr", "h1", "h2", "h3", "h4"}:
+            self.parts.append("\n")
+
+    def handle_data(self, data):
+        if not self._skip_depth:
+            text = data.strip()
+            if text:
+                self.parts.append(text)
+
+    def text(self) -> str:
+        raw = " ".join(self.parts)
+        raw = re.sub(r"[ \t]+", " ", raw)
+        raw = re.sub(r"\n\s*\n+", "\n\n", raw)
+        return unescape(raw).strip()
+
+
+def _looks_like_url(value: str) -> bool:
+    text = value.strip()
+    return text.startswith(("http://", "https://")) or "." in text and " " not in text
+
+
+def _normalize_url(value: str) -> str:
+    text = value.strip()
+    if text and not text.startswith(("http://", "https://")):
+        return f"https://{text}"
+    return text
+
+
+def _fetch_page_text(url: str, timeout: int = 12) -> str:
+    request = Request(
+        _normalize_url(url),
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 Scholar-E/0.1"
+            )
+        },
+    )
+    with urlopen(request, timeout=timeout) as response:
+        content_type = response.headers.get("content-type", "")
+        body = response.read(1_500_000)
+    if "pdf" in content_type.lower() or url.lower().endswith(".pdf"):
+        return extract_text_from_pdf(body)
+    html = body.decode("utf-8", errors="ignore")
+    parser = _ReadableTextParser()
+    parser.feed(html)
+    return parser.text()
+
+
+def _search_opportunity_urls(query: str, limit: int = 3) -> list[str]:
+    if not query.strip():
+        return []
+    search_url = f"https://duckduckgo.com/html/?q={quote_plus(query + ' scholarship requirements deadline')}"
+    try:
+        html = _fetch_raw(search_url)
+    except Exception:
+        return []
+    urls = []
+    for match in re.finditer(r'href="([^"]+)"[^>]*class="result__a"', html):
+        href = unescape(match.group(1))
+        parsed = urlparse(href)
+        if parsed.netloc.endswith("duckduckgo.com"):
+            target = parse_qs(parsed.query).get("uddg", [""])[0]
+            href = unquote(target) if target else href
+        if href.startswith("http") and href not in urls:
+            urls.append(href)
+        if len(urls) >= limit:
+            break
+    return urls
+
+
+def _fetch_raw(url: str, timeout: int = 12) -> str:
+    request = Request(
+        url,
+        headers={"User-Agent": "Mozilla/5.0 Scholar-E/0.1"},
+    )
+    with urlopen(request, timeout=timeout) as response:
+        return response.read(1_500_000).decode("utf-8", errors="ignore")
+
+
+def _gather_opportunity_source_text(request: OpportunityExtractRequest) -> tuple[str, list[str]]:
+    source_urls = []
+    chunks = []
+
+    if request.scholarship_url.strip():
+        source_urls.append(_normalize_url(request.scholarship_url))
+    elif _looks_like_url(request.scholarship_name):
+        source_urls.append(_normalize_url(request.scholarship_name))
+    else:
+        source_urls.extend(_search_opportunity_urls(request.scholarship_name))
+
+    for url in source_urls[:4]:
+        try:
+            text = _fetch_page_text(url)
+        except (HTTPException, URLError, TimeoutError, ValueError):
+            continue
+        if text:
+            chunks.append(f"SOURCE URL: {url}\n{text[:12000]}")
+
+    if request.additional_notes.strip():
+        chunks.append(f"USER NOTES:\n{request.additional_notes.strip()}")
+    if request.scholarship_name.strip():
+        chunks.append(f"USER SCHOLARSHIP NAME/QUERY:\n{request.scholarship_name.strip()}")
+    if request.scholarship_url.strip():
+        chunks.append(f"USER SCHOLARSHIP URL/SOURCE:\n{request.scholarship_url.strip()}")
+
+    return "\n\n---\n\n".join(chunks).strip(), source_urls
 
 
 def run_application_pipeline(
@@ -181,6 +355,52 @@ async def autofill_profile_from_resume(file: UploadFile) -> dict:
     graph = build_profile_extraction_graph()
     result = graph.invoke({"resume_text": raw_resume_text})
     response = ProfileAutofillResponse(**result)
+    if hasattr(response, "model_dump"):
+        return response.model_dump()
+    return response.dict()
+
+
+def extract_scholarship_opportunity(request: OpportunityExtractRequest) -> dict:
+    if not settings.openai_api_key:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Missing OPENAI_API_KEY. Add a .env file in the project root "
+                "with OPENAI_API_KEY=your_key, then restart the server."
+            ),
+        )
+
+    if not (
+        request.scholarship_name.strip()
+        or request.scholarship_url.strip()
+        or request.additional_notes.strip()
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Enter a scholarship name, link, source, or notes before extracting requirements.",
+        )
+
+    source_text, source_urls = _gather_opportunity_source_text(request)
+    if not source_text:
+        source_text = "\n\n".join(
+            [
+                request.scholarship_name.strip(),
+                request.scholarship_url.strip(),
+                request.additional_notes.strip(),
+            ]
+        ).strip()
+
+    graph = build_opportunity_extraction_graph()
+    result = graph.invoke(
+        {
+            "scholarship_name": request.scholarship_name,
+            "scholarship_url": request.scholarship_url,
+            "additional_notes": request.additional_notes,
+            "source_text": source_text,
+            "source_urls": source_urls,
+        }
+    )
+    response = OpportunityExtractResponse(**result)
     if hasattr(response, "model_dump"):
         return response.model_dump()
     return response.dict()

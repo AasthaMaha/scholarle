@@ -82,10 +82,18 @@ export type EssayDraft = {
 
 export type ActiveScholarship = {
   name?: string;
+  organization?: string;
   type?: string;
+  country?: string;
+  officialWebsite?: string;
   url?: string;
+  applicationOpens?: string;
   awardAmount?: string;
   applicationDeadline?: string;
+  notificationDate?: string;
+  programStart?: string;
+  programEnd?: string;
+  currentStatus?: string;
   description?: string;
   minimumGpa?: string;
   enrollmentLevel?: string;
@@ -97,9 +105,18 @@ export type ActiveScholarship = {
   requiredDocumentTypes?: string[];
   otherRequiredMaterials?: string;
   essayPrompts?: string;
+  eligibilityRequirements?: string[];
+  requiredApplicationMaterials?: string[];
+  benefits?: string[];
+  selectionCriteria?: string[];
+  applicationProcess?: string[];
+  missingInformation?: string[];
+  requirements?: Array<{ category?: string; requirement?: string; source?: string }>;
   requirementsPreview?: string;
   additionalNotes?: string;
   fullText?: string;
+  sourceUrls?: string[];
+  extractionCompletedAt?: string;
 };
 
 export type AnalysisScore = {

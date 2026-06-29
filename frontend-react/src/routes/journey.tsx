@@ -4,7 +4,7 @@ import { FileUp, PencilLine } from "lucide-react";
 import { journeySteps } from "@/lib/persona";
 import { loadExampleProfile } from "@/lib/loadExample";
 import { CoachRunButton } from "@/components/CoachRunButton";
-import { autofillProfileFromResume } from "@/lib/api/scholarE";
+import { autofillProfileFromResume, extractScholarshipOpportunity } from "@/lib/api/scholarE";
 import {
   useUser,
   initials as toInitials,
@@ -1282,17 +1282,32 @@ function MatchRing({ score }: { score: number }) {
 function ScholarshipDetailsCard({
   scholarship,
   updateScholarship,
+  onExtract,
+  extracting,
+  extractionStatus,
+  extractionError,
 }: {
   scholarship: ActiveScholarship;
   updateScholarship: (patch: ActiveScholarship) => void;
+  onExtract: () => void;
+  extracting: boolean;
+  extractionStatus: string | null;
+  extractionError: string | null;
 }) {
   return (
     <Card>
       <SectionLabel>Scholarship details</SectionLabel>
       <p className="mt-1 text-xs text-muted-foreground">
-        Paste the real opportunity details here to analyzes the information you provide.
+        Paste the real opportunity details here. Scholar-E will extract requirements into editable fields.
       </p>
       <div className="mt-4 grid sm:grid-cols-2 gap-3">
+        <Input
+          label="Scholarship name"
+          value={scholarship.name ?? ""}
+          onChange={(name) => updateScholarship({ name })}
+          placeholder="Coca-Cola Scholars Program, Gates Scholarship..."
+          className="sm:col-span-2"
+        />
         <Input
           label="Scholarship link or source"
           value={scholarship.url ?? ""}
@@ -1309,9 +1324,132 @@ function ScholarshipDetailsCard({
         rows={3}
       />
       <div className="mt-5 flex justify-end">
-        <button className="rounded-full bg-primary text-primary-foreground px-5 py-2.5 text-sm font-medium hover:opacity-90">
-          Analyzing Scholarship Information
+        <button
+          type="button"
+          onClick={onExtract}
+          disabled={extracting}
+          className="rounded-full bg-primary text-primary-foreground px-5 py-2.5 text-sm font-medium hover:opacity-90 disabled:opacity-50"
+        >
+          {extracting ? "Extracting requirements..." : "Extract Scholarship Information"}
         </button>
+      </div>
+      {extractionStatus && <p className="mt-3 text-xs text-muted-foreground text-right">{extractionStatus}</p>}
+      {extractionError && <p className="mt-3 text-xs text-destructive text-right">{extractionError}</p>}
+    </Card>
+  );
+}
+
+function EditableScholarshipFields({
+  scholarship,
+  updateScholarship,
+}: {
+  scholarship: ActiveScholarship;
+  updateScholarship: (patch: ActiveScholarship) => void;
+}) {
+  const docsValue = (scholarship.requiredDocumentTypes ?? []).join(", ");
+  const hasExtractedDetails = !!scholarship.extractionCompletedAt;
+  const listValue = (items?: string[]) => (items ?? []).join("\n");
+  const parseList = (value: string) =>
+    value
+      .split("\n")
+      .map((item) => item.trim())
+      .filter(Boolean);
+
+  if (!hasExtractedDetails) return null;
+
+  return (
+    <Card>
+      <SectionLabel>Extracted requirements</SectionLabel>
+      <p className="mt-1 text-xs text-muted-foreground">
+        Review and edit anything the extractor found before analyzing fit.
+      </p>
+
+      <div className="mt-4">
+        <Textarea
+          label="Complete extraction output"
+          value={scholarship.requirementsPreview ?? ""}
+          onChange={(requirementsPreview) => updateScholarship({ requirementsPreview })}
+          rows={14}
+        />
+      </div>
+
+      <div className="mt-4 grid sm:grid-cols-2 gap-3">
+        <Input label="Scholarship name" value={scholarship.name ?? ""} onChange={(name) => updateScholarship({ name })} />
+        <Input label="Sponsoring organization" value={scholarship.organization ?? ""} onChange={(organization) => updateScholarship({ organization })} />
+        <Input label="Scholarship type" value={scholarship.type ?? ""} onChange={(type) => updateScholarship({ type })} />
+        <Input label="Country / region" value={scholarship.country ?? ""} onChange={(country) => updateScholarship({ country })} />
+        <Input label="Official website" value={scholarship.officialWebsite ?? scholarship.url ?? ""} onChange={(officialWebsite) => updateScholarship({ officialWebsite, url: officialWebsite })} />
+        <Input label="Award amount" value={scholarship.awardAmount ?? ""} onChange={(awardAmount) => updateScholarship({ awardAmount })} />
+        <Input label="Application opens" value={scholarship.applicationOpens ?? ""} onChange={(applicationOpens) => updateScholarship({ applicationOpens })} />
+        <Input label="Application deadline" value={scholarship.applicationDeadline ?? ""} onChange={(applicationDeadline) => updateScholarship({ applicationDeadline })} />
+        <Input label="Notification date" value={scholarship.notificationDate ?? ""} onChange={(notificationDate) => updateScholarship({ notificationDate })} />
+        <Input label="Program start" value={scholarship.programStart ?? ""} onChange={(programStart) => updateScholarship({ programStart })} />
+        <Input label="Program end" value={scholarship.programEnd ?? ""} onChange={(programEnd) => updateScholarship({ programEnd })} />
+        <Input label="Current status" value={scholarship.currentStatus ?? ""} onChange={(currentStatus) => updateScholarship({ currentStatus })} />
+      </div>
+
+      <div className="mt-3 space-y-3">
+        <Textarea label="Scholarship description" value={scholarship.description ?? ""} onChange={(description) => updateScholarship({ description })} rows={3} />
+        <div className="grid sm:grid-cols-2 gap-3">
+          <Input label="Minimum GPA" value={scholarship.minimumGpa ?? ""} onChange={(minimumGpa) => updateScholarship({ minimumGpa })} />
+          <Input label="Enrollment level" value={scholarship.enrollmentLevel ?? ""} onChange={(enrollmentLevel) => updateScholarship({ enrollmentLevel })} />
+          <Input label="Citizenship / residency requirement" value={scholarship.citizenshipRequirement ?? ""} onChange={(citizenshipRequirement) => updateScholarship({ citizenshipRequirement })} />
+          <Input label="Financial need requirement" value={scholarship.financialNeedRequirement ?? ""} onChange={(financialNeedRequirement) => updateScholarship({ financialNeedRequirement })} />
+          <Input label="Location / residency requirement" value={scholarship.locationRequirement ?? ""} onChange={(locationRequirement) => updateScholarship({ locationRequirement })} />
+          <Input label="Eligible majors / fields" value={scholarship.eligibleMajors ?? ""} onChange={(eligibleMajors) => updateScholarship({ eligibleMajors })} />
+        </div>
+        <Textarea label="Other eligibility rules" value={scholarship.otherEligibilityRules ?? ""} onChange={(otherEligibilityRules) => updateScholarship({ otherEligibilityRules })} rows={4} />
+        <Input
+          label="Required document types"
+          value={docsValue}
+          onChange={(value) =>
+            updateScholarship({
+              requiredDocumentTypes: value
+                .split(",")
+                .map((item) => item.trim())
+                .filter(Boolean),
+            })
+          }
+          placeholder="Essay, transcript, recommendation letter..."
+        />
+        <Textarea label="Other required materials" value={scholarship.otherRequiredMaterials ?? ""} onChange={(otherRequiredMaterials) => updateScholarship({ otherRequiredMaterials })} rows={3} />
+        <Textarea label="Essay prompts" value={scholarship.essayPrompts ?? ""} onChange={(essayPrompts) => updateScholarship({ essayPrompts })} rows={5} />
+        <Textarea
+          label="Eligibility requirements"
+          value={listValue(scholarship.eligibilityRequirements)}
+          onChange={(value) => updateScholarship({ eligibilityRequirements: parseList(value) })}
+          rows={6}
+        />
+        <Textarea
+          label="Required application materials"
+          value={listValue(scholarship.requiredApplicationMaterials)}
+          onChange={(value) => updateScholarship({ requiredApplicationMaterials: parseList(value) })}
+          rows={5}
+        />
+        <Textarea
+          label="Benefits"
+          value={listValue(scholarship.benefits)}
+          onChange={(value) => updateScholarship({ benefits: parseList(value) })}
+          rows={5}
+        />
+        <Textarea
+          label="Selection criteria"
+          value={listValue(scholarship.selectionCriteria)}
+          onChange={(value) => updateScholarship({ selectionCriteria: parseList(value) })}
+          rows={5}
+        />
+        <Textarea
+          label="Application process"
+          value={listValue(scholarship.applicationProcess)}
+          onChange={(value) => updateScholarship({ applicationProcess: parseList(value) })}
+          rows={5}
+        />
+        <Textarea
+          label="Missing information"
+          value={listValue(scholarship.missingInformation)}
+          onChange={(value) => updateScholarship({ missingInformation: parseList(value) })}
+          rows={4}
+        />
       </div>
     </Card>
   );
@@ -1325,8 +1463,37 @@ function StepRequirementsAndFit() {
   const [editingRequirements, setEditingRequirements] = useState(false);
   const [requirementsDraft, setRequirementsDraft] = useState("");
   const [fitStatus, setFitStatus] = useState<string | null>(null);
+  const [extracting, setExtracting] = useState(false);
+  const [extractionStatus, setExtractionStatus] = useState<string | null>(null);
+  const [extractionError, setExtractionError] = useState<string | null>(null);
   function updateScholarship(patch: ActiveScholarship) {
     updateProfile({ activeScholarship: { ...scholarship, ...patch } });
+  }
+  async function runScholarshipExtraction() {
+    setExtracting(true);
+    setExtractionStatus("Looking up scholarship details and extracting requirements...");
+    setExtractionError(null);
+    try {
+      const extracted = await extractScholarshipOpportunity({
+        scholarship_name: scholarship.name ?? "",
+        scholarship_url: scholarship.url ?? "",
+        additional_notes: scholarship.additionalNotes ?? "",
+      });
+      updateScholarship({
+        ...extracted,
+        additionalNotes: scholarship.additionalNotes,
+        url: extracted.url || scholarship.url,
+        name: extracted.name || scholarship.name,
+        extractionCompletedAt: new Date().toISOString(),
+      });
+      setRequirementsDraft(extracted.requirementsPreview ?? "");
+      setExtractionStatus("Requirements extracted. Review and edit the fields below.");
+    } catch (err) {
+      setExtractionError(err instanceof Error ? err.message : "Scholarship extraction failed.");
+      setExtractionStatus(null);
+    } finally {
+      setExtracting(false);
+    }
   }
   const eligibilitySummary = [
     scholarship?.minimumGpa && `Minimum GPA: ${scholarship.minimumGpa}`,
@@ -1366,7 +1533,16 @@ function StepRequirementsAndFit() {
 
   return (
     <div className="space-y-6">
-      <ScholarshipDetailsCard scholarship={scholarship} updateScholarship={updateScholarship} />
+      <ScholarshipDetailsCard
+        scholarship={scholarship}
+        updateScholarship={updateScholarship}
+        onExtract={runScholarshipExtraction}
+        extracting={extracting}
+        extractionStatus={extractionStatus}
+        extractionError={extractionError}
+      />
+
+      <EditableScholarshipFields scholarship={scholarship} updateScholarship={updateScholarship} />
 
       <div>
         <div className="space-y-6">

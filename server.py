@@ -7,7 +7,13 @@ Exposes POST /api/analyze and auth routes for frontend-react.
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routes import AnalyzeRequest, analyze_application, autofill_profile_from_resume
+from api.routes import (
+    AnalyzeRequest,
+    OpportunityExtractRequest,
+    analyze_application,
+    autofill_profile_from_resume,
+    extract_scholarship_opportunity,
+)
 
 app = FastAPI(title="Scholar-E", version="0.1.0")
 
@@ -39,6 +45,16 @@ def analyze(request: AnalyzeRequest):
 async def autofill_resume(file: UploadFile = File(...)):
     try:
         return await autofill_profile_from_resume(file)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/opportunity/extract")
+def extract_opportunity(request: OpportunityExtractRequest):
+    try:
+        return extract_scholarship_opportunity(request)
     except HTTPException:
         raise
     except Exception as exc:

@@ -1,4 +1,4 @@
-import type { AnalysisResult, UserProfile } from "@/lib/userStore";
+import type { ActiveScholarship, AnalysisResult, UserProfile } from "@/lib/userStore";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 
@@ -22,6 +22,17 @@ export type ResumeAutofillResult = {
   undergrad: Record<string, string>;
   graduate: Record<string, string>;
   optional: Record<string, string>;
+};
+
+export type OpportunityExtractPayload = {
+  scholarship_name: string;
+  scholarship_url: string;
+  additional_notes: string;
+};
+
+export type OpportunityExtractResult = ActiveScholarship & {
+  requirements?: Array<{ category?: string; requirement?: string; source?: string }>;
+  sourceUrls?: string[];
 };
 
 function compact(parts: Array<string | undefined | null | false>) {
@@ -127,4 +138,22 @@ export async function autofillProfileFromResume(file: File): Promise<ResumeAutof
   }
 
   return data as ResumeAutofillResult;
+}
+
+export async function extractScholarshipOpportunity(
+  payload: OpportunityExtractPayload,
+): Promise<OpportunityExtractResult> {
+  const response = await fetch(`${API_BASE}/api/opportunity/extract`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    const detail = data?.detail;
+    throw new Error(typeof detail === "string" ? detail : "Scholarship extraction failed.");
+  }
+
+  return data as OpportunityExtractResult;
 }
