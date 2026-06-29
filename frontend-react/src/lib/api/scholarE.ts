@@ -74,6 +74,7 @@ export function buildAnalyzePayload(user: UserProfile | null): AnalyzePayload {
       !!scholarship?.requiredDocumentTypes?.length && `Required documents/materials: ${scholarship.requiredDocumentTypes.join(", ")}`,
       scholarship?.otherRequiredMaterials && `Other required materials:\n${scholarship.otherRequiredMaterials}`,
       scholarship?.essayPrompts && `Essay prompt(s):\n${scholarship.essayPrompts}`,
+      scholarship?.requirementsPreview && `Student-edited scholarship requirements preview:\n${scholarship.requirementsPreview}`,
       scholarship?.additionalNotes && `Additional notes:\n${scholarship.additionalNotes}`,
       scholarship?.fullText && `Full scholarship page text:\n${scholarship.fullText}`,
     ]),

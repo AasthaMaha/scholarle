@@ -6,6 +6,7 @@ type CoachRunButtonProps = {
   label: string;
   loadingLabel?: string;
   disabled?: boolean;
+  fitOnly?: boolean;
   className?: string;
   onStatus?: (message: string) => void;
 };
@@ -14,6 +15,7 @@ export function CoachRunButton({
   label,
   loadingLabel = "Analyzing…",
   disabled,
+  fitOnly = false,
   className,
   onStatus,
 }: CoachRunButtonProps) {
@@ -22,15 +24,17 @@ export function CoachRunButton({
 
   async function run() {
     const payload = buildAnalyzePayload(user);
-    if (
-      !payload.cv_text ||
-      !payload.essay_text ||
-      !payload.scholarship_name ||
-      !payload.scholarship_type ||
-      !payload.prompt
-    ) {
+    if (fitOnly) {
+      payload.essay_text = payload.essay_text || "Fit-only analysis requested before essay draft is available.";
+      payload.scholarship_name = payload.scholarship_name || "Scholarship opportunity";
+      payload.scholarship_type = payload.scholarship_type || "Scholarship";
+    }
+
+    if (!payload.cv_text || !payload.prompt || (!fitOnly && (!payload.essay_text || !payload.scholarship_name || !payload.scholarship_type))) {
       onStatus?.(
-        "Add your profile, scholarship details, and essay draft before running the AI coach.",
+        fitOnly
+          ? "Add your profile and scholarship details before analyzing fit."
+          : "Add your profile, scholarship details, and essay draft before running the AI coach.",
       );
       return;
     }
@@ -40,7 +44,11 @@ export function CoachRunButton({
     try {
       const result = await analyzeApplication(payload);
       updateProfile({ lastAnalysis: result });
-      onStatus?.("Analysis complete. Continue to Application Evaluation to review your scores.");
+      onStatus?.(
+        fitOnly
+          ? "Fit analysis complete. Review the results below."
+          : "Analysis complete. Continue to Application Evaluation to review your scores.",
+      );
     } catch (error) {
       onStatus?.((error as Error).message || "Scholar-E analysis failed.");
     } finally {

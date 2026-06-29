@@ -97,6 +97,7 @@ export type ActiveScholarship = {
   requiredDocumentTypes?: string[];
   otherRequiredMaterials?: string;
   essayPrompts?: string;
+  requirementsPreview?: string;
   additionalNotes?: string;
   fullText?: string;
 };

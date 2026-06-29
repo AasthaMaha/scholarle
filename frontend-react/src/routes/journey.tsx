@@ -41,8 +41,8 @@ function Journey() {
   function handleLoadExample() {
     updateProfile(
       loadExampleProfile({
-        name: user?.name,
-        email: user?.email,
+        name: user?.name ?? "",
+        email: user?.email ?? "",
         id: user?.id,
       }),
     );
@@ -323,7 +323,6 @@ function StepBody({
     case "profile": return <StepProfile error={profileError} />;
     case "discovery": return <StepDiscovery />;
     case "opportunities": return <StepOpportunities onAnalyze={goNext} />;
-    case "import": return <StepImport />;
     case "requirements": return <StepRequirementsAndFit />;
     case "essay-outline": return <StepEssayOutline />;
     case "essay-upload": return <StepEssayUpload />;
@@ -411,16 +410,6 @@ function StepLand() {
               <p className="text-sm text-muted-foreground mt-2 leading-relaxed">{s.d}</p>
             </div>
           ))}
-        </div>
-        <div className="mt-6 space-y-2">
-          <label className="flex items-start gap-3 cursor-pointer">
-            <input type="checkbox" defaultChecked className="size-4 mt-0.5 accent-[oklch(0.32_0.09_270)]" />
-            <span className="text-sm leading-relaxed">Scholar-E is a coach, not a ghostwriter.</span>
-          </label>
-          <label className="flex items-start gap-3 cursor-pointer">
-            <input type="checkbox" defaultChecked className="size-4 mt-0.5 accent-[oklch(0.32_0.09_270)]" />
-            <span className="text-sm leading-relaxed">My essays will stay in my own voice and authorship.</span>
-          </label>
         </div>
       </Card>
     </div>
@@ -571,6 +560,73 @@ function StepProfile({ error }: { error: string }) {
     "A-U.S. Citizen, U.S. National, Permanent Resident (Green Card Holder), Refugee, or Asylee",
     "B-International Student or Other Visa Status (F-1, J-1, H-4, TN, DACA, TPS, etc.)",
   ];
+  const uploadedDocsList = docs.length > 0 && (
+    <div className="mt-4 divide-y divide-border">
+      {docs.map((d) => (
+        <div key={d.name} className="py-3 flex items-center gap-4">
+          <div className="size-10 rounded-lg bg-success/15 text-success grid place-items-center text-xs font-mono">✓</div>
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-medium truncate">{d.name}</div>
+            <div className="text-xs text-muted-foreground">{d.kind}</div>
+          </div>
+          <button
+            onClick={() => removeDoc(d.name)}
+            className="text-xs text-muted-foreground hover:text-destructive"
+          >
+            Remove
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+  const uploadResumeCard = (
+    <Card>
+      <SectionLabel>Upload Resume</SectionLabel>
+      <p className="text-xs text-muted-foreground mt-1">
+        Upload Resume to fill fields automatically
+      </p>
+      {uploadedDocsList}
+      <label className="mt-5 block rounded-xl border-2 border-dashed border-border p-4 text-sm cursor-pointer hover:bg-accent">
+        <div className="text-xs uppercase tracking-widest text-muted-foreground">Upload</div>
+        <div className="font-medium mt-1">Resume</div>
+        <input
+          type="file"
+          accept=".pdf,.doc,.docx,.png,.jpg"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) addDoc("Resume", f);
+          }}
+          className="mt-2 text-xs"
+        />
+      </label>
+    </Card>
+  );
+  const uploadMaterialsCard = (
+    <Card>
+      <SectionLabel>Upload Materials (Optional)</SectionLabel>
+      <p className="text-xs text-muted-foreground mt-1">
+        Add supporting documents you may reuse across applications.
+      </p>
+      {uploadedDocsList}
+      <div className="mt-5 grid sm:grid-cols-3 gap-3">
+        {["Transcript", "Letter of Recommendation", "Other documents"].map((k) => (
+          <label key={k} className="rounded-xl border-2 border-dashed border-border p-4 text-sm cursor-pointer hover:bg-accent">
+            <div className="text-xs uppercase tracking-widest text-muted-foreground">Upload</div>
+            <div className="font-medium mt-1">{k}</div>
+            <input
+              type="file"
+              accept=".pdf,.doc,.docx,.png,.jpg"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) addDoc(k, f);
+              }}
+              className="mt-2 text-xs"
+            />
+          </label>
+        ))}
+      </div>
+    </Card>
+  );
 
   return (
     <div className="space-y-6">
@@ -591,6 +647,8 @@ function StepProfile({ error }: { error: string }) {
           {error}
         </div>
       )}
+
+      {uploadResumeCard}
 
       <Card>
         <SectionLabel>About you *</SectionLabel>
@@ -694,49 +752,7 @@ function StepProfile({ error }: { error: string }) {
         </div>
       </Card>
 
-      {/* Materials/document vault moved here, before Story Prompts */}
-      <Card>
-        <SectionLabel>Upload Materials (Optional)</SectionLabel>
-        <p className="text-xs text-muted-foreground mt-1">
-          Build your document vault so each application can reuse them.
-        </p>
-        {docs.length > 0 && (
-          <div className="mt-4 divide-y divide-border">
-            {docs.map((d) => (
-              <div key={d.name} className="py-3 flex items-center gap-4">
-                <div className="size-10 rounded-lg bg-success/15 text-success grid place-items-center text-xs font-mono">✓</div>
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium truncate">{d.name}</div>
-                  <div className="text-xs text-muted-foreground">{d.kind}</div>
-                </div>
-                <button
-                  onClick={() => removeDoc(d.name)}
-                  className="text-xs text-muted-foreground hover:text-destructive"
-                >
-                  Remove
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-        <div className="mt-5 grid sm:grid-cols-2 gap-3">
-          {["Resume", "Transcript", "Recommendation letter", "Past Personal Application Essays"].map((k) => (
-            <label key={k} className="rounded-xl border-2 border-dashed border-border p-4 text-sm cursor-pointer hover:bg-accent">
-              <div className="text-xs uppercase tracking-widest text-muted-foreground">Upload</div>
-              <div className="font-medium mt-1">{k}</div>
-              <input
-                type="file"
-                accept=".pdf,.doc,.docx,.png,.jpg"
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) addDoc(k, f);
-                }}
-                className="mt-2 text-xs"
-              />
-            </label>
-          ))}
-        </div>
-      </Card>
+      {uploadMaterialsCard}
 
       <Card>
         <SectionLabel>Story prompts (optional)</SectionLabel>
@@ -951,35 +967,10 @@ function GradForm({ value, setBranch, level }: { value: Record<string, unknown>;
 
 function StepDiscovery() {
   const { user } = useUser();
-  const ug = user?.undergrad;
-  const hs = user?.highSchool;
-  const gr = user?.graduate;
-  const major = ug?.major ?? hs?.intendedMajor ?? gr?.researchArea;
-  const qs: { q: string; a: string }[] = [];
-  if (user?.educationLevel) qs.push({ q: "Education level", a: eduLevelLabel(user.educationLevel) });
-  if (major) qs.push({ q: "Major / focus", a: major });
-  if (user?.location) qs.push({ q: "Location", a: user.location });
-  if (user?.citizenshipStatus) qs.push({ q: "Citizenship / Residency Status", a: user.citizenshipStatus });
-  if (user?.raceEthnicity) qs.push({ q: "Race / ethnicity", a: user.raceEthnicity });
-  if (user?.hispanicLatino) qs.push({ q: "Hispanic / Latino?", a: user.hispanicLatino });
-  if (user?.firstGen) qs.push({ q: "First-generation?", a: "Yes" });
-  if (user?.pellEligible) qs.push({ q: "Financial need?", a: "Pell-eligible" });
-  if (user?.careerGoal) qs.push({ q: "Career interests", a: user.careerGoal });
   const resources = buildDiscoveryResources(user);
 
   return (
-    <div className="grid md:grid-cols-2 gap-6">
-      <Card className="self-start">
-        <div className="text-xs uppercase tracking-widest text-muted-foreground">Your answers</div>
-        {qs.length === 0 ? (
-          <div className="mt-3 text-sm text-muted-foreground">No profile data yet — fill out your profile first.</div>
-        ) : (
-          <div className="mt-3">
-            {qs.map((q) => <FieldRow key={q.q} label={q.q} value={q.a} />)}
-          </div>
-        )}
-      </Card>
-
+    <div>
       <Card>
         <div className="flex items-center justify-between">
           <div className="text-xs uppercase tracking-widest text-muted-foreground">
@@ -990,7 +981,7 @@ function StepDiscovery() {
         <p className="text-sm text-muted-foreground mt-2">
           Curated based on your profile. We don't scrape — we point you to the right places.
         </p>
-        <div className="mt-4 space-y-3">
+        <div className="mt-4 grid md:grid-cols-2 gap-3">
           {resources.map((r) => (
             <div key={r.name} className="flex items-start gap-3 rounded-xl border border-border p-3">
               <div className="size-9 rounded-lg bg-gold/20 grid place-items-center font-display">
@@ -1176,378 +1167,55 @@ function MatchRing({ score }: { score: number }) {
   );
 }
 
-/* ---------------- Step 5: Import ---------------- */
-
-function StepImport() {
-  const { user, updateProfile } = useUser();
-  const scholarship = user?.activeScholarship ?? {};
-  const requiredMaterialOptions = [
-    "Resume / CV",
-    "Transcript",
-    "Personal Statement",
-    "Essay",
-    "Recommendation Letter(s)",
-    "FAFSA Submission",
-    "Financial Information",
-    "Portfolio",
-    "Research Proposal",
-    "Proof of Enrollment",
-    "Community Service Verification",
-    "Video Submission",
-  ];
-  const hasEligibilityDetails = !!(
-    scholarship.minimumGpa ||
-    scholarship.enrollmentLevel ||
-    scholarship.citizenshipRequirement ||
-    scholarship.financialNeedRequirement ||
-    scholarship.locationRequirement ||
-    scholarship.eligibleMajors ||
-    scholarship.otherEligibilityRules
-  );
-  const hasStructuredDetails = !!(
-    scholarship.description ||
-    hasEligibilityDetails ||
-    scholarship.requiredDocumentTypes?.length ||
-    scholarship.otherRequiredMaterials ||
-    scholarship.essayPrompts ||
-    scholarship.fullText
-  );
-  const isReady = !!scholarship.name && !!scholarship.type && hasStructuredDetails;
-
-  function updateScholarship(patch: ActiveScholarship) {
-    updateProfile({ activeScholarship: { ...scholarship, ...patch } });
-  }
-
-  function toggleRequiredMaterial(material: string, checked: boolean) {
-    const current = scholarship.requiredDocumentTypes ?? [];
-    const next = checked
-      ? Array.from(new Set([...current, material]))
-      : current.filter((item) => item !== material);
-    updateScholarship({ requiredDocumentTypes: next });
-  }
-
-  return (
-    <div className="space-y-6">
-      <Card>
-        <SectionLabel>Scholarship details</SectionLabel>
-        <p className="mt-1 text-xs text-muted-foreground">
-          Paste the real opportunity details here. Scholar-E does not scrape; it analyzes the information you provide.
-        </p>
-        <div className="mt-4 grid sm:grid-cols-2 gap-3">
-          <Input
-            label="Scholarship name"
-            value={scholarship.name ?? ""}
-            onChange={(name) => updateScholarship({ name })}
-            placeholder="Scholarship name"
-          />
-          <Select
-            label="Scholarship type"
-            value={scholarship.type ?? ""}
-            onChange={(type) => updateScholarship({ type })}
-            options={["Merit-based", "Need-based", "Identity-based", "Research & Fellowship", "Institutional", "Local or community"]}
-          />
-          <Input
-            label="Scholarship link or source"
-            value={scholarship.url ?? ""}
-            onChange={(url) => updateScholarship({ url })}
-            placeholder="https://... or source name"
-            className="sm:col-span-2"
-          />
-          <Input
-            label="Award amount"
-            value={scholarship.awardAmount ?? ""}
-            onChange={(awardAmount) => updateScholarship({ awardAmount })}
-            placeholder="$5,000"
-          />
-          <Input
-            label="Application deadline"
-            value={scholarship.applicationDeadline ?? ""}
-            onChange={(applicationDeadline) => updateScholarship({ applicationDeadline })}
-            type="date"
-          />
-        </div>
-        <Textarea
-          label="Scholarship description"
-          value={scholarship.description ?? ""}
-          onChange={(description) => updateScholarship({ description })}
-          placeholder="Summarize what the scholarship is for and who sponsors it."
-          rows={4}
-        />
-      </Card>
-
-      <Card>
-        <SectionLabel>Eligibility Requirements</SectionLabel>
-        <p className="mt-1 text-xs text-muted-foreground">
-          Use the structured fields for requirements that can be compared directly against the student profile.
-        </p>
-        <div className="mt-4 grid sm:grid-cols-2 gap-3">
-          <Select
-            label="Minimum GPA"
-            value={scholarship.minimumGpa ?? ""}
-            onChange={(minimumGpa) => updateScholarship({ minimumGpa })}
-            options={["No minimum listed", "2.5+", "3.0+", "3.25+", "3.5+", "4.0", "Other"]}
-          />
-          <Select
-            label="Enrollment Level"
-            value={scholarship.enrollmentLevel ?? ""}
-            onChange={(enrollmentLevel) => updateScholarship({ enrollmentLevel })}
-            options={[
-              "High school senior",
-              "Undergraduate student",
-              "Graduate student",
-              "Community college student",
-              "Transfer student",
-              "Other",
-            ]}
-          />
-          <Select
-            label="Citizenship / Residency Status"
-            value={scholarship.citizenshipRequirement ?? ""}
-            onChange={(citizenshipRequirement) => updateScholarship({ citizenshipRequirement })}
-            options={[
-              "U.S. Citizen / National",
-              "Permanent Resident",
-              "Refugee / Asylee",
-              "DACA Recipient",
-              "International Student",
-              "Other",
-            ]}
-          />
-          <Select
-            label="Financial Need Requirement"
-            value={scholarship.financialNeedRequirement ?? ""}
-            onChange={(financialNeedRequirement) => updateScholarship({ financialNeedRequirement })}
-            options={["Not specified", "Required", "Preferred", "FAFSA required", "Pell Grant eligible"]}
-          />
-          <Select
-            label="Location / Residency Requirement"
-            value={scholarship.locationRequirement ?? ""}
-            onChange={(locationRequirement) => updateScholarship({ locationRequirement })}
-            options={[
-              "No location restriction",
-              "U.S. resident",
-              "State resident required",
-              "City/county resident required",
-              "Other",
-            ]}
-            className="sm:col-span-2"
-          />
-        </div>
-        <Textarea
-          label="Eligible Majors / Fields of Study"
-          value={scholarship.eligibleMajors ?? ""}
-          onChange={(eligibleMajors) => updateScholarship({ eligibleMajors })}
-          placeholder="Paste major or field-of-study requirements exactly as listed by the scholarship, such as 'Open to all majors,' 'STEM majors only,' or 'Computer Science, Cybersecurity, Information Systems.'"
-          rows={4}
-        />
-        <Textarea
-          label="Other Eligibility Rules"
-          value={scholarship.otherEligibilityRules ?? ""}
-          onChange={(otherEligibilityRules) => updateScholarship({ otherEligibilityRules })}
-          placeholder="Paste any extra eligibility rules that do not fit above, such as leadership, community service, identity-based eligibility, military status, employer affiliation, or special circumstances."
-          rows={4}
-        />
-      </Card>
-
-      <Card>
-        <SectionLabel>Application materials</SectionLabel>
-        <div className="mt-4 grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
-          {requiredMaterialOptions.map((material) => (
-            <label key={material} className="inline-flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-sm">
-              <input
-                type="checkbox"
-                checked={!!scholarship.requiredDocumentTypes?.includes(material)}
-                onChange={(e) => toggleRequiredMaterial(material, e.target.checked)}
-                className="size-4 accent-[oklch(0.32_0.09_270)]"
-              />
-              <span>{material}</span>
-            </label>
-          ))}
-        </div>
-        <Textarea
-          label="Other Required Materials"
-          value={scholarship.otherRequiredMaterials ?? ""}
-          onChange={(otherRequiredMaterials) => updateScholarship({ otherRequiredMaterials })}
-          placeholder="Paste any additional required documents or materials not listed above."
-          rows={4}
-        />
-        <Textarea
-          label="Essay prompt(s)"
-          value={scholarship.essayPrompts ?? ""}
-          onChange={(essayPrompts) => updateScholarship({ essayPrompts })}
-          placeholder="Paste each essay or short-answer prompt here."
-          rows={5}
-        />
-        <Textarea
-          label="Additional notes"
-          value={scholarship.additionalNotes ?? ""}
-          onChange={(additionalNotes) => updateScholarship({ additionalNotes })}
-          placeholder="Optional notes about selection criteria, recommender deadlines, submission portal details, or anything else."
-          rows={3}
-        />
-        <Textarea
-          label="Paste full scholarship text (optional)"
-          value={scholarship.fullText ?? ""}
-          onChange={(fullText) => updateScholarship({ fullText })}
-          placeholder="Optional: paste the full scholarship page text if you want Scholar-E to analyze everything together."
-          rows={6}
-        />
-      </Card>
-
-      <Card className={isReady ? "bg-success/10 border-success/30" : "bg-secondary/40"}>
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="font-medium">{isReady ? "Ready for analysis" : "Add the required scholarship details"}</div>
-            <div className="text-xs text-muted-foreground mt-1">
-              The next analysis will compare these details against your profile.
-            </div>
-          </div>
-          <Pill tone={isReady ? "success" : "warn"}>{isReady ? "ready" : "incomplete"}</Pill>
-        </div>
-      </Card>
-    </div>
-  );
-}
-
-/* ---------------- Step 6: Requirements + Fit combined ---------------- */
-
-const ELIGIBILITY_STATUS_META: Record<
-  string,
-  { label: string; icon: string; row: string; badge: string }
-> = {
-  met: {
-    label: "Met",
-    icon: "✓",
-    row: "border-success/40 bg-success/5",
-    badge: "bg-success/15 text-success",
-  },
-  not_met: {
-    label: "Not met",
-    icon: "✕",
-    row: "border-destructive/50 bg-destructive/10",
-    badge: "bg-destructive/15 text-destructive",
-  },
-  missing: {
-    label: "Needs info",
-    icon: "!",
-    row: "border-warning/50 bg-warning/10",
-    badge: "bg-warning/20 text-foreground",
-  },
-};
-
-function EligibilityMatrixCard({
-  matrix,
+function ScholarshipDetailsCard({
+  scholarship,
+  updateScholarship,
 }: {
-  matrix?: import("@/lib/userStore").EligibilityMatrix;
+  scholarship: ActiveScholarship;
+  updateScholarship: (patch: ActiveScholarship) => void;
 }) {
-  const rows = matrix?.rows ?? [];
-  if (!rows.length) {
-    return (
-      <Card>
-        <div className="text-xs uppercase tracking-widest text-muted-foreground">
-          Requirements comparison matrix
-        </div>
-        <p className="mt-2 text-sm text-muted-foreground">
-          {matrix?.summary ||
-            "Add the scholarship's eligibility rules and required documents in the import step, then run the coach to see how your profile compares."}
-        </p>
-      </Card>
-    );
-  }
-
-  const violations = matrix?.violation_count ?? rows.filter((r) => r.status === "not_met").length;
-  const missing = matrix?.missing_count ?? rows.filter((r) => r.status === "missing").length;
-  const met = matrix?.met_count ?? rows.filter((r) => r.status === "met").length;
-
   return (
     <Card>
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <div className="text-xs uppercase tracking-widest text-muted-foreground">
-            Requirements comparison matrix
-          </div>
-          <p className="text-sm text-muted-foreground mt-1">
-            How your profile compares against every requirement Scholar-E found.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Pill tone="success">{met} met</Pill>
-          {missing > 0 && <Pill tone="warn">{missing} to fill in</Pill>}
-          {violations > 0 && <Pill tone="danger">{violations} not met</Pill>}
-        </div>
+      <SectionLabel>Scholarship details</SectionLabel>
+      <p className="mt-1 text-xs text-muted-foreground">
+        Paste the real opportunity details here to analyzes the information you provide.
+      </p>
+      <div className="mt-4 grid sm:grid-cols-2 gap-3">
+        <Input
+          label="Scholarship link or source"
+          value={scholarship.url ?? ""}
+          onChange={(url) => updateScholarship({ url })}
+          placeholder="https://... or source name"
+          className="sm:col-span-2"
+        />
       </div>
-
-      {(violations > 0 || missing > 0) && (
-        <div
-          className={`mt-4 rounded-xl border p-4 text-sm ${
-            violations > 0
-              ? "border-destructive/40 bg-destructive/10"
-              : "border-warning/40 bg-warning/10"
-          }`}
-        >
-          <div className="font-medium">
-            {violations > 0
-              ? `${violations} requirement${violations > 1 ? "s are" : " is"} not met`
-              : `${missing} requirement${missing > 1 ? "s need" : " needs"} more information`}
-          </div>
-          <p className="mt-1 text-muted-foreground">
-            {violations > 0
-              ? "Review the highlighted rows below — these may make you ineligible unless addressed."
-              : "Fill in the highlighted rows below so Scholar-E can confirm your eligibility."}
-          </p>
-        </div>
-      )}
-
-      <div className="mt-4 space-y-2">
-        {rows.map((row, i) => {
-          const meta = ELIGIBILITY_STATUS_META[row.status ?? "missing"] ?? ELIGIBILITY_STATUS_META.missing;
-          return (
-            <div key={`${row.requirement}-${i}`} className={`rounded-xl border p-3 ${meta.row}`}>
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className={`text-[11px] rounded-full px-2 py-0.5 ${meta.badge}`}>
-                      <span className="font-mono">{meta.icon}</span> {meta.label}
-                    </span>
-                    {row.category && (
-                      <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
-                        {row.category}
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-1.5 text-sm font-medium">{row.requirement}</div>
-                  {row.explanation && (
-                    <div className="text-xs text-muted-foreground mt-0.5">{row.explanation}</div>
-                  )}
-                </div>
-                <div className="shrink-0 text-right">
-                  <div className="text-[10px] uppercase tracking-widest text-muted-foreground">Your profile</div>
-                  <div className="text-sm">{row.student_value || "Not provided"}</div>
-                </div>
-              </div>
-              {row.status !== "met" && row.action_needed && (
-                <div className="mt-2 rounded-lg bg-background/60 border border-border px-3 py-2 text-xs">
-                  <span className="font-medium">What to fill in: </span>
-                  {row.action_needed}
-                </div>
-              )}
-            </div>
-          );
-        })}
+      <Textarea
+        label="Additional notes"
+        value={scholarship.additionalNotes ?? ""}
+        onChange={(additionalNotes) => updateScholarship({ additionalNotes })}
+        placeholder="Optional notes about selection criteria, recommender deadlines, submission portal details, or anything else."
+        rows={3}
+      />
+      <div className="mt-5 flex justify-end">
+        <button className="rounded-full bg-primary text-primary-foreground px-5 py-2.5 text-sm font-medium hover:opacity-90">
+          Analyzing Scholarship Information
+        </button>
       </div>
-
-      {matrix?.summary && (
-        <p className="mt-4 text-sm text-muted-foreground border-t border-border pt-3">
-          {matrix.summary}
-        </p>
-      )}
     </Card>
   );
 }
 
+/* ---------------- Step 4: Requirements + Fit combined ---------------- */
+
 function StepRequirementsAndFit() {
-  const { user } = useUser();
-  const scholarship = user?.activeScholarship;
+  const { user, updateProfile } = useUser();
+  const scholarship = user?.activeScholarship ?? {};
+  const [editingRequirements, setEditingRequirements] = useState(false);
+  const [requirementsDraft, setRequirementsDraft] = useState("");
+  const [fitStatus, setFitStatus] = useState<string | null>(null);
+  function updateScholarship(patch: ActiveScholarship) {
+    updateProfile({ activeScholarship: { ...scholarship, ...patch } });
+  }
   const eligibilitySummary = [
     scholarship?.minimumGpa && `Minimum GPA: ${scholarship.minimumGpa}`,
     scholarship?.enrollmentLevel && `Enrollment level: ${scholarship.enrollmentLevel}`,
@@ -1569,6 +1237,7 @@ function StepRequirementsAndFit() {
     requiredMaterialsSummary && `Required materials:\n${requiredMaterialsSummary}`,
     scholarship?.essayPrompts && `Essay prompt(s): ${scholarship.essayPrompts}`,
   ].filter(Boolean).join("\n\n");
+  const requirementsPreview = scholarship?.requirementsPreview || scholarshipSummary;
   const analysis = user?.lastAnalysis;
   const readiness = analysis?.readiness_index ?? {};
   const dims = Object.entries(readiness)
@@ -1585,112 +1254,171 @@ function StepRequirementsAndFit() {
 
   return (
     <div className="space-y-6">
-      <Card className="bg-secondary/40">
-        <div className="text-sm font-medium">{scholarship?.name || "Scholarship opportunity"}</div>
-        <p className="mt-2 whitespace-pre-wrap text-foreground/90 font-display italic text-lg">
-          "{scholarshipSummary || "Add scholarship requirements in the import step, then run the coach from the essay step."}"
-        </p>
-      </Card>
+      <ScholarshipDetailsCard scholarship={scholarship} updateScholarship={updateScholarship} />
 
-      {!analysis && (
-        <Card>
-          <div className="font-medium">No analysis yet</div>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Run the AI coach from step 8 (Upload Essay Draft) first. Scholar-E will analyze
-            scholarship fit, compare your profile against every requirement, and return readiness
-            scores here.
-          </p>
-        </Card>
-      )}
-
-      {!!analysis && <EligibilityMatrixCard matrix={analysis.eligibility_matrix} />}
-
-      {!!analysis && (
-        <div className="grid md:grid-cols-3 gap-6">
-        <Card className="md:col-span-1 flex flex-col items-center justify-center text-center">
-          <div className="text-xs uppercase tracking-widest text-muted-foreground">Overall fit</div>
-          <div className="relative mt-3 size-44">
-            <svg viewBox="0 0 100 100" className="size-44 -rotate-90">
-              <circle cx="50" cy="50" r="42" stroke="var(--border)" strokeWidth="8" fill="none" />
-              <circle
-                cx="50" cy="50" r="42"
-                stroke="var(--gold)" strokeWidth="8" fill="none" strokeLinecap="round"
-                strokeDasharray={`${(overall / 100) * 2 * Math.PI * 42} 999`}
-              />
-            </svg>
-            <div className="absolute inset-0 grid place-items-center">
-              <div>
-                <div className="font-display text-5xl">{overall}</div>
-                <div className="text-xs text-muted-foreground">/ 100</div>
-              </div>
+      <div>
+        <div className="space-y-6">
+          <Card className="bg-secondary/40">
+            <div className="flex items-start justify-between gap-3">
+              <div className="text-sm font-medium">Scholarship Preview</div>
+              <button
+                type="button"
+                aria-label="Edit scholarship requirements"
+                title="Edit scholarship requirements"
+                onClick={() => {
+                  setRequirementsDraft(requirementsPreview || "");
+                  setEditingRequirements(true);
+                }}
+                className="rounded-full border border-border bg-background px-2.5 py-1 text-xs hover:bg-accent"
+              >
+                ✎
+              </button>
             </div>
-          </div>
-          <Pill tone="success">Strong fit</Pill>
-        </Card>
-
-        <Card className="md:col-span-2">
-          <div className="text-xs uppercase tracking-widest text-muted-foreground">Dimension breakdown</div>
-          <div className="mt-4 space-y-4">
-            {dims.map((d) => (
-              <div key={d.name}>
-                <div className="flex items-baseline justify-between text-sm">
-                  <span className="font-medium">{d.name}</span>
-                  <span className="font-mono text-xs">{d.score}/100</span>
+            {editingRequirements ? (
+              <div className="mt-3 space-y-3">
+                <Textarea
+                  label="Scholarship requirements"
+                  value={requirementsDraft}
+                  onChange={setRequirementsDraft}
+                  placeholder="Edit or add extracted scholarship requirements here."
+                  rows={8}
+                />
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setEditingRequirements(false)}
+                    className="rounded-full border border-border bg-background px-4 py-2 text-sm hover:bg-accent"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      updateScholarship({ requirementsPreview: requirementsDraft });
+                      setEditingRequirements(false);
+                    }}
+                    className="rounded-full bg-primary text-primary-foreground px-4 py-2 text-sm font-medium hover:opacity-90"
+                  >
+                    Save
+                  </button>
                 </div>
-                <div className="mt-1.5 h-1.5 rounded-full bg-secondary overflow-hidden">
-                  <div className="h-full bg-gold transition-all" style={{ width: `${d.score}%` }} />
-                </div>
-                <div className="text-xs text-muted-foreground mt-1">{d.note}</div>
               </div>
-            ))}
-          </div>
-        </Card>
+            ) : (
+              <p className="mt-2 whitespace-pre-wrap text-foreground/90 font-display italic text-lg">
+                "{requirementsPreview || "Add scholarship details above, then run the coach from the essay step."}"
+              </p>
+            )}
+            <div className="mt-5 flex justify-end">
+              <CoachRunButton
+                label="Accept and Analyze Fit"
+                loadingLabel="Analyzing fit…"
+                fitOnly
+                onStatus={setFitStatus}
+                className="rounded-full bg-primary text-primary-foreground px-5 py-2.5 text-sm font-medium hover:opacity-90 disabled:opacity-40"
+              />
+            </div>
+            {fitStatus && <p className="mt-3 text-xs text-muted-foreground text-right">{fitStatus}</p>}
+          </Card>
+
+          {!analysis && (
+            <Card>
+              <div className="font-medium">No analysis yet</div>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Run the AI coach from step 8 (Upload Essay Draft) first. Scholar-E will analyze
+                scholarship fit, compare your profile against every requirement, and return readiness
+                scores here.
+              </p>
+            </Card>
+          )}
+
+          {!!analysis && (
+            <div className="grid md:grid-cols-3 gap-6">
+              <Card className="md:col-span-1 flex flex-col items-center justify-center text-center">
+                <div className="text-xs uppercase tracking-widest text-muted-foreground">Overall fit</div>
+                <div className="relative mt-3 size-44">
+                  <svg viewBox="0 0 100 100" className="size-44 -rotate-90">
+                    <circle cx="50" cy="50" r="42" stroke="var(--border)" strokeWidth="8" fill="none" />
+                    <circle
+                      cx="50" cy="50" r="42"
+                      stroke="var(--gold)" strokeWidth="8" fill="none" strokeLinecap="round"
+                      strokeDasharray={`${(overall / 100) * 2 * Math.PI * 42} 999`}
+                    />
+                  </svg>
+                  <div className="absolute inset-0 grid place-items-center">
+                    <div>
+                      <div className="font-display text-5xl">{overall}</div>
+                      <div className="text-xs text-muted-foreground">/ 100</div>
+                    </div>
+                  </div>
+                </div>
+                <Pill tone="success">Strong fit</Pill>
+              </Card>
+
+              <Card className="md:col-span-2">
+                <div className="text-xs uppercase tracking-widest text-muted-foreground">Dimension breakdown</div>
+                <div className="mt-4 space-y-4">
+                  {dims.map((d) => (
+                    <div key={d.name}>
+                      <div className="flex items-baseline justify-between text-sm">
+                        <span className="font-medium">{d.name}</span>
+                        <span className="font-mono text-xs">{d.score}/100</span>
+                      </div>
+                      <div className="mt-1.5 h-1.5 rounded-full bg-secondary overflow-hidden">
+                        <div className="h-full bg-gold transition-all" style={{ width: `${d.score}%` }} />
+                      </div>
+                      <div className="text-xs text-muted-foreground mt-1">{d.note}</div>
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            </div>
+          )}
+
+          {!!analysis && Object.keys(opportunityAnalysis).length > 0 && (
+            <Card>
+              <div className="text-xs uppercase tracking-widest text-muted-foreground">Backend opportunity analysis</div>
+              <div className="mt-4 grid sm:grid-cols-2 gap-4 text-sm">
+                {!!opportunityAnalysis.opportunity_type && (
+                  <div>
+                    <div className="text-xs text-muted-foreground">Type</div>
+                    <div className="font-medium">{String(opportunityAnalysis.opportunity_type)}</div>
+                  </div>
+                )}
+                {Array.isArray(opportunityAnalysis.deadlines) && opportunityAnalysis.deadlines.length > 0 && (
+                  <div>
+                    <div className="text-xs text-muted-foreground">Deadlines</div>
+                    <ul className="mt-1 list-disc pl-4 space-y-0.5">
+                      {(opportunityAnalysis.deadlines as string[]).map((d) => (
+                        <li key={d}>{d}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {Array.isArray(opportunityAnalysis.requirements) && opportunityAnalysis.requirements.length > 0 && (
+                  <div className="sm:col-span-2">
+                    <div className="text-xs text-muted-foreground">Requirements</div>
+                    <ul className="mt-1 list-disc pl-4 space-y-0.5">
+                      {(opportunityAnalysis.requirements as string[]).map((r) => (
+                        <li key={r}>{r}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {Array.isArray(opportunityAnalysis.evaluation_themes) && opportunityAnalysis.evaluation_themes.length > 0 && (
+                  <div className="sm:col-span-2">
+                    <div className="text-xs text-muted-foreground">Evaluation themes</div>
+                    <ul className="mt-1 list-disc pl-4 space-y-0.5">
+                      {(opportunityAnalysis.evaluation_themes as string[]).map((t) => (
+                        <li key={t}>{t}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            </Card>
+          )}
         </div>
-      )}
-
-      {!!analysis && Object.keys(opportunityAnalysis).length > 0 && (
-        <Card>
-          <div className="text-xs uppercase tracking-widest text-muted-foreground">Backend opportunity analysis</div>
-          <div className="mt-4 grid sm:grid-cols-2 gap-4 text-sm">
-            {!!opportunityAnalysis.opportunity_type && (
-              <div>
-                <div className="text-xs text-muted-foreground">Type</div>
-                <div className="font-medium">{String(opportunityAnalysis.opportunity_type)}</div>
-              </div>
-            )}
-            {Array.isArray(opportunityAnalysis.deadlines) && opportunityAnalysis.deadlines.length > 0 && (
-              <div>
-                <div className="text-xs text-muted-foreground">Deadlines</div>
-                <ul className="mt-1 list-disc pl-4 space-y-0.5">
-                  {(opportunityAnalysis.deadlines as string[]).map((d) => (
-                    <li key={d}>{d}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {Array.isArray(opportunityAnalysis.requirements) && opportunityAnalysis.requirements.length > 0 && (
-              <div className="sm:col-span-2">
-                <div className="text-xs text-muted-foreground">Requirements</div>
-                <ul className="mt-1 list-disc pl-4 space-y-0.5">
-                  {(opportunityAnalysis.requirements as string[]).map((r) => (
-                    <li key={r}>{r}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {Array.isArray(opportunityAnalysis.evaluation_themes) && opportunityAnalysis.evaluation_themes.length > 0 && (
-              <div className="sm:col-span-2">
-                <div className="text-xs text-muted-foreground">Evaluation themes</div>
-                <ul className="mt-1 list-disc pl-4 space-y-0.5">
-                  {(opportunityAnalysis.evaluation_themes as string[]).map((t) => (
-                    <li key={t}>{t}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </div>
-        </Card>
-      )}
+      </div>
     </div>
   );
 }
