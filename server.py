@@ -9,8 +9,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.routes import (
     AnalyzeRequest,
+    FitAnalyzeRequest,
     OpportunityExtractRequest,
     analyze_application,
+    analyze_scholarship_fit,
     autofill_profile_from_resume,
     extract_scholarship_opportunity,
 )
@@ -55,6 +57,16 @@ async def autofill_resume(file: UploadFile = File(...)):
 def extract_opportunity(request: OpportunityExtractRequest):
     try:
         return extract_scholarship_opportunity(request)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/fit/analyze")
+def analyze_fit(request: FitAnalyzeRequest):
+    try:
+        return analyze_scholarship_fit(request)
     except HTTPException:
         raise
     except Exception as exc:

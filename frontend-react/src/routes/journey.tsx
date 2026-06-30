@@ -4,7 +4,12 @@ import { FileUp, PencilLine } from "lucide-react";
 import { journeySteps } from "@/lib/persona";
 import { loadExampleProfile } from "@/lib/loadExample";
 import { CoachRunButton } from "@/components/CoachRunButton";
-import { autofillProfileFromResume, extractScholarshipOpportunity } from "@/lib/api/scholarE";
+import {
+  analyzeScholarshipFit,
+  autofillProfileFromResume,
+  buildFitPayload,
+  extractScholarshipOpportunity,
+} from "@/lib/api/scholarE";
 import {
   useUser,
   initials as toInitials,
@@ -366,6 +371,21 @@ function FieldRow({ label, value }: { label: string; value: React.ReactNode }) {
     <div className="flex items-baseline justify-between gap-4 py-2 border-b border-border last:border-0">
       <div className="text-sm text-muted-foreground">{label}</div>
       <div className="text-sm text-foreground text-right">{value}</div>
+    </div>
+  );
+}
+
+function FitList({ title, items }: { title: string; items?: string[] }) {
+  return (
+    <div>
+      <div className="text-xs uppercase tracking-widest text-muted-foreground">{title}</div>
+      {items?.length ? (
+        <ul className="mt-3 list-disc pl-5 text-sm space-y-1">
+          {items.map((item) => <li key={item}>{item}</li>)}
+        </ul>
+      ) : (
+        <p className="mt-3 text-sm text-muted-foreground">No items reported.</p>
+      )}
     </div>
   );
 }
@@ -1445,11 +1465,19 @@ function EditableScholarshipFields({
           rows={5}
         />
         <Textarea
-          label="Missing information"
-          value={listValue(scholarship.missingInformation)}
-          onChange={(value) => updateScholarship({ missingInformation: parseList(value) })}
+          label="Important notes"
+          value={listValue(scholarship.importantNotes)}
+          onChange={(value) => updateScholarship({ importantNotes: parseList(value) })}
           rows={4}
         />
+        {!!scholarship.missingInformation?.length && (
+          <Textarea
+            label="Missing information"
+            value={listValue(scholarship.missingInformation)}
+            onChange={(value) => updateScholarship({ missingInformation: parseList(value) })}
+            rows={4}
+          />
+        )}
       </div>
     </Card>
   );
@@ -1460,9 +1488,8 @@ function EditableScholarshipFields({
 function StepRequirementsAndFit() {
   const { user, updateProfile } = useUser();
   const scholarship = user?.activeScholarship ?? {};
-  const [editingRequirements, setEditingRequirements] = useState(false);
-  const [requirementsDraft, setRequirementsDraft] = useState("");
   const [fitStatus, setFitStatus] = useState<string | null>(null);
+  const [fitAnalyzing, setFitAnalyzing] = useState(false);
   const [extracting, setExtracting] = useState(false);
   const [extractionStatus, setExtractionStatus] = useState<string | null>(null);
   const [extractionError, setExtractionError] = useState<string | null>(null);
@@ -1486,7 +1513,6 @@ function StepRequirementsAndFit() {
         name: extracted.name || scholarship.name,
         extractionCompletedAt: new Date().toISOString(),
       });
-      setRequirementsDraft(extracted.requirementsPreview ?? "");
       setExtractionStatus("Requirements extracted. Review and edit the fields below.");
     } catch (err) {
       setExtractionError(err instanceof Error ? err.message : "Scholarship extraction failed.");
@@ -1495,41 +1521,24 @@ function StepRequirementsAndFit() {
       setExtracting(false);
     }
   }
-  const eligibilitySummary = [
-    scholarship?.minimumGpa && `Minimum GPA: ${scholarship.minimumGpa}`,
-    scholarship?.enrollmentLevel && `Enrollment level: ${scholarship.enrollmentLevel}`,
-    scholarship?.citizenshipRequirement && `Citizenship/residency: ${scholarship.citizenshipRequirement}`,
-    scholarship?.financialNeedRequirement && `Financial need: ${scholarship.financialNeedRequirement}`,
-    scholarship?.locationRequirement && `Location/residency: ${scholarship.locationRequirement}`,
-    scholarship?.eligibleMajors && `Eligible majors/fields: ${scholarship.eligibleMajors}`,
-    scholarship?.otherEligibilityRules && `Other rules: ${scholarship.otherEligibilityRules}`,
-  ].filter(Boolean).join("\n");
-  const requiredMaterialsSummary = [
-    scholarship?.requiredDocumentTypes?.length && scholarship.requiredDocumentTypes.join(", "),
-    scholarship?.otherRequiredMaterials && `Other: ${scholarship.otherRequiredMaterials}`,
-  ].filter(Boolean).join("\n");
-  const scholarshipSummary = [
-    scholarship?.awardAmount && `Award amount: ${scholarship.awardAmount}`,
-    scholarship?.applicationDeadline && `Deadline: ${scholarship.applicationDeadline}`,
-    scholarship?.description,
-    eligibilitySummary && `Eligibility:\n${eligibilitySummary}`,
-    requiredMaterialsSummary && `Required materials:\n${requiredMaterialsSummary}`,
-    scholarship?.essayPrompts && `Essay prompt(s): ${scholarship.essayPrompts}`,
-  ].filter(Boolean).join("\n\n");
-  const requirementsPreview = scholarship?.requirementsPreview || scholarshipSummary;
-  const analysis = user?.lastAnalysis;
-  const readiness = analysis?.readiness_index ?? {};
-  const dims = Object.entries(readiness)
-    .filter(([, d]) => typeof d?.score === "number")
-    .map(([key, d]) => ({
-      name: key.replace(/_/g, " "),
-      score: d.score ?? 0,
-      note: d.coaching || d.level || "Reviewed by Scholar-E.",
-    }));
-  const overall = dims.length
-    ? Math.round(dims.reduce((a, d) => a + d.score, 0) / dims.length)
-    : 0;
-  const opportunityAnalysis = analysis?.opportunity_analysis ?? {};
+  async function runFitAnalysis() {
+    if (!scholarship.extractionCompletedAt) {
+      setFitStatus("Extract and review scholarship requirements before analyzing fit.");
+      return;
+    }
+    setFitAnalyzing(true);
+    setFitStatus("Analyzing fit...");
+    try {
+      const result = await analyzeScholarshipFit(buildFitPayload(user));
+      updateProfile({ fitAnalysis: result });
+      setFitStatus("Fit analysis complete. Review the results below.");
+    } catch (err) {
+      setFitStatus(err instanceof Error ? err.message : "Scholarship fit analysis failed.");
+    } finally {
+      setFitAnalyzing(false);
+    }
+  }
+  const fitAnalysis = user?.fitAnalysis;
 
   return (
     <div className="space-y-6">
@@ -1547,163 +1556,130 @@ function StepRequirementsAndFit() {
       <div>
         <div className="space-y-6">
           <Card className="bg-secondary/40">
-            <div className="flex items-start justify-between gap-3">
-              <div className="text-sm font-medium">Scholarship Preview</div>
+            <div className="flex justify-end">
               <button
                 type="button"
-                aria-label="Edit scholarship requirements"
-                title="Edit scholarship requirements"
-                onClick={() => {
-                  setRequirementsDraft(requirementsPreview || "");
-                  setEditingRequirements(true);
-                }}
-                className="rounded-full border border-border bg-background px-2.5 py-1 text-xs hover:bg-accent"
-              >
-                ✎
-              </button>
-            </div>
-            {editingRequirements ? (
-              <div className="mt-3 space-y-3">
-                <Textarea
-                  label="Scholarship requirements"
-                  value={requirementsDraft}
-                  onChange={setRequirementsDraft}
-                  placeholder="Edit or add extracted scholarship requirements here."
-                  rows={8}
-                />
-                <div className="flex justify-end gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setEditingRequirements(false)}
-                    className="rounded-full border border-border bg-background px-4 py-2 text-sm hover:bg-accent"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      updateScholarship({ requirementsPreview: requirementsDraft });
-                      setEditingRequirements(false);
-                    }}
-                    className="rounded-full bg-primary text-primary-foreground px-4 py-2 text-sm font-medium hover:opacity-90"
-                  >
-                    Save
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <p className="mt-2 whitespace-pre-wrap text-foreground/90 font-display italic text-lg">
-                "{requirementsPreview || "Add scholarship details above, then run the coach from the essay step."}"
-              </p>
-            )}
-            <div className="mt-5 flex justify-end">
-              <CoachRunButton
-                label="Accept and Analyze Fit"
-                loadingLabel="Analyzing fit…"
-                fitOnly
-                onStatus={setFitStatus}
+                onClick={runFitAnalysis}
+                disabled={fitAnalyzing}
                 className="rounded-full bg-primary text-primary-foreground px-5 py-2.5 text-sm font-medium hover:opacity-90 disabled:opacity-40"
-              />
+              >
+                {fitAnalyzing ? "Analyzing fit..." : "Accept and Analyze Fit"}
+              </button>
             </div>
             {fitStatus && <p className="mt-3 text-xs text-muted-foreground text-right">{fitStatus}</p>}
           </Card>
 
-          {!analysis && (
+          {!fitAnalysis && (
             <Card>
               <div className="font-medium">No analysis yet</div>
               <p className="mt-1 text-sm text-muted-foreground">
-                Run the AI coach from step 8 (Upload Essay Draft) first. Scholar-E will analyze
-                scholarship fit, compare your profile against every requirement, and return readiness
-                scores here.
+                Extract and review scholarship requirements, then use Accept and Analyze Fit.
+                Scholar-E will compare your profile against the cleaned scholarship requirements.
               </p>
             </Card>
           )}
 
-          {!!analysis && (
+          {!!fitAnalysis && (
             <div className="grid md:grid-cols-3 gap-6">
               <Card className="md:col-span-1 flex flex-col items-center justify-center text-center">
-                <div className="text-xs uppercase tracking-widest text-muted-foreground">Overall fit</div>
+                <div className="text-xs uppercase tracking-widest text-muted-foreground">Fit score</div>
                 <div className="relative mt-3 size-44">
                   <svg viewBox="0 0 100 100" className="size-44 -rotate-90">
                     <circle cx="50" cy="50" r="42" stroke="var(--border)" strokeWidth="8" fill="none" />
                     <circle
-                      cx="50" cy="50" r="42"
-                      stroke="var(--gold)" strokeWidth="8" fill="none" strokeLinecap="round"
-                      strokeDasharray={`${(overall / 100) * 2 * Math.PI * 42} 999`}
+                      cx="50"
+                      cy="50"
+                      r="42"
+                      stroke="var(--gold)"
+                      strokeWidth="8"
+                      fill="none"
+                      strokeLinecap="round"
+                      strokeDasharray={`${((fitAnalysis.fit_score ?? 0) / 100) * 2 * Math.PI * 42} 999`}
                     />
                   </svg>
                   <div className="absolute inset-0 grid place-items-center">
                     <div>
-                      <div className="font-display text-5xl">{overall}</div>
+                      <div className="font-display text-5xl">{fitAnalysis.fit_score ?? 0}</div>
                       <div className="text-xs text-muted-foreground">/ 100</div>
                     </div>
                   </div>
                 </div>
-                <Pill tone="success">Strong fit</Pill>
+                <Pill tone={fitAnalysis.likely_eligible === "No" ? "danger" : fitAnalysis.likely_eligible === "Yes" ? "success" : "gold"}>
+                  {fitAnalysis.fit_label || "Insufficient Information"}
+                </Pill>
+                <div className="mt-3 text-xs text-muted-foreground">
+                  Likely eligible: {fitAnalysis.likely_eligible || "Unclear"}
+                </div>
               </Card>
 
               <Card className="md:col-span-2">
-                <div className="text-xs uppercase tracking-widest text-muted-foreground">Dimension breakdown</div>
-                <div className="mt-4 space-y-4">
-                  {dims.map((d) => (
-                    <div key={d.name}>
-                      <div className="flex items-baseline justify-between text-sm">
-                        <span className="font-medium">{d.name}</span>
-                        <span className="font-mono text-xs">{d.score}/100</span>
-                      </div>
-                      <div className="mt-1.5 h-1.5 rounded-full bg-secondary overflow-hidden">
-                        <div className="h-full bg-gold transition-all" style={{ width: `${d.score}%` }} />
-                      </div>
-                      <div className="text-xs text-muted-foreground mt-1">{d.note}</div>
+                <div className="text-xs uppercase tracking-widest text-muted-foreground">Fit summary</div>
+                <p className="mt-3 text-sm leading-relaxed">{fitAnalysis.summary}</p>
+
+                {!!fitAnalysis.eligibility_analysis?.length && (
+                  <div className="mt-5">
+                    <div className="text-xs uppercase tracking-widest text-muted-foreground">Eligibility checks</div>
+                    <div className="mt-3 space-y-3">
+                      {fitAnalysis.eligibility_analysis.map((item, index) => (
+                        <div key={`${item.requirement}-${index}`} className="rounded-lg border border-border p-3 text-sm">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="font-medium">{item.requirement}</div>
+                            <Pill tone={item.status === "Met" ? "success" : item.status === "Not met" ? "danger" : "gold"}>
+                              {item.status || "Unclear"}
+                            </Pill>
+                          </div>
+                          <div className="mt-2 text-xs text-muted-foreground">{item.student_evidence}</div>
+                          <div className="mt-1 text-xs">{item.explanation}</div>
+                        </div>
+                      ))}
                     </div>
-                  ))}
+                  </div>
+                )}
+              </Card>
+
+              <Card className="md:col-span-3">
+                <div className="grid md:grid-cols-2 gap-6">
+                  <FitList title="Strengths" items={fitAnalysis.strengths} />
+                  <FitList title="Gaps or risks" items={fitAnalysis.gaps_or_risks} />
+                  <FitList title="Missing student information" items={fitAnalysis.missing_student_information} />
+                  <FitList title="Recommended next steps" items={fitAnalysis.recommended_next_steps} />
                 </div>
               </Card>
-            </div>
-          )}
 
-          {!!analysis && Object.keys(opportunityAnalysis).length > 0 && (
-            <Card>
-              <div className="text-xs uppercase tracking-widest text-muted-foreground">Backend opportunity analysis</div>
-              <div className="mt-4 grid sm:grid-cols-2 gap-4 text-sm">
-                {!!opportunityAnalysis.opportunity_type && (
-                  <div>
-                    <div className="text-xs text-muted-foreground">Type</div>
-                    <div className="font-medium">{String(opportunityAnalysis.opportunity_type)}</div>
+              {!!fitAnalysis.application_materials_check?.length && (
+                <Card className="md:col-span-3">
+                  <div className="text-xs uppercase tracking-widest text-muted-foreground">Application materials</div>
+                  <div className="mt-3 grid md:grid-cols-2 gap-3">
+                    {fitAnalysis.application_materials_check.map((item, index) => (
+                      <div key={`${item.material}-${index}`} className="rounded-lg border border-border p-3 text-sm">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="font-medium">{item.material}</div>
+                          <Pill tone={item.status === "Ready" ? "success" : item.status === "Missing" ? "danger" : "gold"}>
+                            {item.status || "Need to confirm"}
+                          </Pill>
+                        </div>
+                        {item.notes && <div className="mt-2 text-xs text-muted-foreground">{item.notes}</div>}
+                      </div>
+                    ))}
                   </div>
-                )}
-                {Array.isArray(opportunityAnalysis.deadlines) && opportunityAnalysis.deadlines.length > 0 && (
-                  <div>
-                    <div className="text-xs text-muted-foreground">Deadlines</div>
-                    <ul className="mt-1 list-disc pl-4 space-y-0.5">
-                      {(opportunityAnalysis.deadlines as string[]).map((d) => (
-                        <li key={d}>{d}</li>
-                      ))}
-                    </ul>
+                </Card>
+              )}
+
+              {!!fitAnalysis.selection_criteria_alignment?.length && (
+                <Card className="md:col-span-3">
+                  <div className="text-xs uppercase tracking-widest text-muted-foreground">Selection criteria alignment</div>
+                  <div className="mt-3 grid md:grid-cols-2 gap-3">
+                    {fitAnalysis.selection_criteria_alignment.map((item, index) => (
+                      <div key={`${item.criterion}-${index}`} className="rounded-lg border border-border p-3 text-sm">
+                        <div className="font-medium">{item.criterion}</div>
+                        <div className="mt-1 text-xs text-muted-foreground">{item.alignment}: {item.student_evidence}</div>
+                        {item.notes && <div className="mt-1 text-xs">{item.notes}</div>}
+                      </div>
+                    ))}
                   </div>
-                )}
-                {Array.isArray(opportunityAnalysis.requirements) && opportunityAnalysis.requirements.length > 0 && (
-                  <div className="sm:col-span-2">
-                    <div className="text-xs text-muted-foreground">Requirements</div>
-                    <ul className="mt-1 list-disc pl-4 space-y-0.5">
-                      {(opportunityAnalysis.requirements as string[]).map((r) => (
-                        <li key={r}>{r}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {Array.isArray(opportunityAnalysis.evaluation_themes) && opportunityAnalysis.evaluation_themes.length > 0 && (
-                  <div className="sm:col-span-2">
-                    <div className="text-xs text-muted-foreground">Evaluation themes</div>
-                    <ul className="mt-1 list-disc pl-4 space-y-0.5">
-                      {(opportunityAnalysis.evaluation_themes as string[]).map((t) => (
-                        <li key={t}>{t}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </div>
-            </Card>
+                </Card>
+              )}
+            </div>
           )}
         </div>
       </div>

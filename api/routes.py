@@ -21,6 +21,7 @@ from fastapi import HTTPException, UploadFile
 from config import settings
 from rag.store import ChromaStore
 from graph.builder import build_application_graph
+from graph.fit_builder import build_fit_analysis_graph
 from graph.opportunity_builder import build_opportunity_extraction_graph
 from graph.profile_builder import build_profile_extraction_graph
 
@@ -84,10 +85,31 @@ class OpportunityExtractResponse(BaseModel):
     selectionCriteria: list[str] = Field(default_factory=list)
     applicationProcess: list[str] = Field(default_factory=list)
     missingInformation: list[str] = Field(default_factory=list)
+    importantNotes: list[str] = Field(default_factory=list)
     requirements: list[dict] = Field(default_factory=list)
     requirementsPreview: str = ""
     fullText: str = ""
     sourceUrls: list[str] = Field(default_factory=list)
+
+
+class FitAnalyzeRequest(BaseModel):
+    scholarship_record: dict = Field(default_factory=dict)
+    student_profile: dict = Field(default_factory=dict)
+
+
+class FitAnalyzeResponse(BaseModel):
+    scholarship_name: str = ""
+    fit_label: str = ""
+    fit_score: int = 0
+    likely_eligible: str = ""
+    summary: str = ""
+    eligibility_analysis: list[dict] = Field(default_factory=list)
+    strengths: list[str] = Field(default_factory=list)
+    gaps_or_risks: list[str] = Field(default_factory=list)
+    missing_student_information: list[str] = Field(default_factory=list)
+    application_materials_check: list[dict] = Field(default_factory=list)
+    selection_criteria_alignment: list[dict] = Field(default_factory=list)
+    recommended_next_steps: list[str] = Field(default_factory=list)
 
 
 def _text_to_chunks(text: str, source: str) -> list:
@@ -401,6 +423,40 @@ def extract_scholarship_opportunity(request: OpportunityExtractRequest) -> dict:
         }
     )
     response = OpportunityExtractResponse(**result)
+    if hasattr(response, "model_dump"):
+        return response.model_dump()
+    return response.dict()
+
+
+def analyze_scholarship_fit(request: FitAnalyzeRequest) -> dict:
+    if not settings.openai_api_key:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Missing OPENAI_API_KEY. Add a .env file in the project root "
+                "with OPENAI_API_KEY=your_key, then restart the server."
+            ),
+        )
+
+    if not request.scholarship_record:
+        raise HTTPException(
+            status_code=400,
+            detail="Extract and review scholarship requirements before analyzing fit.",
+        )
+    if not request.student_profile:
+        raise HTTPException(
+            status_code=400,
+            detail="Create a student profile before analyzing fit.",
+        )
+
+    graph = build_fit_analysis_graph()
+    result = graph.invoke(
+        {
+            "scholarship_record": request.scholarship_record,
+            "student_profile": request.student_profile,
+        }
+    )
+    response = FitAnalyzeResponse(**result)
     if hasattr(response, "model_dump"):
         return response.model_dump()
     return response.dict()

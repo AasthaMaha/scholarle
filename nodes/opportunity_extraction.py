@@ -37,6 +37,28 @@ class ExtractedOpportunity(BaseModel):
     fullText: str = Field(description='Relevant source excerpt or condensed source text used for extraction.')
 
 
+class CleanedOpportunity(BaseModel):
+    scholarship_name: str = Field(description="Clean scholarship name, or empty string.")
+    organization: str = Field(description="Sponsoring organization, or empty string.")
+    type: str = Field(description="Short opportunity type, or empty string.")
+    official_website: str = Field(description="Official website URL, or empty string.")
+    country_or_region: str = Field(description="Country or region, or empty string.")
+    award: str = Field(description="Funding amount or main award summary, or empty string.")
+    application_status: str = Field(description="Open, closed, rolling, upcoming, or empty string.")
+    application_opens: str = Field(description="Opening date/window, or empty string.")
+    application_deadline: str = Field(description="Deadline, or empty string.")
+    notification_date: str = Field(description="Notification date/window, or empty string.")
+    program_start: str = Field(description="Program start date/window, or empty string.")
+    program_end: str = Field(description="Program end date/window, or empty string.")
+    description: str = Field(description="One concise factual description, or empty string.")
+    eligibility_requirements: list[str] = Field(description="Applicant requirements only.")
+    required_materials: list[str] = Field(description="Required submissions/materials only.")
+    benefits: list[str] = Field(description="What the award provides.")
+    selection_criteria: list[str] = Field(description="Evaluation criteria only when explicitly stated.")
+    application_process: list[str] = Field(description="Clear application steps.")
+    important_notes: list[str] = Field(description="Useful special details that do not fit elsewhere.")
+
+
 def _model_dump(value):
     if hasattr(value, "model_dump"):
         return value.model_dump()
@@ -89,6 +111,36 @@ def _clean_list(values):
           cleaned.append(value)
           seen.add(key)
     return cleaned or ["Not stated"]
+
+
+def _is_emptyish(value):
+    return str(value or "").strip().lower() in {
+        "",
+        "not stated",
+        "unknown",
+        "n/a",
+        "not available",
+        "none",
+        "not clearly stated",
+    }
+
+
+def _blank_not_stated(value):
+    return "" if _is_emptyish(value) else str(value).strip()
+
+
+def _clean_optional_list(values):
+    cleaned = []
+    seen = set()
+    for item in values or []:
+        value = str(item or "").strip()
+        if _is_emptyish(value):
+            continue
+        key = value.lower()
+        if key not in seen:
+            cleaned.append(value)
+            seen.add(key)
+    return cleaned
 
 
 def _preview(data):
@@ -194,3 +246,249 @@ def clean_opportunity_fields(state):
     }
 
     return cleaned
+
+
+def _clean_record_preview(data):
+    sections = []
+
+    info_lines = []
+    if data.get("name"):
+        info_lines.append(f"Name: {data['name']}")
+    if data.get("organization"):
+        info_lines.append(f"Organization: {data['organization']}")
+    if data.get("type"):
+        info_lines.append(f"Type: {data['type']}")
+    if data.get("country"):
+        info_lines.append(f"Country/Region: {data['country']}")
+    if data.get("officialWebsite") or data.get("url"):
+        info_lines.append(f"Official Website: {data.get('officialWebsite') or data.get('url')}")
+    if info_lines:
+        sections.append("# Scholarship Information\n" + "\n".join(info_lines))
+
+    timeline_lines = []
+    if data.get("applicationOpens"):
+        timeline_lines.append(f"Application Opens: {data['applicationOpens']}")
+    if data.get("applicationDeadline"):
+        timeline_lines.append(f"Application Deadline: {data['applicationDeadline']}")
+    if data.get("notificationDate"):
+        timeline_lines.append(f"Notification Date: {data['notificationDate']}")
+    if data.get("programStart"):
+        timeline_lines.append(f"Program Start: {data['programStart']}")
+    if data.get("programEnd"):
+        timeline_lines.append(f"Program End: {data['programEnd']}")
+    if data.get("currentStatus"):
+        timeline_lines.append(f"Status: {data['currentStatus']}")
+    if timeline_lines:
+        sections.append("# Timeline\n" + "\n".join(timeline_lines))
+
+    if data.get("description"):
+        sections.append("# Description\n" + data["description"])
+
+    def add_list(title, values, numbered=False):
+        items = _clean_optional_list(values)
+        if not items:
+            return
+        if numbered:
+            body = "\n".join(f"{index + 1}. {item}" for index, item in enumerate(items))
+        else:
+            body = "\n".join(f"- {item}" for item in items)
+        sections.append(f"# {title}\n{body}")
+
+    add_list("Eligibility Requirements", data.get("eligibilityRequirements"))
+    add_list("Required Application Materials", data.get("requiredApplicationMaterials"))
+    add_list("Benefits", data.get("benefits"))
+    add_list("Selection Criteria", data.get("selectionCriteria"))
+    add_list("Application Process", data.get("applicationProcess"), numbered=True)
+    add_list("Important Notes", data.get("importantNotes"))
+
+    return "\n\n".join(sections)
+
+
+def _norm(value):
+    return " ".join(str(value or "").lower().split())
+
+
+def _is_material_like(value):
+    text = _norm(value)
+    material_words = {
+        "essay",
+        "transcript",
+        "resume",
+        "cv",
+        "recommendation",
+        "letter",
+        "portfolio",
+        "application form",
+        "form",
+        "passport",
+        "identification",
+        "id",
+        "test scores",
+        "proposal",
+        "statement",
+        "registration",
+        "register",
+    }
+    action_words = {"submit", "submission", "upload", "provide", "attach", "complete", "register"}
+    return any(word in text for word in material_words) or any(word in text for word in action_words)
+
+
+def _is_selection_like(value):
+    text = _norm(value)
+    selection_words = {
+        "selected based",
+        "evaluated",
+        "judged",
+        "selection",
+        "criteria",
+        "academic merit",
+        "academic excellence",
+        "leadership",
+        "community service",
+        "research potential",
+        "financial need",
+        "innovation",
+        "entrepreneurship",
+        "essay quality",
+    }
+    return any(word in text for word in selection_words)
+
+
+def _without_duplicates_or_materials(values, material_values):
+    material_keys = {_norm(value) for value in material_values}
+    cleaned = []
+    seen = set()
+    for value in values:
+        key = _norm(value)
+        if not key or key in seen or key in material_keys or _is_material_like(value):
+            continue
+        cleaned.append(value)
+        seen.add(key)
+    return cleaned
+
+
+def _final_sanitize(mapped):
+    materials = _clean_optional_list(mapped.get("requiredApplicationMaterials"))
+    mapped["eligibilityRequirements"] = _without_duplicates_or_materials(
+        mapped.get("eligibilityRequirements") or [],
+        materials,
+    )
+
+    mapped["selectionCriteria"] = [
+        item
+        for item in _clean_optional_list(mapped.get("selectionCriteria"))
+        if _is_selection_like(item) and not _is_material_like(item)
+    ]
+
+    notes = _clean_optional_list(mapped.get("importantNotes"))
+    benefit_text = " ".join(mapped.get("benefits") or [])
+    description_text = mapped.get("description") or ""
+    timeline_text = " ".join([
+        mapped.get("applicationOpens") or "",
+        mapped.get("currentStatus") or "",
+        description_text,
+    ])
+
+    if "spring" in _norm(benefit_text + " " + description_text) and "fall" in _norm(benefit_text + " " + description_text):
+        notes.append("Awards are offered each semester in spring and fall.")
+    if "year-round" in _norm(timeline_text) or "year round" in _norm(timeline_text):
+        notes.append("Applications are accepted year-round.")
+        if mapped.get("currentStatus") in {"Open", "Rolling"}:
+            mapped["currentStatus"] = "Open year-round"
+
+    mapped["importantNotes"] = _clean_optional_list(notes)
+    mapped["missingInformation"] = []
+    mapped["requirements"] = [
+        {"category": "Eligibility", "requirement": item, "source": mapped["url"]}
+        for item in mapped["eligibilityRequirements"]
+    ]
+    mapped["requirementsPreview"] = _clean_record_preview(mapped)
+    return mapped
+
+
+def clean_scholarship_output(state):
+    snapshot = {
+        "name": state.get("name", ""),
+        "organization": state.get("organization", ""),
+        "type": state.get("type", ""),
+        "country": state.get("country", ""),
+        "officialWebsite": state.get("officialWebsite", ""),
+        "url": state.get("url", ""),
+        "awardAmount": state.get("awardAmount", ""),
+        "applicationOpens": state.get("applicationOpens", ""),
+        "applicationDeadline": state.get("applicationDeadline", ""),
+        "notificationDate": state.get("notificationDate", ""),
+        "programStart": state.get("programStart", ""),
+        "programEnd": state.get("programEnd", ""),
+        "currentStatus": state.get("currentStatus", ""),
+        "description": state.get("description", ""),
+        "eligibilityRequirements": state.get("eligibilityRequirements", []),
+        "requiredApplicationMaterials": state.get("requiredApplicationMaterials", []),
+        "benefits": state.get("benefits", []),
+        "selectionCriteria": state.get("selectionCriteria", []),
+        "applicationProcess": state.get("applicationProcess", []),
+        "requirementsPreview": state.get("requirementsPreview", ""),
+    }
+
+    model = llm._get_client().with_structured_output(CleanedOpportunity)
+    result = model.invoke(
+        [
+            (
+                "system",
+                "You are a scholarship information cleaner. Take raw scholarship extraction "
+                "output and make it clean for an editable UI. Do not search. Do not add facts. "
+                "Do not evaluate applicant fit. Remove repeated facts, empty/unknown values, "
+                "generic missing-information lists, markdown artifacts, and raw extractor labels. "
+                "Keep eligibility limited to who can apply. Keep materials limited to what must "
+                "be submitted. Keep selection criteria only when evaluation criteria are explicitly "
+                "stated. Preserve factual meaning.",
+            ),
+            (
+                "human",
+                f"Clean this scholarship extraction JSON for UI display:\n{snapshot}",
+            ),
+        ]
+    )
+    cleaned = _model_dump(result)
+
+    mapped = {
+        "name": _blank_not_stated(cleaned.get("scholarship_name")) or _blank_not_stated(state.get("name")),
+        "organization": _blank_not_stated(cleaned.get("organization")),
+        "type": _blank_not_stated(cleaned.get("type")),
+        "country": _blank_not_stated(cleaned.get("country_or_region")),
+        "officialWebsite": _blank_not_stated(cleaned.get("official_website")),
+        "url": _blank_not_stated(cleaned.get("official_website")) or _blank_not_stated(state.get("url")),
+        "awardAmount": _blank_not_stated(cleaned.get("award")),
+        "applicationOpens": _blank_not_stated(cleaned.get("application_opens")),
+        "applicationDeadline": _blank_not_stated(cleaned.get("application_deadline")),
+        "notificationDate": _blank_not_stated(cleaned.get("notification_date")),
+        "programStart": _blank_not_stated(cleaned.get("program_start")),
+        "programEnd": _blank_not_stated(cleaned.get("program_end")),
+        "currentStatus": _blank_not_stated(cleaned.get("application_status")),
+        "description": _blank_not_stated(cleaned.get("description")),
+        "minimumGpa": _blank_not_stated(state.get("minimumGpa")),
+        "enrollmentLevel": _blank_not_stated(state.get("enrollmentLevel")),
+        "citizenshipRequirement": _blank_not_stated(state.get("citizenshipRequirement")),
+        "financialNeedRequirement": _blank_not_stated(state.get("financialNeedRequirement")),
+        "locationRequirement": _blank_not_stated(state.get("locationRequirement")),
+        "eligibleMajors": _blank_not_stated(state.get("eligibleMajors")),
+        "otherEligibilityRules": _blank_not_stated(state.get("otherEligibilityRules")),
+        "requiredDocumentTypes": _clean_optional_list(cleaned.get("required_materials")),
+        "otherRequiredMaterials": "",
+        "essayPrompts": _blank_not_stated(state.get("essayPrompts")),
+        "eligibilityRequirements": _clean_optional_list(cleaned.get("eligibility_requirements")),
+        "requiredApplicationMaterials": _clean_optional_list(cleaned.get("required_materials")),
+        "benefits": _clean_optional_list(cleaned.get("benefits")),
+        "selectionCriteria": _clean_optional_list(cleaned.get("selection_criteria")),
+        "applicationProcess": _clean_optional_list(cleaned.get("application_process")),
+        "missingInformation": [],
+        "importantNotes": _clean_optional_list(cleaned.get("important_notes")),
+        "fullText": state.get("fullText", ""),
+        "sourceUrls": state.get("sourceUrls", []),
+    }
+    mapped["requirements"] = [
+        {"category": "Eligibility", "requirement": item, "source": mapped["url"]}
+        for item in mapped["eligibilityRequirements"]
+    ]
+    mapped["requirementsPreview"] = _clean_record_preview(mapped)
+    return _final_sanitize(mapped)

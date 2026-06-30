@@ -1,4 +1,4 @@
-import type { ActiveScholarship, AnalysisResult, UserProfile } from "@/lib/userStore";
+import type { ActiveScholarship, AnalysisResult, FitAnalysisResult, UserProfile } from "@/lib/userStore";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 
@@ -33,6 +33,11 @@ export type OpportunityExtractPayload = {
 export type OpportunityExtractResult = ActiveScholarship & {
   requirements?: Array<{ category?: string; requirement?: string; source?: string }>;
   sourceUrls?: string[];
+};
+
+export type FitAnalyzePayload = {
+  scholarship_record: ActiveScholarship;
+  student_profile: Record<string, unknown>;
 };
 
 function compact(parts: Array<string | undefined | null | false>) {
@@ -156,4 +161,39 @@ export async function extractScholarshipOpportunity(
   }
 
   return data as OpportunityExtractResult;
+}
+
+export function buildFitPayload(user: UserProfile | null): FitAnalyzePayload {
+  const { lastAnalysis, fitAnalysis, ...studentProfile } = user ?? { name: "", email: "" };
+  void lastAnalysis;
+  void fitAnalysis;
+
+  return {
+    scholarship_record: user?.activeScholarship ?? {},
+    student_profile: {
+      ...studentProfile,
+      profile_text: profileToText(user),
+      available_documents: user?.documents ?? [],
+      essay_draft_available: !!user?.essayDraft?.trim(),
+      essay_word_count: user?.essayDraft?.trim()
+        ? user.essayDraft.trim().split(/\s+/).length
+        : 0,
+    },
+  };
+}
+
+export async function analyzeScholarshipFit(payload: FitAnalyzePayload): Promise<FitAnalysisResult> {
+  const response = await fetch(`${API_BASE}/api/fit/analyze`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    const detail = data?.detail;
+    throw new Error(typeof detail === "string" ? detail : "Scholarship fit analysis failed.");
+  }
+
+  return data as FitAnalysisResult;
 }

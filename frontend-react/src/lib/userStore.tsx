@@ -111,6 +111,7 @@ export type ActiveScholarship = {
   selectionCriteria?: string[];
   applicationProcess?: string[];
   missingInformation?: string[];
+  importantNotes?: string[];
   requirements?: Array<{ category?: string; requirement?: string; source?: string }>;
   requirementsPreview?: string;
   additionalNotes?: string;
@@ -182,6 +183,35 @@ export type AnalysisResult = {
   draft_number?: number;
 };
 
+export type FitAnalysisResult = {
+  scholarship_name?: string;
+  fit_label?: string;
+  fit_score?: number;
+  likely_eligible?: "Yes" | "No" | "Unclear" | string;
+  summary?: string;
+  eligibility_analysis?: Array<{
+    requirement?: string;
+    status?: "Met" | "Not met" | "Unclear" | "Not applicable" | string;
+    student_evidence?: string;
+    explanation?: string;
+  }>;
+  strengths?: string[];
+  gaps_or_risks?: string[];
+  missing_student_information?: string[];
+  application_materials_check?: Array<{
+    material?: string;
+    status?: "Ready" | "Missing" | "Need to prepare" | "Need to confirm" | "Not applicable" | string;
+    notes?: string;
+  }>;
+  selection_criteria_alignment?: Array<{
+    criterion?: string;
+    alignment?: "Strong" | "Moderate" | "Weak" | "Unclear" | string;
+    student_evidence?: string;
+    notes?: string;
+  }>;
+  recommended_next_steps?: string[];
+};
+
 export type UserProfile = {
   // account
   id?: number;
@@ -215,6 +245,8 @@ export type UserProfile = {
   activeScholarship?: ActiveScholarship;
   // latest result returned by the Scholar-E AI coach
   lastAnalysis?: AnalysisResult;
+  // latest dedicated scholarship fit analysis
+  fitAnalysis?: FitAnalysisResult;
   // versioned drafts
   drafts?: EssayDraft[];
   // documents
