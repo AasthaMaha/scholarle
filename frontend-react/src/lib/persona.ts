@@ -87,14 +87,10 @@ export const journeySteps: JourneyStep[] = [
   { id: 2, slug: "profile", title: "Create Profile", goal: "Get started", group: "Discover" },
   { id: 3, slug: "discovery", title: "Scholarship Discovery", goal: "Find opportunities", group: "Discover" },
   { id: 4, slug: "requirements", title: "Analyze Requirements & Fit", goal: "Understand fit", group: "Analyze" },
-  { id: 5, slug: "essay-outline", title: "Personalized Outline", goal: "Plan your draft", group: "Apply" },
-  { id: 6, slug: "essay-upload", title: "Upload Essay Draft", goal: "Submit your draft", group: "Apply" },
-  { id: 7, slug: "scores", title: "Application Evaluation", goal: "Get evaluation", group: "Apply" },
-  { id: 8, slug: "highlights", title: "Review Highlights", goal: "Understand gaps", group: "Apply" },
-  { id: 9, slug: "revise", title: "Revise Essay", goal: "Make it stronger", group: "Apply" },
-  { id: 10, slug: "resubmit", title: "Resubmit for Review", goal: "Improve score", group: "Apply" },
-  { id: 11, slug: "final-check", title: "Final Submission Check", goal: "Ensure readiness", group: "Track" },
-  { id: 12, slug: "tracker", title: "Track Application Status", goal: "Stay organized", group: "Track" },
+  { id: 5, slug: "essay-workspace", title: "Essay Workspace", goal: "Draft and review", group: "Apply" },
+  { id: 6, slug: "revise", title: "Revise Essay", goal: "Make it stronger", group: "Apply" },
+  { id: 7, slug: "final-check", title: "Final Submission Check", goal: "Ensure readiness", group: "Track" },
+  { id: 8, slug: "tracker", title: "Track Application Status", goal: "Stay organized", group: "Track" },
 ];
 
 // Curated scholarships matched to Maya's profile

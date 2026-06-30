@@ -1,6 +1,21 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { useMemo, useRef, useState } from "react";
-import { FileUp, PencilLine } from "lucide-react";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Bold,
+  FileUp,
+  Heading1,
+  Heading2,
+  Italic,
+  Link as LinkIcon,
+  List,
+  ListOrdered,
+  Menu,
+  PencilLine,
+  Power,
+  Redo2,
+  Underline,
+  Undo2,
+} from "lucide-react";
 import { journeySteps } from "@/lib/persona";
 import { loadExampleProfile } from "@/lib/loadExample";
 import { CoachRunButton } from "@/components/CoachRunButton";
@@ -51,6 +66,7 @@ function Journey() {
   const [stepIdx, setStepIdx] = useState(0);
   const [profileError, setProfileError] = useState("");
   const [exampleStatus, setExampleStatus] = useState<string | null>(null);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   function handleLoadExample() {
     updateProfile(
@@ -60,8 +76,8 @@ function Journey() {
         id: user?.id,
       }),
     );
-    setExampleStatus("Example loaded — jump to Upload Essay Draft to run the AI coach.");
-    const essayStepIdx = journeySteps.findIndex((s) => s.slug === "essay-upload");
+    setExampleStatus("Example loaded — jump to Essay Workspace to run the AI coach.");
+    const essayStepIdx = journeySteps.findIndex((s) => s.slug === "essay-workspace");
     if (essayStepIdx >= 0) setStepIdx(essayStepIdx);
   }
 
@@ -85,11 +101,20 @@ function Journey() {
     setProfileError("");
     setStepIdx((i) => Math.max(i - 1, 0));
   };
+  const selectStep = (idx: number) => {
+    setStepIdx(idx);
+    setIsSidebarOpen(false);
+  };
 
   return (
     <TooltipProvider delayDuration={150}>
       <div className="min-h-screen flex">
-        <Sidebar activeIdx={stepIdx} onSelect={setStepIdx} />
+        <Sidebar
+          activeIdx={stepIdx}
+          isOpen={isSidebarOpen}
+          onClose={() => setIsSidebarOpen(false)}
+          onSelect={selectStep}
+        />
         <div className="flex-1 flex flex-col min-w-0">
           <TopBar
             step={step}
@@ -98,6 +123,10 @@ function Journey() {
             stepIdx={stepIdx}
             onLoadExample={handleLoadExample}
             onClearAll={handleClearAll}
+          />
+          <FloatingSidebarToggle
+            isOpen={isSidebarOpen}
+            onOpen={() => setIsSidebarOpen(true)}
           />
           <main className="flex-1 overflow-y-auto">
             <div className="mx-auto max-w-5xl px-6 md:px-10 py-10">
@@ -131,7 +160,17 @@ function isProfileComplete(user: UserProfile | null) {
   );
 }
 
-function Sidebar({ activeIdx, onSelect }: { activeIdx: number; onSelect: (i: number) => void }) {
+function Sidebar({
+  activeIdx,
+  isOpen,
+  onClose,
+  onSelect,
+}: {
+  activeIdx: number;
+  isOpen: boolean;
+  onClose: () => void;
+  onSelect: (i: number) => void;
+}) {
   const groups = useMemo(() => {
     const map = new Map<string, typeof journeySteps>();
     journeySteps.forEach((s) => {
@@ -143,62 +182,76 @@ function Sidebar({ activeIdx, onSelect }: { activeIdx: number; onSelect: (i: num
   }, []);
 
   return (
-    <aside className="hidden lg:flex w-80 shrink-0 flex-col border-r border-border bg-card/60 backdrop-blur sticky top-0 h-screen">
-      <Link to="/" className="flex items-center gap-2 px-6 h-16 border-b border-border">
-        <div className="size-8 rounded-lg bg-primary text-primary-foreground grid place-items-center font-display font-bold">
-          S<span className="text-gold">e</span>
+    <>
+      <button
+        type="button"
+        aria-label="Close sidebar"
+        onClick={onClose}
+        className={`fixed inset-0 z-30 bg-background/60 transition-opacity duration-300 ${
+          isOpen ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"
+        }`}
+      />
+      <aside
+        className={`fixed inset-y-0 left-0 z-40 flex w-80 max-w-[85vw] shrink-0 flex-col border-r border-border bg-card/95 backdrop-blur transition-transform duration-300 ease-out ${
+          isOpen ? "translate-x-0" : "-translate-x-full"
+        }`}
+      >
+        <Link to="/" className="flex items-center gap-2 px-6 h-16 border-b border-border">
+          <div className="size-8 rounded-lg bg-primary text-primary-foreground grid place-items-center font-display font-bold">
+            S<span className="text-gold">e</span>
+          </div>
+          <div className="font-display font-semibold tracking-tight">Scholar-E</div>
+          <span className="ml-auto text-[10px] uppercase tracking-widest text-muted-foreground">journey</span>
+        </Link>
+
+        <div className="px-6 py-5 border-b border-border">
+          <SidebarUser />
         </div>
-        <div className="font-display font-semibold tracking-tight">Scholar-E</div>
-        <span className="ml-auto text-[10px] uppercase tracking-widest text-muted-foreground">journey</span>
-      </Link>
 
-      <div className="px-6 py-5 border-b border-border">
-        <SidebarUser />
-      </div>
-
-      <div className="flex-1 overflow-y-auto px-3 py-4 space-y-5">
-        {groups.map(([group, steps]) => (
-          <div key={group}>
-            <div className="px-3 text-[10px] uppercase tracking-widest text-muted-foreground mb-2">{group}</div>
-            <div className="space-y-0.5">
-              {steps.map((s) => {
-                const idx = journeySteps.findIndex((x) => x.id === s.id);
-                const isActive = idx === activeIdx;
-                const isDone = idx < activeIdx;
-                return (
-                  <button
-                    key={s.id}
-                    onClick={() => onSelect(idx)}
-                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-left text-sm transition-colors ${
-                      isActive
-                        ? "bg-primary text-primary-foreground"
-                        : "hover:bg-accent text-foreground/80"
-                    }`}
-                  >
-                    <span
-                      className={`size-6 shrink-0 rounded-full grid place-items-center text-[11px] font-mono ${
+        <div className="flex-1 overflow-y-auto px-3 py-4 space-y-5">
+          {groups.map(([group, steps]) => (
+            <div key={group}>
+              <div className="px-3 text-[10px] uppercase tracking-widest text-muted-foreground mb-2">{group}</div>
+              <div className="space-y-0.5">
+                {steps.map((s) => {
+                  const idx = journeySteps.findIndex((x) => x.id === s.id);
+                  const isActive = idx === activeIdx;
+                  const isDone = idx < activeIdx;
+                  return (
+                    <button
+                      key={s.id}
+                      onClick={() => onSelect(idx)}
+                      className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-left text-sm transition-colors ${
                         isActive
-                          ? "bg-gold text-gold-foreground"
-                          : isDone
-                          ? "bg-success/20 text-success"
-                          : "bg-secondary text-secondary-foreground"
+                          ? "bg-primary text-primary-foreground"
+                          : "hover:bg-accent text-foreground/80"
                       }`}
                     >
-                      {isDone ? "✓" : s.id}
-                    </span>
-                    <span className="truncate">{s.title}</span>
-                  </button>
-                );
-              })}
+                      <span
+                        className={`size-6 shrink-0 rounded-full grid place-items-center text-[11px] font-mono ${
+                          isActive
+                            ? "bg-gold text-gold-foreground"
+                            : isDone
+                            ? "bg-success/20 text-success"
+                            : "bg-secondary text-secondary-foreground"
+                        }`}
+                      >
+                        {isDone ? "✓" : s.id}
+                      </span>
+                      <span className="truncate">{s.title}</span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
 
-      <div className="px-6 py-4 border-t border-border text-[11px] text-muted-foreground">
-        A coach, not a ghostwriter.
-      </div>
-    </aside>
+        <div className="px-6 py-4 border-t border-border text-[11px] text-muted-foreground">
+          A coach, not a ghostwriter.
+        </div>
+      </aside>
+    </>
   );
 }
 
@@ -221,8 +274,11 @@ function TopBar({
   return (
     <div className="sticky top-0 z-20 border-b border-border bg-background/85 backdrop-blur">
       <div className="px-6 md:px-10 h-16 flex items-center gap-4">
-        <Link to="/" className="lg:hidden font-display font-semibold">
-          Scholar-E
+        <Link to="/" className="flex items-center gap-2 rounded-lg px-2.5 py-1.5">
+          <div className="size-7 rounded-md bg-primary text-primary-foreground grid place-items-center font-display font-bold text-sm">
+            S<span className="text-gold">e</span>
+          </div>
+          <span className="font-display font-semibold">Scholar-E</span>
         </Link>
         <div className="flex-1 min-w-0">
           <div className="text-xs text-muted-foreground">
@@ -282,6 +338,30 @@ function TopBar({
   );
 }
 
+function FloatingSidebarToggle({
+  isOpen,
+  onOpen,
+}: {
+  isOpen: boolean;
+  onOpen: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label="Open sidebar"
+      onClick={onOpen}
+      className={`fixed left-0 top-[70px] z-30 flex h-10 items-center gap-3 rounded-full rounded-l-none border border-l-0 border-border/70 bg-white px-3 text-foreground shadow-md shadow-black/10 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg ${
+        isOpen ? "opacity-0 pointer-events-none" : "opacity-100"
+      }`}
+    >
+      <span className="size-6 rounded-md bg-primary text-primary-foreground grid place-items-center font-display font-bold text-xs">
+        S<span className="text-gold">e</span>
+      </span>
+      <Menu className="size-5 text-muted-foreground" strokeWidth={2.5} />
+    </button>
+  );
+}
+
 function StepHeader({ step }: { step: (typeof journeySteps)[number] }) {
   return (
     <div className="flex items-start justify-between gap-6">
@@ -338,12 +418,8 @@ function StepBody({
     case "discovery": return <StepDiscovery />;
     case "opportunities": return <StepOpportunities onAnalyze={goNext} />;
     case "requirements": return <StepRequirementsAndFit />;
-    case "essay-outline": return <StepEssayOutline />;
-    case "essay-upload": return <StepEssayUpload />;
-    case "scores": return <StepScores />;
-    case "highlights": return <StepHighlights />;
+    case "essay-workspace": return <StepEssayWorkspace />;
     case "revise": return <StepRevise />;
-    case "resubmit": return <StepResubmit />;
     case "final-check": return <StepFinalCheck />;
     case "tracker": return <StepTracker />;
     default: return null;
@@ -448,11 +524,14 @@ function StepLand() {
 
 
 function SidebarUser() {
-  const { user } = useUser();
-  const subtitle =
-    user?.educationLevel
-      ? eduLevelLabel(user.educationLevel)
-      : "Complete your profile →";
+  const { user, resetProfile } = useUser();
+  const navigate = useNavigate();
+
+  function handleSignOut() {
+    resetProfile();
+    navigate({ to: "/" });
+  }
+
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-3">
@@ -461,7 +540,14 @@ function SidebarUser() {
         </div>
         <div className="min-w-0">
           <div className="text-sm font-medium truncate">{user?.name || "Your profile"}</div>
-          <div className="text-xs text-muted-foreground truncate">{subtitle}</div>
+          <button
+            type="button"
+            onClick={handleSignOut}
+            className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <Power className="size-3.5" strokeWidth={2.5} />
+            <span>Sign Out</span>
+          </button>
         </div>
       </div>
     </div>
@@ -1108,7 +1194,6 @@ function StepDiscovery() {
           <div className="text-xs uppercase tracking-widest text-muted-foreground">
             Personalized resources
           </div>
-          <Pill tone="info">Rule-based engine</Pill>
         </div>
         <p className="text-sm text-muted-foreground mt-2">
           Curated based on your profile. We don't scrape — we point you to the right places.
@@ -1682,6 +1767,338 @@ function StepRequirementsAndFit() {
             </div>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- Step 5: Essay Workspace ---------------- */
+
+type WorkspaceTab = "outline" | "evaluation" | "highlights";
+
+function StepEssayWorkspace() {
+  const { user, updateProfile } = useUser();
+  const editorRef = useRef<HTMLDivElement | null>(null);
+  const draft = user?.essayDraft ?? "";
+  const essayTitle = user?.essayTitle ?? "";
+  const wordCount = draft.trim() ? draft.trim().split(/\s+/).filter(Boolean).length : 0;
+  const characterCount = draft.length;
+  const [activeTab, setActiveTab] = useState<WorkspaceTab>("outline");
+  const [pdfStatus, setPdfStatus] = useState<string | null>(null);
+  const [analysisStatus, setAnalysisStatus] = useState<string | null>(null);
+
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    if (editor.innerText !== draft) editor.innerText = draft;
+  }, [draft]);
+
+  function syncEditor() {
+    updateProfile({ essayDraft: editorRef.current?.innerText ?? "" });
+  }
+
+  function applyEditorCommand(command: string, value?: string) {
+    editorRef.current?.focus();
+    document.execCommand(command, false, value);
+    syncEditor();
+  }
+
+  async function handlePdf(file: File) {
+    setPdfStatus(`Extracting text from ${file.name}...`);
+    try {
+      const w = window as unknown as {
+        pdfjsLib?: {
+          GlobalWorkerOptions?: { workerSrc?: string };
+          getDocument: (opts: { data: ArrayBuffer }) => { promise: Promise<PdfDoc> };
+        };
+      };
+      type PdfDoc = {
+        numPages: number;
+        getPage: (n: number) => Promise<{
+          getTextContent: () => Promise<{ items: { str?: string }[] }>;
+        }>;
+      };
+
+      if (!w.pdfjsLib) {
+        await new Promise<void>((resolve, reject) => {
+          const s = document.createElement("script");
+          s.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.min.mjs";
+          s.type = "module";
+          s.onload = () => resolve();
+          s.onerror = () => reject(new Error("Failed to load PDF parser"));
+          document.head.appendChild(s);
+        });
+      }
+      if (!w.pdfjsLib) throw new Error("PDF parser unavailable");
+      if (w.pdfjsLib.GlobalWorkerOptions) {
+        w.pdfjsLib.GlobalWorkerOptions.workerSrc =
+          "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.worker.min.mjs";
+      }
+
+      const buf = await file.arrayBuffer();
+      const pdf: PdfDoc = await w.pdfjsLib.getDocument({ data: buf }).promise;
+      let full = "";
+      for (let p = 1; p <= pdf.numPages; p++) {
+        const page = await pdf.getPage(p);
+        const tc = await page.getTextContent();
+        full += tc.items.map((i) => i.str ?? "").join(" ") + "\n\n";
+      }
+      updateProfile({ essayDraft: full.trim() });
+      setPdfStatus(`Imported ${pdf.numPages} pages from ${file.name}.`);
+    } catch (e) {
+      setPdfStatus(`Could not parse PDF: ${(e as Error).message}`);
+    }
+  }
+
+  function saveAsDraft() {
+    if (wordCount < 1) return;
+    const prev = user?.drafts ?? [];
+    const newDraft: EssayDraft = {
+      id: crypto.randomUUID(),
+      version: (prev[prev.length - 1]?.version ?? 0) + 1,
+      content: draft,
+      wordCount,
+      savedAt: new Date().toISOString(),
+    };
+    updateProfile({ drafts: [...prev, newDraft] });
+  }
+
+  const toolbar = [
+    { label: "Bold", icon: Bold, action: () => applyEditorCommand("bold") },
+    { label: "Italic", icon: Italic, action: () => applyEditorCommand("italic") },
+    { label: "Underline", icon: Underline, action: () => applyEditorCommand("underline") },
+    { label: "Heading 1", icon: Heading1, action: () => applyEditorCommand("formatBlock", "H1") },
+    { label: "Heading 2", icon: Heading2, action: () => applyEditorCommand("formatBlock", "H2") },
+    { label: "Bullet list", icon: List, action: () => applyEditorCommand("insertUnorderedList") },
+    { label: "Numbered list", icon: ListOrdered, action: () => applyEditorCommand("insertOrderedList") },
+    {
+      label: "Link",
+      icon: LinkIcon,
+      action: () => {
+        const url = window.prompt("Paste a link");
+        if (url) applyEditorCommand("createLink", url);
+      },
+    },
+    { label: "Undo", icon: Undo2, action: () => applyEditorCommand("undo") },
+    { label: "Redo", icon: Redo2, action: () => applyEditorCommand("redo") },
+  ];
+
+  return (
+    <div className="relative left-1/2 w-screen -translate-x-1/2 -mt-3 bg-background">
+      <div className="min-h-[calc(100vh-9rem)] border-y border-border bg-white lg:pr-[380px]">
+        <div className="mx-auto flex min-h-[calc(100vh-9rem)] max-w-4xl flex-col px-6 pt-8 md:px-10 lg:px-14">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-4">
+            <div>
+              <div className="text-xs uppercase tracking-[0.22em] text-muted-foreground">Essay Workspace</div>
+              <input
+                type="text"
+                value={essayTitle}
+                onChange={(e) => updateProfile({ essayTitle: e.target.value })}
+                placeholder="Untitled scholarship essay"
+                className="mt-1 w-full min-w-[260px] max-w-xl border-none bg-transparent p-0 font-display text-2xl text-foreground outline-none placeholder:text-foreground"
+              />
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="inline-flex cursor-pointer items-center gap-2 rounded-full border border-border bg-card px-3 py-2 text-sm hover:bg-accent">
+                <FileUp className="size-4" />
+                Upload PDF
+                <input
+                  type="file"
+                  accept="application/pdf,.pdf"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) handlePdf(f);
+                  }}
+                  className="sr-only"
+                />
+              </label>
+              <button
+                type="button"
+                onClick={saveAsDraft}
+                disabled={!draft.trim()}
+                className="rounded-full border border-border bg-card px-3 py-2 text-sm hover:bg-accent disabled:opacity-40"
+              >
+                Save draft
+              </button>
+              <CoachRunButton
+                label={wordCount < 30 ? "Write more to evaluate" : "Run evaluation"}
+                loadingLabel="Analyzing..."
+                disabled={wordCount < 30}
+                onStatus={setAnalysisStatus}
+                className="rounded-full bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-40"
+              />
+            </div>
+          </div>
+
+          {(pdfStatus || analysisStatus) && (
+            <div className="mt-4 space-y-1 text-xs text-muted-foreground">
+              {pdfStatus && <div>{pdfStatus}</div>}
+              {analysisStatus && <div>{analysisStatus}</div>}
+            </div>
+          )}
+
+          <div className="relative flex-1 py-12">
+            {!draft.trim() && (
+              <div className="pointer-events-none absolute left-0 top-12 max-w-xl text-2xl leading-relaxed text-muted-foreground/75">
+                Type or paste your essay draft here, or upload a PDF.
+              </div>
+            )}
+            <div
+              ref={editorRef}
+              contentEditable
+              role="textbox"
+              aria-label="Essay draft editor"
+              suppressContentEditableWarning
+              onInput={syncEditor}
+              onBlur={syncEditor}
+              className="min-h-[520px] w-full whitespace-pre-wrap break-words font-display text-[18px] leading-8 text-foreground outline-none"
+            />
+          </div>
+
+          <div className="sticky bottom-0 -mx-6 flex flex-wrap items-center justify-between gap-3 border-t border-border bg-white/95 px-6 py-3 backdrop-blur md:-mx-10 md:px-10 lg:-mx-14 lg:px-14">
+            <div className="flex flex-wrap items-center gap-1">
+              {toolbar.map((item) => {
+                const Icon = item.icon;
+                return (
+                  <Tooltip key={item.label}>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        onClick={item.action}
+                        className="grid size-9 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+                      >
+                        <Icon className="size-4" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>{item.label}</TooltipContent>
+                  </Tooltip>
+                );
+              })}
+            </div>
+            <div className="flex items-center gap-4 text-sm text-muted-foreground">
+              <span>{wordCount} words</span>
+              <span>{characterCount} characters</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <EssayWorkspacePanel activeTab={activeTab} onTabChange={setActiveTab} />
+    </div>
+  );
+}
+
+function EssayWorkspacePanel({
+  activeTab,
+  onTabChange,
+}: {
+  activeTab: WorkspaceTab;
+  onTabChange: (tab: WorkspaceTab) => void;
+}) {
+  const tabs: Array<{ id: WorkspaceTab; label: string }> = [
+    { id: "outline", label: "Personalized Outline" },
+    { id: "evaluation", label: "Application Evaluation" },
+    { id: "highlights", label: "Review Highlights" },
+  ];
+
+  return (
+    <aside className="border-l border-border bg-card lg:fixed lg:right-0 lg:top-[65px] lg:z-10 lg:h-[calc(100vh-65px)] lg:w-[380px] lg:overflow-y-auto">
+      <div className="grid grid-cols-3 border-b border-border">
+        {tabs.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => onTabChange(tab.id)}
+            className={`min-h-16 border-r border-border px-3 text-left text-xs font-medium leading-tight transition-colors last:border-r-0 ${
+              activeTab === tab.id
+                ? "bg-background text-foreground shadow-[inset_0_-3px_0_var(--primary)]"
+                : "text-muted-foreground hover:bg-accent"
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+      <div className="p-6">
+        {activeTab === "outline" && <WorkspaceList title="Personalized Outline" items={["Introduction", "Personal story", "Key strengths", "Scholarship fit", "Conclusion"]} />}
+        {activeTab === "evaluation" && <WorkspaceEvaluationTab />}
+        {activeTab === "highlights" && <WorkspaceHighlightsTab />}
+      </div>
+    </aside>
+  );
+}
+
+function WorkspaceList({ title, items }: { title: string; items: string[] }) {
+  return (
+    <div>
+      <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">{title}</div>
+      <div className="mt-6 space-y-3">
+        {items.map((item) => (
+          <div key={item} className="rounded-xl border border-border bg-background px-4 py-3 text-sm">
+            {item}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function WorkspaceEvaluationTab() {
+  const { user } = useUser();
+  const analysis = user?.lastAnalysis;
+  const scores = Object.values(analysis?.readiness_index ?? {})
+    .map((entry) => entry.score)
+    .filter((score): score is number => typeof score === "number");
+  const overall = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : null;
+
+  return (
+    <div>
+      <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Application Evaluation</div>
+      <div className="mt-6 space-y-3">
+        <div className="rounded-xl border border-border bg-background px-4 py-3">
+          <div className="text-sm font-medium">Overall score</div>
+          <div className="mt-1 font-display text-3xl text-primary">{overall ?? "--"}</div>
+        </div>
+        {["Requirement coverage", "Strengths", "Missing requirements", "Areas to improve"].map((item) => (
+          <div key={item} className="rounded-xl border border-border bg-background px-4 py-3 text-sm">
+            {item}
+          </div>
+        ))}
+        {analysis?.coaching_brief?.coach_message && (
+          <p className="pt-2 text-sm leading-relaxed text-muted-foreground">
+            {analysis.coaching_brief.coach_message}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function WorkspaceHighlightsTab() {
+  const { user } = useUser();
+  const priorities = user?.lastAnalysis?.revision_priorities ?? [];
+  return (
+    <div>
+      <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Review Highlights</div>
+      <div className="mt-6 space-y-3">
+        {["Clarity suggestions", "Grammar suggestions", "Strong sections", "Weak sections", "Suggested revisions"].map((item) => (
+          <div key={item} className="rounded-xl border border-border bg-background px-4 py-3 text-sm">
+            {item}
+          </div>
+        ))}
+        {priorities.length > 0 && (
+          <div className="pt-2">
+            <div className="text-xs uppercase tracking-widest text-muted-foreground">Coach priorities</div>
+            <ol className="mt-3 space-y-2 text-sm text-muted-foreground">
+              {priorities.slice(0, 3).map((item, i) => (
+                <li key={item} className="flex gap-2">
+                  <span className="font-display text-gold">{i + 1}.</span>
+                  <span>{item}</span>
+                </li>
+              ))}
+            </ol>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -2287,7 +2704,7 @@ function StepRevise() {
 
         {drafts.length === 0 ? (
           <div className="mt-4 text-sm text-muted-foreground">
-            No drafts saved yet — write something in Step 8 and save it as a draft.
+            No drafts saved yet — write something in Essay Workspace and save it as a draft.
           </div>
         ) : (
           <div className="mt-4 grid sm:grid-cols-2 gap-3">
@@ -2335,7 +2752,7 @@ function StepRevise() {
         </pre>
         {opened && (
           <div className="mt-3 text-xs text-muted-foreground">
-            Run step 12 to get an AI score · {opened.wordCount} words
+            Return to Essay Workspace to get an AI score · {opened.wordCount} words
           </div>
         )}
       </Card>

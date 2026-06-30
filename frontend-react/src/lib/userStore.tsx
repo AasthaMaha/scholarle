@@ -240,6 +240,7 @@ export type UserProfile = {
   // prompts
   prompts?: PromptAnswers;
   // essay (current working draft)
+  essayTitle?: string;
   essayDraft?: string;
   // scholarship currently being analyzed
   activeScholarship?: ActiveScholarship;
