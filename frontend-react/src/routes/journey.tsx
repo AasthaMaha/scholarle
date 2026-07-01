@@ -135,8 +135,7 @@ function Journey() {
                   {exampleStatus}
                 </div>
               )}
-              <StepHeader step={step} />
-              <div className="mt-8">
+              <div>
                 <StepBody slug={step.slug} goNext={goNext} profileError={profileError} />
               </div>
               <Nav stepIdx={stepIdx} onNext={goNext} onPrev={goPrev} />
@@ -285,6 +284,7 @@ function TopBar({
             Step {step.id} of {journeySteps.length} · {step.group}
           </div>
           <div className="text-sm font-medium truncate">{step.title}</div>
+          <div className="text-xs text-muted-foreground truncate">Goal: {step.goal}</div>
         </div>
         <div className="flex items-center gap-2">
           <Tooltip>
@@ -359,23 +359,6 @@ function FloatingSidebarToggle({
       </span>
       <Menu className="size-5 text-muted-foreground" strokeWidth={2.5} />
     </button>
-  );
-}
-
-function StepHeader({ step }: { step: (typeof journeySteps)[number] }) {
-  return (
-    <div className="flex items-start justify-between gap-6">
-      <div>
-        <div className="font-mono text-xs text-gold uppercase tracking-widest">
-          Step {String(step.id).padStart(2, "0")} · {step.group}
-        </div>
-        <h1 className="font-display text-4xl md:text-5xl mt-2 text-balance">{step.title}</h1>
-        <div className="text-sm text-muted-foreground mt-2">Goal: {step.goal}</div>
-      </div>
-      <div className="hidden md:flex size-14 rounded-2xl bg-primary text-primary-foreground items-center justify-center font-display text-2xl shrink-0">
-        {step.id}
-      </div>
-    </div>
   );
 }
 
