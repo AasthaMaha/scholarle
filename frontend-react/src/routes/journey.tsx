@@ -395,7 +395,6 @@ function StepBody({
   profileError: string;
 }) {
   switch (slug) {
-    case "land": return <StepLand />;
     case "profile": return <StepProfile error={profileError} />;
     case "discovery": return <StepDiscovery />;
     case "opportunities": return <StepOpportunities onAnalyze={goNext} />;

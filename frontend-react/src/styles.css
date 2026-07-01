@@ -43,32 +43,32 @@
 
 :root {
   --radius: 0.75rem;
-  --parchment: oklch(0.985 0.012 85);
-  --background: oklch(0.985 0.012 85);
-  --foreground: oklch(0.22 0.04 265);
-  --ink: oklch(0.22 0.04 265);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.22 0.04 265);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.22 0.04 265);
-  --primary: oklch(0.32 0.09 270);
-  --primary-foreground: oklch(0.985 0.012 85);
-  --secondary: oklch(0.95 0.02 80);
-  --secondary-foreground: oklch(0.32 0.09 270);
-  --muted: oklch(0.95 0.018 80);
-  --muted-foreground: oklch(0.5 0.03 265);
-  --accent: oklch(0.92 0.04 80);
-  --accent-foreground: oklch(0.32 0.09 270);
-  --gold: oklch(0.78 0.14 75);
-  --gold-foreground: oklch(0.22 0.04 265);
-  --success: oklch(0.65 0.15 155);
-  --warning: oklch(0.75 0.16 60);
-  --info: oklch(0.6 0.14 230);
-  --destructive: oklch(0.58 0.22 27);
-  --destructive-foreground: oklch(0.985 0 0);
-  --border: oklch(0.9 0.02 80);
-  --input: oklch(0.9 0.02 80);
-  --ring: oklch(0.78 0.14 75);
+  --parchment: #f9faff;
+  --background: #f9faff;
+  --foreground: #1f2a44;
+  --ink: #1f2a44;
+  --card: #ffffff;
+  --card-foreground: #1f2a44;
+  --popover: #ffffff;
+  --popover-foreground: #1f2a44;
+  --primary: #1f2a44;
+  --primary-foreground: #ffffff;
+  --secondary: #eef2ff;
+  --secondary-foreground: #1f2a44;
+  --muted: #eef2ff;
+  --muted-foreground: #64708a;
+  --accent: #edebff;
+  --accent-foreground: #1f2a44;
+  --gold: #6d5df6;
+  --gold-foreground: #ffffff;
+  --success: #0ea5a4;
+  --warning: #f59e0b;
+  --info: #6d5df6;
+  --destructive: #dc2626;
+  --destructive-foreground: #ffffff;
+  --border: #d7dee8;
+  --input: #d7dee8;
+  --ring: #6d5df6;
 }
 
 .dark {
@@ -97,8 +97,9 @@
     color: var(--color-foreground);
     font-family: var(--font-sans);
     background-image:
-      radial-gradient(at 20% 0%, oklch(0.92 0.06 75 / 0.5) 0px, transparent 50%),
-      radial-gradient(at 80% 100%, oklch(0.88 0.05 280 / 0.35) 0px, transparent 50%);
+      radial-gradient(at 18% 0%, rgb(109 93 246 / 0.16) 0px, transparent 42%),
+      radial-gradient(at 82% 8%, rgb(138 180 248 / 0.22) 0px, transparent 40%),
+      linear-gradient(135deg, #f9faff 0%, #eef2ff 52%, #f5efff 100%);
     background-attachment: fixed;
   }
   h1, h2, h3, .font-display { font-family: var(--font-display); letter-spacing: -0.02em; }
@@ -111,13 +112,13 @@
   100% { background-position: 200% 0; }
 }
 .ai-shimmer {
-  background: linear-gradient(90deg, transparent, oklch(0.78 0.14 75 / 0.25), transparent);
+  background: linear-gradient(90deg, transparent, rgb(109 93 246 / 0.24), transparent);
   background-size: 200% 100%;
   animation: shimmer 2s linear infinite;
 }
 
 @keyframes highlightPulse {
-  0%, 100% { background-color: oklch(0.85 0.16 75 / 0.35); }
-  50% { background-color: oklch(0.85 0.16 75 / 0.6); }
+  0%, 100% { background-color: rgb(237 235 255 / 0.6); }
+  50% { background-color: rgb(109 93 246 / 0.2); }
 }
 .highlight-pulse { animation: highlightPulse 2.4s ease-in-out infinite; }
