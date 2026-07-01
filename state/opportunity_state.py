@@ -7,6 +7,7 @@ class OpportunityExtractionState(TypedDict, total=False):
     additional_notes: str
     source_text: str
     source_urls: List[str]
+    userProvidedNotes: str
     extraction: Dict[str, Any]
 
     name: str

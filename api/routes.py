@@ -3,6 +3,7 @@
 
 import hashlib
 import io
+import json
 import re
 from html import unescape
 from html.parser import HTMLParser
@@ -24,6 +25,7 @@ from graph.builder import build_application_graph
 from graph.fit_builder import build_fit_analysis_graph
 from graph.opportunity_builder import build_opportunity_extraction_graph
 from graph.profile_builder import build_profile_extraction_graph
+from graph.wiki_builder import build_wiki_discovery_graph
 
 
 class AnalyzeRequest(BaseModel):
@@ -110,6 +112,22 @@ class FitAnalyzeResponse(BaseModel):
     application_materials_check: list[dict] = Field(default_factory=list)
     selection_criteria_alignment: list[dict] = Field(default_factory=list)
     recommended_next_steps: list[str] = Field(default_factory=list)
+
+
+class WikiDiscoverRequest(BaseModel):
+    student_profile: dict = Field(default_factory=dict)
+
+
+class WikiDiscoverResponse(BaseModel):
+    page_title: str = "Scholarship Discovery Wiki"
+    profile_summary: dict = Field(default_factory=dict)
+    recommended_source_groups: list[dict] = Field(default_factory=list)
+    top_free_platforms: list[dict] = Field(default_factory=list)
+    specific_opportunities: list[dict] = Field(default_factory=list)
+    funding_categories: list[dict] = Field(default_factory=list)
+    personalized_search_queries: list[str] = Field(default_factory=list)
+    next_steps: list[str] = Field(default_factory=list)
+    missing_profile_fields: list[str] = Field(default_factory=list)
 
 
 def _text_to_chunks(text: str, source: str) -> list:
@@ -457,6 +475,28 @@ def analyze_scholarship_fit(request: FitAnalyzeRequest) -> dict:
         }
     )
     response = FitAnalyzeResponse(**result)
+    if hasattr(response, "model_dump"):
+        return response.model_dump()
+    return response.dict()
+
+
+def _load_wiki_source_library() -> list[dict]:
+    library_path = Path(__file__).resolve().parent.parent / "data" / "scholarship_source_library.json"
+    try:
+        return json.loads(library_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Scholarship source library could not be loaded.") from exc
+
+
+def discover_scholarship_wiki(request: WikiDiscoverRequest) -> dict:
+    graph = build_wiki_discovery_graph()
+    result = graph.invoke(
+        {
+            "student_profile": request.student_profile,
+            "source_library": _load_wiki_source_library(),
+        }
+    )
+    response = WikiDiscoverResponse(**result)
     if hasattr(response, "model_dump"):
         return response.model_dump()
     return response.dict()

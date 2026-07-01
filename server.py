@@ -11,9 +11,11 @@ from api.routes import (
     AnalyzeRequest,
     FitAnalyzeRequest,
     OpportunityExtractRequest,
+    WikiDiscoverRequest,
     analyze_application,
     analyze_scholarship_fit,
     autofill_profile_from_resume,
+    discover_scholarship_wiki,
     extract_scholarship_opportunity,
 )
 
@@ -67,6 +69,16 @@ def extract_opportunity(request: OpportunityExtractRequest):
 def analyze_fit(request: FitAnalyzeRequest):
     try:
         return analyze_scholarship_fit(request)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/wiki/discover")
+def discover_wiki(request: WikiDiscoverRequest):
+    try:
+        return discover_scholarship_wiki(request)
     except HTTPException:
         raise
     except Exception as exc:

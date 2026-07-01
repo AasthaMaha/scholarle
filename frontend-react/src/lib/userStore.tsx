@@ -212,6 +212,63 @@ export type FitAnalysisResult = {
   recommended_next_steps?: string[];
 };
 
+export type SavedWikiSource = {
+  id: string;
+  name: string;
+  url?: string;
+  category?: string;
+  tags?: string[];
+  notes?: string;
+  saved_at: string;
+};
+
+export type WikiDiscoveryResult = {
+  page_title?: string;
+  profile_summary?: Record<string, unknown>;
+  recommended_source_groups?: Array<{
+    group_name?: string;
+    match_reason?: string;
+    priority?: "High" | "Medium" | "Low" | string;
+    sources?: Array<{
+      name?: string;
+      url?: string;
+      category?: string;
+      cost?: string;
+      best_for?: string[];
+      why_recommended?: string;
+      search_tips?: string[];
+      suggested_queries?: string[];
+    }>;
+  }>;
+  top_free_platforms?: Array<{
+    name?: string;
+    url?: string;
+    category?: string;
+    best_for?: string[];
+    search_tips?: string[];
+  }>;
+  specific_opportunities?: Array<{
+    name?: string;
+    url?: string;
+    category?: string;
+    cost?: string;
+    best_for?: string[];
+    status_note?: string;
+    search_tips?: string[];
+    suggested_queries?: string[];
+  }>;
+  funding_categories?: Array<{
+    category_name?: string;
+    description?: string;
+    best_for?: string[];
+    example_source_types?: string[];
+    suggested_queries?: string[];
+  }>;
+  personalized_search_queries?: string[];
+  next_steps?: string[];
+  missing_profile_fields?: string[];
+};
+
 export type UserProfile = {
   // account
   id?: number;
@@ -249,6 +306,9 @@ export type UserProfile = {
   lastAnalysis?: AnalysisResult;
   // latest dedicated scholarship fit analysis
   fitAnalysis?: FitAnalysisResult;
+  // latest discovery wiki recommendations
+  wikiDiscovery?: WikiDiscoveryResult;
+  savedWikiSources?: SavedWikiSource[];
   // versioned drafts
   drafts?: EssayDraft[];
   // documents

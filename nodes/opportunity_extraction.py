@@ -1,3 +1,5 @@
+import re
+
 from pydantic import BaseModel, Field
 
 from llm.client import llm
@@ -242,6 +244,7 @@ def clean_opportunity_fields(state):
         "requirements": requirements,
         "requirementsPreview": preview_text,
         "fullText": str(data.get("fullText") or state.get("source_text") or "").strip()[:20000],
+        "userProvidedNotes": str(state.get("additional_notes") or "").strip(),
         "sourceUrls": source_urls,
     }
 
@@ -365,6 +368,31 @@ def _without_duplicates_or_materials(values, material_values):
         cleaned.append(value)
         seen.add(key)
     return cleaned
+
+
+def _explicit_award_from_text(*texts):
+    combined = "\n".join(str(text or "") for text in texts)
+    matches = re.findall(r"\$\s?\d[\d,]*(?:\.\d{2})?(?:\s?(?:USD|usd|dollars?))?", combined)
+    cleaned = []
+    seen = set()
+    for match in matches:
+        value = re.sub(r"\s+", " ", match.replace("$ ", "$")).strip()
+        key = value.lower().replace(",", "")
+        if key not in seen:
+            cleaned.append(value)
+            seen.add(key)
+    if len(cleaned) != 1:
+        return ""
+    award = cleaned[0]
+    lower = combined.lower()
+    context = ""
+    if "each semester" in lower:
+        context = " each semester"
+    elif "per semester" in lower:
+        context = " per semester"
+    elif "annually" in lower or "per year" in lower:
+        context = " annually"
+    return f"{award}{context}".strip()
 
 
 def _final_sanitize(mapped):
@@ -491,4 +519,13 @@ def clean_scholarship_output(state):
         for item in mapped["eligibilityRequirements"]
     ]
     mapped["requirementsPreview"] = _clean_record_preview(mapped)
+    explicit_award = _explicit_award_from_text(state.get("userProvidedNotes", ""), state.get("additional_notes", ""))
+    if not explicit_award:
+        explicit_award = _explicit_award_from_text(state.get("source_text", ""), state.get("fullText", ""))
+    if explicit_award:
+        mapped["awardAmount"] = explicit_award
+        benefits = _clean_optional_list(mapped.get("benefits"))
+        if not any(explicit_award.lower().replace(",", "") in item.lower().replace(",", "") for item in benefits):
+            benefits.insert(0, explicit_award)
+        mapped["benefits"] = benefits
     return _final_sanitize(mapped)

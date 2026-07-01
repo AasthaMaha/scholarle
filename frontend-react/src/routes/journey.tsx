@@ -23,6 +23,8 @@ import {
   analyzeScholarshipFit,
   autofillProfileFromResume,
   buildFitPayload,
+  buildWikiPayload,
+  discoverScholarshipWiki,
   extractScholarshipOpportunity,
 } from "@/lib/api/scholarE";
 import {
@@ -32,6 +34,8 @@ import {
   type UserProfile,
   type EssayDraft,
   type ActiveScholarship,
+  type SavedWikiSource,
+  type WikiDiscoveryResult,
 } from "@/lib/userStore";
 import {
   Tooltip,
@@ -1161,68 +1165,303 @@ function GradForm({ value, setBranch, level }: { value: Record<string, unknown>;
   );
 }
 
-/* ---------------- Step 3: Discovery (shortened) ---------------- */
+/* ---------------- Step 3: Scholarship Discovery Wiki ---------------- */
 
 function StepDiscovery() {
-  const { user } = useUser();
-  const resources = buildDiscoveryResources(user);
+  const { user, updateProfile } = useUser();
+  const wiki = user?.wikiDiscovery;
+  const savedSources = user?.savedWikiSources ?? [];
+  const [loading, setLoading] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+  const [categoryFilter, setCategoryFilter] = useState("All");
+  const [freeOnly, setFreeOnly] = useState(false);
+  const [savedOnly, setSavedOnly] = useState(false);
+  const [manualSource, setManualSource] = useState({ name: "", url: "", category: "", notes: "" });
+
+  async function refreshWiki() {
+    setLoading(true);
+    setStatus("Building your discovery wiki...");
+    try {
+      const result = await discoverScholarshipWiki(buildWikiPayload(user));
+      updateProfile({ wikiDiscovery: result });
+      setStatus("Wiki recommendations refreshed.");
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : "Wiki discovery failed.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function saveSource(source: Partial<SavedWikiSource>) {
+    const name = (source.name ?? "").trim();
+    if (!name) return;
+    const url = (source.url ?? "").trim();
+    const exists = savedSources.some((item) => item.name.toLowerCase() === name.toLowerCase() && (item.url ?? "") === url);
+    if (exists) {
+      setStatus("Source is already saved.");
+      return;
+    }
+    const saved: SavedWikiSource = {
+      id: crypto.randomUUID(),
+      name,
+      url,
+      category: source.category ?? "Saved source",
+      notes: source.notes ?? "",
+      tags: source.tags ?? [],
+      saved_at: new Date().toISOString(),
+    };
+    updateProfile({ savedWikiSources: [saved, ...savedSources] });
+    setStatus("Source saved to your Wiki.");
+  }
+
+  function saveManualSource() {
+    saveSource({
+      name: manualSource.name,
+      url: manualSource.url,
+      category: manualSource.category || "Manual source",
+      notes: manualSource.notes,
+      tags: manualSource.category ? [manualSource.category] : [],
+    });
+    setManualSource({ name: "", url: "", category: "", notes: "" });
+  }
+
+  function copyText(value: string) {
+    void navigator.clipboard?.writeText(value);
+    setStatus("Copied.");
+  }
+
+  const allSourceCards = [
+    ...(wiki?.top_free_platforms ?? []).map((source) => ({ ...source, section: "Top Free Platforms", cost: "Free" })),
+    ...(wiki?.specific_opportunities ?? []).map((source) => ({ ...source, section: "Specific Opportunity Sources", cost: source.cost ?? "" })),
+  ];
+  const categories = ["All", ...Array.from(new Set(allSourceCards.map((source) => source.category).filter(Boolean)))];
+  const filteredSources = allSourceCards.filter((source) => {
+    if (categoryFilter !== "All" && source.category !== categoryFilter) return false;
+    if (freeOnly && !String(source.cost ?? "").toLowerCase().includes("free")) return false;
+    if (savedOnly && !savedSources.some((saved) => saved.name === source.name || saved.url === source.url)) return false;
+    return true;
+  });
 
   return (
-    <div>
+    <div className="space-y-5">
       <Card>
-        <div className="flex items-center justify-between">
-          <div className="text-xs uppercase tracking-widest text-muted-foreground">
-            Personalized resources
+        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+          <div>
+            <div className="text-xs uppercase tracking-widest text-muted-foreground">Scholarship Discovery Wiki</div>
+            <h2 className="mt-2 font-display text-[42px] font-extrabold leading-[0.98] tracking-tight">
+              Find the right places to search.
+            </h2>
+            <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground/85">
+              Scholar-E recommends trusted platforms, source pages, funding categories, and search queries based on your profile.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button onClick={refreshWiki} disabled={loading} className="rounded-full bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-40">
+              {loading ? "Running Wiki agents..." : "Run Wiki Agents"}
+            </button>
+            <button onClick={() => setStatus("Go back to the profile step to update your background details.")} className="rounded-full border border-border bg-card px-4 py-2 text-sm hover:bg-accent">
+              Update profile
+            </button>
           </div>
         </div>
-        <p className="text-sm text-muted-foreground mt-2">
-          Curated based on your profile. We don't scrape — we point you to the right places.
-        </p>
-        <div className="mt-4 grid md:grid-cols-2 gap-3">
-          {resources.map((r) => (
-            <div key={r.name} className="flex items-start gap-3 rounded-xl border border-border p-3">
-              <div className="size-9 rounded-lg bg-gold/20 grid place-items-center font-display">
-                {r.name[0]}
+        {status && <p className="mt-3 text-xs text-muted-foreground">{status}</p>}
+        {!wiki && !loading && (
+          <p className="mt-3 text-xs text-muted-foreground">
+            Run the Wiki agents to generate recommendations from your saved profile. This is separate from resume autofill and requirement extraction.
+          </p>
+        )}
+      </Card>
+
+      <Card>
+        <SectionLabel>Profile used for discovery</SectionLabel>
+        <div className="mt-4 grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {Object.entries(wiki?.profile_summary ?? {}).map(([key, value]) => (
+            <div key={key} className="rounded-xl border border-border bg-secondary/30 p-3">
+              <div className="text-xs uppercase tracking-widest text-muted-foreground">{key.replace(/_/g, " ")}</div>
+              <div className="mt-1 text-sm font-medium">{Array.isArray(value) ? value.join(", ") : String(value)}</div>
+            </div>
+          ))}
+        </div>
+        {!!wiki?.missing_profile_fields?.length && (
+          <p className="mt-3 text-xs text-muted-foreground">
+            Add more profile details to improve recommendations: {wiki.missing_profile_fields.join(", ")}.
+          </p>
+        )}
+      </Card>
+
+      <Card>
+        <SectionLabel>Recommended sources for you</SectionLabel>
+        <div className="mt-4 grid lg:grid-cols-2 gap-4">
+          {(wiki?.recommended_source_groups ?? []).map((group) => (
+            <div key={group.group_name} className="rounded-2xl border border-border p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="font-display text-[18px] font-bold">{group.group_name}</div>
+                  <p className="mt-1 text-sm text-muted-foreground/85">{group.match_reason}</p>
+                </div>
+                <Pill tone={group.priority === "High" ? "success" : group.priority === "Medium" ? "info" : "default"}>{group.priority}</Pill>
               </div>
-              <div className="flex-1 min-w-0">
-                <div className="text-sm font-medium">{r.name}</div>
-                <div className="text-xs text-muted-foreground">{r.reason}</div>
-                <div className="text-xs font-mono text-info mt-0.5">{r.url}</div>
+              <div className="mt-3 space-y-3">
+                {(group.sources ?? []).map((source) => (
+                  <WikiSourceCard key={`${group.group_name}-${source.name}`} source={source} onSave={saveSource} onCopy={copyText} />
+                ))}
               </div>
             </div>
           ))}
         </div>
       </Card>
+
+      <Card>
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <SectionLabel>Top free platforms and specific source pages</SectionLabel>
+          <div className="flex flex-wrap items-center gap-2">
+            <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} className="rounded-full border border-border bg-card px-3 py-1.5 text-sm">
+              {categories.map((category) => <option key={category}>{category}</option>)}
+            </select>
+            <label className="inline-flex items-center gap-2 text-sm text-muted-foreground">
+              <input type="checkbox" checked={freeOnly} onChange={(e) => setFreeOnly(e.target.checked)} />
+              Free only
+            </label>
+            <label className="inline-flex items-center gap-2 text-sm text-muted-foreground">
+              <input type="checkbox" checked={savedOnly} onChange={(e) => setSavedOnly(e.target.checked)} />
+              Saved only
+            </label>
+          </div>
+        </div>
+        <div className="mt-4 grid md:grid-cols-2 gap-3">
+          {filteredSources.map((source) => (
+            <WikiSourceCard key={`${source.section}-${source.name}`} source={source} onSave={saveSource} onCopy={copyText} compact />
+          ))}
+          {!filteredSources.length && <p className="text-sm text-muted-foreground">No sources match the selected filters.</p>}
+        </div>
+      </Card>
+
+      <Card>
+        <SectionLabel>Funding categories</SectionLabel>
+        <div className="mt-4 grid md:grid-cols-2 lg:grid-cols-3 gap-3">
+          {(wiki?.funding_categories ?? []).map((category) => (
+            <div key={category.category_name} className="rounded-xl border border-border p-4">
+              <div className="font-display text-[18px] font-bold">{category.category_name}</div>
+              <p className="mt-2 text-sm text-muted-foreground/85">{category.description}</p>
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {(category.best_for ?? []).map((item) => <Pill key={item}>{item}</Pill>)}
+              </div>
+              <ul className="mt-3 space-y-1 text-xs text-muted-foreground">
+                {(category.suggested_queries ?? []).map((query) => <li key={query}>Search: {query}</li>)}
+              </ul>
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      <div className="grid lg:grid-cols-2 gap-4">
+        <Card>
+          <div className="flex items-center justify-between gap-3">
+            <SectionLabel>Personalized search queries</SectionLabel>
+            <button onClick={() => copyText((wiki?.personalized_search_queries ?? []).join("\n"))} className="rounded-full border border-border px-3 py-1.5 text-xs hover:bg-accent">
+              Copy all
+            </button>
+          </div>
+          <div className="mt-4 space-y-2">
+            {(wiki?.personalized_search_queries ?? []).map((query) => (
+              <div key={query} className="flex items-center justify-between gap-3 rounded-xl border border-border p-3">
+                <span className="text-sm">{query}</span>
+                <div className="flex shrink-0 gap-2">
+                  <button onClick={() => copyText(query)} className="rounded-full border border-border px-2.5 py-1 text-xs hover:bg-accent">Copy</button>
+                  <button onClick={() => window.open(`https://www.google.com/search?q=${encodeURIComponent(query)}`, "_blank")} className="rounded-full bg-primary px-2.5 py-1 text-xs text-primary-foreground hover:opacity-90">Search</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+
+      <Card>
+        <SectionLabel>Saved sources</SectionLabel>
+          <div className="mt-4 grid gap-2">
+            {savedSources.map((source) => (
+              <div key={source.id} className="rounded-xl border border-border p-3">
+                <div className="font-medium">{source.name}</div>
+                <div className="text-xs text-muted-foreground">{source.category}</div>
+                {source.url && <div className="mt-1 text-xs font-mono text-info">{source.url}</div>}
+              </div>
+            ))}
+            {!savedSources.length && <p className="text-sm text-muted-foreground">Save platforms or source pages here while researching.</p>}
+          </div>
+
+          <div className="mt-5 border-t border-border pt-4">
+            <div className="text-sm font-medium">Add source manually</div>
+            <div className="mt-3 grid gap-2">
+              <Input label="Source name" value={manualSource.name} onChange={(name) => setManualSource((s) => ({ ...s, name }))} />
+              <Input label="URL" value={manualSource.url} onChange={(url) => setManualSource((s) => ({ ...s, url }))} />
+              <Input label="Category" value={manualSource.category} onChange={(category) => setManualSource((s) => ({ ...s, category }))} />
+              <Textarea label="Notes" value={manualSource.notes} onChange={(notes) => setManualSource((s) => ({ ...s, notes }))} rows={2} />
+              <button onClick={saveManualSource} className="rounded-full bg-primary px-4 py-2 text-sm text-primary-foreground hover:opacity-90">Save source</button>
+            </div>
+          </div>
+        </Card>
+      </div>
     </div>
   );
 }
 
-function buildDiscoveryResources(user: UserProfile | null) {
-  const resources = [
-    { name: "Scholarships.com", reason: "Broad search to build your first scholarship list.", url: "scholarships.com" },
-    { name: "Fastweb", reason: "Saved searches and recurring scholarship discovery.", url: "fastweb.com" },
-    { name: "Going Merry", reason: "Useful for managing multiple scholarship applications.", url: "goingmerry.com" },
-  ];
-  const text = JSON.stringify(user ?? {}).toLowerCase();
-  if (user?.pellEligible || text.includes("financial")) {
-    resources.push({ name: "Scholarship America", reason: "Strong source for need-aware scholarship programs.", url: "scholarshipamerica.org" });
-  }
-  if (user?.firstGen) {
-    resources.push({ name: "First-generation scholarship directories", reason: "Search for awards tied to first-generation status.", url: "imfirst.org" });
-  }
-  if (user?.hispanicLatino === "Yes" || text.includes("hispanic") || text.includes("latino")) {
-    resources.push({ name: "UNCF and identity-based directories", reason: "Use identity and community filters to find relevant awards.", url: "uncf.org" });
-  }
-  if (text.includes("research") || text.includes("graduate") || text.includes("phd")) {
-    resources.push({ name: "ProFellow", reason: "Good fit for fellowships, graduate funding, research, and travel awards.", url: "profellow.com" });
-  }
-  if (user?.educationLevel) {
-    resources.push({ name: "Institutional scholarship office", reason: "Check awards connected to your current or target school.", url: "your school scholarship portal" });
-  }
-  if (user?.location) {
-    resources.push({ name: "Local foundations and civic groups", reason: "Search by city, county, state, employers, banks, and community foundations.", url: `${user.location} local scholarships` });
-  }
-  return resources;
+function WikiSourceCard({
+  source,
+  onSave,
+  onCopy,
+  compact = false,
+}: {
+  source: {
+    name?: string;
+    url?: string;
+    category?: string;
+    cost?: string;
+    best_for?: string[];
+    why_recommended?: string;
+    search_tips?: string[];
+    suggested_queries?: string[];
+    status_note?: string;
+  };
+  onSave: (source: Partial<SavedWikiSource>) => void;
+  onCopy: (value: string) => void;
+  compact?: boolean;
+}) {
+  return (
+    <div className="rounded-xl border border-border bg-card p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="font-medium">{source.name}</div>
+          <div className="text-xs text-muted-foreground">{source.category} {source.cost ? `- ${source.cost}` : ""}</div>
+        </div>
+        <button onClick={() => onSave({ ...source, tags: source.best_for ?? [] })} className="rounded-full border border-border px-2.5 py-1 text-xs hover:bg-accent">
+          Save
+        </button>
+      </div>
+      {source.why_recommended && <p className="mt-2 text-sm text-muted-foreground/85">{source.why_recommended}</p>}
+      {source.status_note && <p className="mt-2 text-xs text-warning">{source.status_note}</p>}
+      {!!source.best_for?.length && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {source.best_for.slice(0, compact ? 3 : 5).map((item) => <Pill key={item}>{item}</Pill>)}
+        </div>
+      )}
+      {!compact && !!source.search_tips?.length && (
+        <ul className="mt-3 space-y-1 text-xs text-muted-foreground">
+          {source.search_tips.map((tip) => <li key={tip}>{tip}</li>)}
+        </ul>
+      )}
+      <div className="mt-3 flex flex-wrap gap-2">
+        {source.url && (
+          <button onClick={() => window.open(source.url, "_blank")} className="rounded-full bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:opacity-90">
+            Open source
+          </button>
+        )}
+        {!!source.suggested_queries?.[0] && (
+          <button onClick={() => onCopy(source.suggested_queries?.[0] ?? "")} className="rounded-full border border-border px-3 py-1.5 text-xs hover:bg-accent">
+            Copy query
+          </button>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function buildOpportunityBuckets(user: UserProfile | null) {
@@ -1381,9 +1620,9 @@ function ScholarshipDetailsCard({
 }) {
   return (
     <Card>
-      <SectionLabel>Scholarship details</SectionLabel>
+      <SectionLabel>Scholarship details for extraction</SectionLabel>
       <p className="mt-1 text-xs text-muted-foreground">
-        Paste the real opportunity details here. Scholar-E will extract requirements into editable fields.
+        After using the Wiki to find a real opportunity, paste its name, link, or copied description here. Scholar-E will extract requirements into editable fields.
       </p>
       <div className="mt-4 grid sm:grid-cols-2 gap-3">
         <Input

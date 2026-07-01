@@ -1,4 +1,4 @@
-import type { ActiveScholarship, AnalysisResult, FitAnalysisResult, UserProfile } from "@/lib/userStore";
+import type { ActiveScholarship, AnalysisResult, FitAnalysisResult, UserProfile, WikiDiscoveryResult } from "@/lib/userStore";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 
@@ -37,6 +37,10 @@ export type OpportunityExtractResult = ActiveScholarship & {
 
 export type FitAnalyzePayload = {
   scholarship_record: ActiveScholarship;
+  student_profile: Record<string, unknown>;
+};
+
+export type WikiDiscoverPayload = {
   student_profile: Record<string, unknown>;
 };
 
@@ -197,4 +201,43 @@ export async function analyzeScholarshipFit(payload: FitAnalyzePayload): Promise
   }
 
   return data as FitAnalysisResult;
+}
+
+export function buildWikiPayload(user: UserProfile | null): WikiDiscoverPayload {
+  const {
+    lastAnalysis,
+    fitAnalysis,
+    wikiDiscovery,
+    savedWikiSources,
+    activeScholarship,
+    ...studentProfile
+  } = user ?? { name: "", email: "" };
+  void lastAnalysis;
+  void fitAnalysis;
+  void wikiDiscovery;
+  void savedWikiSources;
+  void activeScholarship;
+
+  return {
+    student_profile: {
+      ...studentProfile,
+      profile_text: profileToText(user),
+    },
+  };
+}
+
+export async function discoverScholarshipWiki(payload: WikiDiscoverPayload): Promise<WikiDiscoveryResult> {
+  const response = await fetch(`${API_BASE}/api/wiki/discover`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    const detail = data?.detail;
+    throw new Error(typeof detail === "string" ? detail : "Scholarship wiki discovery failed.");
+  }
+
+  return data as WikiDiscoveryResult;
 }
