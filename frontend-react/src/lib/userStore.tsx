@@ -219,6 +219,7 @@ export type UserProfile = {
   email: string;
   // universal
   pronouns?: string;
+  gender?: string;
   location?: string;
   nationality?: string;
   citizenshipStatus?: string;

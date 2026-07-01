@@ -50,6 +50,7 @@ export function profileToText(user: UserProfile | null) {
   return compact([
     `Name: ${user.name}`,
     user.email && `Email: ${user.email}`,
+    user.gender && `Gender: ${user.gender}`,
     user.pronouns && `Pronouns: ${user.pronouns}`,
     user.location && `Location: ${user.location}`,
     user.citizenshipStatus && `Citizenship/Residency Status: ${user.citizenshipStatus}`,

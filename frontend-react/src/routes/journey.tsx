@@ -149,12 +149,11 @@ function Journey() {
 
 function isProfileComplete(user: UserProfile | null) {
   return !!(
-    user?.pronouns?.trim() &&
+    user?.gender?.trim() &&
     user.location?.trim() &&
     user.citizenshipStatus?.trim() &&
     user.hispanicLatino &&
     user.raceEthnicity &&
-    user.careerGoal?.trim() &&
     user.educationLevel
   );
 }
@@ -712,6 +711,7 @@ function StepProfile({ error }: { error: string }) {
     "Two or More Races",
     "White",
   ];
+  const genderOptions = ["Woman", "Man", "Non-binary", "Transgender", "Prefer not to say"];
   const citizenshipOptions = [
     "A-U.S. Citizen, U.S. National, Permanent Resident (Green Card Holder), Refugee, or Asylee",
     "B-International Student or Other Visa Status (F-1, J-1, H-4, TN, DACA, TPS, etc.)",
@@ -854,7 +854,12 @@ function StepProfile({ error }: { error: string }) {
       <Card>
         <SectionLabel>About you *</SectionLabel>
         <div className="grid sm:grid-cols-2 gap-3 mt-3">
-          <Input label="Pronouns" value={user?.pronouns ?? ""} onChange={(v) => set("pronouns", v)} placeholder="she/her, he/him, they/them…" />
+          <Select
+            label="Gender"
+            value={user?.gender ?? ""}
+            onChange={(v) => set("gender", v)}
+            options={genderOptions}
+          />
           <Input label="Location" value={user?.location ?? ""} onChange={(v) => set("location", v)} placeholder="City, State" />
           <Select
             label="Citizenship / Residency Status"
@@ -873,13 +878,6 @@ function StepProfile({ error }: { error: string }) {
             value={user?.raceEthnicity ?? ""}
             onChange={(v) => set("raceEthnicity", v)}
             options={raceOptions}
-            className="sm:col-span-2"
-          />
-          <Input
-            label="Career goal (1-2 sentences)"
-            value={user?.careerGoal ?? ""}
-            onChange={(v) => set("careerGoal", v)}
-            placeholder="What do you want to do after school?"
             className="sm:col-span-2"
           />
         </div>
@@ -1561,6 +1559,7 @@ function StepRequirementsAndFit() {
   const [extracting, setExtracting] = useState(false);
   const [extractionStatus, setExtractionStatus] = useState<string | null>(null);
   const [extractionError, setExtractionError] = useState<string | null>(null);
+  const [rubricOpen, setRubricOpen] = useState(false);
   function updateScholarship(patch: ActiveScholarship) {
     updateProfile({ activeScholarship: { ...scholarship, ...patch } });
   }
@@ -1678,6 +1677,14 @@ function StepRequirementsAndFit() {
                 <div className="mt-3 text-xs text-muted-foreground">
                   Likely eligible: {fitAnalysis.likely_eligible || "Unclear"}
                 </div>
+                <button
+                  type="button"
+                  onClick={() => setRubricOpen(true)}
+                  className="mt-2 text-xs font-medium text-primary underline-offset-4 hover:underline"
+                >
+                  Rubric
+                </button>
+                <FitRubricDialog open={rubricOpen} onOpenChange={setRubricOpen} />
               </Card>
 
               <Card className="md:col-span-2">
@@ -1752,6 +1759,97 @@ function StepRequirementsAndFit() {
         </div>
       </div>
     </div>
+  );
+}
+
+function FitRubricDialog({
+  open,
+  onOpenChange,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const scoreBands = [
+    {
+      range: "90-100",
+      label: "Strong Fit",
+      description: "Mandatory eligibility appears met, profile evidence strongly matches the scholarship purpose, and required materials look ready or easy to confirm.",
+    },
+    {
+      range: "75-89",
+      label: "Good Fit",
+      description: "Eligibility mostly appears met with strong alignment, but one or two details may need confirmation or stronger evidence.",
+    },
+    {
+      range: "55-74",
+      label: "Possible Fit",
+      description: "Some requirements or selection criteria match, but missing profile information or unclear scholarship language keeps confidence moderate.",
+    },
+    {
+      range: "40-54",
+      label: "Weak Fit",
+      description: "The student may be eligible, but there are meaningful gaps, weak alignment, missing documents, or important unclear requirements.",
+    },
+    {
+      range: "0-39",
+      label: "Not Eligible / Insufficient Information",
+      description: "A mandatory requirement is clearly not met, or too much information is missing to responsibly score the opportunity higher.",
+    },
+  ];
+  const factors = [
+    "Mandatory eligibility requirements: enrollment level, citizenship/residency, GPA, location, major/field, identity-based requirements, or other required criteria.",
+    "Student evidence: the score uses only information already in the profile, uploaded/identified documents, essay availability, and reviewed scholarship requirements.",
+    "Missing information: if the profile does not provide enough evidence, the agent marks items as unclear instead of guessing.",
+    "Application materials: required documents are checked as ready, missing, need to prepare, need to confirm, or not applicable.",
+    "Selection criteria alignment: leadership, service, academic fit, community involvement, goals, or other stated selection priorities are scored separately from basic eligibility.",
+  ];
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[90vh] max-w-2xl overflow-hidden p-0">
+        <div className="border-b border-border px-6 py-5">
+        <DialogHeader>
+          <DialogTitle className="font-display text-2xl">Fit Score Rubric</DialogTitle>
+          <DialogDescription>
+            Scholar-E compares the cleaned scholarship requirements against the student profile. The agent separates eligibility from competitiveness and does not invent missing facts.
+          </DialogDescription>
+        </DialogHeader>
+        </div>
+
+        <div className="max-h-[calc(90vh-150px)] space-y-5 overflow-y-auto px-6 py-5">
+          <div>
+            <div className="text-xs uppercase tracking-widest text-muted-foreground">Score bands</div>
+            <div className="mt-3 space-y-2">
+              {scoreBands.map((band) => (
+                <div key={band.range} className="rounded-xl border border-border bg-secondary/30 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="font-medium">{band.label}</div>
+                    <span className="font-mono text-xs text-muted-foreground">{band.range}</span>
+                  </div>
+                  <p className="mt-1 text-sm text-muted-foreground">{band.description}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <div className="text-xs uppercase tracking-widest text-muted-foreground">What the agent checks</div>
+            <ul className="mt-3 space-y-2 text-sm text-foreground/85">
+              {factors.map((factor) => (
+                <li key={factor} className="flex gap-2">
+                  <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-gold" />
+                  <span>{factor}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          <div className="rounded-xl border border-warning/30 bg-warning/10 p-3 text-sm text-foreground/85">
+            If a mandatory requirement is clearly not met, the score is kept below 40. If eligibility is unclear because information is missing, the score stays conservative until the student adds more details.
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 

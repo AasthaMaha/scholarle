@@ -87,7 +87,7 @@ function Hero() {
           <span className="italic text-primary">in your own voice.</span>
         </h1>
         <p className="mt-6 text-lg text-muted-foreground max-w-xl text-balance">
-          Scholar-E walks you through 17 steps — from discovery to submission — analyzing fit, highlighting weak
+          Scholar-E walks you through 8 steps — from discovery to submission — analyzing fit, highlighting weak
           sentences, and tracking every deadline. You stay the author.
         </p>
         <div className="mt-8 flex flex-wrap gap-3">
@@ -106,7 +106,7 @@ function Hero() {
         </div>
         <div className="mt-10 grid grid-cols-3 gap-6 max-w-md">
           {[
-            { k: "17", v: "guided steps" },
+            { k: "8", v: "guided steps" },
             { k: "0", v: "essays written for you" },
             { k: "1", v: "voice — yours" },
           ].map((s) => (
