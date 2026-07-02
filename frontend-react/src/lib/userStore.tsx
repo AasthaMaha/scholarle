@@ -56,6 +56,40 @@ export type GradProfile = {
   needsHelpWith?: string[];
 };
 
+export type EducationHistoryEntry = {
+  id: string;
+  educationLevel?: string;
+  institution?: string;
+  degreeProgram?: string;
+  majorField?: string;
+  department?: string;
+  gpa?: string;
+  startDate?: string;
+  endDate?: string;
+};
+
+export type ResearchExperienceEntry = {
+  id: string;
+  researchAreas?: string;
+  researchProjects?: string;
+  publications?: string;
+  conferences?: string;
+  thesisStatus?: string;
+  assistantshipStatus?: string;
+  advisorLabDepartment?: string;
+};
+
+export type WorkExperienceEntry = {
+  id: string;
+  roleTitle?: string;
+  organization?: string;
+  experienceType?: string;
+  startDate?: string;
+  endDate?: string;
+  description?: string;
+  skillsTechnologies?: string;
+};
+
 export type OptionalSections = {
   resumeFileName?: string;
   societyInvolvement?: string;
@@ -293,6 +327,9 @@ export type UserProfile = {
   highSchool?: HighSchoolProfile;
   undergrad?: UndergradProfile;
   graduate?: GradProfile;
+  educationHistory?: EducationHistoryEntry[];
+  researchExperience?: ResearchExperienceEntry[];
+  workExperience?: WorkExperienceEntry[];
   // optional
   optional?: OptionalSections;
   // prompts

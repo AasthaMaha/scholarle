@@ -21,6 +21,9 @@ export type ResumeAutofillResult = {
   highSchool: Record<string, string>;
   undergrad: Record<string, string>;
   graduate: Record<string, string>;
+  educationHistory?: UserProfile["educationHistory"];
+  researchExperience?: UserProfile["researchExperience"];
+  workExperience?: UserProfile["workExperience"];
   optional: Record<string, string>;
 };
 
@@ -67,6 +70,12 @@ export function profileToText(user: UserProfile | null) {
       : undefined,
     user.careerGoal && `Career goal: ${user.careerGoal}`,
     user.educationLevel && `Education level: ${user.educationLevel}`,
+    user.educationHistory?.length &&
+      `Education history:\n${JSON.stringify(user.educationHistory, null, 2)}`,
+    user.researchExperience?.length &&
+      `Academic/research experience:\n${JSON.stringify(user.researchExperience, null, 2)}`,
+    user.workExperience?.length &&
+      `Work and internship experience:\n${JSON.stringify(user.workExperience, null, 2)}`,
     user.highSchool && `High school profile:\n${JSON.stringify(user.highSchool, null, 2)}`,
     user.undergrad && `Undergraduate profile:\n${JSON.stringify(user.undergrad, null, 2)}`,
     user.graduate && `Graduate profile:\n${JSON.stringify(user.graduate, null, 2)}`,

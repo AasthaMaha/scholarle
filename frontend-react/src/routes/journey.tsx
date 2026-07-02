@@ -31,6 +31,9 @@ import {
   useUser,
   initials as toInitials,
   type EducationLevel,
+  type EducationHistoryEntry,
+  type ResearchExperienceEntry,
+  type WorkExperienceEntry,
   type UserProfile,
   type EssayDraft,
   type ActiveScholarship,
@@ -156,9 +159,8 @@ function isProfileComplete(user: UserProfile | null) {
     user?.gender?.trim() &&
     user.location?.trim() &&
     user.citizenshipStatus?.trim() &&
-    user.hispanicLatino &&
     user.raceEthnicity &&
-    user.educationLevel
+    (user.educationHistory?.some((entry) => entry.educationLevel?.trim()) || user.educationLevel)
   );
 }
 
@@ -655,6 +657,109 @@ function StepProfile({ error }: { error: string }) {
   function setExt(key: string, v: boolean) {
     updateProfile({ extendedContext: { ...(user?.extendedContext ?? {}), [key]: v } });
   }
+  const educationHistory = user?.educationHistory?.length
+    ? user.educationHistory
+    : buildEducationHistoryFromProfile(user);
+  const researchExperience = user?.researchExperience?.length
+    ? user.researchExperience
+    : buildResearchExperienceFromProfile(user);
+  const workExperience = user?.workExperience ?? [];
+  const hasGraduateEducation = educationHistory.some((entry) =>
+    /grad|master|phd|doctor|mba|jd|md/i.test(
+      [entry.educationLevel, entry.degreeProgram].filter(Boolean).join(" "),
+    ),
+  );
+  const [researchOpen, setResearchOpen] = useState(hasGraduateEducation);
+  useEffect(() => {
+    if (hasGraduateEducation) setResearchOpen(true);
+  }, [hasGraduateEducation]);
+
+  function newId(prefix: string) {
+    return `${prefix}-${crypto.randomUUID()}`;
+  }
+  function updateEducationEntry(id: string, patch: Partial<EducationHistoryEntry>) {
+    const next = educationHistory.map((entry) => (entry.id === id ? { ...entry, ...patch } : entry));
+    updateProfile({
+      educationHistory: next,
+      educationLevel: educationLevelCode(next[0]?.educationLevel) ?? user?.educationLevel,
+    });
+  }
+  function addEducationEntry() {
+    updateProfile({
+      educationHistory: [
+        ...educationHistory,
+        {
+          id: newId("edu"),
+          educationLevel: "",
+          institution: "",
+          degreeProgram: "",
+          majorField: "",
+          department: "",
+          gpa: "",
+          startDate: "",
+          endDate: "",
+        },
+      ],
+    });
+  }
+  function removeEducationEntry(id: string) {
+    const next = educationHistory.filter((entry) => entry.id !== id);
+    updateProfile({
+      educationHistory: next,
+      educationLevel: educationLevelCode(next[0]?.educationLevel),
+    });
+  }
+  function updateResearchEntry(id: string, patch: Partial<ResearchExperienceEntry>) {
+    updateProfile({
+      researchExperience: researchExperience.map((entry) => (entry.id === id ? { ...entry, ...patch } : entry)),
+    });
+  }
+  function addResearchEntry() {
+    updateProfile({
+      researchExperience: [
+        ...researchExperience,
+        {
+          id: newId("research"),
+          researchAreas: "",
+          researchProjects: "",
+          publications: "",
+          conferences: "",
+          thesisStatus: "",
+          assistantshipStatus: "",
+          advisorLabDepartment: "",
+        },
+      ],
+    });
+    setResearchOpen(true);
+  }
+  function removeResearchEntry(id: string) {
+    updateProfile({ researchExperience: researchExperience.filter((entry) => entry.id !== id) });
+  }
+  function updateWorkEntry(id: string, patch: Partial<WorkExperienceEntry>) {
+    updateProfile({
+      workExperience: workExperience.map((entry) => (entry.id === id ? { ...entry, ...patch } : entry)),
+    });
+  }
+  function addWorkEntry() {
+    updateProfile({
+      workExperience: [
+        ...workExperience,
+        {
+          id: newId("work"),
+          roleTitle: "",
+          organization: "",
+          experienceType: "",
+          startDate: "",
+          endDate: "",
+          description: "",
+          skillsTechnologies: "",
+        },
+      ],
+    });
+  }
+  function removeWorkEntry(id: string) {
+    updateProfile({ workExperience: workExperience.filter((entry) => entry.id !== id) });
+  }
 
   // documents
   const docs = user?.documents ?? [];
@@ -672,6 +777,29 @@ function StepProfile({ error }: { error: string }) {
     try {
       const profile = await autofillProfileFromResume(file);
       const nextLevel = profile.educationLevel || user?.educationLevel;
+      const parsedHighSchool = compactObject(profile.highSchool);
+      const parsedUndergrad = compactObject(profile.undergrad);
+      const parsedGraduate = compactObject(profile.graduate);
+      const parsedProfile: UserProfile = {
+        name: profile.name || user?.name || "",
+        email: profile.email || user?.email || "",
+        educationLevel: (nextLevel || undefined) as EducationLevel | undefined,
+        highSchool: parsedHighSchool,
+        undergrad: parsedUndergrad,
+        graduate: parsedGraduate,
+      };
+      const nextEducationHistory = (profile.educationHistory?.length
+        ? profile.educationHistory
+        : buildEducationHistoryFromProfile(parsedProfile)
+      ).map((entry, index) => ({ ...entry, id: entry.id || `edu-${index + 1}` }));
+      const nextResearchExperience = (profile.researchExperience?.length
+        ? profile.researchExperience
+        : buildResearchExperienceFromProfile(parsedProfile)
+      ).map((entry, index) => ({ ...entry, id: entry.id || `research-${index + 1}` }));
+      const nextWorkExperience = (profile.workExperience ?? []).map((entry, index) => ({
+        ...entry,
+        id: entry.id || `work-${index + 1}`,
+      }));
       updateProfile({
         name: profile.name || user?.name || "",
         email: profile.email || user?.email || "",
@@ -680,16 +808,21 @@ function StepProfile({ error }: { error: string }) {
         educationLevel: (nextLevel || undefined) as EducationLevel | undefined,
         highSchool: {
           ...(user?.highSchool ?? {}),
-          ...compactObject(profile.highSchool),
+          ...parsedHighSchool,
         },
         undergrad: {
           ...(user?.undergrad ?? {}),
-          ...compactObject(profile.undergrad),
+          ...parsedUndergrad,
         },
         graduate: {
           ...(user?.graduate ?? {}),
-          ...compactObject(profile.graduate),
+          ...parsedGraduate,
         },
+        educationHistory: nextEducationHistory.length ? nextEducationHistory : user?.educationHistory,
+        researchExperience: nextResearchExperience.length
+          ? nextResearchExperience
+          : user?.researchExperience,
+        workExperience: nextWorkExperience.length ? nextWorkExperience : user?.workExperience,
         optional: {
           ...(user?.optional ?? {}),
           ...compactObject(profile.optional),
@@ -706,15 +839,15 @@ function StepProfile({ error }: { error: string }) {
   }
 
   const raceOptions = [
-    "American Indian or Alaska Native",
-    "Asian",
+    "White (Not Hispanic or Latino)",
+    "Hispanic / Latino",
     "Black or African American",
-    "Native Hawaiian or Other Pacific Islander",
-    "Prefer not to say",
+    "Asian",
+    "Native American or Alaskan Native",
     "Two or More Races",
-    "White",
+    "Prefer not to disclose",
   ];
-  const genderOptions = ["Woman", "Man", "Non-binary", "Transgender", "Prefer not to say"];
+  const genderOptions = ["Female", "Male", "Non-binary", "Transgender", "Other", "Prefer not to say"];
   const citizenshipOptions = [
     "A-U.S. Citizen, U.S. National, Permanent Resident (Green Card Holder), Refugee, or Asylee",
     "B-International Student or Other Visa Status (F-1, J-1, H-4, TN, DACA, TPS, etc.)",
@@ -871,12 +1004,6 @@ function StepProfile({ error }: { error: string }) {
             options={citizenshipOptions}
           />
           <Select
-            label="Are you of Hispanic or Latino descent?"
-            value={user?.hispanicLatino ?? ""}
-            onChange={(v) => set("hispanicLatino", v)}
-            options={["Yes", "No"]}
-          />
-          <Select
             label="Please select your Race / Ethnicity"
             value={user?.raceEthnicity ?? ""}
             onChange={(v) => set("raceEthnicity", v)}
@@ -918,27 +1045,28 @@ function StepProfile({ error }: { error: string }) {
         )}
       </Card>
 
-      <Card>
-        <SectionLabel>Education level *</SectionLabel>
-        <p className="text-xs text-muted-foreground mt-1">
-          We use this to ask only the questions that apply to you.
-        </p>
-        <select
-          value={level ?? ""}
-          onChange={(e) => set("educationLevel", (e.target.value || undefined) as EducationLevel | undefined)}
-          className="mt-3 w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm"
-        >
-          <option value="">Select your education level…</option>
-          <option value="high_school">High school</option>
-          <option value="undergrad">Undergraduate</option>
-          <option value="grad">Graduate student</option>
-          <option value="phd">PhD student</option>
-        </select>
-      </Card>
+      <EducationHistorySection
+        entries={educationHistory}
+        onAdd={addEducationEntry}
+        onRemove={removeEducationEntry}
+        onChange={updateEducationEntry}
+      />
 
-      {level === "high_school" && <HighSchoolForm setBranch={setBranch} value={user?.highSchool ?? {}} />}
-      {level === "undergrad" && <UndergradForm setBranch={setBranch} value={user?.undergrad ?? {}} />}
-      {(level === "grad" || level === "phd") && <GradForm setBranch={setBranch} value={user?.graduate ?? {}} level={level} />}
+      <ResearchExperienceSection
+        entries={researchExperience}
+        isOpen={researchOpen}
+        onToggle={() => setResearchOpen((open) => !open)}
+        onAdd={addResearchEntry}
+        onRemove={removeResearchEntry}
+        onChange={updateResearchEntry}
+      />
+
+      <WorkExperienceSection
+        entries={workExperience}
+        onAdd={addWorkEntry}
+        onRemove={removeWorkEntry}
+        onChange={updateWorkEntry}
+      />
 
       <Card>
         <SectionLabel>Optional context</SectionLabel>
@@ -992,10 +1120,10 @@ function Input({
   );
 }
 function Textarea({
-  label, value, onChange, placeholder, rows = 3,
-}: { label: string; value: string; onChange: (v: string) => void; placeholder?: string; rows?: number }) {
+  label, value, onChange, placeholder, rows = 3, className = "",
+}: { label: string; value: string; onChange: (v: string) => void; placeholder?: string; rows?: number; className?: string }) {
   return (
-    <label className="block">
+    <label className={`block ${className}`}>
       <span className="text-xs font-medium text-muted-foreground">{label}</span>
       <textarea
         value={value}
@@ -1068,6 +1196,265 @@ function CheckGroup({ label, options, value, onChange }: { label: string; option
         })}
       </div>
     </div>
+  );
+}
+
+function buildEducationHistoryFromProfile(user: UserProfile | null): EducationHistoryEntry[] {
+  if (!user) return [];
+  const entries: EducationHistoryEntry[] = [];
+  if (user.highSchool && Object.keys(compactObject(user.highSchool)).length) {
+    entries.push({
+      id: "edu-high-school",
+      educationLevel: "High school",
+      institution: "",
+      degreeProgram: "High school diploma",
+      majorField: user.highSchool.intendedMajor ?? "",
+      department: "",
+      gpa: user.highSchool.gpa ?? "",
+      startDate: user.highSchool.intendedStartYear ?? "",
+      endDate: [user.highSchool.gradMonth, user.highSchool.gradYear].filter(Boolean).join(" "),
+    });
+  }
+  if (user.undergrad && Object.keys(compactObject(user.undergrad)).length) {
+    entries.push({
+      id: "edu-undergrad",
+      educationLevel: "Undergraduate",
+      institution: user.undergrad.institution ?? "",
+      degreeProgram: user.undergrad.collegeType ?? "",
+      majorField: [user.undergrad.major, user.undergrad.minor && `Minor: ${user.undergrad.minor}`].filter(Boolean).join("; "),
+      department: "",
+      gpa: user.undergrad.gpa ?? "",
+      startDate: "",
+      endDate: user.undergrad.currentYear ?? "",
+    });
+  }
+  if (user.graduate && Object.keys(compactObject(user.graduate)).length) {
+    entries.push({
+      id: "edu-graduate",
+      educationLevel: user.graduate.graduateLevel || (user.educationLevel === "phd" ? "PhD" : "Graduate"),
+      institution: user.graduate.institution ?? "",
+      degreeProgram: user.graduate.program ?? user.graduate.graduateLevel ?? "",
+      majorField: user.graduate.researchArea ?? "",
+      department: user.graduate.department ?? "",
+      gpa: "",
+      startDate: "",
+      endDate: "",
+    });
+  }
+  return entries;
+}
+
+function buildResearchExperienceFromProfile(user: UserProfile | null): ResearchExperienceEntry[] {
+  const graduate = user?.graduate;
+  if (!graduate || !Object.keys(compactObject(graduate)).length) return [];
+  return [
+    {
+      id: "research-graduate",
+      researchAreas: graduate.researchArea ?? "",
+      researchProjects: "",
+      publications: graduate.researchOutput ?? "",
+      conferences: graduate.travelNeeds ?? "",
+      thesisStatus: "",
+      assistantshipStatus: graduate.assistantshipStatus ?? "",
+      advisorLabDepartment: [graduate.department, graduate.program].filter(Boolean).join(" · "),
+    },
+  ];
+}
+
+function educationLevelCode(value?: string): EducationLevel | undefined {
+  const text = value?.toLowerCase() ?? "";
+  if (!text) return undefined;
+  if (text.includes("phd") || text.includes("doctor")) return "phd";
+  if (text.includes("grad") || text.includes("master") || text.includes("mba") || text.includes("jd") || text.includes("md")) return "grad";
+  if (text.includes("under") || text.includes("bachelor") || text.includes("college")) return "undergrad";
+  if (text.includes("high")) return "high_school";
+  return undefined;
+}
+
+function EducationHistorySection({
+  entries,
+  onAdd,
+  onRemove,
+  onChange,
+}: {
+  entries: EducationHistoryEntry[];
+  onAdd: () => void;
+  onRemove: (id: string) => void;
+  onChange: (id: string, patch: Partial<EducationHistoryEntry>) => void;
+}) {
+  return (
+    <Card>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <SectionLabel>Education History *</SectionLabel>
+          <p className="text-xs text-muted-foreground mt-1">
+            Review every school or program parsed from your resume in one place.
+          </p>
+        </div>
+        <button type="button" onClick={onAdd} className="rounded-full border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent">
+          + Add education
+        </button>
+      </div>
+
+      <div className="mt-4 space-y-4">
+        {entries.length === 0 && (
+          <div className="rounded-xl border border-dashed border-border p-4 text-sm text-muted-foreground">
+            No education entries yet. Add an education entry or upload a resume to autofill this section.
+          </div>
+        )}
+        {entries.map((entry, index) => (
+          <div key={entry.id} className="rounded-xl border border-border bg-secondary/25 p-4">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div className="text-sm font-medium">Education {index + 1}</div>
+              <button type="button" onClick={() => onRemove(entry.id)} className="text-xs text-muted-foreground hover:text-destructive">
+                Remove
+              </button>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Select
+                label="Education level"
+                value={entry.educationLevel ?? ""}
+                onChange={(value) => onChange(entry.id, { educationLevel: value })}
+                options={["High school", "Undergraduate", "Master's", "PhD", "Graduate", "Professional degree", "Other"]}
+              />
+              <Input label="Institution" value={entry.institution ?? ""} onChange={(value) => onChange(entry.id, { institution: value })} />
+              <Input label="Degree / program" value={entry.degreeProgram ?? ""} onChange={(value) => onChange(entry.id, { degreeProgram: value })} />
+              <Input label="Major / field" value={entry.majorField ?? ""} onChange={(value) => onChange(entry.id, { majorField: value })} />
+              <Input label="Department" value={entry.department ?? ""} onChange={(value) => onChange(entry.id, { department: value })} />
+              <Input label="GPA" value={entry.gpa ?? ""} onChange={(value) => onChange(entry.id, { gpa: value })} placeholder="3.85" />
+              <Input label="Start date" value={entry.startDate ?? ""} onChange={(value) => onChange(entry.id, { startDate: value })} placeholder="August 2022" />
+              <Input label="End date / expected graduation" value={entry.endDate ?? ""} onChange={(value) => onChange(entry.id, { endDate: value })} placeholder="May 2026" />
+            </div>
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+function ResearchExperienceSection({
+  entries,
+  isOpen,
+  onToggle,
+  onAdd,
+  onRemove,
+  onChange,
+}: {
+  entries: ResearchExperienceEntry[];
+  isOpen: boolean;
+  onToggle: () => void;
+  onAdd: () => void;
+  onRemove: (id: string) => void;
+  onChange: (id: string, patch: Partial<ResearchExperienceEntry>) => void;
+}) {
+  return (
+    <Card>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <button type="button" onClick={onToggle} className="text-left">
+          <SectionLabel>Academic / Research Experience</SectionLabel>
+          <p className="text-xs text-muted-foreground mt-1">
+            Graduate, PhD, research, assistantship, publication, and presentation evidence.
+          </p>
+        </button>
+        <div className="flex gap-2">
+          <button type="button" onClick={onToggle} className="rounded-full border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent">
+            {isOpen ? "Collapse" : "Expand"}
+          </button>
+          <button type="button" onClick={onAdd} className="rounded-full border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent">
+            + Add research
+          </button>
+        </div>
+      </div>
+
+      {isOpen && (
+        <div className="mt-4 space-y-4">
+          {entries.length === 0 && (
+            <div className="rounded-xl border border-dashed border-border p-4 text-sm text-muted-foreground">
+              Optional for high school and undergraduate profiles. Add research details if they strengthen your scholarship fit.
+            </div>
+          )}
+          {entries.map((entry, index) => (
+            <div key={entry.id} className="rounded-xl border border-border bg-secondary/25 p-4">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div className="text-sm font-medium">Academic / Research Entry {index + 1}</div>
+                <button type="button" onClick={() => onRemove(entry.id)} className="text-xs text-muted-foreground hover:text-destructive">
+                  Remove
+                </button>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Textarea label="Research areas / concentration" value={entry.researchAreas ?? ""} onChange={(value) => onChange(entry.id, { researchAreas: value })} />
+                <Textarea label="Research projects" value={entry.researchProjects ?? ""} onChange={(value) => onChange(entry.id, { researchProjects: value })} />
+                <Textarea label="Publications" value={entry.publications ?? ""} onChange={(value) => onChange(entry.id, { publications: value })} />
+                <Textarea label="Conferences / presentations / posters" value={entry.conferences ?? ""} onChange={(value) => onChange(entry.id, { conferences: value })} />
+                <Input label="Thesis / dissertation status" value={entry.thesisStatus ?? ""} onChange={(value) => onChange(entry.id, { thesisStatus: value })} />
+                <Input label="Assistantship / fellowship status" value={entry.assistantshipStatus ?? ""} onChange={(value) => onChange(entry.id, { assistantshipStatus: value })} />
+                <Input label="Advisor / lab / department" value={entry.advisorLabDepartment ?? ""} onChange={(value) => onChange(entry.id, { advisorLabDepartment: value })} className="sm:col-span-2" />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function WorkExperienceSection({
+  entries,
+  onAdd,
+  onRemove,
+  onChange,
+}: {
+  entries: WorkExperienceEntry[];
+  onAdd: () => void;
+  onRemove: (id: string) => void;
+  onChange: (id: string, patch: Partial<WorkExperienceEntry>) => void;
+}) {
+  return (
+    <Card>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <SectionLabel>Work & Internship Experience</SectionLabel>
+          <p className="text-xs text-muted-foreground mt-1">
+            Work, internships, research assistantships, teaching assistantships, volunteer roles, and leadership experience.
+          </p>
+        </div>
+        <button type="button" onClick={onAdd} className="rounded-full border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent">
+          + Add experience
+        </button>
+      </div>
+
+      <div className="mt-4 space-y-4">
+        {entries.length === 0 && (
+          <div className="rounded-xl border border-dashed border-border p-4 text-sm text-muted-foreground">
+            No experience entries yet. Add roles manually, or upload a resume to extract experience from it.
+          </div>
+        )}
+        {entries.map((entry, index) => (
+          <div key={entry.id} className="rounded-xl border border-border bg-secondary/25 p-4">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div className="text-sm font-medium">Experience {index + 1}</div>
+              <button type="button" onClick={() => onRemove(entry.id)} className="text-xs text-muted-foreground hover:text-destructive">
+                Remove
+              </button>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Input label="Role / title" value={entry.roleTitle ?? ""} onChange={(value) => onChange(entry.id, { roleTitle: value })} />
+              <Input label="Organization / company" value={entry.organization ?? ""} onChange={(value) => onChange(entry.id, { organization: value })} />
+              <Select
+                label="Experience type"
+                value={entry.experienceType ?? ""}
+                onChange={(value) => onChange(entry.id, { experienceType: value })}
+                options={["Work", "Internship", "Research Assistant", "Teaching Assistant", "Volunteer", "Leadership", "Other"]}
+              />
+              <Input label="Start date" value={entry.startDate ?? ""} onChange={(value) => onChange(entry.id, { startDate: value })} />
+              <Input label="End date" value={entry.endDate ?? ""} onChange={(value) => onChange(entry.id, { endDate: value })} />
+              <Input label="Skills / technologies" value={entry.skillsTechnologies ?? ""} onChange={(value) => onChange(entry.id, { skillsTechnologies: value })} />
+              <Textarea label="Description / responsibilities" value={entry.description ?? ""} onChange={(value) => onChange(entry.id, { description: value })} className="sm:col-span-2" />
+            </div>
+          </div>
+        ))}
+      </div>
+    </Card>
   );
 }
 
@@ -2098,6 +2485,7 @@ type WorkspaceTab = "outline" | "evaluation" | "highlights";
 function StepEssayWorkspace() {
   const { user, updateProfile } = useUser();
   const editorRef = useRef<HTMLDivElement | null>(null);
+  const editorSelectionRef = useRef<Range | null>(null);
   const draft = user?.essayDraft ?? "";
   const essayTitle = user?.essayTitle ?? "";
   const wordCount = draft.trim() ? draft.trim().split(/\s+/).filter(Boolean).length : 0;
@@ -2116,9 +2504,34 @@ function StepEssayWorkspace() {
     updateProfile({ essayDraft: editorRef.current?.innerText ?? "" });
   }
 
+  function saveEditorSelection() {
+    const selection = window.getSelection();
+    const editor = editorRef.current;
+    if (!selection?.rangeCount || !editor) return;
+    const range = selection.getRangeAt(0);
+    if (editor.contains(range.commonAncestorContainer)) {
+      editorSelectionRef.current = range.cloneRange();
+    }
+  }
+
+  function restoreEditorSelection() {
+    const range = editorSelectionRef.current;
+    if (!range) return;
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  }
+
   function applyEditorCommand(command: string, value?: string) {
-    editorRef.current?.focus();
-    document.execCommand(command, false, value);
+    const editor = editorRef.current;
+    if (!editor) return;
+    editor.focus();
+    restoreEditorSelection();
+    const applied = document.execCommand(command, false, value);
+    if (!applied && command === "formatBlock" && value?.startsWith("<")) {
+      document.execCommand(command, false, value.replace(/[<>]/g, ""));
+    }
+    saveEditorSelection();
     syncEditor();
   }
 
@@ -2186,8 +2599,8 @@ function StepEssayWorkspace() {
     { label: "Bold", icon: Bold, action: () => applyEditorCommand("bold") },
     { label: "Italic", icon: Italic, action: () => applyEditorCommand("italic") },
     { label: "Underline", icon: Underline, action: () => applyEditorCommand("underline") },
-    { label: "Heading 1", icon: Heading1, action: () => applyEditorCommand("formatBlock", "H1") },
-    { label: "Heading 2", icon: Heading2, action: () => applyEditorCommand("formatBlock", "H2") },
+    { label: "Heading 1", icon: Heading1, action: () => applyEditorCommand("formatBlock", "<h1>") },
+    { label: "Heading 2", icon: Heading2, action: () => applyEditorCommand("formatBlock", "<h2>") },
     { label: "Bullet list", icon: List, action: () => applyEditorCommand("insertUnorderedList") },
     { label: "Numbered list", icon: ListOrdered, action: () => applyEditorCommand("insertOrderedList") },
     {
@@ -2270,7 +2683,9 @@ function StepEssayWorkspace() {
               suppressContentEditableWarning
               onInput={syncEditor}
               onBlur={syncEditor}
-              className="min-h-[520px] w-full whitespace-pre-wrap break-words font-display text-[18px] leading-8 text-foreground outline-none"
+              onKeyUp={saveEditorSelection}
+              onMouseUp={saveEditorSelection}
+              className="min-h-[520px] w-full whitespace-pre-wrap break-words font-display text-[18px] leading-8 text-foreground outline-none [&_h1]:mb-4 [&_h1]:mt-6 [&_h1]:text-4xl [&_h1]:font-bold [&_h1]:leading-tight [&_h2]:mb-3 [&_h2]:mt-5 [&_h2]:text-2xl [&_h2]:font-bold [&_h2]:leading-snug [&_ol]:my-4 [&_ol]:list-decimal [&_ol]:pl-8 [&_ul]:my-4 [&_ul]:list-disc [&_ul]:pl-8 [&_li]:my-1 [&_a]:text-info [&_a]:underline"
             />
           </div>
 
@@ -2283,7 +2698,14 @@ function StepEssayWorkspace() {
                     <TooltipTrigger asChild>
                       <button
                         type="button"
-                        onClick={item.action}
+                        onMouseDown={(event) => {
+                          event.preventDefault();
+                          item.action();
+                        }}
+                        onTouchStart={(event) => {
+                          event.preventDefault();
+                          item.action();
+                        }}
                         className="grid size-9 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
                       >
                         <Icon className="size-4" />

@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import List, Literal
 
 from pydantic import BaseModel, Field
 
@@ -55,6 +55,40 @@ class OptionalAutofill(BaseModel):
     projects: str = Field(description="Personal, school, research, technical, or community projects.")
 
 
+class EducationHistoryAutofill(BaseModel):
+    id: str = Field(description="Stable short id for this entry, such as edu-1.")
+    educationLevel: str = Field(description="High school, Undergraduate, Master's, PhD, Graduate, Professional degree, or Other.")
+    institution: str = Field(description="School, college, university, or institution name if explicit.")
+    degreeProgram: str = Field(description="Degree, diploma, certificate, or program name if explicit.")
+    majorField: str = Field(description="Major, field of study, concentration, or intended field if explicit.")
+    department: str = Field(description="Department or academic unit if explicit.")
+    gpa: str = Field(description="GPA if explicit.")
+    startDate: str = Field(description="Start date if explicit.")
+    endDate: str = Field(description="End date, graduation date, or expected graduation if explicit.")
+
+
+class ResearchExperienceAutofill(BaseModel):
+    id: str = Field(description="Stable short id for this entry, such as research-1.")
+    researchAreas: str = Field(description="Research areas, concentrations, or specialties if explicit.")
+    researchProjects: str = Field(description="Research projects, lab work, capstones, or technical projects if explicit.")
+    publications: str = Field(description="Publications, papers, articles, citations, or manuscripts if explicit.")
+    conferences: str = Field(description="Conferences, presentations, posters, talks, or symposiums if explicit.")
+    thesisStatus: str = Field(description="Thesis or dissertation status if explicit.")
+    assistantshipStatus: str = Field(description="Teaching assistantship, research assistantship, fellowship, or funding status if explicit.")
+    advisorLabDepartment: str = Field(description="Advisor, PI, lab, department, or research group if explicit.")
+
+
+class WorkExperienceAutofill(BaseModel):
+    id: str = Field(description="Stable short id for this entry, such as work-1.")
+    roleTitle: str = Field(description="Role or title if explicit.")
+    organization: str = Field(description="Organization, company, lab, school, or group if explicit.")
+    experienceType: str = Field(description="Work, Internship, Research Assistant, Teaching Assistant, Volunteer, Leadership, or Other.")
+    startDate: str = Field(description="Start date if explicit.")
+    endDate: str = Field(description="End date or Present if explicit.")
+    description: str = Field(description="Responsibilities, accomplishments, or role description.")
+    skillsTechnologies: str = Field(description="Skills, tools, technologies, methods, or languages if explicit.")
+
+
 class ExtractedProfile(BaseModel):
     name: str = Field(description="Applicant full name. Empty string if not found.")
     email: str = Field(description="Email address. Empty string if not found.")
@@ -68,6 +102,15 @@ class ExtractedProfile(BaseModel):
     highSchool: HighSchoolAutofill
     undergrad: UndergradAutofill
     graduate: GradAutofill
+    educationHistory: List[EducationHistoryAutofill] = Field(
+        description="All education entries found in the resume, including high school, undergraduate, graduate, PhD, certificates, and professional programs."
+    )
+    researchExperience: List[ResearchExperienceAutofill] = Field(
+        description="Academic and research experience entries found in the resume."
+    )
+    workExperience: List[WorkExperienceAutofill] = Field(
+        description="Work, internship, research assistant, teaching assistant, volunteer, and leadership roles found in the resume."
+    )
     optional: OptionalAutofill
 
 
@@ -84,9 +127,11 @@ def extract_profile_fields(state):
             (
                 "system",
                 "You extract data for the Scholar-E scholarship profile UI. Fill only "
-                "fields that match the existing UI labels. Do not infer race, ethnicity, "
+                "fields that match the profile UI labels. Do not infer race, ethnicity, "
                 "citizenship, Pell eligibility, first-generation status, parent education, "
-                "pronouns, or financial need. Use empty strings when a field is not explicit.",
+                "pronouns, or financial need. Use empty strings when a field is not explicit. "
+                "Extract every visible education entry, research/academic experience, and "
+                "work/internship/assistantship/volunteer/leadership role as separate editable list entries.",
             ),
             (
                 "human",
@@ -106,6 +151,17 @@ def _clean_dict(data):
     return {key: _clean_text(value) for key, value in (data or {}).items()}
 
 
+def _clean_list(items):
+    cleaned = []
+    for idx, item in enumerate(items or [], start=1):
+        entry = _clean_dict(item)
+        if not any(value for key, value in entry.items() if key != "id"):
+            continue
+        entry["id"] = entry.get("id") or f"entry-{idx}"
+        cleaned.append(entry)
+    return cleaned
+
+
 def clean_profile_fields(state):
     education_level = _clean_text(state.get("educationLevel"))
     if education_level not in {"high_school", "undergrad", "grad", "phd"}:
@@ -120,5 +176,8 @@ def clean_profile_fields(state):
         "highSchool": _clean_dict(state.get("highSchool")),
         "undergrad": _clean_dict(state.get("undergrad")),
         "graduate": _clean_dict(state.get("graduate")),
+        "educationHistory": _clean_list(state.get("educationHistory")),
+        "researchExperience": _clean_list(state.get("researchExperience")),
+        "workExperience": _clean_list(state.get("workExperience")),
         "optional": _clean_dict(state.get("optional")),
     }

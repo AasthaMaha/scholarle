@@ -47,6 +47,9 @@ class ProfileAutofillResponse(BaseModel):
     highSchool: dict = Field(default_factory=dict)
     undergrad: dict = Field(default_factory=dict)
     graduate: dict = Field(default_factory=dict)
+    educationHistory: list[dict] = Field(default_factory=list)
+    researchExperience: list[dict] = Field(default_factory=list)
+    workExperience: list[dict] = Field(default_factory=list)
     optional: dict = Field(default_factory=dict)
 
 

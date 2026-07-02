@@ -11,4 +11,7 @@ class ProfileExtractionState(TypedDict, total=False):
     highSchool: Dict[str, Any]
     undergrad: Dict[str, Any]
     graduate: Dict[str, Any]
+    educationHistory: list[Dict[str, Any]]
+    researchExperience: list[Dict[str, Any]]
+    workExperience: list[Dict[str, Any]]
     optional: Dict[str, str]
