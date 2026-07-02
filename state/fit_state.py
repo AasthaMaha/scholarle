@@ -18,3 +18,4 @@ class FitAnalysisState(TypedDict, total=False):
     application_materials_check: List[Dict[str, str]]
     selection_criteria_alignment: List[Dict[str, str]]
     recommended_next_steps: List[str]
+    application_readiness_matrix: Dict[str, Any]

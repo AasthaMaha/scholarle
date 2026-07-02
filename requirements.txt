@@ -8,6 +8,10 @@ chromadb
 tiktoken
 pydantic
 python-dotenv
+pydantic-settings
+sqlalchemy
+alembic
+psycopg2-binary
 fastapi
 uvicorn[standard]
 pypdf

@@ -26,9 +26,11 @@ from graph.fit_builder import build_fit_analysis_graph
 from graph.opportunity_builder import build_opportunity_extraction_graph
 from graph.profile_builder import build_profile_extraction_graph
 from graph.wiki_builder import build_wiki_discovery_graph
+from persistence.services import default_user_id, run_agent_with_persistence
 
 
 class AnalyzeRequest(BaseModel):
+    user_id: str = Field(default="", max_length=100)
     cv_text: str = Field(..., min_length=1, max_length=50000)
     essay_text: str = Field(..., min_length=1, max_length=20000)
     scholarship_name: str = Field(..., min_length=1, max_length=500)
@@ -54,6 +56,7 @@ class ProfileAutofillResponse(BaseModel):
 
 
 class OpportunityExtractRequest(BaseModel):
+    user_id: str = Field(default="", max_length=100)
     scholarship_name: str = Field(default="", max_length=500)
     scholarship_url: str = Field(default="", max_length=2000)
     additional_notes: str = Field(default="", max_length=12000)
@@ -98,6 +101,7 @@ class OpportunityExtractResponse(BaseModel):
 
 
 class FitAnalyzeRequest(BaseModel):
+    user_id: str = Field(default="", max_length=100)
     scholarship_record: dict = Field(default_factory=dict)
     student_profile: dict = Field(default_factory=dict)
 
@@ -115,9 +119,11 @@ class FitAnalyzeResponse(BaseModel):
     application_materials_check: list[dict] = Field(default_factory=list)
     selection_criteria_alignment: list[dict] = Field(default_factory=list)
     recommended_next_steps: list[str] = Field(default_factory=list)
+    application_readiness_matrix: dict = Field(default_factory=dict)
 
 
 class WikiDiscoverRequest(BaseModel):
+    user_id: str = Field(default="", max_length=100)
     student_profile: dict = Field(default_factory=dict)
 
 
@@ -346,12 +352,24 @@ def analyze_application(request: AnalyzeRequest) -> dict:
         request.prompt,
     )
 
-    result = run_application_pipeline(
-        opportunity_text=opportunity_text,
-        student_draft=request.essay_text,
-        profile_text=request.cv_text,
-        previous_readiness=request.previous_readiness,
-        draft_number=request.draft_number,
+    result, _ = run_agent_with_persistence(
+        user_id=request.user_id,
+        agent_name="essay_application_coaching",
+        input_json={
+            "cv_text_chars": len(request.cv_text),
+            "essay_text_chars": len(request.essay_text),
+            "scholarship_name": request.scholarship_name,
+            "scholarship_type": request.scholarship_type,
+            "prompt_chars": len(request.prompt),
+            "draft_number": request.draft_number,
+        },
+        run_fn=lambda _: run_application_pipeline(
+            opportunity_text=opportunity_text,
+            student_draft=request.essay_text,
+            profile_text=request.cv_text,
+            previous_readiness=request.previous_readiness,
+            draft_number=request.draft_number,
+        ),
     )
 
     return {
@@ -361,6 +379,7 @@ def analyze_application(request: AnalyzeRequest) -> dict:
         "reviewer_comments": result.get("reviewer_comments", []),
         "coaching_reports": result.get("coaching_reports", {}),
         "eligibility_matrix": result.get("eligibility_matrix", {}),
+        "essay_alignment_matrix": result.get("essay_alignment_matrix", {}),
         "feedback": result.get("feedback", ""),
         "section_coaching": result.get("section_coaching", {}),
         "opportunity_analysis": result.get("opportunity_analysis", {}),
@@ -396,7 +415,16 @@ async def autofill_profile_from_resume(file: UploadFile) -> dict:
         )
 
     graph = build_profile_extraction_graph()
-    result = graph.invoke({"resume_text": raw_resume_text})
+    result, _ = run_agent_with_persistence(
+        user_id=default_user_id(),
+        agent_name="resume_profile_extraction",
+        input_json={
+            "filename": file.filename or "",
+            "content_type": file.content_type or "",
+            "resume_text_chars": len(raw_resume_text),
+        },
+        run_fn=lambda _: graph.invoke({"resume_text": raw_resume_text}),
+    )
     response = ProfileAutofillResponse(**result)
     if hasattr(response, "model_dump"):
         return response.model_dump()
@@ -434,14 +462,24 @@ def extract_scholarship_opportunity(request: OpportunityExtractRequest) -> dict:
         ).strip()
 
     graph = build_opportunity_extraction_graph()
-    result = graph.invoke(
-        {
+    payload = {
             "scholarship_name": request.scholarship_name,
             "scholarship_url": request.scholarship_url,
             "additional_notes": request.additional_notes,
             "source_text": source_text,
             "source_urls": source_urls,
-        }
+    }
+    result, _ = run_agent_with_persistence(
+        user_id=request.user_id,
+        agent_name="scholarship_requirements_extraction",
+        input_json={
+            "scholarship_name": request.scholarship_name,
+            "scholarship_url": request.scholarship_url,
+            "additional_notes_chars": len(request.additional_notes),
+            "source_text_chars": len(source_text),
+            "source_url_count": len(source_urls),
+        },
+        run_fn=lambda _: graph.invoke(payload),
     )
     response = OpportunityExtractResponse(**result)
     if hasattr(response, "model_dump"):
@@ -471,11 +509,18 @@ def analyze_scholarship_fit(request: FitAnalyzeRequest) -> dict:
         )
 
     graph = build_fit_analysis_graph()
-    result = graph.invoke(
-        {
+    payload = {
             "scholarship_record": request.scholarship_record,
             "student_profile": request.student_profile,
-        }
+    }
+    result, _ = run_agent_with_persistence(
+        user_id=request.user_id,
+        agent_name="scholarship_fit_analysis",
+        input_json={
+            "scholarship_name": request.scholarship_record.get("name") or request.scholarship_record.get("scholarship_name", ""),
+            "profile_keys": sorted(request.student_profile.keys()),
+        },
+        run_fn=lambda _: graph.invoke(payload),
     )
     response = FitAnalyzeResponse(**result)
     if hasattr(response, "model_dump"):
@@ -493,11 +538,19 @@ def _load_wiki_source_library() -> list[dict]:
 
 def discover_scholarship_wiki(request: WikiDiscoverRequest) -> dict:
     graph = build_wiki_discovery_graph()
-    result = graph.invoke(
-        {
+    payload = {
             "student_profile": request.student_profile,
             "source_library": _load_wiki_source_library(),
-        }
+    }
+    result, _ = run_agent_with_persistence(
+        user_id=request.user_id,
+        agent_name="scholarship_discovery_wiki",
+        input_json={
+            "profile_keys": sorted(request.student_profile.keys()),
+            "education_level": request.student_profile.get("educationLevel", ""),
+            "has_opportunity_preferences": bool(request.student_profile.get("opportunityPreferences")),
+        },
+        run_fn=lambda _: graph.invoke(payload),
     )
     response = WikiDiscoverResponse(**result)
     if hasattr(response, "model_dump"):

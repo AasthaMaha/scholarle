@@ -21,7 +21,11 @@ chroma_db_kb/
 chroma_db_rfp/
 chroma_db_opportunity/
 chroma_db_profile/
+chroma_db/
+uploads/
+local_data/
 scholar_e.db
+*.db
 *.sqlite
 *.sqlite3
 

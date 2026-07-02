@@ -56,6 +56,7 @@ def _university(profile: dict[str, Any]) -> str:
 
 def _opportunity_types(profile: dict[str, Any]) -> list[str]:
     values = []
+    values.extend(_list(profile.get("opportunityPreferences")))
     for branch in ("highSchool", "undergrad", "graduate"):
         values.extend(_list((profile.get(branch) or {}).get("needsHelpWith")))
     blob = _profile_blob(profile)
@@ -138,7 +139,56 @@ def _tokens(*values: Any) -> set[str]:
         aliases.add("stem")
     if "optimization" in aliases or "operations" in aliases or "analytics" in aliases:
         aliases.update({"operations research", "data science", "stem"})
+    if "math" in aliases or "mathematics" in aliases:
+        aliases.update({"mathematics", "stem"})
+    if "science" in aliases or "biology" in aliases or "chemistry" in aliases or "physics" in aliases:
+        aliases.add("stem")
     return aliases
+
+
+def _degree_matches(source: dict[str, Any], degree: str) -> bool:
+    if not degree:
+        return True
+    return any(degree.lower() == item.lower() for item in source.get("degree_levels", []))
+
+
+def _field_match_strength(source: dict[str, Any], field: str) -> int:
+    if not field:
+        return 0
+    profile_tokens = _tokens(field)
+    source_tokens = _tokens(source.get("fields", []), source.get("best_for", []), source.get("category", ""))
+    if profile_tokens & source_tokens:
+        return 2
+    if "General" in source.get("fields", []):
+        return 1
+    return 0
+
+
+def _opportunity_match_strength(source: dict[str, Any], opportunities: list[str]) -> int:
+    source_ops = {item.lower() for item in source.get("opportunity_types", [])}
+    matches = [item for item in opportunities if item.lower() in source_ops]
+    return min(len(matches), 3)
+
+
+def _identity_supported(source: dict[str, Any], profile: dict[str, Any]) -> bool:
+    text = _profile_blob(profile)
+    source_blob = " ".join([
+        str(source.get("name", "")),
+        str(source.get("category", "")),
+        " ".join(source.get("best_for", [])),
+        " ".join(source.get("search_tips", [])),
+        str(source.get("status_note", "")),
+    ]).lower()
+    sensitive_markers = ["hispanic", "latino", "women", "woman", "underrepresented"]
+    if not any(marker in source_blob for marker in sensitive_markers):
+        return True
+    if "hispanic" in source_blob or "latino" in source_blob:
+        return any(token in text for token in ["hispanic", "latino", "latina", "latinx"])
+    if "women" in source_blob or "woman" in source_blob:
+        return any(token in text for token in ["woman", "women", "female"])
+    if "underrepresented" in source_blob:
+        return any(token in text for token in ["underrepresented", "black", "african american", "hispanic", "latino", "native", "american indian"])
+    return True
 
 
 def _score_source(source: dict[str, Any], profile: dict[str, Any], wanted_kind: str) -> int:
@@ -153,27 +203,41 @@ def _score_source(source: dict[str, Any], profile: dict[str, Any], wanted_kind: 
     field = summary.get("field_of_study", "")
     opportunities = summary.get("opportunity_types", [])
 
+    if wanted_kind == "specific_source":
+        if degree and not _degree_matches(source, degree):
+            return -999
+        if not _identity_supported(source, profile):
+            return -999
+
+    field_strength = _field_match_strength(source, field)
+    opportunity_strength = _opportunity_match_strength(source, opportunities)
+
     score = 0
-    if degree and any(degree.lower() in item.lower() for item in source.get("degree_levels", [])):
-        score += 25
+    if degree and _degree_matches(source, degree):
+        score += 35 if wanted_kind == "specific_source" else 25
     profile_kind = _profile_student_kind(profile)
     if profile_kind and profile_kind in source.get("student_types", []):
         score += 25
     if field:
-        profile_tokens = _tokens(field)
-        source_tokens = _tokens(source.get("fields", []), source.get("best_for", []), source.get("category", ""))
-        if profile_tokens & source_tokens or "General" in source.get("fields", []):
-            score += 20 if profile_tokens & source_tokens else 8
-    if opportunities:
-        source_ops = {item.lower() for item in source.get("opportunity_types", [])}
-        if any(item.lower() in source_ops for item in opportunities):
-            score += 15
+        score += {2: 35, 1: 10, 0: 0}[field_strength] if wanted_kind == "specific_source" else {2: 20, 1: 8, 0: 0}[field_strength]
+    if opportunities and opportunity_strength:
+        score += 8 + (opportunity_strength * 7)
     if country and any(country.lower() in item.lower() or item == "Global" for item in source.get("regions", [])):
         score += 10
     if "free" in str(source.get("cost", "")).lower():
         score += 5
+    if source.get("award_amount"):
+        score += 5
+    if source.get("deadline_window"):
+        score += 3
+    if source.get("competitiveness"):
+        score += 3
     if source.get("category") in {"University funding pages", "Professional society awards"} and degree in {"Graduate", "PhD"}:
         score += 8
+    if wanted_kind == "specific_source" and field and field_strength == 0:
+        score -= 25
+    if wanted_kind == "specific_source" and opportunities and opportunity_strength == 0:
+        score -= 10
     return score
 
 
@@ -186,6 +250,9 @@ def _with_score(source: dict[str, Any], score: int) -> dict[str, Any]:
         "best_for": source.get("best_for", []),
         "search_tips": source.get("search_tips", []),
         "status_note": source.get("status_note", ""),
+        "award_amount": source.get("award_amount", ""),
+        "deadline_window": source.get("deadline_window", ""),
+        "competitiveness": source.get("competitiveness", ""),
         "score": score,
     }
 
@@ -206,7 +273,7 @@ def extract_specific_opportunity_sources(state):
     scored = []
     for source in state.get("source_library", []):
         score = _score_source(source, profile, "specific_source")
-        if score >= 22:
+        if score >= 55:
             scored.append(_with_score(source, score))
     scored.sort(key=lambda item: item["score"], reverse=True)
     return {"specific_sources": scored[:8]}
@@ -261,6 +328,9 @@ def _group_sources(sources: list[dict[str, Any]], profile: dict[str, Any]) -> li
                 "why_recommended": _why(item, profile),
                 "search_tips": item.get("search_tips", [])[:3],
                 "suggested_queries": _source_queries(item, profile),
+                "award_amount": item.get("award_amount", ""),
+                "deadline_window": item.get("deadline_window", ""),
+                "competitiveness": item.get("competitiveness", ""),
             })
         result.append({
             "group_name": category,
@@ -276,7 +346,7 @@ def _why(source: dict[str, Any], profile: dict[str, Any]) -> str:
     field = summary.get("field_of_study")
     degree = summary.get("degree_level")
     if field and degree:
-        return f"Matches {degree} level discovery needs and has useful coverage for {field} or adjacent fields."
+        return f"Matches the profile's {degree} level and {field} background, with official-source details ready for requirement extraction."
     if degree:
         return f"Useful for {degree} level scholarship and funding discovery."
     return "Useful as a trusted starting point for scholarship discovery."
@@ -384,7 +454,7 @@ def clean_wiki_discovery_output(state):
         }
         for item in platforms
         if "free" in item.get("cost", "").lower()
-    ][:6]
+    ][:5]
     specific_output = [
         {
             "name": item["name"],
@@ -393,10 +463,14 @@ def clean_wiki_discovery_output(state):
             "cost": item.get("cost", ""),
             "best_for": item.get("best_for", []),
             "status_note": item.get("status_note") or "Verify current status on the official source page.",
+            "why_recommended": _why(item, profile),
+            "award_amount": item.get("award_amount", ""),
+            "deadline_window": item.get("deadline_window", ""),
+            "competitiveness": item.get("competitiveness", ""),
             "search_tips": item.get("search_tips", [])[:3],
             "suggested_queries": _source_queries(item, profile),
         }
-        for item in specifics
+        for item in specifics[:5]
     ]
     return {
         "page_title": "Scholarship Discovery Wiki",
@@ -405,7 +479,7 @@ def clean_wiki_discovery_output(state):
         "top_free_platforms": top_free,
         "specific_opportunities": specific_output,
         "funding_categories": _funding_categories(profile),
-        "personalized_search_queries": _personalized_queries(profile),
+        "personalized_search_queries": _personalized_queries(profile)[:3],
         "next_steps": [
             "Open two high-priority source groups and search with the personalized queries.",
             "Save useful platform or award pages to the Wiki.",

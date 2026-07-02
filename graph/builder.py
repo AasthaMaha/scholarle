@@ -17,6 +17,7 @@ from nodes.generation import (
 )
 from nodes.combine import combine_coaching
 from nodes.critic import MAX_CRITIC_ATTEMPTS, critic_review
+from nodes.essay_alignment import essay_alignment_node
 from nodes.assemble_package import assemble_package
 from nodes.insufficient import insufficient_input
 from nodes.routing import (
@@ -85,7 +86,7 @@ def build_application_graph(profile_store):
                                             \--(no draft)--------->  combine
                                               -> critic
                                                  --revise--> combine (bounded)
-                                                 --done----> assemble -> END
+                                                 --done----> essay_alignment -> assemble -> END
     """
     builder = StateGraph(ApplicationState)
 
@@ -105,6 +106,7 @@ def build_application_graph(profile_store):
 
     builder.add_node("combine_coaching", combine_coaching)
     builder.add_node("critic_review", critic_review)
+    builder.add_node("essay_alignment_matrix", essay_alignment_node)
     builder.add_node("assemble_package", assemble_package)
 
     # Branch 1: short-circuit empty submissions before any LLM call
@@ -157,8 +159,9 @@ def build_application_graph(profile_store):
     builder.add_conditional_edges(
         "critic_review",
         _route_after_critic,
-        {"revise": "combine_coaching", "done": "assemble_package"},
+        {"revise": "combine_coaching", "done": "essay_alignment_matrix"},
     )
+    builder.add_edge("essay_alignment_matrix", "assemble_package")
     builder.add_edge("assemble_package", END)
 
     return builder.compile()

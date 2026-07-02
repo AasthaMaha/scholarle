@@ -1,6 +1,7 @@
 from pydantic import BaseModel, Field
 
 from llm.client import llm
+from nodes.readiness_matrix import build_application_readiness_matrix
 
 
 class EligibilityCheck(BaseModel):
@@ -95,7 +96,7 @@ def clean_fit_result(state):
     if eligible not in {"Yes", "No", "Unclear"}:
         eligible = "Unclear"
 
-    return {
+    cleaned = {
         "scholarship_name": str(data.get("scholarship_name") or "").strip(),
         "fit_label": fit_label,
         "fit_score": score,
@@ -109,3 +110,5 @@ def clean_fit_result(state):
         "selection_criteria_alignment": data.get("selection_criteria_alignment") or [],
         "recommended_next_steps": data.get("recommended_next_steps") or [],
     }
+    cleaned["application_readiness_matrix"] = build_application_readiness_matrix(cleaned)
+    return cleaned

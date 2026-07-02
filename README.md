@@ -99,6 +99,7 @@ Key fields, grouped by who writes them:
 | `section_coaching` | coach_sections | Section-by-section essay feedback |
 | `reviewer_report` | reviewer_agent | Four reviewer-persona comments |
 | `readiness_index`, `coaching_brief`, `growth_report`, `reviewer_comments`, `coaching_reports`, `eligibility_matrix`, `feedback`, `revision_priorities`, `scores` | combine_coaching | Consumer-facing synthesis |
+| `essay_alignment_matrix` | Essay Alignment Matrix | Checks whether the current essay draft covers the prompt, themes, criteria, length guidance, and profile-grounded evidence |
 | `critique`, `critic_attempts`, `needs_revision` | critic_review | Quality audit + loop control |
 | `final_application_package` | assemble_package | Final markdown package |
 
@@ -223,6 +224,19 @@ the student's profile, grounded only in submitted text. Each row gets a status:
 prominently (red for violations, amber for missing, with a "what to fill in"
 action per row).
 
+### Application Readiness Matrix
+**File:** `nodes/readiness_matrix.py` · **LLM:** no
+
+The dedicated scholarship fit flow also creates an **Application Readiness
+Matrix** from the fit agent's eligibility checks and required-material checks.
+It answers: do we have the required eligibility evidence and application
+materials ready?
+
+This matrix is separate from the essay-writing review. It includes each
+eligibility item or material, readiness status, risk level, evidence, action
+needed, blockers, and preparation tasks. It is returned by `/api/fit/analyze`
+as `application_readiness_matrix` and displayed in the scholarship fit step.
+
 ---
 
 ### Agent 5 — Experience Discovery (`discovery_agent`)
@@ -318,6 +332,29 @@ the combined output against the submitted text and the grounding rules:
 
 ---
 
+### Essay Alignment Matrix
+**File:** `nodes/essay_alignment.py` · **LLM:** no
+
+After the critic approves the coaching synthesis, Scholar-E runs an **Essay
+Alignment Matrix** over the current draft. It does not rewrite the essay and
+does not invent student experiences. It checks whether the draft responds to
+the prompt, required themes, selection criteria, profile-grounded evidence, and
+word-limit guidance.
+
+The output includes overall alignment status, completion percent, word count,
+word-limit status, requirement-by-requirement rows, missing or weak items,
+supported strengths, revision tasks, and final submission readiness. The UI
+shows it in the Essay Workspace and Application Evaluation areas.
+
+The two matrices serve different jobs:
+
+| Matrix | Main question | Runs in |
+| --- | --- | --- |
+| Application Readiness Matrix | Are eligibility evidence and required materials ready? | Scholarship fit flow |
+| Essay Alignment Matrix | Does this essay draft answer what the scholarship asks for? | Essay/application coaching flow |
+
+---
+
 ### Branch point 3 — `route_after_critic` (bounded revision loop)
 **File:** `graph/builder.py` · **LLM:** no
 
@@ -332,10 +369,10 @@ the combined output against the submitted text and the grounding rules:
 **File:** `nodes/assemble_package.py` · **LLM:** no
 
 Renders everything into a single markdown coaching package: coaching brief,
-readiness index table, **eligibility & requirements matrix**, growth across
-drafts, reviewer simulation, coach reports, opportunity analysis, retrieved
-evidence, section coaching, and the critic's quality check. **Writes**
-`final_application_package`.
+readiness index table, **eligibility & requirements matrix**, **essay alignment
+matrix**, growth across drafts, reviewer simulation, coach reports, opportunity
+analysis, retrieved evidence, section coaching, and the critic's quality check.
+**Writes** `final_application_package`.
 
 The API (`api/routes.py`) then returns the consumer-facing fields as JSON.
 
@@ -377,6 +414,8 @@ changes with what each student actually submits).
 pip install -r requirements.txt
 # .env at project root:
 #   OPENAI_API_KEY=sk-...
+#   DATABASE_URL=postgresql+psycopg2://user:password@localhost:5432/scholare
+#   CHROMA_PERSIST_DIRECTORY=./chroma_db
 python server.py            # http://127.0.0.1:8000  (POST /api/analyze, GET /health)
 ```
 
@@ -392,6 +431,34 @@ Open the app, create an account (or "Fill demo details" / "Load example"), paste
 a draft and scholarship details, and run the coach. The readiness scores,
 eligibility matrix, reviewer comments, and critic quality check appear in the
 journey UI.
+
+### Persistence setup
+
+Scholar-E now has a PostgreSQL-ready persistence layer for durable user data,
+agent runs, version history, and future RAG memory. The current UI still works
+without PostgreSQL; when `DATABASE_URL` is set, current agent routes write
+`agent_runs` through the shared persistence wrapper.
+
+Recommended local database setup:
+
+```bash
+createdb scholare
+set DATABASE_URL=postgresql+psycopg2://user:password@localhost:5432/scholare
+alembic upgrade head
+python scripts/seed_demo_data.py
+```
+
+Storage rules:
+
+* PostgreSQL is the source of truth for structured records.
+* Chroma is only for searchable embedded chunks.
+* Private memory must always carry `user_id` and explicit collection filters.
+* Do not put `.env`, `chroma_db/`, `uploads/`, `local_data/`, SQLite files, or
+  local database files in git.
+* The shared `VectorService` contract is the path for new durable RAG features;
+  agents should not invent one-off retrieval paths.
+* Current endpoints remain backward compatible; `user_id` is optional until the
+  auth layer is implemented, and defaults to the local demo user.
 
 ---
 

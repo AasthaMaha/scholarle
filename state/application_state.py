@@ -33,6 +33,7 @@ class ApplicationState(TypedDict, total=False):
 
     # Eligibility / requirements comparison matrix (consumer-facing)
     eligibility_matrix: Dict[str, Any]
+    essay_alignment_matrix: Dict[str, Any]
 
     # Combiner agent output (consumer-facing)
     coaching_brief: Dict[str, Any]

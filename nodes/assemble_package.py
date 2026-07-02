@@ -87,6 +87,32 @@ def _format_eligibility_matrix(matrix):
     return header + ("\n".join(rows)) + (f"\n\n{summary}" if summary else "")
 
 
+def _format_essay_alignment_matrix(matrix):
+    if not matrix or not matrix.get("matrix"):
+        return "_No essay alignment check available._"
+
+    rows = [
+        "| Requirement | Type | Evidence | Status | Risk | Revision task |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for row in matrix.get("matrix", []):
+        rows.append(
+            f"| {row.get('requirement', '-')} | {row.get('requirement_type', '-')} | "
+            f"{row.get('essay_evidence', '-')} | {row.get('status', '-')} | "
+            f"{row.get('risk_level', '-')} | {row.get('revision_needed') or '-'} |"
+        )
+
+    header = (
+        f"**Overall:** {matrix.get('overall_alignment_status', 'Insufficient information')} — "
+        f"{matrix.get('completion_percent', 0)}% complete, "
+        f"{matrix.get('word_count', 0)} words, "
+        f"{matrix.get('word_limit_status', 'No limit provided')}.\n\n"
+    )
+    tasks = matrix.get("recommended_revision_tasks") or []
+    task_block = "\n\n**Revision tasks:**\n" + "\n".join(f"- {task}" for task in tasks) if tasks else ""
+    return header + "\n".join(rows) + task_block
+
+
 def _format_reviewer_comments(comments):
     if not comments:
         return "_No reviewer simulation available._"
@@ -191,6 +217,10 @@ def assemble_package(state):
 ## Eligibility & Requirements Matrix
 
 {_format_eligibility_matrix(state.get('eligibility_matrix', {}))}
+
+## Essay Alignment Matrix
+
+{_format_essay_alignment_matrix(state.get('essay_alignment_matrix', {}))}
 
 ## Growth Across Drafts
 

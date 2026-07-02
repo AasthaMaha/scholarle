@@ -37,8 +37,10 @@ import {
   type UserProfile,
   type EssayDraft,
   type ActiveScholarship,
-  type SavedWikiSource,
   type WikiDiscoveryResult,
+  type ApplicationReadinessMatrix,
+  type EssayAlignmentMatrix,
+  type FitAnalysisResult,
 } from "@/lib/userStore";
 import {
   Tooltip,
@@ -143,7 +145,13 @@ function Journey() {
                 </div>
               )}
               <div>
-                <StepBody slug={step.slug} goNext={goNext} profileError={profileError} />
+              <StepBody
+                slug={step.slug}
+                goNext={goNext}
+                goToProfile={() => setStepIdx(Math.max(0, journeySteps.findIndex((s) => s.slug === "profile")))}
+                goToRequirements={() => setStepIdx(Math.max(0, journeySteps.findIndex((s) => s.slug === "requirements")))}
+                profileError={profileError}
+              />
               </div>
               <Nav stepIdx={stepIdx} onNext={goNext} onPrev={goPrev} />
             </div>
@@ -394,15 +402,19 @@ function Nav({ stepIdx, onNext, onPrev }: { stepIdx: number; onNext: () => void;
 function StepBody({
   slug,
   goNext,
+  goToProfile,
+  goToRequirements,
   profileError,
 }: {
   slug: string;
   goNext: () => void;
+  goToProfile: () => void;
+  goToRequirements: () => void;
   profileError: string;
 }) {
   switch (slug) {
     case "profile": return <StepProfile error={profileError} />;
-    case "discovery": return <StepDiscovery />;
+    case "discovery": return <StepDiscovery onUpdateProfile={goToProfile} onUseSource={goToRequirements} />;
     case "opportunities": return <StepOpportunities onAnalyze={goNext} />;
     case "requirements": return <StepRequirementsAndFit />;
     case "essay-workspace": return <StepEssayWorkspace />;
@@ -450,6 +462,163 @@ function FitList({ title, items }: { title: string; items?: string[] }) {
         <p className="mt-3 text-sm text-muted-foreground">No items reported.</p>
       )}
     </div>
+  );
+}
+
+function matrixTone(status?: string, risk?: string): "default" | "gold" | "success" | "warn" | "info" | "danger" {
+  const value = `${status ?? ""} ${risk ?? ""}`.toLowerCase();
+  if (value.includes("high") || value.includes("missing") || value.includes("blocked") || value.includes("not met")) return "danger";
+  if (value.includes("medium") || value.includes("partial") || value.includes("confirm") || value.includes("progress") || value.includes("revision")) return "gold";
+  if (value.includes("ready") || value.includes("met") || value.includes("low")) return "success";
+  return "info";
+}
+
+function buildReadinessFallback(fitAnalysis?: FitAnalysisResult): ApplicationReadinessMatrix | undefined {
+  if (!fitAnalysis) return undefined;
+  if (fitAnalysis.application_readiness_matrix?.matrix?.length) return fitAnalysis.application_readiness_matrix;
+
+  const rows: NonNullable<ApplicationReadinessMatrix["matrix"]> = [
+    ...(fitAnalysis.eligibility_analysis ?? []).map((item) => {
+      const ready = item.status === "Met";
+      const missing = item.status === "Not met";
+      return {
+        item: item.requirement,
+        item_type: "Eligibility",
+        status: ready ? "Ready" : missing ? "Missing" : "Need to confirm",
+        risk_level: ready ? "Low" : missing ? "High" : "Medium",
+        student_evidence: item.student_evidence,
+        action_needed: item.explanation,
+        notes: item.explanation,
+      };
+    }),
+    ...(fitAnalysis.application_materials_check ?? []).map((item) => {
+      const ready = item.status === "Ready";
+      const missing = item.status === "Missing";
+      return {
+        item: item.material,
+        item_type: "Application material",
+        status: ready ? "Ready" : missing ? "Missing" : "Need to confirm",
+        risk_level: ready ? "Low" : missing ? "High" : "Medium",
+        student_evidence: "",
+        action_needed: item.notes,
+        notes: item.notes,
+      };
+    }),
+  ].filter((row) => !!row.item);
+
+  if (!rows.length) return undefined;
+  const readyCount = rows.filter((row) => row.status === "Ready").length;
+  return {
+    overall_status: rows.some((row) => row.risk_level === "High") ? "Blocked" : readyCount === rows.length ? "Ready" : "Needs preparation",
+    completion_percent: Math.round((readyCount / rows.length) * 100),
+    ready_count: readyCount,
+    total_count: rows.length,
+    matrix: rows,
+    blockers: rows.filter((row) => row.risk_level === "High") as Array<Record<string, string>>,
+    preparation_tasks: rows.filter((row) => row.status !== "Ready").map((row) => row.action_needed || `Confirm ${row.item}`).filter(Boolean) as string[],
+    summary: `${readyCount} of ${rows.length} eligibility/material items look ready.`,
+  };
+}
+
+function ApplicationReadinessMatrixCard({ matrix }: { matrix?: ApplicationReadinessMatrix }) {
+  const rows = matrix?.matrix ?? [];
+  return (
+    <Card className="md:col-span-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="text-xs uppercase tracking-widest text-muted-foreground">Application Readiness Matrix</div>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Checks whether the required eligibility items and materials are ready to apply.
+          </p>
+        </div>
+        <div className="text-right">
+          <Pill tone={matrixTone(matrix?.overall_status)}>{matrix?.overall_status ?? "Needs review"}</Pill>
+          <div className="mt-2 text-xs text-muted-foreground">{matrix?.completion_percent ?? 0}% complete</div>
+        </div>
+      </div>
+      {matrix?.summary && <p className="mt-4 text-sm">{matrix.summary}</p>}
+      {rows.length ? (
+        <div className="mt-4 space-y-3">
+          {rows.map((row, index) => (
+          <div key={`${row.item}-${index}`} className="rounded-lg border border-border p-3 text-sm">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <div className="font-medium">{row.item}</div>
+                <div className="text-xs text-muted-foreground">{row.item_type}</div>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                <Pill tone={matrixTone(row.status)}>{row.status || "Need to confirm"}</Pill>
+                <Pill tone={matrixTone(undefined, row.risk_level)}>{row.risk_level || "Medium"} risk</Pill>
+              </div>
+            </div>
+            {row.student_evidence && <div className="mt-2 text-xs text-muted-foreground">{row.student_evidence}</div>}
+            {row.action_needed && <div className="mt-1 text-xs">{row.action_needed}</div>}
+          </div>
+          ))}
+        </div>
+      ) : (
+        <div className="mt-4 rounded-lg border border-dashed border-border bg-secondary/30 p-4 text-sm text-muted-foreground">
+          Run or rerun the scholarship fit analysis to populate this matrix.
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function EssayAlignmentMatrixCard({ matrix }: { matrix?: EssayAlignmentMatrix }) {
+  const rows = matrix?.matrix ?? [];
+  return (
+    <Card>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="text-xs uppercase tracking-widest text-muted-foreground">Essay Alignment Matrix</div>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Checks whether this essay version answers the prompt, themes, criteria, and length guidance.
+          </p>
+        </div>
+        <div className="text-right">
+          <Pill tone={matrixTone(matrix?.overall_alignment_status)}>{matrix?.overall_alignment_status ?? "Needs review"}</Pill>
+          <div className="mt-2 text-xs text-muted-foreground">
+            {matrix?.completion_percent ?? 0}% · {matrix?.word_count ?? 0} words · {matrix?.word_limit_status ?? "No limit provided"}
+          </div>
+        </div>
+      </div>
+      {rows.length ? (
+        <div className="mt-4 space-y-3">
+          {rows.slice(0, 8).map((row, index) => (
+          <div key={`${row.requirement}-${index}`} className="rounded-lg border border-border p-3 text-sm">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <div className="font-medium">{row.requirement}</div>
+                <div className="text-xs text-muted-foreground">{row.requirement_type}</div>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                <Pill tone={matrixTone(row.status)}>{row.status || "Unclear"}</Pill>
+                <Pill tone={matrixTone(undefined, row.risk_level)}>{row.risk_level || "Medium"} risk</Pill>
+              </div>
+            </div>
+            {row.essay_evidence && <div className="mt-2 text-xs text-muted-foreground">{row.essay_evidence}</div>}
+            {row.revision_needed && <div className="mt-1 text-xs">{row.revision_needed}</div>}
+          </div>
+          ))}
+        </div>
+      ) : (
+        <div className="mt-4 rounded-lg border border-dashed border-border bg-secondary/30 p-4 text-sm text-muted-foreground">
+          Run or rerun the essay evaluation to populate this matrix.
+        </div>
+      )}
+      {!!matrix?.recommended_revision_tasks?.length && (
+        <div className="mt-5">
+          <div className="text-xs uppercase tracking-widest text-muted-foreground">Revision tasks</div>
+          <ul className="mt-3 list-disc space-y-1 pl-5 text-sm">
+            {matrix.recommended_revision_tasks.slice(0, 5).map((task) => <li key={task}>{task}</li>)}
+          </ul>
+        </div>
+      )}
+      {matrix?.final_submission_readiness && (
+        <p className="mt-4 text-sm text-muted-foreground">{matrix.final_submission_readiness}</p>
+      )}
+    </Card>
   );
 }
 
@@ -619,6 +788,18 @@ const EXTENDED_CONTEXT_GROUPS: { group: string; options: string[] }[] = [
   { group: "Citizenship / Residency Status", options: ["U.S. citizen", "Permanent resident", "International student", "DACA / undocumented student"] },
   { group: "Enrollment Status", options: ["Full-time student", "Part-time student"] },
   { group: "Military Affiliation", options: ["Veteran", "Military dependent"] },
+];
+
+const SCHOLARSHIP_TYPE_OPTIONS = [
+  "Scholarship",
+  "Fellowship",
+  "Research funding",
+  "Conference travel grant",
+  "Workshop",
+  "Internship",
+  "Grant",
+  "Need-based aid",
+  "Merit award",
 ];
 
 /* ---------------- Step 2: Profile (with materials before story prompts) ---------------- */
@@ -1052,6 +1233,7 @@ function StepProfile({ error }: { error: string }) {
         onChange={updateEducationEntry}
       />
 
+<<<<<<< Updated upstream
       <ResearchExperienceSection
         entries={researchExperience}
         isOpen={researchOpen}
@@ -1067,6 +1249,26 @@ function StepProfile({ error }: { error: string }) {
         onRemove={removeWorkEntry}
         onChange={updateWorkEntry}
       />
+=======
+      <Card>
+        <SectionLabel>Scholarship search preferences</SectionLabel>
+        <p className="text-xs text-muted-foreground mt-1">
+          These guide the Wiki search so direct results are closer to the type of funding you actually want.
+        </p>
+        <div className="mt-4">
+          <CheckGroup
+            label="Types of opportunities"
+            options={SCHOLARSHIP_TYPE_OPTIONS}
+            value={user?.opportunityPreferences ?? []}
+            onChange={(v) => set("opportunityPreferences", v)}
+          />
+        </div>
+      </Card>
+
+      {level === "high_school" && <HighSchoolForm setBranch={setBranch} value={user?.highSchool ?? {}} />}
+      {level === "undergrad" && <UndergradForm setBranch={setBranch} value={user?.undergrad ?? {}} />}
+      {(level === "grad" || level === "phd") && <GradForm setBranch={setBranch} value={user?.graduate ?? {}} level={level} />}
+>>>>>>> Stashed changes
 
       <Card>
         <SectionLabel>Optional context</SectionLabel>
@@ -1554,16 +1756,17 @@ function GradForm({ value, setBranch, level }: { value: Record<string, unknown>;
 
 /* ---------------- Step 3: Scholarship Discovery Wiki ---------------- */
 
-function StepDiscovery() {
+function StepDiscovery({
+  onUpdateProfile,
+  onUseSource,
+}: {
+  onUpdateProfile: () => void;
+  onUseSource: () => void;
+}) {
   const { user, updateProfile } = useUser();
   const wiki = user?.wikiDiscovery;
-  const savedSources = user?.savedWikiSources ?? [];
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
-  const [categoryFilter, setCategoryFilter] = useState("All");
-  const [freeOnly, setFreeOnly] = useState(false);
-  const [savedOnly, setSavedOnly] = useState(false);
-  const [manualSource, setManualSource] = useState({ name: "", url: "", category: "", notes: "" });
 
   async function refreshWiki() {
     setLoading(true);
@@ -1579,55 +1782,47 @@ function StepDiscovery() {
     }
   }
 
-  function saveSource(source: Partial<SavedWikiSource>) {
-    const name = (source.name ?? "").trim();
-    if (!name) return;
-    const url = (source.url ?? "").trim();
-    const exists = savedSources.some((item) => item.name.toLowerCase() === name.toLowerCase() && (item.url ?? "") === url);
-    if (exists) {
-      setStatus("Source is already saved.");
-      return;
-    }
-    const saved: SavedWikiSource = {
-      id: crypto.randomUUID(),
-      name,
-      url,
-      category: source.category ?? "Saved source",
-      notes: source.notes ?? "",
-      tags: source.tags ?? [],
-      saved_at: new Date().toISOString(),
-    };
-    updateProfile({ savedWikiSources: [saved, ...savedSources] });
-    setStatus("Source saved to your Wiki.");
-  }
-
-  function saveManualSource() {
-    saveSource({
-      name: manualSource.name,
-      url: manualSource.url,
-      category: manualSource.category || "Manual source",
-      notes: manualSource.notes,
-      tags: manualSource.category ? [manualSource.category] : [],
-    });
-    setManualSource({ name: "", url: "", category: "", notes: "" });
-  }
-
   function copyText(value: string) {
     void navigator.clipboard?.writeText(value);
     setStatus("Copied.");
   }
 
-  const allSourceCards = [
-    ...(wiki?.top_free_platforms ?? []).map((source) => ({ ...source, section: "Top Free Platforms", cost: "Free" })),
-    ...(wiki?.specific_opportunities ?? []).map((source) => ({ ...source, section: "Specific Opportunity Sources", cost: source.cost ?? "" })),
-  ];
-  const categories = ["All", ...Array.from(new Set(allSourceCards.map((source) => source.category).filter(Boolean)))];
-  const filteredSources = allSourceCards.filter((source) => {
-    if (categoryFilter !== "All" && source.category !== categoryFilter) return false;
-    if (freeOnly && !String(source.cost ?? "").toLowerCase().includes("free")) return false;
-    if (savedOnly && !savedSources.some((saved) => saved.name === source.name || saved.url === source.url)) return false;
-    return true;
-  });
+  function useSourceForExtraction(source: {
+    name?: string;
+    url?: string;
+    category?: string;
+    status_note?: string;
+    why_recommended?: string;
+    award_amount?: string;
+    deadline_window?: string;
+    competitiveness?: string;
+    search_tips?: string[];
+    suggested_queries?: string[];
+  }) {
+    updateProfile({
+      activeScholarship: {
+        ...(user?.activeScholarship ?? {}),
+        name: source.name ?? "",
+        url: source.url ?? "",
+        additionalNotes: [
+          source.category && `Source category: ${source.category}`,
+          source.award_amount && `Award amount: ${source.award_amount}`,
+          source.deadline_window && `Deadline window: ${source.deadline_window}`,
+          source.competitiveness && `Ranking / likelihood signal: ${source.competitiveness}`,
+          source.why_recommended && `Why Scholar-E recommended it: ${source.why_recommended}`,
+          source.status_note,
+          ...(source.search_tips ?? []).map((tip) => `Search tip: ${tip}`),
+          ...(source.suggested_queries ?? []).map((query) => `Suggested query: ${query}`),
+        ].filter(Boolean).join("\n"),
+      },
+    });
+    onUseSource();
+  }
+
+  const hasWiki = !!wiki;
+  const directSources = wiki?.specific_opportunities?.slice(0, 5) ?? [];
+  const platformSources = wiki?.top_free_platforms?.slice(0, 5) ?? [];
+  const profileSummary = wiki?.profile_summary ?? {};
 
   return (
     <div className="space-y-5">
@@ -1635,34 +1830,51 @@ function StepDiscovery() {
         <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div>
             <div className="text-xs uppercase tracking-widest text-muted-foreground">Scholarship Discovery Wiki</div>
-            <h2 className="mt-2 font-display text-[42px] font-extrabold leading-[0.98] tracking-tight">
-              Find the right places to search.
+            <h2 className="mt-2 max-w-3xl font-display text-[42px] font-extrabold leading-[0.98] tracking-tight">
+              Search scholarships from your profile.
             </h2>
             <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground/85">
               Scholar-E recommends trusted platforms, source pages, funding categories, and search queries based on your profile.
             </p>
+            <div className="mt-4 grid max-w-xl grid-cols-3 gap-2">
+              <div className="rounded-xl border border-border bg-secondary/30 p-3">
+                <div className="text-2xl font-bold">{directSources.length || "-"}</div>
+                <div className="text-xs text-muted-foreground">Direct sources</div>
+              </div>
+              <div className="rounded-xl border border-border bg-secondary/30 p-3">
+                <div className="text-2xl font-bold">{platformSources.length || "-"}</div>
+                <div className="text-xs text-muted-foreground">Platforms</div>
+              </div>
+              <div className="rounded-xl border border-border bg-secondary/30 p-3">
+                <div className="text-2xl font-bold">{wiki?.personalized_search_queries?.length || "-"}</div>
+                <div className="text-xs text-muted-foreground">Searches</div>
+              </div>
+            </div>
           </div>
           <div className="flex flex-wrap gap-2">
             <button onClick={refreshWiki} disabled={loading} className="rounded-full bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-40">
-              {loading ? "Running Wiki agents..." : "Run Wiki Agents"}
+              {loading ? "Searching..." : "Search"}
             </button>
-            <button onClick={() => setStatus("Go back to the profile step to update your background details.")} className="rounded-full border border-border bg-card px-4 py-2 text-sm hover:bg-accent">
+            <button onClick={onUpdateProfile} className="rounded-full border border-border bg-card px-4 py-2 text-sm hover:bg-accent">
               Update profile
             </button>
           </div>
         </div>
         {status && <p className="mt-3 text-xs text-muted-foreground">{status}</p>}
         {!wiki && !loading && (
-          <p className="mt-3 text-xs text-muted-foreground">
-            Run the Wiki agents to generate recommendations from your saved profile. This is separate from resume autofill and requirement extraction.
-          </p>
+          <div className="mt-5 rounded-2xl border border-dashed border-border bg-secondary/25 p-5">
+            <div className="font-medium">Ready to search from your saved profile</div>
+            <p className="mt-1 text-sm text-muted-foreground/85">
+              Click Search to generate profile-specific scholarship sources. Results appear after the Wiki agents finish.
+            </p>
+          </div>
         )}
       </Card>
 
-      <Card>
+      {hasWiki && <Card>
         <SectionLabel>Profile used for discovery</SectionLabel>
         <div className="mt-4 grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
-          {Object.entries(wiki?.profile_summary ?? {}).map(([key, value]) => (
+          {Object.entries(profileSummary).map(([key, value]) => (
             <div key={key} className="rounded-xl border border-border bg-secondary/30 p-3">
               <div className="text-xs uppercase tracking-widest text-muted-foreground">{key.replace(/_/g, " ")}</div>
               <div className="mt-1 text-sm font-medium">{Array.isArray(value) ? value.join(", ") : String(value)}</div>
@@ -1674,56 +1886,50 @@ function StepDiscovery() {
             Add more profile details to improve recommendations: {wiki.missing_profile_fields.join(", ")}.
           </p>
         )}
-      </Card>
+      </Card>}
 
-      <Card>
-        <SectionLabel>Recommended sources for you</SectionLabel>
-        <div className="mt-4 grid lg:grid-cols-2 gap-4">
-          {(wiki?.recommended_source_groups ?? []).map((group) => (
-            <div key={group.group_name} className="rounded-2xl border border-border p-4">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="font-display text-[18px] font-bold">{group.group_name}</div>
-                  <p className="mt-1 text-sm text-muted-foreground/85">{group.match_reason}</p>
-                </div>
-                <Pill tone={group.priority === "High" ? "success" : group.priority === "Medium" ? "info" : "default"}>{group.priority}</Pill>
-              </div>
-              <div className="mt-3 space-y-3">
-                {(group.sources ?? []).map((source) => (
-                  <WikiSourceCard key={`${group.group_name}-${source.name}`} source={source} onSave={saveSource} onCopy={copyText} />
-                ))}
-              </div>
+      {hasWiki && (
+        <div className="grid lg:grid-cols-2 gap-4">
+          <Card>
+            <SectionLabel>Top 5 direct scholarship sources</SectionLabel>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Send one into Step 4 with its name, link, and notes filled for requirement extraction.
+            </p>
+            <div className="mt-4 space-y-3">
+              {directSources.map((source) => (
+                <WikiSourceCard
+                  key={`direct-${source.name}`}
+                  source={source}
+                  onCopy={copyText}
+                  onUseSource={useSourceForExtraction}
+                  mode="direct"
+                />
+              ))}
+              {!directSources.length && <p className="text-sm text-muted-foreground">No direct sources matched this profile.</p>}
             </div>
-          ))}
-        </div>
-      </Card>
+          </Card>
 
-      <Card>
-        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <SectionLabel>Top free platforms and specific source pages</SectionLabel>
-          <div className="flex flex-wrap items-center gap-2">
-            <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} className="rounded-full border border-border bg-card px-3 py-1.5 text-sm">
-              {categories.map((category) => <option key={category}>{category}</option>)}
-            </select>
-            <label className="inline-flex items-center gap-2 text-sm text-muted-foreground">
-              <input type="checkbox" checked={freeOnly} onChange={(e) => setFreeOnly(e.target.checked)} />
-              Free only
-            </label>
-            <label className="inline-flex items-center gap-2 text-sm text-muted-foreground">
-              <input type="checkbox" checked={savedOnly} onChange={(e) => setSavedOnly(e.target.checked)} />
-              Saved only
-            </label>
-          </div>
+          <Card>
+            <SectionLabel>Top 5 scholarship platforms</SectionLabel>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Use these platforms to continue searching for real opportunities.
+            </p>
+            <div className="mt-4 space-y-3">
+              {platformSources.map((source) => (
+                <WikiSourceCard
+                  key={`platform-${source.name}`}
+                  source={{ ...source, cost: "Free" }}
+                  onCopy={copyText}
+                  mode="platform"
+                />
+              ))}
+              {!platformSources.length && <p className="text-sm text-muted-foreground">No platforms matched this profile.</p>}
+            </div>
+          </Card>
         </div>
-        <div className="mt-4 grid md:grid-cols-2 gap-3">
-          {filteredSources.map((source) => (
-            <WikiSourceCard key={`${source.section}-${source.name}`} source={source} onSave={saveSource} onCopy={copyText} compact />
-          ))}
-          {!filteredSources.length && <p className="text-sm text-muted-foreground">No sources match the selected filters.</p>}
-        </div>
-      </Card>
+      )}
 
-      <Card>
+      {hasWiki && <Card>
         <SectionLabel>Funding categories</SectionLabel>
         <div className="mt-4 grid md:grid-cols-2 lg:grid-cols-3 gap-3">
           {(wiki?.funding_categories ?? []).map((category) => (
@@ -1733,69 +1939,33 @@ function StepDiscovery() {
               <div className="mt-3 flex flex-wrap gap-1.5">
                 {(category.best_for ?? []).map((item) => <Pill key={item}>{item}</Pill>)}
               </div>
-              <ul className="mt-3 space-y-1 text-xs text-muted-foreground">
-                {(category.suggested_queries ?? []).map((query) => <li key={query}>Search: {query}</li>)}
-              </ul>
             </div>
           ))}
         </div>
-      </Card>
+      </Card>}
 
-      <div className="grid lg:grid-cols-2 gap-4">
-        <Card>
-          <div className="flex items-center justify-between gap-3">
+      {hasWiki && <Card>
             <SectionLabel>Personalized search queries</SectionLabel>
-            <button onClick={() => copyText((wiki?.personalized_search_queries ?? []).join("\n"))} className="rounded-full border border-border px-3 py-1.5 text-xs hover:bg-accent">
-              Copy all
-            </button>
-          </div>
           <div className="mt-4 space-y-2">
-            {(wiki?.personalized_search_queries ?? []).map((query) => (
+            {(wiki?.personalized_search_queries ?? []).slice(0, 3).map((query) => (
               <div key={query} className="flex items-center justify-between gap-3 rounded-xl border border-border p-3">
                 <span className="text-sm">{query}</span>
                 <div className="flex shrink-0 gap-2">
-                  <button onClick={() => copyText(query)} className="rounded-full border border-border px-2.5 py-1 text-xs hover:bg-accent">Copy</button>
                   <button onClick={() => window.open(`https://www.google.com/search?q=${encodeURIComponent(query)}`, "_blank")} className="rounded-full bg-primary px-2.5 py-1 text-xs text-primary-foreground hover:opacity-90">Search</button>
                 </div>
               </div>
             ))}
           </div>
-        </Card>
-
-      <Card>
-        <SectionLabel>Saved sources</SectionLabel>
-          <div className="mt-4 grid gap-2">
-            {savedSources.map((source) => (
-              <div key={source.id} className="rounded-xl border border-border p-3">
-                <div className="font-medium">{source.name}</div>
-                <div className="text-xs text-muted-foreground">{source.category}</div>
-                {source.url && <div className="mt-1 text-xs font-mono text-info">{source.url}</div>}
-              </div>
-            ))}
-            {!savedSources.length && <p className="text-sm text-muted-foreground">Save platforms or source pages here while researching.</p>}
-          </div>
-
-          <div className="mt-5 border-t border-border pt-4">
-            <div className="text-sm font-medium">Add source manually</div>
-            <div className="mt-3 grid gap-2">
-              <Input label="Source name" value={manualSource.name} onChange={(name) => setManualSource((s) => ({ ...s, name }))} />
-              <Input label="URL" value={manualSource.url} onChange={(url) => setManualSource((s) => ({ ...s, url }))} />
-              <Input label="Category" value={manualSource.category} onChange={(category) => setManualSource((s) => ({ ...s, category }))} />
-              <Textarea label="Notes" value={manualSource.notes} onChange={(notes) => setManualSource((s) => ({ ...s, notes }))} rows={2} />
-              <button onClick={saveManualSource} className="rounded-full bg-primary px-4 py-2 text-sm text-primary-foreground hover:opacity-90">Save source</button>
-            </div>
-          </div>
-        </Card>
-      </div>
+      </Card>}
     </div>
   );
 }
 
 function WikiSourceCard({
   source,
-  onSave,
   onCopy,
-  compact = false,
+  onUseSource,
+  mode,
 }: {
   source: {
     name?: string;
@@ -1807,10 +1977,24 @@ function WikiSourceCard({
     search_tips?: string[];
     suggested_queries?: string[];
     status_note?: string;
+    award_amount?: string;
+    deadline_window?: string;
+    competitiveness?: string;
   };
-  onSave: (source: Partial<SavedWikiSource>) => void;
   onCopy: (value: string) => void;
-  compact?: boolean;
+  onUseSource?: (source: {
+    name?: string;
+    url?: string;
+    category?: string;
+    status_note?: string;
+    why_recommended?: string;
+    award_amount?: string;
+    deadline_window?: string;
+    competitiveness?: string;
+    search_tips?: string[];
+    suggested_queries?: string[];
+  }) => void;
+  mode: "direct" | "platform";
 }) {
   return (
     <div className="rounded-xl border border-border bg-card p-3">
@@ -1819,18 +2003,38 @@ function WikiSourceCard({
           <div className="font-medium">{source.name}</div>
           <div className="text-xs text-muted-foreground">{source.category} {source.cost ? `- ${source.cost}` : ""}</div>
         </div>
-        <button onClick={() => onSave({ ...source, tags: source.best_for ?? [] })} className="rounded-full border border-border px-2.5 py-1 text-xs hover:bg-accent">
-          Save
-        </button>
+        {mode === "direct" ? <Pill tone="gold">Direct</Pill> : <Pill>Platform</Pill>}
       </div>
       {source.why_recommended && <p className="mt-2 text-sm text-muted-foreground/85">{source.why_recommended}</p>}
+      {(source.award_amount || source.deadline_window || source.competitiveness) && (
+        <div className="mt-3 grid gap-2 sm:grid-cols-3">
+          {source.award_amount && (
+            <div className="rounded-lg border border-border bg-secondary/30 p-2">
+              <div className="text-[10px] uppercase tracking-widest text-muted-foreground">Amount</div>
+              <div className="mt-1 text-xs font-medium">{source.award_amount}</div>
+            </div>
+          )}
+          {source.deadline_window && (
+            <div className="rounded-lg border border-border bg-secondary/30 p-2">
+              <div className="text-[10px] uppercase tracking-widest text-muted-foreground">Deadline</div>
+              <div className="mt-1 text-xs font-medium">{source.deadline_window}</div>
+            </div>
+          )}
+          {source.competitiveness && (
+            <div className="rounded-lg border border-border bg-secondary/30 p-2">
+              <div className="text-[10px] uppercase tracking-widest text-muted-foreground">Signal</div>
+              <div className="mt-1 text-xs font-medium">{source.competitiveness}</div>
+            </div>
+          )}
+        </div>
+      )}
       {source.status_note && <p className="mt-2 text-xs text-warning">{source.status_note}</p>}
       {!!source.best_for?.length && (
         <div className="mt-2 flex flex-wrap gap-1.5">
-          {source.best_for.slice(0, compact ? 3 : 5).map((item) => <Pill key={item}>{item}</Pill>)}
+          {source.best_for.slice(0, 3).map((item) => <Pill key={item}>{item}</Pill>)}
         </div>
       )}
-      {!compact && !!source.search_tips?.length && (
+      {!!source.search_tips?.length && (
         <ul className="mt-3 space-y-1 text-xs text-muted-foreground">
           {source.search_tips.map((tip) => <li key={tip}>{tip}</li>)}
         </ul>
@@ -1841,9 +2045,14 @@ function WikiSourceCard({
             Open source
           </button>
         )}
-        {!!source.suggested_queries?.[0] && (
+        {!!source.suggested_queries?.[0] && mode === "platform" && (
           <button onClick={() => onCopy(source.suggested_queries?.[0] ?? "")} className="rounded-full border border-border px-3 py-1.5 text-xs hover:bg-accent">
             Copy query
+          </button>
+        )}
+        {mode === "direct" && (
+          <button onClick={() => onUseSource?.(source)} className="rounded-full bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:opacity-90">
+            Copy query to extractor
           </button>
         )}
       </div>
@@ -2346,6 +2555,8 @@ function StepRequirementsAndFit() {
                 </div>
               </Card>
 
+              <ApplicationReadinessMatrixCard matrix={buildReadinessFallback(fitAnalysis)} />
+
               {!!fitAnalysis.application_materials_check?.length && (
                 <Card className="md:col-span-3">
                   <div className="text-xs uppercase tracking-widest text-muted-foreground">Application materials</div>
@@ -2810,6 +3021,7 @@ function WorkspaceEvaluationTab() {
             {analysis.coaching_brief.coach_message}
           </p>
         )}
+        <EssayAlignmentMatrixCard matrix={analysis?.essay_alignment_matrix} />
       </div>
     </div>
   );
@@ -3231,6 +3443,8 @@ function StepScores() {
           ))}
         </ol>
       </Card>
+
+      <EssayAlignmentMatrixCard matrix={analysis.essay_alignment_matrix} />
       </>
       )}
     </div>
