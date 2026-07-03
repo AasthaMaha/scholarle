@@ -1233,23 +1233,6 @@ function StepProfile({ error }: { error: string }) {
         onChange={updateEducationEntry}
       />
 
-<<<<<<< Updated upstream
-      <ResearchExperienceSection
-        entries={researchExperience}
-        isOpen={researchOpen}
-        onToggle={() => setResearchOpen((open) => !open)}
-        onAdd={addResearchEntry}
-        onRemove={removeResearchEntry}
-        onChange={updateResearchEntry}
-      />
-
-      <WorkExperienceSection
-        entries={workExperience}
-        onAdd={addWorkEntry}
-        onRemove={removeWorkEntry}
-        onChange={updateWorkEntry}
-      />
-=======
       <Card>
         <SectionLabel>Scholarship search preferences</SectionLabel>
         <p className="text-xs text-muted-foreground mt-1">
@@ -1265,10 +1248,21 @@ function StepProfile({ error }: { error: string }) {
         </div>
       </Card>
 
-      {level === "high_school" && <HighSchoolForm setBranch={setBranch} value={user?.highSchool ?? {}} />}
-      {level === "undergrad" && <UndergradForm setBranch={setBranch} value={user?.undergrad ?? {}} />}
-      {(level === "grad" || level === "phd") && <GradForm setBranch={setBranch} value={user?.graduate ?? {}} level={level} />}
->>>>>>> Stashed changes
+      <ResearchExperienceSection
+        entries={researchExperience}
+        isOpen={researchOpen}
+        onToggle={() => setResearchOpen((open) => !open)}
+        onAdd={addResearchEntry}
+        onRemove={removeResearchEntry}
+        onChange={updateResearchEntry}
+      />
+
+      <WorkExperienceSection
+        entries={workExperience}
+        onAdd={addWorkEntry}
+        onRemove={removeWorkEntry}
+        onChange={updateWorkEntry}
+      />
 
       <Card>
         <SectionLabel>Optional context</SectionLabel>
