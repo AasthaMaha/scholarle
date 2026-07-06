@@ -57,10 +57,23 @@ class OptionalAutofill(BaseModel):
 
 class EducationHistoryAutofill(BaseModel):
     id: str = Field(description="Stable short id for this entry, such as edu-1.")
-    educationLevel: str = Field(description="High school, Undergraduate, Master's, PhD, Graduate, Professional degree, or Other.")
+    educationLevel: str = Field(
+        description=(
+            "Use exactly one UI label when explicit or clearly stated by the degree/program: "
+            "High School, Associate Degree, Bachelor's Degree, Master's Degree, "
+            "Doctoral Degree, Professional Degree (JD, MD, DDS, etc.), or Other. "
+            "For text like 'Masters in Computer Science', use Master's Degree."
+        )
+    )
     institution: str = Field(description="School, college, university, or institution name if explicit.")
     degreeProgram: str = Field(description="Degree, diploma, certificate, or program name if explicit.")
-    majorField: str = Field(description="Major, field of study, concentration, or intended field if explicit.")
+    majorField: str = Field(
+        description=(
+            "Major, field of study, concentration, or intended field if explicit. "
+            "For degree text like 'Masters in Computer Science' or 'B.S in Computer Science', "
+            "put 'Computer Science' here."
+        )
+    )
     department: str = Field(description="Department or academic unit if explicit.")
     gpa: str = Field(description="GPA if explicit.")
     startDate: str = Field(description="Start date if explicit.")
@@ -131,7 +144,12 @@ def extract_profile_fields(state):
                 "citizenship, Pell eligibility, first-generation status, parent education, "
                 "pronouns, or financial need. Use empty strings when a field is not explicit. "
                 "Extract every visible education entry, research/academic experience, and "
-                "work/internship/assistantship/volunteer/leadership role as separate editable list entries.",
+                "work/internship/assistantship/volunteer/leadership role as separate editable list entries. "
+                "For educationHistory.educationLevel, use only these exact UI options: "
+                "High School; Associate Degree; Bachelor's Degree; Master's Degree; "
+                "Doctoral Degree; Professional Degree (JD, MD, DDS, etc.); Other. "
+                "If a resume says 'Masters in Computer Science' or similar, the education level "
+                "must be Master's Degree and the degree/program should preserve the visible degree text.",
             ),
             (
                 "human",
@@ -181,8 +199,6 @@ def clean_profile_fields(state):
         "workExperience": _clean_list(state.get("workExperience")),
         "optional": _clean_dict(state.get("optional")),
     }
-
-
 
 
 

@@ -972,7 +972,15 @@ function StepProfile({ error }: { error: string }) {
       const nextEducationHistory = (profile.educationHistory?.length
         ? profile.educationHistory
         : buildEducationHistoryFromProfile(parsedProfile)
-      ).map((entry, index) => ({ ...entry, id: entry.id || `edu-${index + 1}` }));
+      ).map((entry, index) => ({
+        ...entry,
+        id: entry.id || `edu-${index + 1}`,
+        majorField: entry.majorField || inferMajorField(entry.degreeProgram),
+        educationLevel:
+          normalizeEducationLevelLabel(entry.educationLevel) ||
+          inferEducationLevelLabel(entry) ||
+          educationLevelLabelFromCode(nextLevel),
+      }));
       const nextResearchExperience = (profile.researchExperience?.length
         ? profile.researchExperience
         : buildResearchExperienceFromProfile(parsedProfile)
@@ -1414,7 +1422,7 @@ function buildEducationHistoryFromProfile(user: UserProfile | null): EducationHi
   if (user.undergrad && Object.keys(compactObject(user.undergrad)).length) {
     entries.push({
       id: "edu-undergrad",
-      educationLevel: "Undergraduate",
+      educationLevel: "Bachelor",
       institution: user.undergrad.institution ?? "",
       degreeProgram: user.undergrad.collegeType ?? "",
       majorField: [user.undergrad.major, user.undergrad.minor && `Minor: ${user.undergrad.minor}`].filter(Boolean).join("; "),
@@ -1467,6 +1475,78 @@ function educationLevelCode(value?: string): EducationLevel | undefined {
   return undefined;
 }
 
+function normalizeEducationLevelLabel(value?: string) {
+  const text = value?.trim() ?? "";
+  if (!text) return "";
+  if (/^high school$/i.test(text)) return "High School";
+  if (/^associate'?s?( degree)?$/i.test(text)) return "Associate Degree";
+  if (/^undergrad(uate)?$/i.test(text)) return "Bachelor's Degree";
+  if (/^bachelor'?s?( degree)?$/i.test(text)) return "Bachelor's Degree";
+  if (/^master'?s?( degree)?$/i.test(text)) return "Master's Degree";
+  if (/^masters?\b/i.test(text)) return "Master's Degree";
+  if (/^(phd|ph\.d\.?|doctoral|doctorate)( degree)?$/i.test(text)) return "Doctoral Degree";
+  if (/^professional degree/i.test(text)) return "Professional Degree (JD, MD, DDS, etc.)";
+  return text;
+}
+
+function educationLevelLabelFromCode(value?: string) {
+  switch (value) {
+    case "high_school":
+      return "High School";
+    case "undergrad":
+      return "Bachelor's Degree";
+    case "grad":
+      return "Master's Degree";
+    case "phd":
+      return "Doctoral Degree";
+    default:
+      return "";
+  }
+}
+
+function inferEducationLevelLabel(entry: Partial<EducationHistoryEntry>) {
+  const text = [
+    entry.educationLevel,
+    entry.degreeProgram,
+    entry.majorField,
+    entry.institution,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  if (!text) return "";
+  if (/\b(jd|j\.d\.?|md|m\.d\.?|dds|d\.d\.s\.?|dvm|pharmd|pharm\.d\.?)\b/.test(text)) {
+    return "Professional Degree (JD, MD, DDS, etc.)";
+  }
+  if (/\b(phd|ph\.d|doctorate|doctoral)\b/.test(text)) return "Doctoral Degree";
+  if (/\b(master|masters|m\.s\.?|ms|m\.a\.?|ma|mba|mfa|mph)\b/.test(text)) return "Master's Degree";
+  if (/\b(bachelor|b\.s\.?|bs|b\.a\.?|ba|bba|undergrad|undergraduate)\b/.test(text)) return "Bachelor's Degree";
+  if (/\b(associate|a\.a\.?|aa|a\.s\.?|as)\b/.test(text)) return "Associate Degree";
+  if (/\b(high school|secondary school|diploma)\b/.test(text)) return "High School";
+  return "";
+}
+
+function inferMajorField(value?: string) {
+  const text = value?.trim() ?? "";
+  if (!text) return "";
+
+  const patterns = [
+    /\b(?:master'?s?|masters|m\.s\.?|ms|m\.a\.?|ma)\s+(?:degree\s+)?(?:in|of)\s+(.+)$/i,
+    /\b(?:bachelor'?s?|bachelors|b\.s\.?|bs|b\.a\.?|ba|bba)\s+(?:degree\s+)?(?:in|of)\s+(.+)$/i,
+    /\b(?:associate'?s?|associates|a\.a\.?|aa|a\.s\.?|as)\s+(?:degree\s+)?(?:in|of)\s+(.+)$/i,
+    /\b(?:phd|ph\.d\.?|doctorate|doctoral)\s+(?:degree\s+)?(?:in|of)\s+(.+)$/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    const field = match?.[1]?.trim();
+    if (field) return field.replace(/[,.]$/, "");
+  }
+
+  return "";
+}
+
 function EducationHistorySection({
   entries,
   onAdd,
@@ -1511,12 +1591,18 @@ function EducationHistorySection({
                 label="Education level"
                 value={entry.educationLevel ?? ""}
                 onChange={(value) => onChange(entry.id, { educationLevel: value })}
-                options={["High school", "Undergraduate", "Master's", "PhD", "Graduate", "Professional degree", "Other"]}
+                options={[
+                  "High School",
+                  "Associate Degree",
+                  "Bachelor's Degree",
+                  "Master's Degree",
+                  "Doctoral Degree",
+                  "Professional Degree (JD, MD, DDS, etc.)",
+                  "Other",
+                ]}
               />
               <Input label="Institution" value={entry.institution ?? ""} onChange={(value) => onChange(entry.id, { institution: value })} />
-              <Input label="Degree / program" value={entry.degreeProgram ?? ""} onChange={(value) => onChange(entry.id, { degreeProgram: value })} />
               <Input label="Major / field" value={entry.majorField ?? ""} onChange={(value) => onChange(entry.id, { majorField: value })} />
-              <Input label="Department" value={entry.department ?? ""} onChange={(value) => onChange(entry.id, { department: value })} />
               <Input label="GPA" value={entry.gpa ?? ""} onChange={(value) => onChange(entry.id, { gpa: value })} placeholder="3.85" />
               <Input label="Start date" value={entry.startDate ?? ""} onChange={(value) => onChange(entry.id, { startDate: value })} placeholder="August 2022" />
               <Input label="End date / expected graduation" value={entry.endDate ?? ""} onChange={(value) => onChange(entry.id, { endDate: value })} placeholder="May 2026" />
