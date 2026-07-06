@@ -119,7 +119,12 @@ class ExtractedProfile(BaseModel):
         description="All education entries found in the resume, including high school, undergraduate, graduate, PhD, certificates, and professional programs."
     )
     researchExperience: List[ResearchExperienceAutofill] = Field(
-        description="Academic and research experience entries found in the resume."
+        description=(
+            "Academic and research experience entries found in the resume. Only include entries with "
+            "concrete research evidence such as research assistant work, lab work, advisor/PI/lab, "
+            "thesis/dissertation, publications, posters, presentations, conferences, or assistantships. "
+            "Do not create research entries from degree names, majors, programs, or departments alone."
+        )
     )
     workExperience: List[WorkExperienceAutofill] = Field(
         description="Work, internship, research assistant, teaching assistant, volunteer, and leadership roles found in the resume."
@@ -145,6 +150,10 @@ def extract_profile_fields(state):
                 "pronouns, or financial need. Use empty strings when a field is not explicit. "
                 "Extract every visible education entry, research/academic experience, and "
                 "work/internship/assistantship/volunteer/leadership role as separate editable list entries. "
+                "Do not create or populate researchExperience only because the resume shows a Master's, "
+                "PhD, major, department, or program. Leave researchExperience empty unless there is concrete "
+                "research evidence like an advisor/PI/lab, research assistantship, thesis/dissertation, "
+                "publication, poster, presentation, conference, lab work, or named research project. "
                 "For educationHistory.educationLevel, use only these exact UI options: "
                 "High School; Associate Degree; Bachelor's Degree; Master's Degree; "
                 "Doctoral Degree; Professional Degree (JD, MD, DDS, etc.); Other. "
@@ -180,6 +189,42 @@ def _clean_list(items):
     return cleaned
 
 
+def _has_concrete_research_evidence(entry):
+    direct_fields = [
+        "researchProjects",
+        "publications",
+        "conferences",
+        "thesisStatus",
+        "assistantshipStatus",
+    ]
+    if any(_clean_text(entry.get(field)) for field in direct_fields):
+        return True
+
+    research_area = _clean_text(entry.get("researchAreas")).lower()
+    if any(
+        term in research_area
+        for term in [
+            "research",
+            "thesis",
+            "dissertation",
+            "lab",
+            "laboratory",
+            "project",
+            "capstone",
+            "poster",
+            "publication",
+            "conference",
+        ]
+    ):
+        return True
+
+    advisor_lab = _clean_text(entry.get("advisorLabDepartment")).lower()
+    return any(
+        term in advisor_lab
+        for term in ["advisor", "principal investigator", " pi", "lab", "laboratory", "research group"]
+    )
+
+
 def clean_profile_fields(state):
     education_level = _clean_text(state.get("educationLevel"))
     if education_level not in {"high_school", "undergrad", "grad", "phd"}:
@@ -195,11 +240,14 @@ def clean_profile_fields(state):
         "undergrad": _clean_dict(state.get("undergrad")),
         "graduate": _clean_dict(state.get("graduate")),
         "educationHistory": _clean_list(state.get("educationHistory")),
-        "researchExperience": _clean_list(state.get("researchExperience")),
+        "researchExperience": [
+            entry
+            for entry in _clean_list(state.get("researchExperience"))
+            if _has_concrete_research_evidence(entry)
+        ],
         "workExperience": _clean_list(state.get("workExperience")),
         "optional": _clean_dict(state.get("optional")),
     }
-
 
 
 

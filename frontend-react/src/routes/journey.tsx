@@ -138,7 +138,7 @@ function Journey() {
             onOpen={() => setIsSidebarOpen(true)}
           />
           <main className="flex-1 overflow-y-auto">
-            <div className="mx-auto max-w-5xl px-6 md:px-10 py-10">
+            <div className={`mx-auto px-6 md:px-10 py-10 ${step.slug === "profile" ? "max-w-7xl" : "max-w-5xl"}`}>
               {exampleStatus && (
                 <div className="mb-4 rounded-xl border border-gold/30 bg-gold/10 px-4 py-3 text-sm text-foreground/90">
                   {exampleStatus}
@@ -802,6 +802,9 @@ const SCHOLARSHIP_TYPE_OPTIONS = [
   "Merit award",
 ];
 
+const PROFILE_SECTION_CLASS = "!rounded-xl !border-border/60 !bg-white/75 !p-6 !shadow-none";
+const PROFILE_ENTRY_CLASS = "rounded-lg border border-border/60 bg-white/60 p-4";
+
 /* ---------------- Step 2: Profile (with materials before story prompts) ---------------- */
 
 function StepProfile({ error }: { error: string }) {
@@ -984,7 +987,9 @@ function StepProfile({ error }: { error: string }) {
       const nextResearchExperience = (profile.researchExperience?.length
         ? profile.researchExperience
         : buildResearchExperienceFromProfile(parsedProfile)
-      ).map((entry, index) => ({ ...entry, id: entry.id || `research-${index + 1}` }));
+      )
+        .filter(hasConcreteResearchEvidence)
+        .map((entry, index) => ({ ...entry, id: entry.id || `research-${index + 1}` }));
       const nextWorkExperience = (profile.workExperience ?? []).map((entry, index) => ({
         ...entry,
         id: entry.id || `work-${index + 1}`,
@@ -1008,9 +1013,7 @@ function StepProfile({ error }: { error: string }) {
           ...parsedGraduate,
         },
         educationHistory: nextEducationHistory.length ? nextEducationHistory : user?.educationHistory,
-        researchExperience: nextResearchExperience.length
-          ? nextResearchExperience
-          : user?.researchExperience,
+        researchExperience: nextResearchExperience,
         workExperience: nextWorkExperience.length ? nextWorkExperience : user?.workExperience,
         optional: {
           ...(user?.optional ?? {}),
@@ -1061,15 +1064,15 @@ function StepProfile({ error }: { error: string }) {
     </div>
   );
   const uploadMaterialsCard = (
-    <Card>
+    <Card className={PROFILE_SECTION_CLASS}>
       <SectionLabel>Upload Materials (Optional)</SectionLabel>
       <p className="text-xs text-muted-foreground mt-1">
         Add supporting documents you may reuse across applications.
       </p>
       {uploadedDocsList}
-      <div className="mt-5 grid sm:grid-cols-3 gap-3">
+      <div className="mt-4 grid sm:grid-cols-3 gap-3">
         {["Transcript", "Letter of Recommendation", "Other documents"].map((k) => (
-          <label key={k} className="rounded-xl border-2 border-dashed border-border p-4 text-sm cursor-pointer hover:bg-accent">
+          <label key={k} className="rounded-lg border border-dashed border-border p-3 text-sm cursor-pointer hover:bg-accent">
             <div className="text-xs uppercase tracking-widest text-muted-foreground">Upload</div>
             <div className="font-medium mt-1">{k}</div>
             <input
@@ -1088,7 +1091,7 @@ function StepProfile({ error }: { error: string }) {
   );
 
   return (
-    <div className="space-y-6">
+    <div className="mx-auto max-w-7xl">
       <Dialog open={showStartDialog} onOpenChange={setShowStartDialog}>
         <DialogContent className="max-w-md">
           <DialogHeader>
@@ -1149,17 +1152,19 @@ function StepProfile({ error }: { error: string }) {
         </DialogContent>
       </Dialog>
 
-      <Card>
+      <div className="grid items-start gap-8 xl:grid-cols-2">
+        <div className="space-y-8">
+      <Card className={PROFILE_SECTION_CLASS}>
         <div className="flex items-center gap-3">
-          <div className="size-12 rounded-2xl bg-primary text-primary-foreground grid place-items-center font-display text-xl">
+          <div className="size-10 rounded-xl bg-primary text-primary-foreground grid place-items-center font-display text-base">
             {toInitials(user?.name)}
           </div>
           <div>
-            <div className="font-display text-xl">{user?.name}</div>
+            <div className="font-display text-xl font-semibold">{user?.name}</div>
             <div className="text-sm text-muted-foreground">{user?.email}</div>
           </div>
         </div>
-        <p className="mt-4 text-xs text-muted-foreground">
+        <p className="mt-3 text-xs text-muted-foreground">
           {profileStartMode === "resume"
             ? "Review and edit the fields filled from your resume."
             : "Fill out the fields below to build your student profile."}
@@ -1176,7 +1181,7 @@ function StepProfile({ error }: { error: string }) {
         </div>
       )}
 
-      <Card>
+      <Card className={PROFILE_SECTION_CLASS}>
         <SectionLabel>About you *</SectionLabel>
         <div className="grid sm:grid-cols-2 gap-3 mt-3">
           <Select
@@ -1201,20 +1206,20 @@ function StepProfile({ error }: { error: string }) {
           />
         </div>
 
-        <div className="mt-5 grid sm:grid-cols-2 gap-3">
+        <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2">
           <GlossaryCheck label="First-generation college student" checked={!!user?.firstGen} onChange={(v) => set("firstGen", v)} />
           <GlossaryCheck label="Pell Grant eligible" checked={!!user?.pellEligible} onChange={(v) => set("pellEligible", v)} />
         </div>
 
         <button
           onClick={() => setShowExtended((s) => !s)}
-          className="mt-5 text-xs underline text-muted-foreground hover:text-foreground"
+          className="mt-4 text-xs underline text-muted-foreground hover:text-foreground"
         >
           {showExtended ? "− Hide" : "+ Add more personalized context"}
         </button>
 
         {showExtended && (
-          <div className="mt-4 space-y-5">
+          <div className="mt-4 space-y-4">
             {EXTENDED_CONTEXT_GROUPS.map((grp) => (
               <div key={grp.group}>
                 <div className="text-[11px] uppercase tracking-widest text-gold">{grp.group}</div>
@@ -1241,21 +1246,8 @@ function StepProfile({ error }: { error: string }) {
         onChange={updateEducationEntry}
       />
 
-      <Card>
-        <SectionLabel>Scholarship search preferences</SectionLabel>
-        <p className="text-xs text-muted-foreground mt-1">
-          These guide the Wiki search so direct results are closer to the type of funding you actually want.
-        </p>
-        <div className="mt-4">
-          <CheckGroup
-            label="Types of opportunities"
-            options={SCHOLARSHIP_TYPE_OPTIONS}
-            value={user?.opportunityPreferences ?? []}
-            onChange={(v) => set("opportunityPreferences", v)}
-          />
         </div>
-      </Card>
-
+        <div className="space-y-8">
       <ResearchExperienceSection
         entries={researchExperience}
         isOpen={researchOpen}
@@ -1272,12 +1264,16 @@ function StepProfile({ error }: { error: string }) {
         onChange={updateWorkEntry}
       />
 
-      <Card>
+      {uploadMaterialsCard}
+        </div>
+      </div>
+
+      <Card className={`${PROFILE_SECTION_CLASS} mt-8`}>
         <SectionLabel>Optional context</SectionLabel>
         <p className="text-xs text-muted-foreground mt-1">
           All optional — add whatever helps scholarships see who you are.
         </p>
-        <div className="mt-4 space-y-3">
+        <div className="mt-3 grid gap-3 md:grid-cols-3">
           <Textarea label="Society / club involvement" value={user?.optional?.societyInvolvement ?? ""} onChange={(v) => setOptional({ societyInvolvement: v })} placeholder="Clubs, organizations, roles…" />
           <Textarea label="Leadership experience" value={user?.optional?.leadership ?? ""} onChange={(v) => setOptional({ leadership: v })} placeholder="Captain, president, lead organizer, founder…" />
           <Textarea label="Sports" value={user?.optional?.sports ?? ""} onChange={(v) => setOptional({ sports: v })} placeholder="Teams, varsity/club, captaincy…" />
@@ -1286,14 +1282,12 @@ function StepProfile({ error }: { error: string }) {
         </div>
       </Card>
 
-      {uploadMaterialsCard}
-
-      <Card>
+      <Card className={`${PROFILE_SECTION_CLASS} mt-8`}>
         <SectionLabel>Story prompts (optional)</SectionLabel>
         <p className="text-xs text-muted-foreground mt-1">
           Short reflections you can reuse across scholarship essays.
         </p>
-        <div className="mt-4 space-y-3">
+        <div className="mt-3 grid gap-3 md:grid-cols-3">
           <Textarea label="Name a time you overcame a challenge." value={user?.prompts?.challenge ?? ""} onChange={(v) => setPrompts({ challenge: v })} />
           <Textarea label="Leadership — describe a time you had to lead." value={user?.prompts?.leadership ?? ""} onChange={(v) => setPrompts({ leadership: v })} />
           <Textarea label="Name a time you worked with a team." value={user?.prompts?.teamwork ?? ""} onChange={(v) => setPrompts({ teamwork: v })} />
@@ -1451,6 +1445,12 @@ function buildEducationHistoryFromProfile(user: UserProfile | null): EducationHi
 function buildResearchExperienceFromProfile(user: UserProfile | null): ResearchExperienceEntry[] {
   const graduate = user?.graduate;
   if (!graduate || !Object.keys(compactObject(graduate)).length) return [];
+  const hasConcreteResearchContext = [
+    graduate.assistantshipStatus,
+    graduate.researchOutput,
+    graduate.travelNeeds,
+  ].some((value) => String(value ?? "").trim());
+  if (!hasConcreteResearchContext) return [];
   return [
     {
       id: "research-graduate",
@@ -1460,9 +1460,28 @@ function buildResearchExperienceFromProfile(user: UserProfile | null): ResearchE
       conferences: graduate.travelNeeds ?? "",
       thesisStatus: "",
       assistantshipStatus: graduate.assistantshipStatus ?? "",
-      advisorLabDepartment: [graduate.department, graduate.program].filter(Boolean).join(" · "),
+      advisorLabDepartment: "",
     },
   ];
+}
+
+function hasConcreteResearchEvidence(entry: Partial<ResearchExperienceEntry>) {
+  const directEvidence = [
+    entry.researchProjects,
+    entry.publications,
+    entry.conferences,
+    entry.thesisStatus,
+    entry.assistantshipStatus,
+  ].some((value) => String(value ?? "").trim());
+  if (directEvidence) return true;
+
+  const researchArea = String(entry.researchAreas ?? "").trim();
+  if (/\b(research|thesis|dissertation|lab|laboratory|project|capstone|poster|publication|conference)\b/i.test(researchArea)) {
+    return true;
+  }
+
+  const advisorLab = String(entry.advisorLabDepartment ?? "").trim();
+  return /\b(advisor|principal investigator|pi\b|lab|laboratory|research group)\b/i.test(advisorLab);
 }
 
 function educationLevelCode(value?: string): EducationLevel | undefined {
@@ -1559,7 +1578,7 @@ function EducationHistorySection({
   onChange: (id: string, patch: Partial<EducationHistoryEntry>) => void;
 }) {
   return (
-    <Card>
+    <Card className={PROFILE_SECTION_CLASS}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <SectionLabel>Education History *</SectionLabel>
@@ -1572,15 +1591,15 @@ function EducationHistorySection({
         </button>
       </div>
 
-      <div className="mt-4 space-y-4">
+      <div className="mt-4 space-y-3">
         {entries.length === 0 && (
-          <div className="rounded-xl border border-dashed border-border p-4 text-sm text-muted-foreground">
+          <div className="rounded-lg border border-dashed border-border p-3 text-sm text-muted-foreground">
             No education entries yet. Add an education entry or upload a resume to autofill this section.
           </div>
         )}
         {entries.map((entry, index) => (
-          <div key={entry.id} className="rounded-xl border border-border bg-secondary/25 p-4">
-            <div className="mb-4 flex items-center justify-between gap-3">
+          <div key={entry.id} className={PROFILE_ENTRY_CLASS}>
+            <div className="mb-3 flex items-center justify-between gap-3">
               <div className="text-sm font-medium">Education {index + 1}</div>
               <button type="button" onClick={() => onRemove(entry.id)} className="text-xs text-muted-foreground hover:text-destructive">
                 Remove
@@ -1630,7 +1649,7 @@ function ResearchExperienceSection({
   onChange: (id: string, patch: Partial<ResearchExperienceEntry>) => void;
 }) {
   return (
-    <Card>
+    <Card className={PROFILE_SECTION_CLASS}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <button type="button" onClick={onToggle} className="text-left">
           <SectionLabel>Academic / Research Experience</SectionLabel>
@@ -1649,15 +1668,15 @@ function ResearchExperienceSection({
       </div>
 
       {isOpen && (
-        <div className="mt-4 space-y-4">
+        <div className="mt-4 space-y-3">
           {entries.length === 0 && (
-            <div className="rounded-xl border border-dashed border-border p-4 text-sm text-muted-foreground">
+            <div className="rounded-lg border border-dashed border-border p-3 text-sm text-muted-foreground">
               Optional for high school and undergraduate profiles. Add research details if they strengthen your scholarship fit.
             </div>
           )}
           {entries.map((entry, index) => (
-            <div key={entry.id} className="rounded-xl border border-border bg-secondary/25 p-4">
-              <div className="mb-4 flex items-center justify-between gap-3">
+            <div key={entry.id} className={PROFILE_ENTRY_CLASS}>
+              <div className="mb-3 flex items-center justify-between gap-3">
                 <div className="text-sm font-medium">Academic / Research Entry {index + 1}</div>
                 <button type="button" onClick={() => onRemove(entry.id)} className="text-xs text-muted-foreground hover:text-destructive">
                   Remove
@@ -1692,7 +1711,7 @@ function WorkExperienceSection({
   onChange: (id: string, patch: Partial<WorkExperienceEntry>) => void;
 }) {
   return (
-    <Card>
+    <Card className={PROFILE_SECTION_CLASS}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <SectionLabel>Work & Internship Experience</SectionLabel>
@@ -1705,15 +1724,15 @@ function WorkExperienceSection({
         </button>
       </div>
 
-      <div className="mt-4 space-y-4">
+      <div className="mt-4 space-y-3">
         {entries.length === 0 && (
-          <div className="rounded-xl border border-dashed border-border p-4 text-sm text-muted-foreground">
+          <div className="rounded-lg border border-dashed border-border p-3 text-sm text-muted-foreground">
             No experience entries yet. Add roles manually, or upload a resume to extract experience from it.
           </div>
         )}
         {entries.map((entry, index) => (
-          <div key={entry.id} className="rounded-xl border border-border bg-secondary/25 p-4">
-            <div className="mb-4 flex items-center justify-between gap-3">
+          <div key={entry.id} className={PROFILE_ENTRY_CLASS}>
+            <div className="mb-3 flex items-center justify-between gap-3">
               <div className="text-sm font-medium">Experience {index + 1}</div>
               <button type="button" onClick={() => onRemove(entry.id)} className="text-xs text-muted-foreground hover:text-destructive">
                 Remove
