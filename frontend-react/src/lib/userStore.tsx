@@ -353,6 +353,41 @@ export type WikiDiscoveryResult = {
   missing_profile_fields?: string[];
 };
 
+export type PersonalizedOutlineResult = {
+  status?: "success" | "error" | string;
+  message?: string;
+  outline?: {
+    outline_title?: string;
+    thesis_or_core_message?: string;
+    sections?: Array<{
+      section_name?: string;
+      purpose?: string;
+      suggested_content?: string[];
+      profile_evidence_to_use?: string[];
+      scholarship_requirement_addressed?: string[];
+      estimated_word_count?: string;
+      coaching_notes?: string[];
+    }>;
+    recommended_opening?: string;
+    recommended_conclusion?: string;
+    questions_for_student?: string[];
+  };
+  strategy?: {
+    recommended_strategy?: string;
+    central_message?: string;
+    tone_guidance?: string;
+  };
+  coverage_check?: Array<{
+    requirement?: string;
+    covered?: boolean;
+    where_covered?: string;
+    notes?: string;
+  }>;
+  warnings?: string[];
+  missing_profile_info?: string[];
+  generatedForKey?: string;
+};
+
 export type UserProfile = {
   // account
   id?: number;
@@ -396,6 +431,7 @@ export type UserProfile = {
   fitAnalysis?: FitAnalysisResult;
   // latest discovery wiki recommendations
   wikiDiscovery?: WikiDiscoveryResult;
+  personalizedOutline?: PersonalizedOutlineResult;
   savedWikiSources?: SavedWikiSource[];
   // versioned drafts
   drafts?: EssayDraft[];

@@ -5,7 +5,6 @@ from langgraph.graph import END, StateGraph
 from state.application_state import ApplicationState
 from llm.client import llm
 from utils.parsing import safe_json_parse
-from rag.retrieve import retrieve_context
 from nodes.prepare import prepare_context
 from nodes.coach_sections import coach_sections
 from nodes.generation import (
@@ -46,7 +45,7 @@ OPPORTUNITY TEXT:
     return {"opportunity_analysis": data}
 
 
-def retrieve_profile(state, profile_store):
+def retrieve_profile(state, vector_service, user_id: str):
     analysis = state.get("opportunity_analysis", {}) or {}
     queries = []
     queries.extend(analysis.get("requirements") or [])
@@ -56,7 +55,34 @@ def retrieve_profile(state, profile_store):
     if not queries:
         queries = [state.get("opportunity_text", "")]
 
-    return {"retrieved_profile_chunks": retrieve_context(profile_store, queries, k=4)}
+    context_chunks = []
+    seen = set()
+    for query in queries[:8]:
+        for item in vector_service.retrieve_context(
+            user_id=user_id,
+            query=query,
+            allowed_collections=[
+                "user_profile_memory",
+                "user_opportunity_memory",
+                "user_application_memory",
+                "user_feedback_memory",
+            ],
+            k=4,
+        ):
+            key = (item.get("collection"), item.get("chroma_id"), item.get("text"))
+            if key in seen:
+                continue
+            seen.add(key)
+            context_chunks.append(item)
+
+    profile_chunks = []
+    for item in context_chunks[:10]:
+        source_label = item.get("source_type") or item.get("collection") or "memory"
+        profile_chunks.append(f"[{source_label}]\n{item.get('text', '')}")
+    return {
+        "retrieved_profile_chunks": profile_chunks,
+        "retrieved_context_chunks": context_chunks[:10],
+    }
 
 
 def _route_after_critic(state):
@@ -66,7 +92,7 @@ def _route_after_critic(state):
     return "done"
 
 
-def build_application_graph(profile_store):
+def build_application_graph(vector_service, user_id: str):
     """
     Branched multi-agent coaching graph (non-linear — agents run only when they
     can add value):
@@ -92,7 +118,7 @@ def build_application_graph(profile_store):
 
     builder.add_node("insufficient_input", insufficient_input)
     builder.add_node("analyze_opportunity", analyze_opportunity)
-    builder.add_node("retrieve_profile", lambda s: retrieve_profile(s, profile_store))
+    builder.add_node("retrieve_profile", lambda s: retrieve_profile(s, vector_service, user_id))
     builder.add_node("prepare_context", prepare_context)
 
     # Specialized generation agents (selected subset runs in parallel)

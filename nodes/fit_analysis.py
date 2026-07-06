@@ -47,6 +47,10 @@ def _model_dump(value):
 
 def analyze_fit(state):
     model = llm._get_client().with_structured_output(FitAnalysisResult)
+    rag_context = "\n\n".join(
+        f"[{item.get('source_type', 'memory')}] {item.get('text', '')}"
+        for item in state.get("rag_context", [])[:8]
+    )
     result = model.invoke(
         [
             (
@@ -65,7 +69,8 @@ def analyze_fit(state):
                 "human",
                 "Analyze fit using the cleaned scholarship record and student profile below.\n\n"
                 f"Clean scholarship record:\n{state.get('scholarship_record', {})}\n\n"
-                f"Student profile:\n{state.get('student_profile', {})}",
+                f"Student profile:\n{state.get('student_profile', {})}\n\n"
+                f"Retrieved user memory context:\n{rag_context or 'No retrieved memory context.'}",
             ),
         ]
     )

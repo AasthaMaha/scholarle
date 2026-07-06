@@ -13,6 +13,7 @@ class ApplicationState(TypedDict, total=False):
     # Input documents + retrieval (Retriever agent)
     student_profile_docs: List[Any]
     retrieved_profile_chunks: List[str]
+    retrieved_context_chunks: List[Dict[str, Any]]
 
     # Student-provided draft
     student_draft: str

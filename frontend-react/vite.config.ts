@@ -16,7 +16,7 @@ let backendStartPromise: Promise<void> | null = null;
 
 async function backendIsReady() {
   try {
-    const response = await fetch(`${apiBase}/health`, { signal: AbortSignal.timeout(800) });
+    const response = await fetch(`${apiBase}/health`, { signal: AbortSignal.timeout(2000) });
     return response.ok;
   } catch {
     return false;
@@ -25,9 +25,9 @@ async function backendIsReady() {
 
 async function waitForBackend() {
   const startedAt = Date.now();
-  while (Date.now() - startedAt < 15000) {
+  while (Date.now() - startedAt < 45000) {
     if (await backendIsReady()) return;
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 300));
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 500));
   }
   throw new Error("FastAPI backend did not become ready on http://127.0.0.1:8000.");
 }
@@ -39,10 +39,14 @@ function startBackendIfNeeded() {
     if (await backendIsReady()) return;
 
     console.log("[scholar-e] Starting FastAPI backend on http://127.0.0.1:8000...");
-    backendProcess = spawn("python", ["server.py"], {
+    backendProcess = spawn(process.env.PYTHON ?? "python", ["server.py"], {
       cwd: repoRoot,
       stdio: "inherit",
-      shell: process.platform === "win32",
+      shell: false,
+      env: {
+        ...process.env,
+        PYTHONUNBUFFERED: "1",
+      },
     });
 
     backendProcess.on("exit", (code) => {
@@ -92,9 +96,27 @@ function lazyBackendPlugin() {
   };
 }
 
+function isKnownExternalUnusedImportWarning(warning: { code?: string; message?: string; exporter?: string }) {
+  if (warning.code !== "UNUSED_EXTERNAL_IMPORT") return false;
+  const exporter = warning.exporter ?? "";
+  const message = warning.message ?? "";
+  return (
+    exporter.startsWith("@tanstack/router-core") ||
+    message.includes('external module "@tanstack/router-core')
+  );
+}
+
 export default defineConfig({
   vite: {
     plugins: [lazyBackendPlugin()],
+    build: {
+      rollupOptions: {
+        onwarn(warning, warn) {
+          if (isKnownExternalUnusedImportWarning(warning)) return;
+          warn(warning);
+        },
+      },
+    },
     server: {
       proxy: {
         "/api": apiBase,

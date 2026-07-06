@@ -24,6 +24,7 @@ chroma_db_profile/
 chroma_db/
 uploads/
 local_data/
+.pgdata/
 scholar_e.db
 *.db
 *.sqlite

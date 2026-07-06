@@ -4,6 +4,7 @@ from typing import Any, Dict, List, TypedDict
 class FitAnalysisState(TypedDict, total=False):
     scholarship_record: Dict[str, Any]
     student_profile: Dict[str, Any]
+    rag_context: List[Dict[str, Any]]
     fit_result: Dict[str, Any]
 
     scholarship_name: str

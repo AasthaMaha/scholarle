@@ -4,19 +4,21 @@ FastAPI server for Scholar-E MVP.
 Exposes POST /api/analyze and auth routes for frontend-react.
 """
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.routes import (
     AnalyzeRequest,
     FitAnalyzeRequest,
     OpportunityExtractRequest,
+    OutlineGenerateRequest,
     WikiDiscoverRequest,
     analyze_application,
     analyze_scholarship_fit,
     autofill_profile_from_resume,
     discover_scholarship_wiki,
     extract_scholarship_opportunity,
+    generate_personalized_outline,
 )
 
 app = FastAPI(title="Scholar-E", version="0.1.0")
@@ -46,9 +48,9 @@ def analyze(request: AnalyzeRequest):
 
 
 @app.post("/api/profile/autofill-resume")
-async def autofill_resume(file: UploadFile = File(...)):
+async def autofill_resume(file: UploadFile = File(...), user_id: str = Form(default="")):
     try:
-        return await autofill_profile_from_resume(file)
+        return await autofill_profile_from_resume(file, user_id=user_id)
     except HTTPException:
         raise
     except Exception as exc:
@@ -79,6 +81,16 @@ def analyze_fit(request: FitAnalyzeRequest):
 def discover_wiki(request: WikiDiscoverRequest):
     try:
         return discover_scholarship_wiki(request)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/apply/generate-outline")
+def generate_outline(request: OutlineGenerateRequest):
+    try:
+        return generate_personalized_outline(request)
     except HTTPException:
         raise
     except Exception as exc:

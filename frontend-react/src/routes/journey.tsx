@@ -23,9 +23,11 @@ import {
   analyzeScholarshipFit,
   autofillProfileFromResume,
   buildFitPayload,
+  buildOutlinePayload,
   buildWikiPayload,
   discoverScholarshipWiki,
   extractScholarshipOpportunity,
+  generatePersonalizedOutline,
 } from "@/lib/api/scholarE";
 import {
   useUser,
@@ -41,6 +43,7 @@ import {
   type ApplicationReadinessMatrix,
   type EssayAlignmentMatrix,
   type FitAnalysisResult,
+  type PersonalizedOutlineResult,
 } from "@/lib/userStore";
 import {
   Tooltip,
@@ -3067,6 +3070,54 @@ function EssayWorkspacePanel({
   activeTab: WorkspaceTab;
   onTabChange: (tab: WorkspaceTab) => void;
 }) {
+  const { user, updateProfile } = useUser();
+  const [outlineLoading, setOutlineLoading] = useState(false);
+  const [outlineStatus, setOutlineStatus] = useState<string | null>(null);
+  const outlineKey = useMemo(() => {
+    const scholarship = user?.activeScholarship ?? {};
+    return JSON.stringify({
+      scholarshipName: scholarship.name ?? "",
+      scholarshipUrl: scholarship.url ?? scholarship.officialWebsite ?? "",
+      prompt: scholarship.essayPrompts || scholarship.otherRequiredMaterials || scholarship.requirementsPreview || "",
+      requirementsPreview: scholarship.requirementsPreview ?? "",
+      updatedAt: scholarship.extractionCompletedAt ?? "",
+      profileName: user?.name ?? "",
+      educationLevel: user?.educationLevel ?? "",
+      careerGoal: user?.careerGoal ?? "",
+      highSchool: user?.highSchool ?? {},
+      undergrad: user?.undergrad ?? {},
+      graduate: user?.graduate ?? {},
+      researchExperience: user?.researchExperience ?? [],
+      workExperience: user?.workExperience ?? [],
+      optional: user?.optional ?? {},
+      prompts: user?.prompts ?? {},
+    });
+  }, [user]);
+
+  async function runOutlineGeneration(force = false) {
+    if (!user || outlineLoading) return;
+    if (!force && user.personalizedOutline?.generatedForKey === outlineKey) return;
+    setOutlineLoading(true);
+    setOutlineStatus("Building your personalized outline from the scholarship requirements and your profile...");
+    try {
+      const result = await generatePersonalizedOutline(buildOutlinePayload(user));
+      updateProfile({ personalizedOutline: { ...result, generatedForKey: outlineKey } });
+      setOutlineStatus(result.status === "error" ? "A fallback outline is ready." : "Personalized outline ready.");
+    } catch (error) {
+      setOutlineStatus(error instanceof Error ? error.message : "Could not generate the outline.");
+    } finally {
+      setOutlineLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (activeTab !== "outline") return;
+    if (!user) return;
+    if (user.personalizedOutline?.generatedForKey === outlineKey) return;
+    void runOutlineGeneration(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, outlineKey, user?.personalizedOutline?.generatedForKey]);
+
   const tabs: Array<{ id: WorkspaceTab; label: string }> = [
     { id: "outline", label: "Personalized Outline" },
     { id: "evaluation", label: "Application Evaluation" },
@@ -3092,11 +3143,234 @@ function EssayWorkspacePanel({
         ))}
       </div>
       <div className="p-6">
-        {activeTab === "outline" && <WorkspaceList title="Personalized Outline" items={["Introduction", "Personal story", "Key strengths", "Scholarship fit", "Conclusion"]} />}
+        {activeTab === "outline" && (
+          <PersonalizedOutlinePanel
+            outline={user?.personalizedOutline}
+            scholarshipName={user?.activeScholarship?.name}
+            essayPrompt={user?.activeScholarship?.essayPrompts || user?.activeScholarship?.otherRequiredMaterials || user?.activeScholarship?.requirementsPreview}
+            wordLimit={buildOutlinePayload(user).word_limit}
+            loading={outlineLoading}
+            status={outlineStatus}
+            onRegenerate={() => void runOutlineGeneration(true)}
+          />
+        )}
         {activeTab === "evaluation" && <WorkspaceEvaluationTab />}
         {activeTab === "highlights" && <WorkspaceHighlightsTab />}
       </div>
     </aside>
+  );
+}
+
+function outlineToText(outline?: PersonalizedOutlineResult) {
+  const data = outline?.outline;
+  if (!data) return "";
+  const lines = [
+    data.outline_title,
+    "",
+    "Core message:",
+    data.thesis_or_core_message,
+    "",
+    ...(data.sections ?? []).flatMap((section, index) => [
+      `Section ${index + 1}: ${section.section_name}`,
+      `Purpose: ${section.purpose}`,
+      "Suggested content:",
+      ...(section.suggested_content ?? []).map((item) => `- ${item}`),
+      "Profile evidence to use:",
+      ...(section.profile_evidence_to_use ?? []).map((item) => `- ${item}`),
+      "Requirements addressed:",
+      ...(section.scholarship_requirement_addressed ?? []).map((item) => `- ${item}`),
+      section.estimated_word_count ? `Estimated word count: ${section.estimated_word_count}` : "",
+      "Coaching notes:",
+      ...(section.coaching_notes ?? []).map((item) => `- ${item}`),
+      "",
+    ]),
+    "Recommended opening:",
+    data.recommended_opening,
+    "",
+    "Recommended conclusion:",
+    data.recommended_conclusion,
+  ];
+  return lines.filter(Boolean).join("\n").trim();
+}
+
+function MiniList({ items }: { items?: string[] }) {
+  const clean = (items ?? []).filter(Boolean);
+  if (!clean.length) return <p className="text-sm text-muted-foreground">Not enough information yet.</p>;
+  return (
+    <ul className="mt-2 space-y-1.5 text-sm text-foreground/85">
+      {clean.map((item) => (
+        <li key={item} className="flex gap-2">
+          <span className="mt-2 size-1.5 shrink-0 rounded-full bg-primary/70" />
+          <span>{item}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function PersonalizedOutlinePanel({
+  outline,
+  scholarshipName,
+  essayPrompt,
+  wordLimit,
+  loading,
+  status,
+  onRegenerate,
+}: {
+  outline?: PersonalizedOutlineResult;
+  scholarshipName?: string;
+  essayPrompt?: string;
+  wordLimit?: string;
+  loading: boolean;
+  status?: string | null;
+  onRegenerate: () => void;
+}) {
+  const [copyStatus, setCopyStatus] = useState("");
+  const data = outline?.outline;
+
+  async function copyOutline() {
+    const text = outlineToText(outline);
+    if (!text) return;
+    await navigator.clipboard?.writeText(text);
+    setCopyStatus("Copied.");
+    window.setTimeout(() => setCopyStatus(""), 1600);
+  }
+
+  return (
+    <div>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Personalized Outline</div>
+          <div className="mt-1 text-sm font-medium">{scholarshipName || "Current scholarship"}</div>
+          {wordLimit && <div className="mt-1 text-xs text-muted-foreground">{wordLimit}</div>}
+        </div>
+        <button type="button" onClick={onRegenerate} disabled={loading} className="rounded-full border border-border px-3 py-1.5 text-xs hover:bg-accent disabled:opacity-50">
+          {loading ? "Generating" : "Regenerate"}
+        </button>
+      </div>
+
+      {essayPrompt && (
+        <div className="mt-4 rounded-xl border border-border bg-background p-3">
+          <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">Essay prompt</div>
+          <p className="mt-2 line-clamp-5 text-sm leading-relaxed text-foreground/85">{essayPrompt}</p>
+        </div>
+      )}
+
+      {loading && (
+        <div className="mt-4 rounded-xl border border-primary/20 bg-primary/5 p-4 text-sm text-foreground/80">
+          <div className="flex items-center gap-2">
+            <span className="size-3 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />
+            <span>Building your personalized outline...</span>
+          </div>
+          <div className="mt-3 space-y-1 text-xs text-muted-foreground">
+            <div>Reading scholarship requirements</div>
+            <div>Matching profile evidence</div>
+            <div>Planning essay strategy</div>
+            <div>Reviewing outline coverage</div>
+          </div>
+        </div>
+      )}
+
+      {status && <p className="mt-3 text-xs text-muted-foreground">{status}</p>}
+
+      {!loading && !data && (
+        <div className="mt-5 rounded-xl border border-border bg-background p-4 text-sm text-muted-foreground">
+          Add a scholarship prompt or requirement details to generate a personalized outline.
+        </div>
+      )}
+
+      {data && (
+        <div className="mt-5 space-y-4">
+          <div className="rounded-xl border border-border bg-background p-4">
+            <div className="text-xs uppercase tracking-widest text-muted-foreground">Core Message</div>
+            <h3 className="mt-2 text-base font-semibold">{data.outline_title || "Scholarship essay plan"}</h3>
+            <p className="mt-2 text-sm leading-relaxed text-foreground/85">{data.thesis_or_core_message}</p>
+          </div>
+          {outline?.strategy && (
+            <div className="rounded-xl border border-border bg-background p-4">
+              <div className="text-xs uppercase tracking-widest text-muted-foreground">Strategy Notes</div>
+              <p className="mt-2 text-sm leading-relaxed">{outline.strategy.recommended_strategy}</p>
+              {outline.strategy.tone_guidance && <p className="mt-2 text-xs text-muted-foreground">Tone: {outline.strategy.tone_guidance}</p>}
+            </div>
+          )}
+          {(data.sections ?? []).map((section, index) => (
+            <div key={`${section.section_name}-${index}`} className="rounded-xl border border-border bg-background p-4">
+              <div className="text-xs text-muted-foreground">Section {index + 1}</div>
+              <h4 className="mt-1 text-sm font-semibold leading-snug">{section.section_name}</h4>
+              <p className="mt-2 text-sm leading-relaxed text-foreground/80">{section.purpose}</p>
+              {!!section.scholarship_requirement_addressed?.length && (
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {section.scholarship_requirement_addressed.map((item) => (
+                    <span key={item} className="rounded-full bg-primary/10 px-2 py-1 text-[11px] font-medium text-primary">{item}</span>
+                  ))}
+                </div>
+              )}
+              <div className="mt-4">
+                <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">Suggested content</div>
+                <MiniList items={section.suggested_content} />
+              </div>
+              <div className="mt-4">
+                <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">Profile evidence</div>
+                <MiniList items={section.profile_evidence_to_use} />
+              </div>
+              {!!section.coaching_notes?.length && (
+                <div className="mt-4 rounded-lg bg-accent p-3">
+                  <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">Coaching notes</div>
+                  <MiniList items={section.coaching_notes} />
+                </div>
+              )}
+              {section.estimated_word_count && <div className="mt-3 text-xs text-muted-foreground">Suggested length: {section.estimated_word_count}</div>}
+            </div>
+          ))}
+          {(data.recommended_opening || data.recommended_conclusion) && (
+            <div className="rounded-xl border border-border bg-background p-4">
+              <div className="text-xs uppercase tracking-widest text-muted-foreground">Opening & Closing Guidance</div>
+              {data.recommended_opening && <p className="mt-2 text-sm leading-relaxed"><span className="font-medium">Opening:</span> {data.recommended_opening}</p>}
+              {data.recommended_conclusion && <p className="mt-2 text-sm leading-relaxed"><span className="font-medium">Conclusion:</span> {data.recommended_conclusion}</p>}
+            </div>
+          )}
+          {!!outline?.coverage_check?.length && (
+            <div className="rounded-xl border border-border bg-background p-4">
+              <div className="text-xs uppercase tracking-widest text-muted-foreground">Coverage Check</div>
+              <div className="mt-3 space-y-2">
+                {outline.coverage_check.map((item, index) => (
+                  <div key={`${item.requirement}-${index}`} className="rounded-lg border border-border p-3 text-sm">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-medium">{item.requirement || "Requirement"}</span>
+                      <span className={`rounded-full px-2 py-0.5 text-[11px] ${item.covered ? "bg-success/10 text-success" : "bg-warning/10 text-warning"}`}>{item.covered ? "Covered" : "Needs detail"}</span>
+                    </div>
+                    {(item.where_covered || item.notes) && <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{item.where_covered || item.notes}</p>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {!!data.questions_for_student?.length && (
+            <div className="rounded-xl border border-warning/30 bg-warning/10 p-4">
+              <div className="text-xs uppercase tracking-widest text-muted-foreground">Questions to answer before drafting</div>
+              <MiniList items={data.questions_for_student} />
+            </div>
+          )}
+          {!!outline?.warnings?.length && (
+            <div className="rounded-xl border border-warning/30 bg-warning/10 p-4">
+              <div className="text-xs uppercase tracking-widest text-muted-foreground">Warnings</div>
+              <MiniList items={outline.warnings} />
+            </div>
+          )}
+          {!!outline?.missing_profile_info?.length && (
+            <div className="rounded-xl border border-border bg-background p-4">
+              <div className="text-xs uppercase tracking-widest text-muted-foreground">Missing Profile Information</div>
+              <MiniList items={outline.missing_profile_info} />
+            </div>
+          )}
+          <div className="flex flex-wrap gap-2 pt-1">
+            <button type="button" onClick={copyOutline} className="rounded-full border border-border px-3 py-1.5 text-xs hover:bg-accent">Copy outline</button>
+            <button type="button" className="rounded-full bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground">Continue to draft</button>
+            {copyStatus && <span className="self-center text-xs text-muted-foreground">{copyStatus}</span>}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

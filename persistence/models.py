@@ -31,7 +31,7 @@ class TimestampMixin:
 class User(Base, TimestampMixin):
     __tablename__ = "users"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    id: Mapped[str] = mapped_column(String(100), primary_key=True, default=_uuid)
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True, nullable=False)
     full_name: Mapped[str] = mapped_column(String(255), default="", nullable=False)
     password_hash: Mapped[str | None] = mapped_column(String(255))
@@ -44,7 +44,7 @@ class StudentProfile(Base, TimestampMixin):
     __table_args__ = (Index("ix_student_profiles_user_current", "user_id"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(String(100), ForeignKey("users.id"), index=True, nullable=False)
     display_name: Mapped[str] = mapped_column(String(255), default="", nullable=False)
     degree_level: Mapped[str] = mapped_column(String(80), default="", nullable=False)
     year_of_study: Mapped[str] = mapped_column(String(80), default="", nullable=False)
@@ -72,7 +72,7 @@ class ProfileVersion(Base):
     __table_args__ = (Index("ix_profile_versions_user_profile", "user_id", "profile_id"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(String(100), ForeignKey("users.id"), index=True, nullable=False)
     profile_id: Mapped[str] = mapped_column(String(36), ForeignKey("student_profiles.id"), index=True, nullable=False)
     source_document_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("user_documents.id"))
     extracted_json: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
@@ -87,7 +87,7 @@ class UserDocument(Base, TimestampMixin):
     __table_args__ = (Index("ix_user_documents_user_type", "user_id", "document_type"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(String(100), ForeignKey("users.id"), index=True, nullable=False)
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
     original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
     file_type: Mapped[str] = mapped_column(String(120), default="", nullable=False)
@@ -122,7 +122,7 @@ class SavedScholarshipSource(Base, TimestampMixin):
     __table_args__ = (Index("ix_saved_sources_user", "user_id"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(String(100), ForeignKey("users.id"), index=True, nullable=False)
     source_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("scholarship_sources.id"))
     name: Mapped[str] = mapped_column(String(500), nullable=False)
     url: Mapped[str] = mapped_column(String(2000), default="", nullable=False)
@@ -136,7 +136,7 @@ class ScholarshipOpportunity(Base, TimestampMixin):
     __tablename__ = "scholarship_opportunities"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(String(100), ForeignKey("users.id"), index=True, nullable=False)
     scholarship_name: Mapped[str] = mapped_column(String(500), nullable=False)
     source_url: Mapped[str | None] = mapped_column(String(2000))
     source_text: Mapped[str | None] = mapped_column(Text)
@@ -155,7 +155,7 @@ class ScholarshipExtraction(Base):
     __table_args__ = (Index("ix_scholarship_extractions_user_opportunity", "user_id", "opportunity_id"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(String(100), ForeignKey("users.id"), index=True, nullable=False)
     opportunity_id: Mapped[str] = mapped_column(String(36), ForeignKey("scholarship_opportunities.id"), index=True, nullable=False)
     agent_run_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("agent_runs.id"), index=True)
     raw_input: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
@@ -169,7 +169,7 @@ class ScholarshipCleanRecord(Base, TimestampMixin):
     __table_args__ = (Index("ix_clean_records_user_current", "user_id", "opportunity_id", "is_current"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(String(100), ForeignKey("users.id"), index=True, nullable=False)
     opportunity_id: Mapped[str] = mapped_column(String(36), ForeignKey("scholarship_opportunities.id"), index=True, nullable=False)
     agent_run_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("agent_runs.id"), index=True)
     clean_json: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
@@ -182,7 +182,7 @@ class ScholarshipFitAnalysis(Base):
     __table_args__ = (Index("ix_fit_user_opportunity_current", "user_id", "opportunity_id", "is_current"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(String(100), ForeignKey("users.id"), index=True, nullable=False)
     opportunity_id: Mapped[str] = mapped_column(String(36), ForeignKey("scholarship_opportunities.id"), index=True, nullable=False)
     clean_record_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("scholarship_clean_records.id"), index=True)
     profile_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("student_profiles.id"), index=True)
@@ -207,7 +207,7 @@ class ScholarshipTrackerItem(Base, TimestampMixin):
     __tablename__ = "scholarship_tracker_items"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(String(100), ForeignKey("users.id"), index=True, nullable=False)
     opportunity_id: Mapped[str] = mapped_column(String(36), ForeignKey("scholarship_opportunities.id"), index=True, nullable=False)
     fit_analysis_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("scholarship_fit_analyses.id"))
     status: Mapped[str] = mapped_column(String(80), default="discovered", nullable=False)
@@ -223,7 +223,7 @@ class Essay(Base, TimestampMixin):
     __tablename__ = "essays"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(String(100), ForeignKey("users.id"), index=True, nullable=False)
     opportunity_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("scholarship_opportunities.id"), index=True)
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     prompt_text: Mapped[str] = mapped_column(Text, default="", nullable=False)
@@ -236,7 +236,7 @@ class EssayVersion(Base):
     __table_args__ = (Index("ix_essay_versions_user_essay", "user_id", "essay_id"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(String(100), ForeignKey("users.id"), index=True, nullable=False)
     essay_id: Mapped[str] = mapped_column(String(36), ForeignKey("essays.id"), index=True, nullable=False)
     version_number: Mapped[int] = mapped_column(Integer, nullable=False)
     draft_text: Mapped[str] = mapped_column(Text, nullable=False)
@@ -250,7 +250,7 @@ class EssayCoachingFeedback(Base):
     __tablename__ = "essay_coaching_feedback"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(String(100), ForeignKey("users.id"), index=True, nullable=False)
     essay_id: Mapped[str] = mapped_column(String(36), ForeignKey("essays.id"), index=True, nullable=False)
     essay_version_id: Mapped[str] = mapped_column(String(36), ForeignKey("essay_versions.id"), index=True, nullable=False)
     opportunity_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("scholarship_opportunities.id"), index=True)
@@ -266,7 +266,7 @@ class EssayAlignmentMatrix(Base, TimestampMixin):
     __table_args__ = (Index("ix_essay_alignment_user_essay_current", "user_id", "essay_id", "is_current"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(String(100), ForeignKey("users.id"), index=True, nullable=False)
     opportunity_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("scholarship_opportunities.id"), index=True)
     essay_id: Mapped[str] = mapped_column(String(36), ForeignKey("essays.id"), index=True, nullable=False)
     essay_version_id: Mapped[str] = mapped_column(String(36), ForeignKey("essay_versions.id"), index=True, nullable=False)
@@ -309,7 +309,7 @@ class AgentRun(Base):
     __tablename__ = "agent_runs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(String(100), index=True, nullable=False)
     agent_definition_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("agent_definitions.id"))
     agent_name: Mapped[str] = mapped_column(String(160), index=True, nullable=False)
     agent_version: Mapped[str | None] = mapped_column(String(80))
@@ -332,7 +332,7 @@ class KnowledgeItem(Base, TimestampMixin):
     __table_args__ = (Index("ix_knowledge_items_user_source", "user_id", "source_type", "source_id"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(String(100), index=True, nullable=False)
     source_type: Mapped[str] = mapped_column(String(120), index=True, nullable=False)
     source_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
     title: Mapped[str] = mapped_column(String(500), default="", nullable=False)
@@ -347,7 +347,7 @@ class KnowledgeChunk(Base, TimestampMixin):
     __table_args__ = (Index("ix_knowledge_chunks_user_item", "user_id", "knowledge_item_id"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(String(100), index=True, nullable=False)
     knowledge_item_id: Mapped[str] = mapped_column(String(36), ForeignKey("knowledge_items.id"), index=True, nullable=False)
     source_type: Mapped[str] = mapped_column(String(120), index=True, nullable=False)
     source_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
@@ -366,7 +366,7 @@ class AgentContextChunk(Base):
     __table_args__ = (Index("ix_agent_context_chunks_user_run", "user_id", "agent_run_id"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(String(100), index=True, nullable=False)
     agent_run_id: Mapped[str] = mapped_column(String(36), ForeignKey("agent_runs.id"), index=True, nullable=False)
     knowledge_chunk_id: Mapped[str] = mapped_column(String(36), ForeignKey("knowledge_chunks.id"), index=True, nullable=False)
     source_type: Mapped[str] = mapped_column(String(120), index=True, nullable=False)
@@ -379,7 +379,7 @@ class AppEvent(Base):
     __tablename__ = "app_events"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    user_id: Mapped[str | None] = mapped_column(String(100), index=True)
     event_type: Mapped[str] = mapped_column(String(160), index=True, nullable=False)
     entity_type: Mapped[str] = mapped_column(String(160), default="", nullable=False)
     entity_id: Mapped[str] = mapped_column(String(36), default="", nullable=False)

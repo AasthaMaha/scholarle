@@ -20,13 +20,24 @@ from pydantic import BaseModel, Field
 from fastapi import HTTPException, UploadFile
 
 from config import settings
-from rag.store import ChromaStore
 from graph.builder import build_application_graph
 from graph.fit_builder import build_fit_analysis_graph
 from graph.opportunity_builder import build_opportunity_extraction_graph
 from graph.profile_builder import build_profile_extraction_graph
 from graph.wiki_builder import build_wiki_discovery_graph
-from persistence.services import default_user_id, run_agent_with_persistence
+from llm.client import llm
+from persistence.memory_text import (
+    build_feedback_memory_text,
+    build_profile_memory_text,
+    build_scholarship_memory_text,
+)
+from persistence.services import (
+    ProfileService,
+    ScholarshipService,
+    default_user_id,
+    run_agent_with_persistence,
+)
+from persistence.vector_service import VectorService
 
 
 class AnalyzeRequest(BaseModel):
@@ -139,10 +150,104 @@ class WikiDiscoverResponse(BaseModel):
     missing_profile_fields: list[str] = Field(default_factory=list)
 
 
+class OutlineGenerateRequest(BaseModel):
+    opportunity_id: str = Field(default="", max_length=200)
+    scholarship_name: str = Field(default="", max_length=500)
+    student_profile: dict = Field(default_factory=dict)
+    clean_scholarship_record: dict = Field(default_factory=dict)
+    essay_prompt: str = Field(default="", max_length=12000)
+    essay_type: str = Field(default="", max_length=200)
+    word_limit: str = Field(default="", max_length=120)
+    user_notes: str = Field(default="", max_length=5000)
+
+
+class OutlineSection(BaseModel):
+    section_name: str = ""
+    purpose: str = ""
+    suggested_content: list[str] = Field(default_factory=list)
+    profile_evidence_to_use: list[str] = Field(default_factory=list)
+    scholarship_requirement_addressed: list[str] = Field(default_factory=list)
+    estimated_word_count: str = ""
+    coaching_notes: list[str] = Field(default_factory=list)
+
+
+class PersonalizedOutline(BaseModel):
+    outline_title: str = ""
+    thesis_or_core_message: str = ""
+    sections: list[OutlineSection] = Field(default_factory=list)
+    recommended_opening: str = ""
+    recommended_conclusion: str = ""
+    questions_for_student: list[str] = Field(default_factory=list)
+
+
+class OutlineStrategy(BaseModel):
+    recommended_strategy: str = ""
+    central_message: str = ""
+    tone_guidance: str = ""
+
+
+class CoverageCheck(BaseModel):
+    requirement: str = ""
+    covered: bool = False
+    where_covered: str = ""
+    notes: str = ""
+
+
+class OutlineGenerateResponse(BaseModel):
+    status: str = "success"
+    outline: PersonalizedOutline = Field(default_factory=PersonalizedOutline)
+    strategy: OutlineStrategy = Field(default_factory=OutlineStrategy)
+    coverage_check: list[CoverageCheck] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    missing_profile_info: list[str] = Field(default_factory=list)
+
+
 def _text_to_chunks(text: str, source: str) -> list:
     doc = Document(page_content=text.strip(), metadata={"source": source})
     splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
     return splitter.split_documents([doc])
+
+
+def _stable_source_id(prefix: str, value: object) -> str:
+    raw = json.dumps(value, sort_keys=True, default=str) if not isinstance(value, str) else value
+    digest = hashlib.sha256(raw.strip().encode("utf-8")).hexdigest()[:24]
+    return f"{prefix[:10]}-{digest}"
+
+
+def _safe_vector_service() -> VectorService:
+    return VectorService()
+
+
+def _upsert_memory(
+    vector_service: VectorService,
+    *,
+    user_id: str,
+    source_type: str,
+    source_id: str,
+    title: str,
+    canonical_text: str,
+    structured_json: dict,
+    collection_name: str,
+) -> None:
+    try:
+        vector_service.upsert_user_memory(
+            user_id=user_id,
+            source_type=source_type,
+            source_id=source_id,
+            title=title,
+            canonical_text=canonical_text,
+            structured_json=structured_json,
+            collection_name=collection_name,
+        )
+    except Exception:
+        pass
+
+
+def _persist_domain_record(save_fn, *args, **kwargs):
+    try:
+        return save_fn(*args, **kwargs)
+    except Exception:
+        return None
 
 
 def _build_opportunity_text(
@@ -307,33 +412,204 @@ def _gather_opportunity_source_text(request: OpportunityExtractRequest) -> tuple
 
 
 def run_application_pipeline(
+    user_id: str,
     opportunity_text: str,
     student_draft: str,
     profile_text: str,
     previous_readiness: Optional[Dict[str, int]] = None,
     draft_number: int = 1,
 ) -> dict:
+    vector_service = _safe_vector_service()
     profile_docs = _text_to_chunks(profile_text, "uploaded_cv")
-    profile_store_path = _profile_store_path(profile_text)
-    profile_store_path.parent.mkdir(parents=True, exist_ok=True)
-    has_existing = _has_existing_chroma_store(profile_store_path)
-    profile_store = ChromaStore(
-        documents=None if has_existing else profile_docs,
-        persist_directory=str(profile_store_path),
-        ephemeral=not has_existing,
+
+    _upsert_memory(
+        vector_service,
+        user_id=user_id,
+        source_type="profile_summary",
+        source_id="current-profile",
+        title="Current student profile",
+        canonical_text=profile_text,
+        structured_json={"profile_text": profile_text},
+        collection_name="user_profile_memory",
     )
 
+
+def _outline_fallback(request: OutlineGenerateRequest, message: str = "") -> dict:
+    scholarship = request.clean_scholarship_record or {}
+    prompt = request.essay_prompt.strip() or scholarship.get("essayPrompts") or scholarship.get("requirementsPreview") or ""
+    warnings = []
+    if message:
+        warnings.append(message)
+    if not request.student_profile:
+        warnings.append("Add your student profile to make this outline more personalized.")
+    if not request.clean_scholarship_record:
+        warnings.append("Scholarship requirements are limited, so this outline is based mainly on the essay prompt and profile.")
+    if not prompt:
+        warnings.append("Add an essay prompt or scholarship writing requirement to generate a more personalized outline.")
+
+    name = request.scholarship_name or scholarship.get("name") or "this scholarship"
+    return {
+        "status": "success",
+        "outline": {
+            "outline_title": f"Essay plan for {name}",
+            "thesis_or_core_message": "Connect your strongest real profile evidence to the scholarship prompt and stated selection priorities.",
+            "sections": [
+                {
+                    "section_name": "Opening motivation tied to the prompt",
+                    "purpose": "Introduce the specific motivation or problem that makes this opportunity relevant.",
+                    "suggested_content": ["Use one concrete real experience from your profile.", "Name the academic, service, or career direction the essay will explain."],
+                    "profile_evidence_to_use": ["Use a real profile detail you have already provided."],
+                    "scholarship_requirement_addressed": ["Essay prompt or writing requirement"],
+                    "estimated_word_count": request.word_limit or "Adjust to the final word limit.",
+                    "coaching_notes": ["Do not invent a dramatic story. Avoid generic openings."],
+                },
+                {
+                    "section_name": "Evidence of preparation and fit",
+                    "purpose": "Show the experiences, skills, coursework, research, work, or leadership that support your claim.",
+                    "suggested_content": ["Choose two or three strongest facts from your profile.", "Explain what each fact proves about readiness or alignment."],
+                    "profile_evidence_to_use": ["Academic background", "Skills", "Leadership, research, work, or projects if provided"],
+                    "scholarship_requirement_addressed": ["Selection criteria", "Eligibility or application themes"],
+                    "estimated_word_count": "Middle section",
+                    "coaching_notes": ["Use evidence, not a list of achievements."],
+                },
+                {
+                    "section_name": "Future goals and scholarship alignment",
+                    "purpose": "Explain how the scholarship connects to your next step and the impact you want to make.",
+                    "suggested_content": ["Tie goals to the scholarship mission or benefits.", "End with a contribution-focused statement."],
+                    "profile_evidence_to_use": ["Career goal or academic goal if provided"],
+                    "scholarship_requirement_addressed": ["Career goals", "Community impact", "Scholarship purpose"],
+                    "estimated_word_count": "Closing section",
+                    "coaching_notes": ["Keep the ending specific to the scholarship."],
+                },
+            ],
+            "recommended_opening": "Begin with a specific real moment, project, question, or responsibility that connects to the prompt.",
+            "recommended_conclusion": "Close by reinforcing what the scholarship would help you do next and why that matters.",
+            "questions_for_student": ["What real experience best proves your fit for this scholarship?", "What detail from your profile should the essay definitely include?"],
+        },
+        "strategy": {
+            "recommended_strategy": "Use a profile-grounded, scholarship-specific argument rather than a broad personal statement.",
+            "central_message": "Your preparation and goals match the opportunity's purpose.",
+            "tone_guidance": "Specific, reflective, confident, and evidence-based.",
+        },
+        "coverage_check": [],
+        "warnings": warnings,
+        "missing_profile_info": [],
+    }
+
+
+def generate_personalized_outline(request: OutlineGenerateRequest) -> dict:
+    if not settings.openai_api_key:
+        return _outline_fallback(request, "AI outline generation is unavailable because OPENAI_API_KEY is missing.")
+
+    scholarship = request.clean_scholarship_record or {}
+    essay_prompt = (
+        request.essay_prompt.strip()
+        or str(scholarship.get("essayPrompts") or "").strip()
+        or str(scholarship.get("otherRequiredMaterials") or "").strip()
+        or str(scholarship.get("requirementsPreview") or "").strip()
+    )
+    if not essay_prompt and not scholarship:
+        return _outline_fallback(request)
+
+    model = llm._get_client().with_structured_output(OutlineGenerateResponse)
     try:
-        graph = build_application_graph(profile_store)
-        return graph.invoke({
+        result = model.invoke(
+            [
+                (
+                    "system",
+                    "You are an AI scholarship essay planning team. Create a personalized, read-only essay outline "
+                    "for a student applying to a specific scholarship. Use only the provided student profile, cleaned "
+                    "scholarship requirements, essay prompt, selection criteria, and word limit. Do not invent student "
+                    "experiences or scholarship requirements. Do not write the full essay. Do not make the outline generic. "
+                    "Return structured data only.",
+                ),
+                (
+                    "human",
+                    "Generate the final personalized outline through these internal steps: identify relevant profile evidence, "
+                    "analyze essay requirements, choose an essay strategy, draft a structured outline, then review coverage. "
+                    "Keep confirmed requirements separate from suggestions. Use meaningful section names, not generic paragraph labels.\n\n"
+                    f"Scholarship name:\n{request.scholarship_name or scholarship.get('name', '')}\n\n"
+                    f"Clean scholarship record:\n{json.dumps(scholarship, indent=2, default=str)}\n\n"
+                    f"Essay prompt or writing requirement:\n{essay_prompt}\n\n"
+                    f"Essay type:\n{request.essay_type}\n\n"
+                    f"Word limit:\n{request.word_limit or 'Not stated'}\n\n"
+                    f"Student profile:\n{json.dumps(request.student_profile or {}, indent=2, default=str)}\n\n"
+                    f"User notes:\n{request.user_notes}",
+                ),
+            ]
+        )
+        data = result.model_dump() if hasattr(result, "model_dump") else result.dict()
+    except Exception as exc:
+        fallback = _outline_fallback(request, f"Outline generation failed, so Scholar-E created a basic guide instead: {exc}")
+        fallback["status"] = "error"
+        fallback["message"] = str(exc)
+        fallback["fallback_outline"] = fallback.get("outline")
+        return fallback
+
+    data["status"] = data.get("status") or "success"
+    outline = data.get("outline") or {}
+    if not outline.get("sections"):
+        return _outline_fallback(request, "The generated outline was incomplete, so Scholar-E created a safe fallback guide.")
+
+    warnings = list(data.get("warnings") or [])
+    if not request.word_limit:
+        warnings.append("No word limit was found. Adjust section lengths after confirming the official limit.")
+    if not request.student_profile:
+        warnings.append("Add your student profile to make this outline more personalized.")
+    if not request.clean_scholarship_record:
+        warnings.append("Scholarship requirements are limited, so this outline is based mainly on the essay prompt and profile.")
+    data["warnings"] = list(dict.fromkeys(warnings))
+    return data
+    _upsert_memory(
+        vector_service,
+        user_id=user_id,
+        source_type="opportunity",
+        source_id=_stable_source_id("opportunity", opportunity_text),
+        title="Current scholarship opportunity",
+        canonical_text=opportunity_text,
+        structured_json={"opportunity_text": opportunity_text},
+        collection_name="user_opportunity_memory",
+    )
+    if student_draft.strip():
+        _upsert_memory(
+            vector_service,
+            user_id=user_id,
+            source_type="essay_draft",
+            source_id=_stable_source_id(f"essay-draft-{draft_number}", student_draft),
+            title=f"Essay draft {draft_number}",
+            canonical_text=student_draft,
+            structured_json={"draft_number": draft_number, "essay_text": student_draft},
+            collection_name="user_application_memory",
+        )
+
+    graph = build_application_graph(vector_service, user_id)
+    result = graph.invoke(
+        {
             "opportunity_text": opportunity_text,
             "student_profile_docs": profile_docs,
             "student_draft": student_draft,
             "previous_readiness": previous_readiness or {},
             "draft_number": draft_number,
-        })
-    finally:
-        profile_store.close()
+        }
+    )
+    feedback_text = build_feedback_memory_text(
+        {
+            "summary": result.get("feedback", ""),
+            "strengths": result.get("revision_priorities", []),
+            "recommended_next_steps": result.get("essay_alignment_matrix", {}).get("recommended_revision_tasks", []),
+        }
+    )
+    _upsert_memory(
+        vector_service,
+        user_id=user_id,
+        source_type="coaching_feedback",
+        source_id=_stable_source_id(f"coaching-{draft_number}", result.get("feedback", "")),
+        title=f"Coaching feedback draft {draft_number}",
+        canonical_text=feedback_text,
+        structured_json=result,
+        collection_name="user_feedback_memory",
+    )
+    return result
 
 
 def analyze_application(request: AnalyzeRequest) -> dict:
@@ -364,6 +640,7 @@ def analyze_application(request: AnalyzeRequest) -> dict:
             "draft_number": request.draft_number,
         },
         run_fn=lambda _: run_application_pipeline(
+            user_id=default_user_id(request.user_id),
             opportunity_text=opportunity_text,
             student_draft=request.essay_text,
             profile_text=request.cv_text,
@@ -390,7 +667,7 @@ def analyze_application(request: AnalyzeRequest) -> dict:
     }
 
 
-async def autofill_profile_from_resume(file: UploadFile) -> dict:
+async def autofill_profile_from_resume(file: UploadFile, user_id: str = "") -> dict:
     if not settings.openai_api_key:
         raise HTTPException(
             status_code=400,
@@ -415,8 +692,8 @@ async def autofill_profile_from_resume(file: UploadFile) -> dict:
         )
 
     graph = build_profile_extraction_graph()
-    result, _ = run_agent_with_persistence(
-        user_id=default_user_id(),
+    result, agent_run_id = run_agent_with_persistence(
+        user_id=default_user_id(user_id),
         agent_name="resume_profile_extraction",
         input_json={
             "filename": file.filename or "",
@@ -426,6 +703,30 @@ async def autofill_profile_from_resume(file: UploadFile) -> dict:
         run_fn=lambda _: graph.invoke({"resume_text": raw_resume_text}),
     )
     response = ProfileAutofillResponse(**result)
+    user_id = default_user_id(user_id)
+    vector_service = _safe_vector_service()
+    profile_data = response.model_dump() if hasattr(response, "model_dump") else response.dict()
+    _upsert_memory(
+        vector_service,
+        user_id=user_id,
+        source_type="resume",
+        source_id=_stable_source_id("resume", raw_resume_text),
+        title=file.filename or "Uploaded resume",
+        canonical_text=raw_resume_text,
+        structured_json={"filename": file.filename or ""},
+        collection_name="user_profile_memory",
+    )
+    _persist_domain_record(ProfileService.save_current_profile, user_id, profile_data, raw_resume_text, agent_run_id)
+    _upsert_memory(
+        vector_service,
+        user_id=user_id,
+        source_type="profile_summary",
+        source_id="current-profile",
+        title="Current student profile",
+        canonical_text=build_profile_memory_text(profile_data),
+        structured_json=profile_data,
+        collection_name="user_profile_memory",
+    )
     if hasattr(response, "model_dump"):
         return response.model_dump()
     return response.dict()
@@ -469,7 +770,7 @@ def extract_scholarship_opportunity(request: OpportunityExtractRequest) -> dict:
             "source_text": source_text,
             "source_urls": source_urls,
     }
-    result, _ = run_agent_with_persistence(
+    result, agent_run_id = run_agent_with_persistence(
         user_id=request.user_id,
         agent_name="scholarship_requirements_extraction",
         input_json={
@@ -482,6 +783,24 @@ def extract_scholarship_opportunity(request: OpportunityExtractRequest) -> dict:
         run_fn=lambda _: graph.invoke(payload),
     )
     response = OpportunityExtractResponse(**result)
+    clean_data = response.model_dump() if hasattr(response, "model_dump") else response.dict()
+    _persist_domain_record(
+        ScholarshipService.save_clean_record,
+        default_user_id(request.user_id),
+        clean_data,
+        source_text,
+        agent_run_id,
+    )
+    _upsert_memory(
+        _safe_vector_service(),
+        user_id=default_user_id(request.user_id),
+        source_type="clean_scholarship",
+        source_id=_stable_source_id("scholarship", clean_data.get("name") or clean_data),
+        title=clean_data.get("name") or request.scholarship_name or "Scholarship opportunity",
+        canonical_text=build_scholarship_memory_text(clean_data),
+        structured_json=clean_data,
+        collection_name="user_opportunity_memory",
+    )
     if hasattr(response, "model_dump"):
         return response.model_dump()
     return response.dict()
@@ -508,12 +827,50 @@ def analyze_scholarship_fit(request: FitAnalyzeRequest) -> dict:
             detail="Create a student profile before analyzing fit.",
         )
 
+    vector_service = _safe_vector_service()
+    user_id = default_user_id(request.user_id)
+    profile_text = build_profile_memory_text(request.student_profile)
+    scholarship_text = build_scholarship_memory_text(request.scholarship_record)
+    profile_id = _persist_domain_record(ProfileService.save_current_profile, user_id, request.student_profile, profile_text, None)
+    clean_ids = _persist_domain_record(ScholarshipService.save_clean_record, user_id, request.scholarship_record, scholarship_text, None)
+    clean_record_id = clean_ids[1] if isinstance(clean_ids, tuple) else None
+    _upsert_memory(
+        vector_service,
+        user_id=user_id,
+        source_type="profile_summary",
+        source_id="current-profile",
+        title="Current student profile",
+        canonical_text=profile_text,
+        structured_json=request.student_profile,
+        collection_name="user_profile_memory",
+    )
+    _upsert_memory(
+        vector_service,
+        user_id=user_id,
+        source_type="clean_scholarship",
+        source_id=_stable_source_id("scholarship", request.scholarship_record.get("name") or request.scholarship_record),
+        title=request.scholarship_record.get("name") or "Scholarship opportunity",
+        canonical_text=scholarship_text,
+        structured_json=request.scholarship_record,
+        collection_name="user_opportunity_memory",
+    )
+    try:
+        rag_context = vector_service.retrieve_context(
+            user_id=user_id,
+            query="\n".join([request.scholarship_record.get("name", ""), scholarship_text, profile_text])[:4000],
+            allowed_collections=["user_profile_memory", "user_opportunity_memory"],
+            k=8,
+        )
+    except Exception:
+        rag_context = []
+
     graph = build_fit_analysis_graph()
     payload = {
             "scholarship_record": request.scholarship_record,
             "student_profile": request.student_profile,
+            "rag_context": rag_context,
     }
-    result, _ = run_agent_with_persistence(
+    result, agent_run_id = run_agent_with_persistence(
         user_id=request.user_id,
         agent_name="scholarship_fit_analysis",
         input_json={
@@ -523,6 +880,26 @@ def analyze_scholarship_fit(request: FitAnalyzeRequest) -> dict:
         run_fn=lambda _: graph.invoke(payload),
     )
     response = FitAnalyzeResponse(**result)
+    fit_data = response.model_dump() if hasattr(response, "model_dump") else response.dict()
+    _persist_domain_record(
+        ScholarshipService.save_fit_analysis,
+        user_id,
+        request.scholarship_record.get("name") or fit_data.get("scholarship_name") or "",
+        fit_data,
+        profile_id,
+        clean_record_id,
+        agent_run_id,
+    )
+    _upsert_memory(
+        vector_service,
+        user_id=user_id,
+        source_type="fit_analysis",
+        source_id=_stable_source_id("fit", fit_data),
+        title=f"Fit analysis: {fit_data.get('scholarship_name') or request.scholarship_record.get('name') or 'Scholarship'}",
+        canonical_text=build_feedback_memory_text(fit_data),
+        structured_json=fit_data,
+        collection_name="user_feedback_memory",
+    )
     if hasattr(response, "model_dump"):
         return response.model_dump()
     return response.dict()
@@ -537,6 +914,19 @@ def _load_wiki_source_library() -> list[dict]:
 
 
 def discover_scholarship_wiki(request: WikiDiscoverRequest) -> dict:
+    user_id = default_user_id(request.user_id)
+    profile_text = build_profile_memory_text(request.student_profile)
+    _persist_domain_record(ProfileService.save_current_profile, user_id, request.student_profile, profile_text, None)
+    _upsert_memory(
+        _safe_vector_service(),
+        user_id=user_id,
+        source_type="profile_summary",
+        source_id="current-profile",
+        title="Current student profile",
+        canonical_text=profile_text,
+        structured_json=request.student_profile,
+        collection_name="user_profile_memory",
+    )
     graph = build_wiki_discovery_graph()
     payload = {
             "student_profile": request.student_profile,

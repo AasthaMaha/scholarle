@@ -1,4 +1,4 @@
-import type { ActiveScholarship, AnalysisResult, FitAnalysisResult, UserProfile, WikiDiscoveryResult } from "@/lib/userStore";
+import type { ActiveScholarship, AnalysisResult, FitAnalysisResult, PersonalizedOutlineResult, UserProfile, WikiDiscoveryResult } from "@/lib/userStore";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 
@@ -45,6 +45,17 @@ export type FitAnalyzePayload = {
 
 export type WikiDiscoverPayload = {
   student_profile: Record<string, unknown>;
+};
+
+export type OutlineGeneratePayload = {
+  opportunity_id?: string;
+  scholarship_name?: string;
+  student_profile: Record<string, unknown>;
+  clean_scholarship_record: ActiveScholarship;
+  essay_prompt: string;
+  essay_type?: string;
+  word_limit?: string;
+  user_notes?: string;
 };
 
 function compact(parts: Array<string | undefined | null | false>) {
@@ -249,4 +260,52 @@ export async function discoverScholarshipWiki(payload: WikiDiscoverPayload): Pro
   }
 
   return data as WikiDiscoveryResult;
+}
+
+function findWordLimit(text: string) {
+  const match = text.match(/(\d{2,5})\s*(?:-|to)?\s*(?:word|words)/i);
+  return match?.[0] ?? "";
+}
+
+export function buildOutlinePayload(user: UserProfile | null): OutlineGeneratePayload {
+  const scholarship = user?.activeScholarship ?? {};
+  const essayPrompt = scholarship.essayPrompts || scholarship.otherRequiredMaterials || scholarship.requirementsPreview || "";
+  const { lastAnalysis, fitAnalysis, wikiDiscovery, savedWikiSources, activeScholarship, personalizedOutline, ...studentProfile } =
+    user ?? { name: "", email: "" };
+  void lastAnalysis;
+  void fitAnalysis;
+  void wikiDiscovery;
+  void savedWikiSources;
+  void activeScholarship;
+  void personalizedOutline;
+
+  return {
+    opportunity_id: scholarship.url || scholarship.name || "",
+    scholarship_name: scholarship.name || "",
+    clean_scholarship_record: scholarship,
+    essay_prompt: essayPrompt,
+    essay_type: scholarship.type || "Scholarship essay",
+    word_limit: findWordLimit([essayPrompt, scholarship.otherRequiredMaterials, scholarship.requirementsPreview].filter(Boolean).join("\n")),
+    student_profile: {
+      ...studentProfile,
+      profile_text: profileToText(user),
+    },
+    user_notes: scholarship.additionalNotes || "",
+  };
+}
+
+export async function generatePersonalizedOutline(payload: OutlineGeneratePayload): Promise<PersonalizedOutlineResult> {
+  const response = await fetch(`${API_BASE}/api/apply/generate-outline`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    const detail = data?.detail;
+    throw new Error(typeof detail === "string" ? detail : "Personalized outline generation failed.");
+  }
+
+  return data as PersonalizedOutlineResult;
 }
