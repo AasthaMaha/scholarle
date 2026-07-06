@@ -138,7 +138,7 @@ function Journey() {
             onOpen={() => setIsSidebarOpen(true)}
           />
           <main className="flex-1 overflow-y-auto">
-            <div className={`mx-auto px-6 md:px-10 py-10 ${step.slug === "profile" ? "max-w-7xl" : "max-w-5xl"}`}>
+            <div className={`mx-auto px-6 md:px-10 py-10 ${["profile", "discovery"].includes(step.slug) ? "max-w-7xl" : "max-w-5xl"}`}>
               {exampleStatus && (
                 <div className="mb-4 rounded-xl border border-gold/30 bg-gold/10 px-4 py-3 text-sm text-foreground/90">
                   {exampleStatus}
@@ -1273,7 +1273,7 @@ function StepProfile({ error }: { error: string }) {
         <p className="text-xs text-muted-foreground mt-1">
           All optional — add whatever helps scholarships see who you are.
         </p>
-        <div className="mt-3 grid gap-3 md:grid-cols-3">
+        <div className="mt-3 grid gap-3 md:grid-cols-2">
           <Textarea label="Society / club involvement" value={user?.optional?.societyInvolvement ?? ""} onChange={(v) => setOptional({ societyInvolvement: v })} placeholder="Clubs, organizations, roles…" />
           <Textarea label="Leadership experience" value={user?.optional?.leadership ?? ""} onChange={(v) => setOptional({ leadership: v })} placeholder="Captain, president, lead organizer, founder…" />
           <Textarea label="Sports" value={user?.optional?.sports ?? ""} onChange={(v) => setOptional({ sports: v })} placeholder="Teams, varsity/club, captaincy…" />
@@ -1287,7 +1287,7 @@ function StepProfile({ error }: { error: string }) {
         <p className="text-xs text-muted-foreground mt-1">
           Short reflections you can reuse across scholarship essays.
         </p>
-        <div className="mt-3 grid gap-3 md:grid-cols-3">
+        <div className="mt-3 grid gap-3 md:grid-cols-2">
           <Textarea label="Name a time you overcame a challenge." value={user?.prompts?.challenge ?? ""} onChange={(v) => setPrompts({ challenge: v })} />
           <Textarea label="Leadership — describe a time you had to lead." value={user?.prompts?.leadership ?? ""} onChange={(v) => setPrompts({ leadership: v })} />
           <Textarea label="Name a time you worked with a team." value={user?.prompts?.teamwork ?? ""} onChange={(v) => setPrompts({ teamwork: v })} />
@@ -1924,8 +1924,8 @@ function StepDiscovery({
   const profileSummary = wiki?.profile_summary ?? {};
 
   return (
-    <div className="space-y-5">
-      <Card>
+    <div className="space-y-8">
+      <Card className={PROFILE_SECTION_CLASS}>
         <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div>
             <div className="text-xs uppercase tracking-widest text-muted-foreground">Scholarship Discovery Wiki</div>
@@ -1935,16 +1935,16 @@ function StepDiscovery({
             <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground/85">
               Scholar-E recommends trusted platforms, source pages, funding categories, and search queries based on your profile.
             </p>
-            <div className="mt-4 grid max-w-xl grid-cols-3 gap-2">
-              <div className="rounded-xl border border-border bg-secondary/30 p-3">
+            <div className="mt-5 grid max-w-xl grid-cols-3 gap-3">
+              <div className="rounded-lg border border-border/60 bg-white/60 p-3">
                 <div className="text-2xl font-bold">{directSources.length || "-"}</div>
                 <div className="text-xs text-muted-foreground">Direct sources</div>
               </div>
-              <div className="rounded-xl border border-border bg-secondary/30 p-3">
+              <div className="rounded-lg border border-border/60 bg-white/60 p-3">
                 <div className="text-2xl font-bold">{platformSources.length || "-"}</div>
                 <div className="text-xs text-muted-foreground">Platforms</div>
               </div>
-              <div className="rounded-xl border border-border bg-secondary/30 p-3">
+              <div className="rounded-lg border border-border/60 bg-white/60 p-3">
                 <div className="text-2xl font-bold">{wiki?.personalized_search_queries?.length || "-"}</div>
                 <div className="text-xs text-muted-foreground">Searches</div>
               </div>
@@ -1961,7 +1961,7 @@ function StepDiscovery({
         </div>
         {status && <p className="mt-3 text-xs text-muted-foreground">{status}</p>}
         {!wiki && !loading && (
-          <div className="mt-5 rounded-2xl border border-dashed border-border bg-secondary/25 p-5">
+          <div className="mt-5 rounded-lg border border-dashed border-border bg-white/60 p-4">
             <div className="font-medium">Ready to search from your saved profile</div>
             <p className="mt-1 text-sm text-muted-foreground/85">
               Click Search to generate profile-specific scholarship sources. Results appear after the Wiki agents finish.
@@ -1970,11 +1970,11 @@ function StepDiscovery({
         )}
       </Card>
 
-      {hasWiki && <Card>
+      {hasWiki && <Card className={PROFILE_SECTION_CLASS}>
         <SectionLabel>Profile used for discovery</SectionLabel>
         <div className="mt-4 grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {Object.entries(profileSummary).map(([key, value]) => (
-            <div key={key} className="rounded-xl border border-border bg-secondary/30 p-3">
+            <div key={key} className="rounded-lg border border-border/60 bg-white/60 p-3">
               <div className="text-xs uppercase tracking-widest text-muted-foreground">{key.replace(/_/g, " ")}</div>
               <div className="mt-1 text-sm font-medium">{Array.isArray(value) ? value.join(", ") : String(value)}</div>
             </div>
@@ -1988,13 +1988,13 @@ function StepDiscovery({
       </Card>}
 
       {hasWiki && (
-        <div className="grid lg:grid-cols-2 gap-4">
-          <Card>
-            <SectionLabel>Top 5 direct scholarship sources</SectionLabel>
+        <div className="space-y-8">
+          <Card className={PROFILE_SECTION_CLASS}>
+            <div className="text-sm font-semibold uppercase tracking-widest text-muted-foreground">Top 5 direct scholarship sources</div>
             <p className="mt-1 text-xs text-muted-foreground">
               Send one into Step 4 with its name, link, and notes filled for requirement extraction.
             </p>
-            <div className="mt-4 space-y-3">
+            <div className="mt-4 grid gap-4 xl:grid-cols-2">
               {directSources.map((source) => (
                 <WikiSourceCard
                   key={`direct-${source.name}`}
@@ -2008,12 +2008,12 @@ function StepDiscovery({
             </div>
           </Card>
 
-          <Card>
-            <SectionLabel>Top 5 scholarship platforms</SectionLabel>
+          <Card className={PROFILE_SECTION_CLASS}>
+            <div className="text-sm font-semibold uppercase tracking-widest text-muted-foreground">Top 5 scholarship platforms</div>
             <p className="mt-1 text-xs text-muted-foreground">
               Use these platforms to continue searching for real opportunities.
             </p>
-            <div className="mt-4 space-y-3">
+            <div className="mt-4 grid gap-4 xl:grid-cols-2">
               {platformSources.map((source) => (
                 <WikiSourceCard
                   key={`platform-${source.name}`}
@@ -2028,11 +2028,11 @@ function StepDiscovery({
         </div>
       )}
 
-      {hasWiki && <Card>
+      {hasWiki && <Card className={PROFILE_SECTION_CLASS}>
         <SectionLabel>Funding categories</SectionLabel>
         <div className="mt-4 grid md:grid-cols-2 lg:grid-cols-3 gap-3">
           {(wiki?.funding_categories ?? []).map((category) => (
-            <div key={category.category_name} className="rounded-xl border border-border p-4">
+            <div key={category.category_name} className="rounded-lg border border-border/60 bg-white/60 p-4">
               <div className="font-display text-[18px] font-bold">{category.category_name}</div>
               <p className="mt-2 text-sm text-muted-foreground/85">{category.description}</p>
               <div className="mt-3 flex flex-wrap gap-1.5">
@@ -2043,11 +2043,11 @@ function StepDiscovery({
         </div>
       </Card>}
 
-      {hasWiki && <Card>
+      {hasWiki && <Card className={PROFILE_SECTION_CLASS}>
             <SectionLabel>Personalized search queries</SectionLabel>
           <div className="mt-4 space-y-2">
             {(wiki?.personalized_search_queries ?? []).slice(0, 3).map((query) => (
-              <div key={query} className="flex items-center justify-between gap-3 rounded-xl border border-border p-3">
+              <div key={query} className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-white/60 p-3">
                 <span className="text-sm">{query}</span>
                 <div className="flex shrink-0 gap-2">
                   <button onClick={() => window.open(`https://www.google.com/search?q=${encodeURIComponent(query)}`, "_blank")} className="rounded-full bg-primary px-2.5 py-1 text-xs text-primary-foreground hover:opacity-90">Search</button>
@@ -2095,50 +2095,70 @@ function WikiSourceCard({
   }) => void;
   mode: "direct" | "platform";
 }) {
+  const metaItems = [
+    source.award_amount && { label: "Amount", value: source.award_amount },
+    source.deadline_window && { label: "Deadline", value: source.deadline_window },
+    source.competitiveness && { label: "Signal", value: source.competitiveness },
+  ].filter(Boolean) as { label: string; value: string }[];
+  const headerLabel = mode === "direct" ? "Direct source" : source.cost ? `${source.cost} platform` : "Platform";
+
   return (
-    <div className="rounded-xl border border-border bg-card p-3">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <div className="font-medium">{source.name}</div>
-          <div className="text-xs text-muted-foreground">{source.category} {source.cost ? `- ${source.cost}` : ""}</div>
+    <div className="group flex h-full min-h-[300px] flex-col overflow-hidden rounded-xl border border-border/70 bg-white shadow-sm shadow-black/5 transition-shadow hover:shadow-lg hover:shadow-black/10">
+      <div className="bg-primary text-primary-foreground">
+        <div className="h-3 bg-gold" />
+        <div className="min-h-[88px] p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-xs font-semibold uppercase tracking-widest text-primary-foreground/75">{headerLabel}</div>
+              <div className="mt-3 text-xs text-primary-foreground/80">
+                {source.category || (mode === "direct" ? "Scholarship source" : "Search platform")}
+              </div>
+            </div>
+          </div>
         </div>
-        {mode === "direct" ? <Pill tone="gold">Direct</Pill> : <Pill>Platform</Pill>}
       </div>
-      {source.why_recommended && <p className="mt-2 text-sm text-muted-foreground/85">{source.why_recommended}</p>}
-      {(source.award_amount || source.deadline_window || source.competitiveness) && (
-        <div className="mt-3 grid gap-2 sm:grid-cols-3">
-          {source.award_amount && (
-            <div className="rounded-lg border border-border bg-secondary/30 p-2">
-              <div className="text-[10px] uppercase tracking-widest text-muted-foreground">Amount</div>
-              <div className="mt-1 text-xs font-medium">{source.award_amount}</div>
-            </div>
-          )}
-          {source.deadline_window && (
-            <div className="rounded-lg border border-border bg-secondary/30 p-2">
-              <div className="text-[10px] uppercase tracking-widest text-muted-foreground">Deadline</div>
-              <div className="mt-1 text-xs font-medium">{source.deadline_window}</div>
-            </div>
-          )}
-          {source.competitiveness && (
-            <div className="rounded-lg border border-border bg-secondary/30 p-2">
-              <div className="text-[10px] uppercase tracking-widest text-muted-foreground">Signal</div>
-              <div className="mt-1 text-xs font-medium">{source.competitiveness}</div>
-            </div>
-          )}
+
+      <div className="flex flex-1 flex-col p-4">
+        <div>
+          <div className="font-display text-xl font-bold leading-tight text-foreground">{source.name}</div>
+          {source.cost && <div className="mt-2 text-xs text-muted-foreground">{source.cost}</div>}
         </div>
-      )}
-      {source.status_note && <p className="mt-2 text-xs text-warning">{source.status_note}</p>}
-      {!!source.best_for?.length && (
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {source.best_for.slice(0, 3).map((item) => <Pill key={item}>{item}</Pill>)}
-        </div>
-      )}
-      {!!source.search_tips?.length && (
-        <ul className="mt-3 space-y-1 text-xs text-muted-foreground">
-          {source.search_tips.map((tip) => <li key={tip}>{tip}</li>)}
-        </ul>
-      )}
-      <div className="mt-3 flex flex-wrap gap-2">
+
+        {source.why_recommended && (
+          <p className="mt-3 text-sm leading-6 text-muted-foreground/90">{source.why_recommended}</p>
+        )}
+
+        {!!metaItems.length && (
+          <>
+            <div className="my-4 border-t border-dashed border-border" />
+            <div className="grid gap-2 sm:grid-cols-3">
+              {metaItems.map((item) => (
+                <div key={item.label} className="rounded-lg border border-border/70 bg-secondary/20 p-2">
+                  <div className="text-[10px] uppercase tracking-widest text-muted-foreground">{item.label}</div>
+                  <div className="mt-1 text-sm font-semibold">{item.value}</div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
+        {source.status_note && <p className="mt-3 text-xs font-medium text-warning">{source.status_note}</p>}
+
+        {!!source.best_for?.length && (
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            {source.best_for.slice(0, 3).map((item) => <Pill key={item}>{item}</Pill>)}
+          </div>
+        )}
+
+        {!!source.search_tips?.length && (
+          <div className="mt-3 border-t border-border/70 pt-3">
+            <ul className="space-y-1 text-xs leading-5 text-muted-foreground">
+              {source.search_tips.map((tip) => <li key={tip}>{tip}</li>)}
+            </ul>
+          </div>
+        )}
+
+      <div className="mt-auto flex flex-wrap gap-2 pt-4">
         {source.url && (
           <button onClick={() => window.open(source.url, "_blank")} className="rounded-full bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:opacity-90">
             Open source
@@ -2154,6 +2174,7 @@ function WikiSourceCard({
             Copy query to extractor
           </button>
         )}
+      </div>
       </div>
     </div>
   );
