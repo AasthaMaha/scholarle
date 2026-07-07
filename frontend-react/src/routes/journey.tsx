@@ -1,28 +1,35 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  Bold,
+  ArrowLeft,
   Check,
+  ChevronLeft,
+  ChevronRight,
+  ChevronDown,
   ClipboardList,
   Copy,
   FileUp,
-  Heading1,
-  Heading2,
-  Italic,
+  Gauge,
   Lightbulb,
-  Link as LinkIcon,
-  List,
-  ListOrdered,
+  ListChecks,
   Menu,
+  MessageSquare,
   PencilLine,
   Power,
-  Redo2,
   RefreshCw,
+  Save,
   Sparkles,
   Target,
-  Underline,
-  Undo2,
 } from "lucide-react";
+import { Skeleton } from "@/components/ui/skeleton";
+import { EssayEditor, type EssayEditorHandle } from "@/components/EssayEditor";
+import {
+  analyzeText,
+  CATEGORY_META,
+  CATEGORY_ORDER,
+  countByCategory,
+  type Suggestion,
+} from "@/lib/suggestions";
 import { journeySteps } from "@/lib/persona";
 import { loadExampleProfile } from "@/lib/loadExample";
 import { CoachRunButton } from "@/components/CoachRunButton";
@@ -44,6 +51,8 @@ import {
   type ResearchExperienceEntry,
   type WorkExperienceEntry,
   type UserProfile,
+  type AnalysisResult,
+  type AnalysisScore,
   type EssayDraft,
   type ActiveScholarship,
   type WikiDiscoveryResult,
@@ -158,6 +167,7 @@ function Journey() {
               <StepBody
                 slug={step.slug}
                 goNext={goNext}
+                goPrev={goPrev}
                 goToProfile={() => setStepIdx(Math.max(0, journeySteps.findIndex((s) => s.slug === "profile")))}
                 goToRequirements={() => setStepIdx(Math.max(0, journeySteps.findIndex((s) => s.slug === "requirements")))}
                 profileError={profileError}
@@ -412,12 +422,14 @@ function Nav({ stepIdx, onNext, onPrev }: { stepIdx: number; onNext: () => void;
 function StepBody({
   slug,
   goNext,
+  goPrev,
   goToProfile,
   goToRequirements,
   profileError,
 }: {
   slug: string;
   goNext: () => void;
+  goPrev: () => void;
   goToProfile: () => void;
   goToRequirements: () => void;
   profileError: string;
@@ -427,7 +439,7 @@ function StepBody({
     case "discovery": return <StepDiscovery onUpdateProfile={goToProfile} onUseSource={goToRequirements} />;
     case "opportunities": return <StepOpportunities onAnalyze={goNext} />;
     case "requirements": return <StepRequirementsAndFit />;
-    case "essay-workspace": return <StepEssayWorkspace />;
+    case "essay-workspace": return <StepEssayWorkspace onBack={goPrev} />;
     case "revise": return <StepRevise />;
     case "final-check": return <StepFinalCheck />;
     case "tracker": return <StepTracker />;
@@ -2808,57 +2820,167 @@ function FitRubricDialog({
 
 type WorkspaceTab = "outline" | "evaluation" | "highlights";
 
-function StepEssayWorkspace() {
+/** Pull the largest 2–5 digit number out of a word-limit string (e.g. "400-500 words" → 500). */
+function parseWordTarget(limit?: string): number | null {
+  const nums = (limit ?? "").match(/\d{2,5}/g);
+  if (!nums?.length) return null;
+  return Math.max(...nums.map(Number));
+}
+
+/** Overall essay score (0–100) = mean of the readiness-index dimension scores. */
+function overallEssayScore(analysis?: AnalysisResult): number | null {
+  const scores = Object.values(analysis?.readiness_index ?? {})
+    .map((entry) => entry.score)
+    .filter((s): s is number => typeof s === "number");
+  if (!scores.length) return null;
+  return Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
+}
+
+function scoreColor(score: number): string {
+  if (score >= 80) return "var(--success)";
+  if (score >= 60) return "var(--warning)";
+  return "var(--destructive)";
+}
+
+function labelize(key: string): string {
+  return key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function levelWord(score: number): string {
+  if (score >= 80) return "Strong — competitive draft";
+  if (score >= 60) return "Developing — keep refining";
+  return "Needs work — focus on the priorities";
+}
+
+/** Grammarly-style circular score badge with a colored ring. */
+function ScoreRing({ score, size = 40, stroke = 3.5 }: { score: number | null; size?: number; stroke?: number }) {
+  const radius = (size - stroke) / 2;
+  const circ = 2 * Math.PI * radius;
+  const pct = score == null ? 0 : Math.max(0, Math.min(100, score)) / 100;
+  const color = score == null ? "var(--muted-foreground)" : scoreColor(score);
+  return (
+    <div className="relative shrink-0" style={{ width: size, height: size }}>
+      <svg width={size} height={size} className="-rotate-90">
+        <circle cx={size / 2} cy={size / 2} r={radius} fill="none" stroke="var(--border)" strokeWidth={stroke} />
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="none"
+          stroke={color}
+          strokeWidth={stroke}
+          strokeLinecap="round"
+          strokeDasharray={circ}
+          strokeDashoffset={circ * (1 - pct)}
+          className="transition-[stroke-dashoffset] duration-700 ease-out"
+        />
+      </svg>
+      <span
+        className="absolute inset-0 grid place-items-center text-[11px] font-semibold tabular-nums"
+        style={{ color }}
+      >
+        {score == null ? "–" : score}
+      </span>
+    </div>
+  );
+}
+
+/** Live word/character count with a thin target-progress bar. */
+function WordCountMeter({ wordCount, characterCount, target }: { wordCount: number; characterCount: number; target: number | null }) {
+  const pct = target ? Math.min(100, Math.round((wordCount / target) * 100)) : 0;
+  const over = target ? wordCount > target : false;
+  return (
+    <div className="hidden flex-col items-end gap-1 sm:flex">
+      <div className="flex items-center gap-1.5 text-[12px] tabular-nums text-muted-foreground">
+        <span className="font-semibold text-foreground">{wordCount}</span>
+        {target ? <span>/ {target} words</span> : <span>words</span>}
+        <span className="hidden text-muted-foreground/60 md:inline">· {characterCount} chars</span>
+      </div>
+      {target && (
+        <div className="h-1 w-24 overflow-hidden rounded-full bg-border">
+          <div
+            className={`h-full rounded-full transition-all duration-300 ${over ? "bg-warning" : "bg-info"}`}
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   const { user, updateProfile } = useUser();
-  const editorRef = useRef<HTMLDivElement | null>(null);
-  const editorSelectionRef = useRef<Range | null>(null);
+  const editorApiRef = useRef<EssayEditorHandle | null>(null);
+  const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
   const draft = user?.essayDraft ?? "";
   const essayTitle = user?.essayTitle ?? "";
   const wordCount = draft.trim() ? draft.trim().split(/\s+/).filter(Boolean).length : 0;
   const characterCount = draft.length;
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("outline");
+  const [panelOpen, setPanelOpen] = useState(true);
+  const [isEvaluating, setIsEvaluating] = useState(false);
   const [pdfStatus, setPdfStatus] = useState<string | null>(null);
   const [analysisStatus, setAnalysisStatus] = useState<string | null>(null);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+  const [nowTick, setNowTick] = useState(() => Date.now());
 
+  const wordTarget = useMemo(() => parseWordTarget(buildOutlinePayload(user).word_limit), [user]);
+  const score = useMemo(() => overallEssayScore(user?.lastAnalysis), [user?.lastAnalysis]);
+  const suggestions = useMemo(
+    () => analyzeText(draft).filter((s) => !dismissed.has(s.id)),
+    [draft, dismissed],
+  );
+
+  // Lightweight autosave indicator — the working draft is continuously synced to
+  // the store, so treat each settled edit as an autosave checkpoint.
   useEffect(() => {
-    const editor = editorRef.current;
-    if (!editor) return;
-    if (editor.innerText !== draft) editor.innerText = draft;
+    if (!draft.trim()) return;
+    const id = window.setTimeout(() => setSavedAt(Date.now()), 600);
+    return () => window.clearTimeout(id);
   }, [draft]);
 
-  function syncEditor() {
-    updateProfile({ essayDraft: editorRef.current?.innerText ?? "" });
-  }
+  useEffect(() => {
+    const id = window.setInterval(() => setNowTick(Date.now()), 30000);
+    return () => window.clearInterval(id);
+  }, []);
 
-  function saveEditorSelection() {
-    const selection = window.getSelection();
-    const editor = editorRef.current;
-    if (!selection?.rangeCount || !editor) return;
-    const range = selection.getRangeAt(0);
-    if (editor.contains(range.commonAncestorContainer)) {
-      editorSelectionRef.current = range.cloneRange();
+  const savedLabel = (() => {
+    if (!savedAt) return "Not saved yet";
+    const mins = Math.floor((nowTick - savedAt) / 60000);
+    if (mins < 1) return "Saved · just now";
+    if (mins === 1) return "Saved · 1m ago";
+    if (mins < 60) return `Saved · ${mins}m ago`;
+    return `Saved · ${Math.floor(mins / 60)}h ago`;
+  })();
+
+  function handleRunningChange(running: boolean) {
+    setIsEvaluating(running);
+    if (running) {
+      setPanelOpen(true);
+      setActiveTab("evaluation");
     }
   }
 
-  function restoreEditorSelection() {
-    const range = editorSelectionRef.current;
-    if (!range) return;
-    const selection = window.getSelection();
-    selection?.removeAllRanges();
-    selection?.addRange(range);
+  function acceptSuggestion(s: Suggestion) {
+    editorApiRef.current?.accept(s);
   }
 
-  function applyEditorCommand(command: string, value?: string) {
-    const editor = editorRef.current;
-    if (!editor) return;
-    editor.focus();
-    restoreEditorSelection();
-    const applied = document.execCommand(command, false, value);
-    if (!applied && command === "formatBlock" && value?.startsWith("<")) {
-      document.execCommand(command, false, value.replace(/[<>]/g, ""));
-    }
-    saveEditorSelection();
-    syncEditor();
+  function dismissSuggestion(s: Suggestion) {
+    setDismissed((prev) => {
+      const next = new Set(prev);
+      next.add(s.id);
+      return next;
+    });
+  }
+
+  function revealSuggestion(s: Suggestion) {
+    editorApiRef.current?.reveal(s);
+  }
+
+  function openHighlights() {
+    setPanelOpen(true);
+    setActiveTab("highlights");
+    if (suggestions[0]) requestAnimationFrame(() => editorApiRef.current?.reveal(suggestions[0]));
   }
 
   async function handlePdf(file: File) {
@@ -2916,141 +3038,144 @@ function StepEssayWorkspace() {
       version: (prev[prev.length - 1]?.version ?? 0) + 1,
       content: draft,
       wordCount,
+      score: score ?? undefined,
       savedAt: new Date().toISOString(),
     };
     updateProfile({ drafts: [...prev, newDraft] });
+    setSavedAt(Date.now());
   }
 
-  const toolbar = [
-    { label: "Bold", icon: Bold, action: () => applyEditorCommand("bold") },
-    { label: "Italic", icon: Italic, action: () => applyEditorCommand("italic") },
-    { label: "Underline", icon: Underline, action: () => applyEditorCommand("underline") },
-    { label: "Heading 1", icon: Heading1, action: () => applyEditorCommand("formatBlock", "<h1>") },
-    { label: "Heading 2", icon: Heading2, action: () => applyEditorCommand("formatBlock", "<h2>") },
-    { label: "Bullet list", icon: List, action: () => applyEditorCommand("insertUnorderedList") },
-    { label: "Numbered list", icon: ListOrdered, action: () => applyEditorCommand("insertOrderedList") },
-    {
-      label: "Link",
-      icon: LinkIcon,
-      action: () => {
-        const url = window.prompt("Paste a link");
-        if (url) applyEditorCommand("createLink", url);
-      },
-    },
-    { label: "Undo", icon: Undo2, action: () => applyEditorCommand("undo") },
-    { label: "Redo", icon: Redo2, action: () => applyEditorCommand("redo") },
-  ];
-
   return (
-    <div className="relative left-1/2 w-screen -translate-x-1/2 -mt-3 bg-background">
-      <div className="min-h-[calc(100vh-9rem)] border-y border-border bg-white lg:pr-[380px]">
-        <div className="mx-auto flex min-h-[calc(100vh-9rem)] max-w-4xl flex-col px-6 pt-8 md:px-10 lg:px-14">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-4">
-            <div>
-              <div className="text-xs uppercase tracking-[0.22em] text-muted-foreground">Essay Workspace</div>
-              <input
-                type="text"
-                value={essayTitle}
-                onChange={(e) => updateProfile({ essayTitle: e.target.value })}
-                placeholder="Untitled scholarship essay"
-                className="mt-1 w-full min-w-[260px] max-w-xl border-none bg-transparent p-0 font-display text-2xl text-foreground outline-none placeholder:text-foreground"
-              />
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <label className="inline-flex cursor-pointer items-center gap-2 rounded-full border border-border bg-card px-3 py-2 text-sm hover:bg-accent">
-                <FileUp className="size-4" />
-                Upload PDF
-                <input
-                  type="file"
-                  accept="application/pdf,.pdf"
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    if (f) handlePdf(f);
-                  }}
-                  className="sr-only"
-                />
-              </label>
-              <button
-                type="button"
-                onClick={saveAsDraft}
-                disabled={!draft.trim()}
-                className="rounded-full border border-border bg-card px-3 py-2 text-sm hover:bg-accent disabled:opacity-40"
-              >
-                Save draft
-              </button>
-              <CoachRunButton
-                label={wordCount < 30 ? "Write more to evaluate" : "Run evaluation"}
-                loadingLabel="Analyzing..."
-                disabled={wordCount < 30}
-                onStatus={setAnalysisStatus}
-                className="rounded-full bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-40"
-              />
-            </div>
-          </div>
+    <div className="relative left-1/2 w-screen -translate-x-1/2 -mt-10 border-t border-border bg-background">
+      {/* Zone 1 — slim top bar (Grammarly-style) */}
+      <header className="sticky top-0 z-20 border-b border-border bg-background/90 backdrop-blur">
+        <div className="mx-auto flex h-14 max-w-[1440px] items-center gap-2 px-3 md:px-4">
+          <button
+            type="button"
+            onClick={onBack}
+            aria-label="Back"
+            className="grid size-9 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground"
+          >
+            <ArrowLeft className="size-4" />
+          </button>
 
-          {(pdfStatus || analysisStatus) && (
-            <div className="mt-4 space-y-1 text-xs text-muted-foreground">
-              {pdfStatus && <div>{pdfStatus}</div>}
-              {analysisStatus && <div>{analysisStatus}</div>}
-            </div>
-          )}
-
-          <div className="relative flex-1 py-12">
-            {!draft.trim() && (
-              <div className="pointer-events-none absolute left-0 top-12 max-w-xl text-2xl leading-relaxed text-muted-foreground/75">
-                Type or paste your essay draft here, or upload a PDF.
-              </div>
-            )}
-            <div
-              ref={editorRef}
-              contentEditable
-              role="textbox"
-              aria-label="Essay draft editor"
-              suppressContentEditableWarning
-              onInput={syncEditor}
-              onBlur={syncEditor}
-              onKeyUp={saveEditorSelection}
-              onMouseUp={saveEditorSelection}
-              className="min-h-[520px] w-full whitespace-pre-wrap break-words font-display text-[18px] leading-8 text-foreground outline-none [&_h1]:mb-4 [&_h1]:mt-6 [&_h1]:text-4xl [&_h1]:font-bold [&_h1]:leading-tight [&_h2]:mb-3 [&_h2]:mt-5 [&_h2]:text-2xl [&_h2]:font-bold [&_h2]:leading-snug [&_ol]:my-4 [&_ol]:list-decimal [&_ol]:pl-8 [&_ul]:my-4 [&_ul]:list-disc [&_ul]:pl-8 [&_li]:my-1 [&_a]:text-info [&_a]:underline"
+          <div className="flex min-w-0 flex-1 flex-col justify-center">
+            <input
+              type="text"
+              value={essayTitle}
+              onChange={(e) => updateProfile({ essayTitle: e.target.value })}
+              placeholder="Untitled scholarship essay"
+              aria-label="Essay title"
+              className="w-full truncate border-none bg-transparent p-0 text-[15px] font-semibold leading-tight text-foreground outline-none placeholder:text-muted-foreground"
             />
+            <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+              <span className={`inline-block size-1.5 rounded-full ${savedAt ? "bg-success" : "bg-muted-foreground/40"}`} />
+              {savedLabel}
+            </div>
           </div>
 
-          <div className="sticky bottom-0 -mx-6 flex flex-wrap items-center justify-between gap-3 border-t border-border bg-white/95 px-6 py-3 backdrop-blur md:-mx-10 md:px-10 lg:-mx-14 lg:px-14">
-            <div className="flex flex-wrap items-center gap-1">
-              {toolbar.map((item) => {
-                const Icon = item.icon;
-                return (
-                  <Tooltip key={item.label}>
-                    <TooltipTrigger asChild>
-                      <button
-                        type="button"
-                        onMouseDown={(event) => {
-                          event.preventDefault();
-                          item.action();
-                        }}
-                        onTouchStart={(event) => {
-                          event.preventDefault();
-                          item.action();
-                        }}
-                        className="grid size-9 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-                      >
-                        <Icon className="size-4" />
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent>{item.label}</TooltipContent>
-                  </Tooltip>
-                );
-              })}
-            </div>
-            <div className="flex items-center gap-4 text-sm text-muted-foreground">
-              <span>{wordCount} words</span>
-              <span>{characterCount} characters</span>
-            </div>
+          <div className="flex shrink-0 items-center gap-1 md:gap-1.5">
+            <WordCountMeter wordCount={wordCount} characterCount={characterCount} target={wordTarget} />
+            <div className="mx-1 hidden h-6 w-px bg-border sm:block" />
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <label className="grid size-9 cursor-pointer place-items-center rounded-lg text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground">
+                  <FileUp className="size-4" />
+                  <input
+                    type="file"
+                    accept="application/pdf,.pdf"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) handlePdf(f);
+                    }}
+                    className="sr-only"
+                  />
+                </label>
+              </TooltipTrigger>
+              <TooltipContent>Upload PDF</TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={saveAsDraft}
+                  disabled={!draft.trim()}
+                  aria-label="Save draft"
+                  className="grid size-9 place-items-center rounded-lg text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground disabled:opacity-40"
+                >
+                  <Save className="size-4" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>Save draft</TooltipContent>
+            </Tooltip>
+
+            <CoachRunButton
+              label={wordCount < 30 ? "Write more" : "Run evaluation"}
+              loadingLabel="Analyzing…"
+              disabled={wordCount < 30}
+              onStatus={setAnalysisStatus}
+              onRunningChange={handleRunningChange}
+              className="ml-0.5 rounded-lg bg-info px-3.5 py-2 text-[13px] font-medium text-white transition-opacity duration-150 hover:opacity-90 disabled:opacity-40"
+            />
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div className="ml-1 hidden md:block">
+                  <ScoreRing score={score} />
+                </div>
+              </TooltipTrigger>
+              <TooltipContent>{score == null ? "Run an evaluation to get your essay score" : `Essay score: ${score}/100`}</TooltipContent>
+            </Tooltip>
+
+            <button
+              type="button"
+              onClick={() => setPanelOpen((open) => !open)}
+              aria-label={panelOpen ? "Hide panel" : "Show panel"}
+              className="ml-0.5 hidden size-9 place-items-center rounded-lg text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground lg:grid"
+            >
+              {panelOpen ? <ChevronRight className="size-4" /> : <ChevronLeft className="size-4" />}
+            </button>
           </div>
         </div>
-      </div>
 
-      <EssayWorkspacePanel activeTab={activeTab} onTabChange={setActiveTab} />
+        {(pdfStatus || analysisStatus) && (
+          <div className="border-t border-border bg-accent/40 px-4 py-1.5 text-[11px] text-muted-foreground">
+            {pdfStatus ?? analysisStatus}
+          </div>
+        )}
+      </header>
+
+      {/* Zone 2 (editor) + Zone 3 (sidebar) */}
+      <div className="mx-auto flex max-w-[1440px] flex-col items-stretch lg:flex-row lg:items-start">
+        <div className="flex min-h-[60vh] min-w-0 flex-1 flex-col lg:h-[calc(100vh-120px)] lg:min-h-0">
+          <div className="mx-auto flex min-h-0 w-full max-w-[760px] flex-1 flex-col">
+            <EssayEditor
+              ref={editorApiRef}
+              value={draft}
+              onChange={(v) => updateProfile({ essayDraft: v })}
+              suggestions={suggestions}
+              onDismiss={dismissSuggestion}
+              onOpenHighlights={openHighlights}
+              className="flex-1"
+            />
+          </div>
+        </div>
+
+        {panelOpen && (
+          <EssayWorkspacePanel
+            activeTab={activeTab}
+            onTabChange={setActiveTab}
+            isEvaluating={isEvaluating}
+            onCollapse={() => setPanelOpen(false)}
+            suggestions={suggestions}
+            onAccept={acceptSuggestion}
+            onDismiss={dismissSuggestion}
+            onReveal={revealSuggestion}
+          />
+        )}
+      </div>
     </div>
   );
 }
@@ -3058,11 +3183,31 @@ function StepEssayWorkspace() {
 function EssayWorkspacePanel({
   activeTab,
   onTabChange,
+  isEvaluating,
+  onCollapse,
+  suggestions,
+  onAccept,
+  onDismiss,
+  onReveal,
 }: {
   activeTab: WorkspaceTab;
   onTabChange: (tab: WorkspaceTab) => void;
+  isEvaluating: boolean;
+  onCollapse: () => void;
+  suggestions: Suggestion[];
+  onAccept: (s: Suggestion) => void;
+  onDismiss: (s: Suggestion) => void;
+  onReveal: (s: Suggestion) => void;
 }) {
   const { user, updateProfile } = useUser();
+  const [coveredPoints, setCoveredPoints] = useState<Set<string>>(() => new Set());
+  const toggleCovered = (id: string) =>
+    setCoveredPoints((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   const [outlineLoading, setOutlineLoading] = useState(false);
   const [outlineStatus, setOutlineStatus] = useState<string | null>(null);
   const outlineKey = useMemo(() => {
@@ -3110,31 +3255,49 @@ function EssayWorkspacePanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, outlineKey, user?.personalizedOutline?.generatedForKey]);
 
-  const tabs: Array<{ id: WorkspaceTab; label: string }> = [
-    { id: "outline", label: "Personalized Outline" },
-    { id: "evaluation", label: "Application Evaluation" },
-    { id: "highlights", label: "Review Highlights" },
+  const tabs: Array<{ id: WorkspaceTab; label: string; icon: typeof ListChecks; count?: number }> = [
+    { id: "outline", label: "Outline", icon: ListChecks },
+    { id: "evaluation", label: "Evaluation", icon: Gauge },
+    { id: "highlights", label: "Highlights", icon: Sparkles, count: suggestions.length },
   ];
 
   return (
-    <aside className="border-l border-border bg-card lg:fixed lg:right-0 lg:top-[65px] lg:z-10 lg:h-[calc(100vh-65px)] lg:w-[380px] lg:overflow-y-auto">
-      <div className="grid grid-cols-3 border-b border-border">
-        {tabs.map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            onClick={() => onTabChange(tab.id)}
-            className={`min-h-16 border-r border-border px-3 text-left text-xs font-medium leading-tight transition-colors last:border-r-0 ${
-              activeTab === tab.id
-                ? "bg-background text-foreground shadow-[inset_0_-3px_0_var(--primary)]"
-                : "text-muted-foreground hover:bg-accent"
-            }`}
-          >
-            {tab.label}
-          </button>
-        ))}
+    <aside className="w-full shrink-0 border-t border-border bg-card lg:sticky lg:top-[56px] lg:h-[calc(100vh-120px)] lg:w-[380px] lg:overflow-y-auto lg:border-l lg:border-t-0">
+      <div className="sticky top-0 z-10 flex items-center gap-1 border-b border-border bg-card/95 p-2 backdrop-blur">
+        <div className="flex flex-1 items-center gap-1 rounded-lg bg-muted/60 p-1">
+          {tabs.map((tab) => {
+            const Icon = tab.icon;
+            const active = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => onTabChange(tab.id)}
+                className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-[12px] font-medium transition-colors duration-150 ${
+                  active ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <Icon className="size-3.5" />
+                <span className="hidden sm:inline">{tab.label}</span>
+                {tab.count ? (
+                  <span className={`grid h-4 min-w-4 place-items-center rounded-full px-1 text-[10px] font-bold ${active ? "bg-info text-white" : "bg-info/15 text-info"}`}>
+                    {tab.count}
+                  </span>
+                ) : null}
+              </button>
+            );
+          })}
+        </div>
+        <button
+          type="button"
+          onClick={onCollapse}
+          aria-label="Collapse panel"
+          className="hidden size-8 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground lg:grid"
+        >
+          <ChevronRight className="size-4" />
+        </button>
       </div>
-      <div className="p-6">
+      <div key={activeTab} className="animate-in fade-in slide-in-from-bottom-1 p-3 duration-200">
         {activeTab === "outline" && (
           <PersonalizedOutlinePanel
             outline={user?.personalizedOutline}
@@ -3143,10 +3306,20 @@ function EssayWorkspacePanel({
             loading={outlineLoading}
             status={outlineStatus}
             onRegenerate={() => void runOutlineGeneration(true)}
+            covered={coveredPoints}
+            onToggleCovered={toggleCovered}
           />
         )}
-        {activeTab === "evaluation" && <WorkspaceEvaluationTab />}
-        {activeTab === "highlights" && <WorkspaceHighlightsTab />}
+        {activeTab === "evaluation" && <WorkspaceEvaluationTab isEvaluating={isEvaluating} />}
+        {activeTab === "highlights" && (
+          <WorkspaceHighlightsTab
+            isEvaluating={isEvaluating}
+            suggestions={suggestions}
+            onAccept={onAccept}
+            onDismiss={onDismiss}
+            onReveal={onReveal}
+          />
+        )}
       </div>
     </aside>
   );
@@ -3199,6 +3372,82 @@ function MiniList({ items }: { items?: string[] }) {
   );
 }
 
+function OutlineCheckRow({
+  id,
+  label,
+  detail,
+  covered,
+  onToggle,
+  children,
+}: {
+  id: string;
+  label: string;
+  detail?: string;
+  covered: Set<string>;
+  onToggle: (id: string) => void;
+  children?: React.ReactNode;
+}) {
+  const done = covered.has(id);
+  return (
+    <div className="rounded-lg border border-border bg-background p-2.5">
+      <div className="flex items-start gap-2">
+        <button
+          type="button"
+          onClick={() => onToggle(id)}
+          aria-pressed={done}
+          aria-label={done ? "Mark as not covered" : "Mark as covered"}
+          className={`mt-0.5 grid size-4 shrink-0 place-items-center rounded border transition-colors duration-150 ${
+            done ? "border-success bg-success text-white" : "border-border text-transparent hover:border-info"
+          }`}
+        >
+          <Check className="size-3" />
+        </button>
+        <div className="min-w-0 flex-1">
+          <div className={`text-[13px] font-medium leading-snug ${done ? "text-muted-foreground line-through" : "text-foreground"}`}>{label}</div>
+          {detail && <div className="mt-0.5 text-[12px] leading-relaxed text-muted-foreground">{detail}</div>}
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function OutlineGroup({
+  id,
+  title,
+  icon: Icon,
+  total,
+  coveredCount,
+  open,
+  onToggle,
+  children,
+}: {
+  id: string;
+  title: string;
+  icon: typeof Target;
+  total: number;
+  coveredCount: number;
+  open: boolean;
+  onToggle: (id: string) => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="overflow-hidden rounded-xl border border-border">
+      <button
+        type="button"
+        onClick={() => onToggle(id)}
+        className="flex w-full items-center gap-2 bg-accent/40 px-3 py-2.5 text-left transition-colors duration-150 hover:bg-accent/70"
+      >
+        <Icon className="size-4 text-info" />
+        <span className="flex-1 text-[13px] font-semibold">{title}</span>
+        <span className="text-[11px] tabular-nums text-muted-foreground">{coveredCount}/{total}</span>
+        <ChevronDown className={`size-4 text-muted-foreground transition-transform duration-200 ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && <div className="space-y-2 p-2.5">{children}</div>}
+    </div>
+  );
+}
+
 function PersonalizedOutlinePanel({
   outline,
   scholarshipName,
@@ -3206,6 +3455,8 @@ function PersonalizedOutlinePanel({
   loading,
   status,
   onRegenerate,
+  covered,
+  onToggleCovered,
 }: {
   outline?: PersonalizedOutlineResult;
   scholarshipName?: string;
@@ -3213,8 +3464,18 @@ function PersonalizedOutlinePanel({
   loading: boolean;
   status?: string | null;
   onRegenerate: () => void;
+  covered: Set<string>;
+  onToggleCovered: (id: string) => void;
 }) {
   const [copyStatus, setCopyStatus] = useState("");
+  const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set(["core", "strategy", "structure", "keypoints"]));
+  const toggleGroup = (id: string) =>
+    setOpenGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   const data = outline?.outline;
 
   async function copyOutline() {
@@ -3227,14 +3488,14 @@ function PersonalizedOutlinePanel({
 
   return (
     <div className="text-foreground">
-      <div className="border-b border-border pb-5">
+      <div className="border-b border-border pb-4">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="inline-flex items-center gap-2 rounded-md bg-info/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-info">
               <Sparkles className="size-3.5" />
               Personalized Outline
             </div>
-            <div className="mt-3 truncate font-display text-2xl font-semibold leading-tight">
+            <div className="mt-2 truncate font-display text-lg font-semibold leading-tight">
               {scholarshipName || "Current scholarship"}
             </div>
             {wordLimit && (
@@ -3289,199 +3550,378 @@ function PersonalizedOutlinePanel({
         </div>
       )}
 
-      {data && (
-        <div className="mt-5 space-y-4">
-          <div className="rounded-lg border border-primary/20 bg-primary/5 p-4">
-            <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-primary">
-              <Target className="size-3.5" />
-              Core Message
-            </div>
-            <h3 className="mt-3 text-base font-semibold leading-snug">{data.outline_title || "Scholarship essay plan"}</h3>
-            <p className="mt-2 text-sm leading-relaxed text-foreground/85">{data.thesis_or_core_message}</p>
-          </div>
-          {outline?.strategy && (
-            <div className="rounded-lg border border-info/20 bg-info/5 p-4">
-              <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-info">
-                <Lightbulb className="size-3.5" />
-                Strategy Notes
+      {data &&
+        (() => {
+          type Pt = { id: string; label: string; detail?: string };
+          const corePoints: Pt[] = [
+            { id: "p-core", label: data.outline_title || "Core message", detail: data.thesis_or_core_message },
+          ];
+          const strategyPoints: Pt[] = [];
+          if (outline?.strategy?.recommended_strategy) strategyPoints.push({ id: "p-strat", label: outline.strategy.recommended_strategy });
+          if (outline?.strategy?.central_message) strategyPoints.push({ id: "p-central", label: outline.strategy.central_message });
+          if (outline?.strategy?.tone_guidance) strategyPoints.push({ id: "p-tone", label: `Tone: ${outline.strategy.tone_guidance}` });
+          const sections = data.sections ?? [];
+          const structurePoints: Pt[] = sections.map((s, i) => ({ id: `p-sec-${i}`, label: s.section_name || `Section ${i + 1}` }));
+          let keyPoints: Pt[] = (outline?.coverage_check ?? []).map((c, i) => ({
+            id: `p-kp-${i}`,
+            label: c.requirement || `Requirement ${i + 1}`,
+            detail: c.where_covered || c.notes || undefined,
+          }));
+          if (!keyPoints.length) keyPoints = (data.questions_for_student ?? []).map((q, i) => ({ id: `p-q-${i}`, label: q }));
+          if (!keyPoints.length) {
+            const reqs = Array.from(new Set(sections.flatMap((s) => s.scholarship_requirement_addressed ?? [])));
+            keyPoints = reqs.map((r, i) => ({ id: `p-req-${i}`, label: r }));
+          }
+          const allIds = [...corePoints, ...strategyPoints, ...structurePoints, ...keyPoints].map((p) => p.id);
+          const total = allIds.length;
+          const coveredCount = allIds.filter((id) => covered.has(id)).length;
+          const cc = (pts: Pt[]) => pts.filter((p) => covered.has(p.id)).length;
+          const pct = total ? Math.round((coveredCount / total) * 100) : 0;
+
+          return (
+            <div className="mt-4 space-y-3">
+              <div className="rounded-xl border border-border bg-background p-3">
+                <div className="flex items-center justify-between text-[12px]">
+                  <span className="font-semibold uppercase tracking-[0.12em] text-muted-foreground">Coverage</span>
+                  <span className="font-semibold tabular-nums text-foreground">{coveredCount}/{total} covered</span>
+                </div>
+                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-border">
+                  <div className="h-full rounded-full bg-info transition-all duration-500" style={{ width: `${pct}%` }} />
+                </div>
               </div>
-              <p className="mt-2 text-sm leading-relaxed">{outline.strategy.recommended_strategy}</p>
-              {outline.strategy.tone_guidance && (
-                <div className="mt-3 rounded-md bg-background/80 px-3 py-2 text-xs text-muted-foreground">
-                  Tone: {outline.strategy.tone_guidance}
-                </div>
-              )}
-            </div>
-          )}
-          {(data.sections ?? []).map((section, index) => (
-            <div key={`${section.section_name}-${index}`} className="overflow-hidden rounded-lg border border-border bg-background">
-              <div className="flex items-center gap-3 border-b border-border bg-accent/50 px-4 py-3">
-                <div className="grid size-7 shrink-0 place-items-center rounded-md bg-primary text-xs font-semibold text-primary-foreground">
-                  {index + 1}
-                </div>
-                <h4 className="text-sm font-semibold leading-snug">{section.section_name}</h4>
-              </div>
-              <div className="p-4">
-              <p className="mt-2 text-sm leading-relaxed text-foreground/80">{section.purpose}</p>
-              {!!section.scholarship_requirement_addressed?.length && (
-                <div className="mt-3 flex flex-wrap gap-1.5">
-                  {section.scholarship_requirement_addressed.map((item) => (
-                    <span key={item} className="rounded-md bg-info/10 px-2 py-1 text-[11px] font-medium text-info">{item}</span>
-                  ))}
-                </div>
-              )}
-              <div className="mt-4 rounded-md border border-border/70 p-3">
-                <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">
-                  <ClipboardList className="size-3.5" />
-                  Suggested content
-                </div>
-                <MiniList items={section.suggested_content} />
-              </div>
-              <div className="mt-3 rounded-md border border-success/20 bg-success/5 p-3">
-                <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.12em] text-success">
-                  <Check className="size-3.5" />
-                  Profile evidence
-                </div>
-                <MiniList items={section.profile_evidence_to_use} />
-              </div>
-              {!!section.coaching_notes?.length && (
-                <div className="mt-3 rounded-md bg-warning/10 p-3">
-                  <div className="text-xs font-medium uppercase tracking-[0.12em] text-warning">Coaching notes</div>
-                  <MiniList items={section.coaching_notes} />
-                </div>
-              )}
-              {section.estimated_word_count && <div className="mt-3 text-xs text-muted-foreground">Suggested length: {section.estimated_word_count}</div>}
-              </div>
-            </div>
-          ))}
-          {(data.recommended_opening || data.recommended_conclusion) && (
-            <div className="rounded-lg border border-border bg-background p-4">
-              <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Opening & Closing Guidance</div>
-              {data.recommended_opening && <p className="mt-2 text-sm leading-relaxed"><span className="font-medium">Opening:</span> {data.recommended_opening}</p>}
-              {data.recommended_conclusion && <p className="mt-2 text-sm leading-relaxed"><span className="font-medium">Conclusion:</span> {data.recommended_conclusion}</p>}
-            </div>
-          )}
-          {!!outline?.coverage_check?.length && (
-            <div className="rounded-lg border border-border bg-background p-4">
-              <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Coverage Check</div>
-              <div className="mt-3 space-y-2">
-                {outline.coverage_check.map((item, index) => (
-                  <div key={`${item.requirement}-${index}`} className="rounded-md border border-border p-3 text-sm">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-medium">{item.requirement || "Requirement"}</span>
-                      <span className={`rounded-md px-2 py-0.5 text-[11px] ${item.covered ? "bg-success/10 text-success" : "bg-warning/10 text-warning"}`}>{item.covered ? "Covered" : "Needs detail"}</span>
-                    </div>
-                    {(item.where_covered || item.notes) && <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{item.where_covered || item.notes}</p>}
-                  </div>
+
+              <OutlineGroup id="core" title="Core Message" icon={Target} total={corePoints.length} coveredCount={cc(corePoints)} open={openGroups.has("core")} onToggle={toggleGroup}>
+                {corePoints.map((p) => (
+                  <OutlineCheckRow key={p.id} id={p.id} label={p.label} detail={p.detail} covered={covered} onToggle={onToggleCovered} />
                 ))}
+              </OutlineGroup>
+
+              {!!strategyPoints.length && (
+                <OutlineGroup id="strategy" title="Strategy Notes" icon={Lightbulb} total={strategyPoints.length} coveredCount={cc(strategyPoints)} open={openGroups.has("strategy")} onToggle={toggleGroup}>
+                  {strategyPoints.map((p) => (
+                    <OutlineCheckRow key={p.id} id={p.id} label={p.label} covered={covered} onToggle={onToggleCovered} />
+                  ))}
+                </OutlineGroup>
+              )}
+
+              {!!structurePoints.length && (
+                <OutlineGroup id="structure" title="Structure" icon={ClipboardList} total={structurePoints.length} coveredCount={cc(structurePoints)} open={openGroups.has("structure")} onToggle={toggleGroup}>
+                  {sections.map((s, i) => (
+                    <OutlineCheckRow key={`p-sec-${i}`} id={`p-sec-${i}`} label={s.section_name || `Section ${i + 1}`} detail={s.purpose} covered={covered} onToggle={onToggleCovered}>
+                      {!!s.scholarship_requirement_addressed?.length && (
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          {s.scholarship_requirement_addressed.map((item) => (
+                            <span key={item} className="rounded bg-info/10 px-1.5 py-0.5 text-[10px] font-medium text-info">{item}</span>
+                          ))}
+                        </div>
+                      )}
+                      {!!s.suggested_content?.length && (
+                        <ul className="mt-2 space-y-1 text-[12px] text-muted-foreground">
+                          {s.suggested_content.slice(0, 3).map((c) => (
+                            <li key={c} className="flex gap-1.5">
+                              <span className="mt-1.5 size-1 shrink-0 rounded-full bg-info/60" />
+                              {c}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                      {s.estimated_word_count && <div className="mt-1.5 text-[11px] text-muted-foreground">~{s.estimated_word_count}</div>}
+                    </OutlineCheckRow>
+                  ))}
+                </OutlineGroup>
+              )}
+
+              {!!keyPoints.length && (
+                <OutlineGroup id="keypoints" title="Key Points to Hit" icon={ListChecks} total={keyPoints.length} coveredCount={cc(keyPoints)} open={openGroups.has("keypoints")} onToggle={toggleGroup}>
+                  {keyPoints.map((p) => (
+                    <OutlineCheckRow key={p.id} id={p.id} label={p.label} detail={p.detail} covered={covered} onToggle={onToggleCovered} />
+                  ))}
+                </OutlineGroup>
+              )}
+
+              {(data.recommended_opening || data.recommended_conclusion) && (
+                <div className="rounded-xl border border-border bg-background p-3">
+                  <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Opening &amp; Closing</div>
+                  {data.recommended_opening && <p className="mt-2 text-[13px] leading-relaxed"><span className="font-medium">Opening:</span> {data.recommended_opening}</p>}
+                  {data.recommended_conclusion && <p className="mt-2 text-[13px] leading-relaxed"><span className="font-medium">Conclusion:</span> {data.recommended_conclusion}</p>}
+                </div>
+              )}
+
+              {!!outline?.warnings?.length && (
+                <div className="rounded-xl border border-warning/30 bg-warning/10 p-3">
+                  <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-warning">Warnings</div>
+                  <MiniList items={outline.warnings} />
+                </div>
+              )}
+              {!!outline?.missing_profile_info?.length && (
+                <div className="rounded-xl border border-border bg-background p-3">
+                  <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Missing Profile Information</div>
+                  <MiniList items={outline.missing_profile_info} />
+                </div>
+              )}
+
+              <div className="flex flex-wrap gap-2 pt-1">
+                <button type="button" onClick={copyOutline} className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs hover:bg-accent">
+                  <Copy className="size-3.5" />
+                  Copy outline
+                </button>
+                {copyStatus && <span className="self-center text-xs text-muted-foreground">{copyStatus}</span>}
               </div>
             </div>
-          )}
-          {!!data.questions_for_student?.length && (
-            <div className="rounded-lg border border-warning/30 bg-warning/10 p-4">
-              <div className="text-xs font-semibold uppercase tracking-[0.14em] text-warning">Questions to answer before drafting</div>
-              <MiniList items={data.questions_for_student} />
-            </div>
-          )}
-          {!!outline?.warnings?.length && (
-            <div className="rounded-lg border border-warning/30 bg-warning/10 p-4">
-              <div className="text-xs font-semibold uppercase tracking-[0.14em] text-warning">Warnings</div>
-              <MiniList items={outline.warnings} />
-            </div>
-          )}
-          {!!outline?.missing_profile_info?.length && (
-            <div className="rounded-lg border border-border bg-background p-4">
-              <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Missing Profile Information</div>
-              <MiniList items={outline.missing_profile_info} />
-            </div>
-          )}
-          <div className="flex flex-wrap gap-2 pt-1">
-            <button type="button" onClick={copyOutline} className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs hover:bg-accent">
-              <Copy className="size-3.5" />
-              Copy outline
-            </button>
-            <button type="button" className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90">Continue to draft</button>
-            {copyStatus && <span className="self-center text-xs text-muted-foreground">{copyStatus}</span>}
-          </div>
+          );
+        })()}
+    </div>
+  );
+}
+
+function PanelLabel({ children }: { children: React.ReactNode }) {
+  return <div className="text-[13px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">{children}</div>;
+}
+
+function PanelEmpty({ label, message }: { label: string; message: string }) {
+  return (
+    <div className="space-y-3">
+      <PanelLabel>{label}</PanelLabel>
+      <div className="rounded-xl border border-dashed border-border bg-background p-4 text-[13px] leading-relaxed text-muted-foreground">
+        {message}
+      </div>
+    </div>
+  );
+}
+
+function ReadinessRow({ label, value }: { label: string; value: AnalysisScore }) {
+  const [open, setOpen] = useState(false);
+  const s = typeof value.score === "number" ? value.score : 0;
+  const hasDetail = !!value.coaching?.trim();
+  return (
+    <div className="rounded-lg border border-border bg-background p-3">
+      <button
+        type="button"
+        onClick={() => hasDetail && setOpen((o) => !o)}
+        className="flex w-full items-center justify-between gap-2 text-left"
+        aria-expanded={open}
+      >
+        <span className="flex items-center gap-1.5 text-[13px] font-medium">
+          {label}
+          {hasDetail && <ChevronDown className={`size-3.5 text-muted-foreground transition-transform duration-200 ${open ? "rotate-180" : ""}`} />}
+        </span>
+        <span className="text-[12px] font-semibold tabular-nums" style={{ color: scoreColor(s) }}>
+          {s}
+        </span>
+      </button>
+      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-border">
+        <div className="h-full rounded-full transition-all duration-500" style={{ width: `${s}%`, background: scoreColor(s) }} />
+      </div>
+      {value.level && <div className="mt-1.5 text-[11px] text-muted-foreground">{value.level}</div>}
+      {open && hasDetail && (
+        <div className="mt-2 border-t border-border pt-2 text-[12px] leading-relaxed text-muted-foreground animate-in fade-in slide-in-from-top-1 duration-150">
+          {value.coaching}
         </div>
       )}
     </div>
   );
 }
 
-function WorkspaceList({ title, items }: { title: string; items: string[] }) {
+function EvaluationSkeleton() {
   return (
-    <div>
-      <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">{title}</div>
-      <div className="mt-6 space-y-3">
-        {items.map((item) => (
-          <div key={item} className="rounded-xl border border-border bg-background px-4 py-3 text-sm">
-            {item}
-          </div>
-        ))}
-      </div>
+    <div className="space-y-3">
+      <Skeleton className="h-4 w-40" />
+      <Skeleton className="h-16 w-full rounded-xl" />
+      {[0, 1, 2, 3, 4].map((i) => (
+        <Skeleton key={i} className="h-14 w-full rounded-lg" />
+      ))}
     </div>
   );
 }
 
-function WorkspaceEvaluationTab() {
+function HighlightsSkeleton() {
+  return (
+    <div className="space-y-3">
+      <Skeleton className="h-4 w-36" />
+      <Skeleton className="h-24 w-full rounded-xl" />
+      <Skeleton className="h-20 w-full rounded-xl" />
+      <Skeleton className="h-20 w-full rounded-xl" />
+    </div>
+  );
+}
+
+function WorkspaceEvaluationTab({ isEvaluating }: { isEvaluating: boolean }) {
   const { user } = useUser();
   const analysis = user?.lastAnalysis;
-  const scores = Object.values(analysis?.readiness_index ?? {})
-    .map((entry) => entry.score)
-    .filter((score): score is number => typeof score === "number");
-  const overall = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : null;
+  const entries = Object.entries(analysis?.readiness_index ?? {});
+  const score = overallEssayScore(analysis);
+
+  if (isEvaluating) return <EvaluationSkeleton />;
+
+  if (!entries.length) {
+    return (
+      <PanelEmpty
+        label="Application Evaluation"
+        message="Run an evaluation to see your readiness scores, the coach's message, and the essay alignment matrix."
+      />
+    );
+  }
 
   return (
-    <div>
-      <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Application Evaluation</div>
-      <div className="mt-6 space-y-3">
-        <div className="rounded-xl border border-border bg-background px-4 py-3">
-          <div className="text-sm font-medium">Overall score</div>
-          <div className="mt-1 font-display text-3xl text-primary">{overall ?? "--"}</div>
+    <div className="space-y-3">
+      <PanelLabel>Application Evaluation</PanelLabel>
+      <div className="flex items-center gap-3 rounded-xl border border-border bg-background p-3">
+        <ScoreRing score={score} size={52} stroke={4} />
+        <div className="min-w-0">
+          <div className="text-[13px] font-semibold">Overall essay score</div>
+          <div className="text-[12px] text-muted-foreground">{score != null ? levelWord(score) : "Not scored yet"}</div>
         </div>
-        {["Requirement coverage", "Strengths", "Missing requirements", "Areas to improve"].map((item) => (
-          <div key={item} className="rounded-xl border border-border bg-background px-4 py-3 text-sm">
-            {item}
-          </div>
+      </div>
+      <div className="space-y-2">
+        {entries.map(([key, value]) => (
+          <ReadinessRow key={key} label={labelize(key)} value={value} />
         ))}
-        {analysis?.coaching_brief?.coach_message && (
-          <p className="pt-2 text-sm leading-relaxed text-muted-foreground">
-            {analysis.coaching_brief.coach_message}
-          </p>
-        )}
-        <EssayAlignmentMatrixCard matrix={analysis?.essay_alignment_matrix} />
+      </div>
+      {analysis?.coaching_brief?.coach_message && (
+        <div className="rounded-xl border border-info/20 bg-info/5 p-3 text-[13px] leading-relaxed text-foreground/85">
+          {analysis.coaching_brief.coach_message}
+        </div>
+      )}
+      <EssayAlignmentMatrixCard matrix={analysis?.essay_alignment_matrix} />
+    </div>
+  );
+}
+
+function SuggestionCard({
+  s,
+  onAccept,
+  onDismiss,
+  onReveal,
+}: {
+  s: Suggestion;
+  onAccept: (s: Suggestion) => void;
+  onDismiss: (s: Suggestion) => void;
+  onReveal: (s: Suggestion) => void;
+}) {
+  const meta = CATEGORY_META[s.category];
+  return (
+    <div className={`rounded-lg border border-l-4 border-border bg-background p-2.5 ${meta.borderClass}`}>
+      <button type="button" onClick={() => onReveal(s)} className="block w-full text-left" title="Jump to this text in the editor">
+        <span className={`text-[11px] font-semibold ${meta.textClass}`}>{s.title}</span>
+        <div className="mt-1 text-[12px]">
+          <span className="text-muted-foreground line-through decoration-muted-foreground/50">{s.original.trim() || "␠"}</span>
+          <span className="mx-1 text-muted-foreground">→</span>
+          <span className="font-medium text-foreground">{s.replacement.trim() || "(removed)"}</span>
+        </div>
+      </button>
+      <div className="mt-2 flex items-center gap-1.5">
+        <button type="button" onClick={() => onAccept(s)} className="flex-1 rounded-md bg-info px-2.5 py-1 text-[11px] font-semibold text-white transition-opacity hover:opacity-90">
+          Accept
+        </button>
+        <button type="button" onClick={() => onDismiss(s)} className="rounded-md border border-border px-2.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
+          Dismiss
+        </button>
       </div>
     </div>
   );
 }
 
-function WorkspaceHighlightsTab() {
+function WorkspaceHighlightsTab({
+  isEvaluating,
+  suggestions,
+  onAccept,
+  onDismiss,
+  onReveal,
+}: {
+  isEvaluating: boolean;
+  suggestions: Suggestion[];
+  onAccept: (s: Suggestion) => void;
+  onDismiss: (s: Suggestion) => void;
+  onReveal: (s: Suggestion) => void;
+}) {
   const { user } = useUser();
-  const priorities = user?.lastAnalysis?.revision_priorities ?? [];
+  const analysis = user?.lastAnalysis;
+  const priorities = analysis?.revision_priorities ?? [];
+  const reviewers = analysis?.reviewer_comments ?? [];
+  const strengths = analysis?.essay_alignment_matrix?.strengths ?? [];
+  const counts = countByCategory(suggestions);
+  const hasBackend = priorities.length || reviewers.length || strengths.length;
+
+  if (isEvaluating) return <HighlightsSkeleton />;
+
+  if (!suggestions.length && !hasBackend) {
+    return (
+      <PanelEmpty
+        label="Review Highlights"
+        message="As you write, inline suggestions appear here grouped by type. Run an evaluation for deeper coach feedback."
+      />
+    );
+  }
+
   return (
-    <div>
-      <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Review Highlights</div>
-      <div className="mt-6 space-y-3">
-        {["Clarity suggestions", "Grammar suggestions", "Strong sections", "Weak sections", "Suggested revisions"].map((item) => (
-          <div key={item} className="rounded-xl border border-border bg-background px-4 py-3 text-sm">
-            {item}
-          </div>
-        ))}
-        {priorities.length > 0 && (
-          <div className="pt-2">
-            <div className="text-xs uppercase tracking-widest text-muted-foreground">Coach priorities</div>
-            <ol className="mt-3 space-y-2 text-sm text-muted-foreground">
-              {priorities.slice(0, 3).map((item, i) => (
-                <li key={item} className="flex gap-2">
-                  <span className="font-display text-gold">{i + 1}.</span>
-                  <span>{item}</span>
-                </li>
-              ))}
-            </ol>
-          </div>
-        )}
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <PanelLabel>Review Highlights</PanelLabel>
+        <span className="text-[12px] font-semibold text-muted-foreground">{suggestions.length} open</span>
       </div>
+
+      {!suggestions.length && (
+        <div className="rounded-xl border border-success/20 bg-success/5 p-3 text-[13px] text-success">
+          No inline writing suggestions — this draft reads clean.
+        </div>
+      )}
+
+      {CATEGORY_ORDER.filter((cat) => counts[cat] > 0).map((cat) => {
+        const meta = CATEGORY_META[cat];
+        const items = suggestions.filter((s) => s.category === cat);
+        return (
+          <div key={cat} className="space-y-2">
+            <div className="flex items-center gap-1.5">
+              <span className={`size-2 rounded-full ${meta.dotClass}`} />
+              <span className="text-[12px] font-semibold">{meta.label}</span>
+              <span className="text-[11px] text-muted-foreground">· {items.length}</span>
+            </div>
+            {items.map((s) => (
+              <SuggestionCard key={s.id} s={s} onAccept={onAccept} onDismiss={onDismiss} onReveal={onReveal} />
+            ))}
+          </div>
+        );
+      })}
+
+      {!!hasBackend && (
+        <div className="space-y-3 border-t border-border pt-3">
+          {!!priorities.length && (
+            <div className="rounded-xl border border-warning/25 bg-warning/5 p-3">
+              <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-warning">Top revision priorities</div>
+              <ol className="mt-2 space-y-1.5 text-[13px] leading-relaxed">
+                {priorities.slice(0, 4).map((item, i) => (
+                  <li key={item} className="flex gap-2">
+                    <span className="font-semibold text-warning">{i + 1}.</span>
+                    <span>{item}</span>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
+
+          {!!strengths.length && (
+            <div className="rounded-xl border border-success/20 bg-success/5 p-3">
+              <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-success">Working well</div>
+              <MiniList items={strengths} />
+            </div>
+          )}
+
+          {!!reviewers.length && (
+            <div className="space-y-2">
+              <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Reviewer reactions</div>
+              {reviewers.map((reviewer, i) => (
+                <div key={`${reviewer.persona}-${i}`} className="rounded-lg border border-border bg-background p-3">
+                  <div className="flex items-center gap-1.5 text-[12px] font-semibold">
+                    <MessageSquare className="size-3.5 text-info" />
+                    {reviewer.persona ?? "Reviewer"}
+                  </div>
+                  <p className="mt-1.5 text-[13px] leading-relaxed text-foreground/85">{reviewer.comment}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

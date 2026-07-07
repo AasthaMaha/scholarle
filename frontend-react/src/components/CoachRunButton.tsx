@@ -9,6 +9,7 @@ type CoachRunButtonProps = {
   fitOnly?: boolean;
   className?: string;
   onStatus?: (message: string) => void;
+  onRunningChange?: (running: boolean) => void;
 };
 
 export function CoachRunButton({
@@ -18,6 +19,7 @@ export function CoachRunButton({
   fitOnly = false,
   className,
   onStatus,
+  onRunningChange,
 }: CoachRunButtonProps) {
   const { user, updateProfile } = useUser();
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -40,6 +42,7 @@ export function CoachRunButton({
     }
 
     setIsAnalyzing(true);
+    onRunningChange?.(true);
     onStatus?.("Analyzing…");
     try {
       const result = await analyzeApplication(payload);
@@ -53,6 +56,7 @@ export function CoachRunButton({
       onStatus?.((error as Error).message || "Scholar-E analysis failed.");
     } finally {
       setIsAnalyzing(false);
+      onRunningChange?.(false);
     }
   }
 

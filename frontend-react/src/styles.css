@@ -122,3 +122,15 @@
   50% { background-color: rgb(109 93 246 / 0.2); }
 }
 .highlight-pulse { animation: highlightPulse 2.4s ease-in-out infinite; }
+
+@keyframes essayFlashAccept {
+  0% { background-color: rgb(22 163 74 / 0.28); }
+  100% { background-color: rgb(22 163 74 / 0); }
+}
+.essay-flash-accept { animation: essayFlashAccept 0.7s ease-out forwards; }
+
+@keyframes essayFlashPulse {
+  0%, 100% { background-color: rgb(109 93 246 / 0); }
+  40% { background-color: rgb(109 93 246 / 0.3); }
+}
+.essay-flash-pulse { animation: essayFlashPulse 0.7s ease-in-out; }
