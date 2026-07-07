@@ -330,6 +330,40 @@ def _normalize_url(value: str) -> str:
     return text
 
 
+def _is_fetchable_url(value: str) -> bool:
+    parsed = urlparse(_normalize_url(value))
+    host = parsed.hostname or ""
+    return parsed.scheme in {"http", "https"} and "." in host
+
+
+def _candidate_urls_from_clues(*values: str) -> list[str]:
+    candidates = []
+
+    def add(url: str) -> None:
+        if _is_fetchable_url(url) and url not in candidates:
+            candidates.append(_normalize_url(url))
+
+    for value in values:
+        text = value.strip()
+        if not text:
+            continue
+        parsed = urlparse(_normalize_url(text))
+        host = parsed.hostname or ""
+        if host and "." not in host and re.fullmatch(r"[a-zA-Z0-9-]{3,40}", host):
+            for suffix in (".org", ".edu", ".com", ".gov"):
+                add(f"https://{host}{suffix}/")
+                add(f"https://www.{host}{suffix}/")
+
+        words = re.findall(r"\b[A-Z][A-Z0-9]{2,}\b", text)
+        for word in words:
+            slug = word.lower()
+            for suffix in (".org", ".edu", ".com", ".gov"):
+                add(f"https://{slug}{suffix}/")
+                add(f"https://www.{slug}{suffix}/")
+
+    return candidates
+
+
 def _fetch_page_text(url: str, timeout: int = 12) -> str:
     request = Request(
         _normalize_url(url),
@@ -386,17 +420,56 @@ def _gather_opportunity_source_text(request: OpportunityExtractRequest) -> tuple
     source_urls = []
     chunks = []
 
-    if request.scholarship_url.strip():
-        source_urls.append(_normalize_url(request.scholarship_url))
-    elif _looks_like_url(request.scholarship_name):
-        source_urls.append(_normalize_url(request.scholarship_name))
-    else:
-        source_urls.extend(_search_opportunity_urls(request.scholarship_name))
+    def add_search_results(query: str) -> None:
+        for url in _search_opportunity_urls(query):
+            if _is_fetchable_url(url) and url not in source_urls:
+                source_urls.append(url)
 
-    for url in source_urls[:4]:
+    def add_candidate_urls(*values: str) -> None:
+        for url in _candidate_urls_from_clues(*values):
+            if url not in source_urls:
+                source_urls.append(url)
+
+    def search_from_clues(include_broken_link: bool = False) -> None:
+        queries = [
+            request.scholarship_name.strip(),
+            " ".join([request.scholarship_name.strip(), request.additional_notes.strip()[:500]]).strip(),
+        ]
+        if include_broken_link:
+            queries.append(" ".join([request.scholarship_name.strip(), request.scholarship_url.strip()]).strip())
+        for query in queries:
+            if query and not source_urls:
+                add_search_results(query)
+
+    if request.scholarship_url.strip():
+        if _is_fetchable_url(request.scholarship_url):
+            source_urls.append(_normalize_url(request.scholarship_url))
+        else:
+            chunks.append(
+                "USER LINK WARNING: The scholarship link/source is incomplete or malformed. "
+                f"Use it only as a search clue, not as the official website: {request.scholarship_url.strip()}"
+            )
+            search_from_clues(include_broken_link=True)
+            add_candidate_urls(request.scholarship_url, request.scholarship_name)
+    elif _looks_like_url(request.scholarship_name):
+        if _is_fetchable_url(request.scholarship_name):
+            source_urls.append(_normalize_url(request.scholarship_name))
+        else:
+            chunks.append(
+                "USER LINK WARNING: The scholarship name/query looks like an incomplete URL. "
+                f"Use it only as a search clue, not as the official website: {request.scholarship_name.strip()}"
+            )
+            add_search_results(request.scholarship_name.strip())
+            add_candidate_urls(request.scholarship_name)
+    else:
+        search_from_clues()
+        add_candidate_urls(request.scholarship_name)
+
+    for url in source_urls[:8]:
         try:
             text = _fetch_page_text(url)
-        except (HTTPException, URLError, TimeoutError, ValueError):
+        except (HTTPException, OSError, URLError, TimeoutError, ValueError) as exc:
+            chunks.append(f"SOURCE FETCH WARNING: Could not read {url}. Use the user-provided name, link, and notes instead. Error: {exc}")
             continue
         if text:
             chunks.append(f"SOURCE URL: {url}\n{text[:12000]}")

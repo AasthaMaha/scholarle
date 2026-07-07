@@ -8,12 +8,27 @@ import { defineConfig } from "@lovable.dev/vite-tanstack-config";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 const apiBase = "http://127.0.0.1:8000";
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const venvPython = resolve(repoRoot, ".venv/bin/python");
-const backendPython = process.env.PYTHON ?? (existsSync(venvPython) ? venvPython : "python3");
+
+function resolveBackendPython() {
+  if (process.env.PYTHON) return process.env.PYTHON;
+
+  const candidates = [
+    process.env.CONDA_PREFIX ? join(process.env.CONDA_PREFIX, "python.exe") : "",
+    resolve(repoRoot, ".venv", "Scripts", "python.exe"),
+    resolve(repoRoot, ".venv", "bin", "python"),
+  ].filter(Boolean);
+
+  const localPython = candidates.find((candidate) => existsSync(candidate));
+  if (localPython) return localPython;
+
+  return process.platform === "win32" ? "python" : "python3";
+}
+
+const backendPython = resolveBackendPython();
 let backendProcess: ChildProcessWithoutNullStreams | null = null;
 let backendStartPromise: Promise<void> | null = null;
 

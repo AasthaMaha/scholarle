@@ -2,10 +2,14 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Bold,
+  Check,
+  ClipboardList,
+  Copy,
   FileUp,
   Heading1,
   Heading2,
   Italic,
+  Lightbulb,
   Link as LinkIcon,
   List,
   ListOrdered,
@@ -13,6 +17,9 @@ import {
   PencilLine,
   Power,
   Redo2,
+  RefreshCw,
+  Sparkles,
+  Target,
   Underline,
   Undo2,
 } from "lucide-react";
@@ -2407,15 +2414,6 @@ function EditableScholarshipFields({
         Review and edit anything the extractor found before analyzing fit.
       </p>
 
-      <div className="mt-4">
-        <Textarea
-          label="Complete extraction output"
-          value={scholarship.requirementsPreview ?? ""}
-          onChange={(requirementsPreview) => updateScholarship({ requirementsPreview })}
-          rows={14}
-        />
-      </div>
-
       <div className="mt-4 grid sm:grid-cols-2 gap-3">
         <Input label="Scholarship name" value={scholarship.name ?? ""} onChange={(name) => updateScholarship({ name })} />
         <Input label="Sponsoring organization" value={scholarship.organization ?? ""} onChange={(organization) => updateScholarship({ organization })} />
@@ -2486,12 +2484,6 @@ function EditableScholarshipFields({
           value={listValue(scholarship.applicationProcess)}
           onChange={(value) => updateScholarship({ applicationProcess: parseList(value) })}
           rows={5}
-        />
-        <Textarea
-          label="Important notes"
-          value={listValue(scholarship.importantNotes)}
-          onChange={(value) => updateScholarship({ importantNotes: parseList(value) })}
-          rows={4}
         />
         {!!scholarship.missingInformation?.length && (
           <Textarea
@@ -3147,7 +3139,6 @@ function EssayWorkspacePanel({
           <PersonalizedOutlinePanel
             outline={user?.personalizedOutline}
             scholarshipName={user?.activeScholarship?.name}
-            essayPrompt={user?.activeScholarship?.essayPrompts || user?.activeScholarship?.otherRequiredMaterials || user?.activeScholarship?.requirementsPreview}
             wordLimit={buildOutlinePayload(user).word_limit}
             loading={outlineLoading}
             status={outlineStatus}
@@ -3211,7 +3202,6 @@ function MiniList({ items }: { items?: string[] }) {
 function PersonalizedOutlinePanel({
   outline,
   scholarshipName,
-  essayPrompt,
   wordLimit,
   loading,
   status,
@@ -3219,7 +3209,6 @@ function PersonalizedOutlinePanel({
 }: {
   outline?: PersonalizedOutlineResult;
   scholarshipName?: string;
-  essayPrompt?: string;
   wordLimit?: string;
   loading: boolean;
   status?: string | null;
@@ -3237,107 +3226,150 @@ function PersonalizedOutlinePanel({
   }
 
   return (
-    <div>
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Personalized Outline</div>
-          <div className="mt-1 text-sm font-medium">{scholarshipName || "Current scholarship"}</div>
-          {wordLimit && <div className="mt-1 text-xs text-muted-foreground">{wordLimit}</div>}
+    <div className="text-foreground">
+      <div className="border-b border-border pb-5">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="inline-flex items-center gap-2 rounded-md bg-info/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-info">
+              <Sparkles className="size-3.5" />
+              Personalized Outline
+            </div>
+            <div className="mt-3 truncate font-display text-2xl font-semibold leading-tight">
+              {scholarshipName || "Current scholarship"}
+            </div>
+            {wordLimit && (
+              <div className="mt-2 inline-flex items-center rounded-md border border-border bg-background px-2.5 py-1 text-xs text-muted-foreground">
+                {wordLimit}
+              </div>
+            )}
+          </div>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={onRegenerate}
+                disabled={loading}
+                className="grid size-9 shrink-0 place-items-center rounded-md border border-border text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
+                aria-label="Regenerate outline"
+              >
+                <RefreshCw className={`size-4 ${loading ? "animate-spin" : ""}`} />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>{loading ? "Generating outline" : "Regenerate outline"}</TooltipContent>
+          </Tooltip>
         </div>
-        <button type="button" onClick={onRegenerate} disabled={loading} className="rounded-full border border-border px-3 py-1.5 text-xs hover:bg-accent disabled:opacity-50">
-          {loading ? "Generating" : "Regenerate"}
-        </button>
       </div>
 
-      {essayPrompt && (
-        <div className="mt-4 rounded-xl border border-border bg-background p-3">
-          <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">Essay prompt</div>
-          <p className="mt-2 line-clamp-5 text-sm leading-relaxed text-foreground/85">{essayPrompt}</p>
-        </div>
-      )}
-
       {loading && (
-        <div className="mt-4 rounded-xl border border-primary/20 bg-primary/5 p-4 text-sm text-foreground/80">
+        <div className="mt-4 rounded-lg border border-info/20 bg-info/5 p-4 text-sm text-foreground/80">
           <div className="flex items-center gap-2">
-            <span className="size-3 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />
-            <span>Building your personalized outline...</span>
+            <span className="size-3 animate-spin rounded-full border-2 border-info/30 border-t-info" />
+            <span className="font-medium">Building your personalized outline...</span>
           </div>
-          <div className="mt-3 space-y-1 text-xs text-muted-foreground">
-            <div>Reading scholarship requirements</div>
-            <div>Matching profile evidence</div>
-            <div>Planning essay strategy</div>
-            <div>Reviewing outline coverage</div>
+          <div className="mt-4 grid gap-2 text-xs text-muted-foreground">
+            {["Reading scholarship requirements", "Matching profile evidence", "Planning essay strategy", "Reviewing outline coverage"].map((item) => (
+              <div key={item} className="flex items-center gap-2">
+                <span className="size-1.5 rounded-full bg-info/70" />
+                <span>{item}</span>
+              </div>
+            ))}
           </div>
         </div>
       )}
 
-      {status && <p className="mt-3 text-xs text-muted-foreground">{status}</p>}
+      {status && (
+        <div className="mt-3 rounded-md bg-accent px-3 py-2 text-xs text-muted-foreground">
+          {status}
+        </div>
+      )}
 
       {!loading && !data && (
-        <div className="mt-5 rounded-xl border border-border bg-background p-4 text-sm text-muted-foreground">
+        <div className="mt-5 rounded-lg border border-dashed border-border bg-background p-4 text-sm text-muted-foreground">
           Add a scholarship prompt or requirement details to generate a personalized outline.
         </div>
       )}
 
       {data && (
         <div className="mt-5 space-y-4">
-          <div className="rounded-xl border border-border bg-background p-4">
-            <div className="text-xs uppercase tracking-widest text-muted-foreground">Core Message</div>
-            <h3 className="mt-2 text-base font-semibold">{data.outline_title || "Scholarship essay plan"}</h3>
+          <div className="rounded-lg border border-primary/20 bg-primary/5 p-4">
+            <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-primary">
+              <Target className="size-3.5" />
+              Core Message
+            </div>
+            <h3 className="mt-3 text-base font-semibold leading-snug">{data.outline_title || "Scholarship essay plan"}</h3>
             <p className="mt-2 text-sm leading-relaxed text-foreground/85">{data.thesis_or_core_message}</p>
           </div>
           {outline?.strategy && (
-            <div className="rounded-xl border border-border bg-background p-4">
-              <div className="text-xs uppercase tracking-widest text-muted-foreground">Strategy Notes</div>
+            <div className="rounded-lg border border-info/20 bg-info/5 p-4">
+              <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-info">
+                <Lightbulb className="size-3.5" />
+                Strategy Notes
+              </div>
               <p className="mt-2 text-sm leading-relaxed">{outline.strategy.recommended_strategy}</p>
-              {outline.strategy.tone_guidance && <p className="mt-2 text-xs text-muted-foreground">Tone: {outline.strategy.tone_guidance}</p>}
+              {outline.strategy.tone_guidance && (
+                <div className="mt-3 rounded-md bg-background/80 px-3 py-2 text-xs text-muted-foreground">
+                  Tone: {outline.strategy.tone_guidance}
+                </div>
+              )}
             </div>
           )}
           {(data.sections ?? []).map((section, index) => (
-            <div key={`${section.section_name}-${index}`} className="rounded-xl border border-border bg-background p-4">
-              <div className="text-xs text-muted-foreground">Section {index + 1}</div>
-              <h4 className="mt-1 text-sm font-semibold leading-snug">{section.section_name}</h4>
+            <div key={`${section.section_name}-${index}`} className="overflow-hidden rounded-lg border border-border bg-background">
+              <div className="flex items-center gap-3 border-b border-border bg-accent/50 px-4 py-3">
+                <div className="grid size-7 shrink-0 place-items-center rounded-md bg-primary text-xs font-semibold text-primary-foreground">
+                  {index + 1}
+                </div>
+                <h4 className="text-sm font-semibold leading-snug">{section.section_name}</h4>
+              </div>
+              <div className="p-4">
               <p className="mt-2 text-sm leading-relaxed text-foreground/80">{section.purpose}</p>
               {!!section.scholarship_requirement_addressed?.length && (
                 <div className="mt-3 flex flex-wrap gap-1.5">
                   {section.scholarship_requirement_addressed.map((item) => (
-                    <span key={item} className="rounded-full bg-primary/10 px-2 py-1 text-[11px] font-medium text-primary">{item}</span>
+                    <span key={item} className="rounded-md bg-info/10 px-2 py-1 text-[11px] font-medium text-info">{item}</span>
                   ))}
                 </div>
               )}
-              <div className="mt-4">
-                <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">Suggested content</div>
+              <div className="mt-4 rounded-md border border-border/70 p-3">
+                <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">
+                  <ClipboardList className="size-3.5" />
+                  Suggested content
+                </div>
                 <MiniList items={section.suggested_content} />
               </div>
-              <div className="mt-4">
-                <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">Profile evidence</div>
+              <div className="mt-3 rounded-md border border-success/20 bg-success/5 p-3">
+                <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.12em] text-success">
+                  <Check className="size-3.5" />
+                  Profile evidence
+                </div>
                 <MiniList items={section.profile_evidence_to_use} />
               </div>
               {!!section.coaching_notes?.length && (
-                <div className="mt-4 rounded-lg bg-accent p-3">
-                  <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">Coaching notes</div>
+                <div className="mt-3 rounded-md bg-warning/10 p-3">
+                  <div className="text-xs font-medium uppercase tracking-[0.12em] text-warning">Coaching notes</div>
                   <MiniList items={section.coaching_notes} />
                 </div>
               )}
               {section.estimated_word_count && <div className="mt-3 text-xs text-muted-foreground">Suggested length: {section.estimated_word_count}</div>}
+              </div>
             </div>
           ))}
           {(data.recommended_opening || data.recommended_conclusion) && (
-            <div className="rounded-xl border border-border bg-background p-4">
-              <div className="text-xs uppercase tracking-widest text-muted-foreground">Opening & Closing Guidance</div>
+            <div className="rounded-lg border border-border bg-background p-4">
+              <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Opening & Closing Guidance</div>
               {data.recommended_opening && <p className="mt-2 text-sm leading-relaxed"><span className="font-medium">Opening:</span> {data.recommended_opening}</p>}
               {data.recommended_conclusion && <p className="mt-2 text-sm leading-relaxed"><span className="font-medium">Conclusion:</span> {data.recommended_conclusion}</p>}
             </div>
           )}
           {!!outline?.coverage_check?.length && (
-            <div className="rounded-xl border border-border bg-background p-4">
-              <div className="text-xs uppercase tracking-widest text-muted-foreground">Coverage Check</div>
+            <div className="rounded-lg border border-border bg-background p-4">
+              <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Coverage Check</div>
               <div className="mt-3 space-y-2">
                 {outline.coverage_check.map((item, index) => (
-                  <div key={`${item.requirement}-${index}`} className="rounded-lg border border-border p-3 text-sm">
+                  <div key={`${item.requirement}-${index}`} className="rounded-md border border-border p-3 text-sm">
                     <div className="flex items-center justify-between gap-2">
                       <span className="font-medium">{item.requirement || "Requirement"}</span>
-                      <span className={`rounded-full px-2 py-0.5 text-[11px] ${item.covered ? "bg-success/10 text-success" : "bg-warning/10 text-warning"}`}>{item.covered ? "Covered" : "Needs detail"}</span>
+                      <span className={`rounded-md px-2 py-0.5 text-[11px] ${item.covered ? "bg-success/10 text-success" : "bg-warning/10 text-warning"}`}>{item.covered ? "Covered" : "Needs detail"}</span>
                     </div>
                     {(item.where_covered || item.notes) && <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{item.where_covered || item.notes}</p>}
                   </div>
@@ -3346,26 +3378,29 @@ function PersonalizedOutlinePanel({
             </div>
           )}
           {!!data.questions_for_student?.length && (
-            <div className="rounded-xl border border-warning/30 bg-warning/10 p-4">
-              <div className="text-xs uppercase tracking-widest text-muted-foreground">Questions to answer before drafting</div>
+            <div className="rounded-lg border border-warning/30 bg-warning/10 p-4">
+              <div className="text-xs font-semibold uppercase tracking-[0.14em] text-warning">Questions to answer before drafting</div>
               <MiniList items={data.questions_for_student} />
             </div>
           )}
           {!!outline?.warnings?.length && (
-            <div className="rounded-xl border border-warning/30 bg-warning/10 p-4">
-              <div className="text-xs uppercase tracking-widest text-muted-foreground">Warnings</div>
+            <div className="rounded-lg border border-warning/30 bg-warning/10 p-4">
+              <div className="text-xs font-semibold uppercase tracking-[0.14em] text-warning">Warnings</div>
               <MiniList items={outline.warnings} />
             </div>
           )}
           {!!outline?.missing_profile_info?.length && (
-            <div className="rounded-xl border border-border bg-background p-4">
-              <div className="text-xs uppercase tracking-widest text-muted-foreground">Missing Profile Information</div>
+            <div className="rounded-lg border border-border bg-background p-4">
+              <div className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Missing Profile Information</div>
               <MiniList items={outline.missing_profile_info} />
             </div>
           )}
           <div className="flex flex-wrap gap-2 pt-1">
-            <button type="button" onClick={copyOutline} className="rounded-full border border-border px-3 py-1.5 text-xs hover:bg-accent">Copy outline</button>
-            <button type="button" className="rounded-full bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground">Continue to draft</button>
+            <button type="button" onClick={copyOutline} className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs hover:bg-accent">
+              <Copy className="size-3.5" />
+              Copy outline
+            </button>
+            <button type="button" className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90">Continue to draft</button>
             {copyStatus && <span className="self-center text-xs text-muted-foreground">{copyStatus}</span>}
           </div>
         </div>

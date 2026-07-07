@@ -1,4 +1,5 @@
 import re
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
@@ -80,7 +81,17 @@ def extract_opportunity_fields(state):
                 "missing facts. Extract only information explicitly stated in the provided sources. "
                 'If a field is unavailable, write "Not stated". Prefer official scholarship sources. '
                 "If sources conflict, use the official source. Preserve exact eligibility wording "
-                "when possible. Be complete but concise.",
+                "when possible. Be complete but concise. Treat user-entered names, URLs, and notes "
+                "as search clues when they are incomplete or malformed. You may use complete URLs and "
+                "page text supplied in Source URLs checked / Source text to correct a broken user link "
+                "or fill missing fields. Do not output a malformed URL. Do not invent facts from "
+                "general knowledge or from the scholarship name alone. If only a name or sparse notes "
+                "are available and no reliable source text or complete source URL is provided, extract "
+                "only those facts, list all other needed fields in missingInformation, and explain that "
+                "the user should review/fill the fields manually. If the scholarship cannot be "
+                "confidently identified from the provided or discovered sources, say so in "
+                "missingInformation and do not create plausible eligibility rules, materials, deadlines, "
+                "or award terms.",
             ),
             (
                 "human",
@@ -129,6 +140,20 @@ def _is_emptyish(value):
 
 def _blank_not_stated(value):
     return "" if _is_emptyish(value) else str(value).strip()
+
+
+def _is_valid_public_url(value):
+    text = _blank_not_stated(value)
+    if not text:
+        return False
+    parsed = urlparse(text)
+    host = parsed.hostname or ""
+    return parsed.scheme in {"http", "https"} and "." in host
+
+
+def _clean_url(value):
+    text = _blank_not_stated(value)
+    return text if _is_valid_public_url(text) else ""
 
 
 def _clean_optional_list(values):
@@ -190,9 +215,9 @@ def _preview(data):
 
 def clean_opportunity_fields(state):
     data = state.get("extraction") or {}
-    source_urls = state.get("source_urls") or []
-    official_url = _clean_text(data.get("officialWebsite"))
-    if official_url == "Not stated" and source_urls:
+    source_urls = [url for url in state.get("source_urls") or [] if _is_valid_public_url(url)]
+    official_url = _clean_url(data.get("officialWebsite"))
+    if not official_url and source_urls:
         official_url = source_urls[0]
 
     required_docs = _clean_list(data.get("requiredDocumentTypes"))
@@ -201,7 +226,7 @@ def clean_opportunity_fields(state):
 
     eligibility = _clean_list(data.get("eligibilityRequirements"))
     requirements = [
-        {"category": "Eligibility", "requirement": item, "source": official_url if official_url != "Not stated" else ""}
+        {"category": "Eligibility", "requirement": item, "source": official_url}
         for item in eligibility
         if item != "Not stated"
     ]
@@ -216,7 +241,7 @@ def clean_opportunity_fields(state):
         "type": _clean_text(data.get("type")),
         "country": _clean_text(data.get("country")),
         "officialWebsite": official_url,
-        "url": official_url if official_url != "Not stated" else _clean_text(state.get("scholarship_url")),
+        "url": official_url,
         "applicationOpens": _clean_text(data.get("applicationOpens")),
         "applicationDeadline": _clean_text(data.get("applicationDeadline")),
         "notificationDate": _clean_text(data.get("notificationDate")),
@@ -357,6 +382,78 @@ def _is_selection_like(value):
     return any(word in text for word in selection_words)
 
 
+def _has_verified_source_text(mapped):
+    return "SOURCE URL:" in str(mapped.get("fullText") or "")
+
+
+def _is_tentative_value(value):
+    text = _norm(value)
+    tentative_phrases = {
+        "verify current",
+        "verify the current",
+        "confirm current",
+        "confirm the current",
+        "verify dates",
+        "confirm dates",
+        "annual cycle",
+        "deadline window",
+        "award terms",
+        "ranking / likelihood",
+        "why scholar-e recommended",
+        "search tip",
+        "suggested query",
+        "official-source details ready",
+        "confirm citizenship",
+        "confirm discipline",
+        "confirm doctoral enrollment",
+        "not enough data",
+    }
+    return any(phrase in text for phrase in tentative_phrases)
+
+
+def _is_grounded_in_text(value, source_text):
+    value_norm = _norm(value)
+    source_norm = _norm(source_text)
+    return bool(value_norm and value_norm in source_norm)
+
+
+def _filter_unverified_list(values, source_text, has_verified_source):
+    cleaned = []
+    for value in _clean_optional_list(values):
+        if _is_tentative_value(value):
+            continue
+        if not has_verified_source and not _is_grounded_in_text(value, source_text):
+            continue
+        cleaned.append(value)
+    return _clean_optional_list(cleaned)
+
+
+def _missing_labels_for_empty_fields(mapped):
+    checks = [
+        ("officialWebsite", "Official website"),
+        ("awardAmount", "Award amount"),
+        ("applicationOpens", "Application opening date/window"),
+        ("applicationDeadline", "Application deadline"),
+        ("notificationDate", "Notification date/window"),
+        ("programStart", "Program start date"),
+        ("programEnd", "Program end date"),
+        ("enrollmentLevel", "Enrollment level requirement"),
+        ("citizenshipRequirement", "Citizenship/residency requirement"),
+        ("eligibleMajors", "Eligible majors/fields"),
+        ("requiredApplicationMaterials", "Required application materials"),
+        ("applicationProcess", "Application process details"),
+    ]
+    missing = []
+    for key, label in checks:
+        value = mapped.get(key)
+        if isinstance(value, list):
+            if not _clean_optional_list(value):
+                missing.append(label)
+        elif not _blank_not_stated(value):
+            missing.append(label)
+    return missing
+
+
 def _without_duplicates_or_materials(values, material_values):
     material_keys = {_norm(value) for value in material_values}
     cleaned = []
@@ -396,6 +493,65 @@ def _explicit_award_from_text(*texts):
 
 
 def _final_sanitize(mapped):
+    source_urls = [url for url in mapped.get("sourceUrls") or [] if _is_valid_public_url(url)]
+    has_verified_source = _has_verified_source_text(mapped)
+    source_text = str(mapped.get("fullText") or "")
+    mapped["sourceUrls"] = source_urls
+    mapped["officialWebsite"] = _clean_url(mapped.get("officialWebsite"))
+    mapped["url"] = _clean_url(mapped.get("url") or mapped.get("officialWebsite"))
+
+    missing = _clean_optional_list(mapped.get("missingInformation"))
+    notes = [note for note in _clean_optional_list(mapped.get("importantNotes")) if not _is_tentative_value(note)]
+    tentative_field_notes = []
+    for field in [
+        "applicationOpens",
+        "applicationDeadline",
+        "notificationDate",
+        "programStart",
+        "programEnd",
+        "currentStatus",
+        "awardAmount",
+        "minimumGpa",
+        "enrollmentLevel",
+        "citizenshipRequirement",
+        "financialNeedRequirement",
+        "locationRequirement",
+        "eligibleMajors",
+        "otherEligibilityRules",
+        "otherRequiredMaterials",
+        "essayPrompts",
+    ]:
+        value = mapped.get(field)
+        if value and _is_tentative_value(value):
+            tentative_field_notes.append(field)
+            mapped[field] = ""
+
+    mapped["requiredApplicationMaterials"] = _filter_unverified_list(
+        mapped.get("requiredApplicationMaterials"),
+        source_text,
+        has_verified_source,
+    )
+    mapped["requiredDocumentTypes"] = _filter_unverified_list(
+        mapped.get("requiredDocumentTypes"),
+        source_text,
+        has_verified_source,
+    )
+    mapped["eligibilityRequirements"] = _filter_unverified_list(
+        mapped.get("eligibilityRequirements"),
+        source_text,
+        has_verified_source,
+    )
+    mapped["benefits"] = _filter_unverified_list(
+        mapped.get("benefits"),
+        source_text,
+        has_verified_source,
+    )
+    mapped["applicationProcess"] = _filter_unverified_list(
+        mapped.get("applicationProcess"),
+        source_text,
+        has_verified_source,
+    )
+
     materials = _clean_optional_list(mapped.get("requiredApplicationMaterials"))
     mapped["eligibilityRequirements"] = _without_duplicates_or_materials(
         mapped.get("eligibilityRequirements") or [],
@@ -408,7 +564,8 @@ def _final_sanitize(mapped):
         if _is_selection_like(item) and not _is_material_like(item)
     ]
 
-    notes = _clean_optional_list(mapped.get("importantNotes"))
+    if tentative_field_notes:
+        notes.append("Some user-provided clues asked Scholar-E to verify current terms; those tentative values were not copied into final fields.")
     benefit_text = " ".join(mapped.get("benefits") or [])
     description_text = mapped.get("description") or ""
     timeline_text = " ".join([
@@ -424,8 +581,9 @@ def _final_sanitize(mapped):
         if mapped.get("currentStatus") in {"Open", "Rolling"}:
             mapped["currentStatus"] = "Open year-round"
 
+    missing = _clean_optional_list(missing + _missing_labels_for_empty_fields(mapped))
     mapped["importantNotes"] = _clean_optional_list(notes)
-    mapped["missingInformation"] = []
+    mapped["missingInformation"] = missing[:12]
     mapped["requirements"] = [
         {"category": "Eligibility", "requirement": item, "source": mapped["url"]}
         for item in mapped["eligibilityRequirements"]
@@ -469,7 +627,13 @@ def clean_scholarship_output(state):
                 "generic missing-information lists, markdown artifacts, and raw extractor labels. "
                 "Keep eligibility limited to who can apply. Keep materials limited to what must "
                 "be submitted. Keep selection criteria only when evaluation criteria are explicitly "
-                "stated. Preserve factual meaning.",
+                "stated. Preserve factual meaning. Do not copy malformed or incomplete URLs into "
+                "official_website. If the source only contains a name, broken URL, or sparse user "
+                "notes, leave unsupported fields empty and put clear manual-review guidance in "
+                "important_notes. Phrases such as 'verify current dates', 'verify current award "
+                "terms', 'confirm citizenship', search tips, suggested queries, and recommendation "
+                "rationales are not scholarship facts; convert them to important notes or missing "
+                "information instead of deadlines, benefits, eligibility requirements, or materials.",
             ),
             (
                 "human",
@@ -484,8 +648,8 @@ def clean_scholarship_output(state):
         "organization": _blank_not_stated(cleaned.get("organization")),
         "type": _blank_not_stated(cleaned.get("type")),
         "country": _blank_not_stated(cleaned.get("country_or_region")),
-        "officialWebsite": _blank_not_stated(cleaned.get("official_website")),
-        "url": _blank_not_stated(cleaned.get("official_website")) or _blank_not_stated(state.get("url")),
+        "officialWebsite": _clean_url(cleaned.get("official_website")) or _clean_url(state.get("officialWebsite")),
+        "url": _clean_url(cleaned.get("official_website")) or _clean_url(state.get("url")),
         "awardAmount": _blank_not_stated(cleaned.get("award")),
         "applicationOpens": _blank_not_stated(cleaned.get("application_opens")),
         "applicationDeadline": _blank_not_stated(cleaned.get("application_deadline")),
@@ -509,7 +673,7 @@ def clean_scholarship_output(state):
         "benefits": _clean_optional_list(cleaned.get("benefits")),
         "selectionCriteria": _clean_optional_list(cleaned.get("selection_criteria")),
         "applicationProcess": _clean_optional_list(cleaned.get("application_process")),
-        "missingInformation": [],
+        "missingInformation": _clean_optional_list(state.get("missingInformation")),
         "importantNotes": _clean_optional_list(cleaned.get("important_notes")),
         "fullText": state.get("fullText", ""),
         "sourceUrls": state.get("sourceUrls", []),
