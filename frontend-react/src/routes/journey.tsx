@@ -1,7 +1,9 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  AlertCircle,
   ArrowLeft,
+  CalendarDays,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -16,8 +18,10 @@ import {
   MessageSquare,
   PencilLine,
   Power,
+  ReceiptText,
   RefreshCw,
   Save,
+  ShieldCheck,
   Sparkles,
   Target,
 } from "lucide-react";
@@ -2341,6 +2345,61 @@ function MatchRing({ score }: { score: number }) {
   );
 }
 
+function WorkflowStep({
+  number,
+  title,
+  description,
+  complete,
+  active,
+  isLast = false,
+  children,
+}: {
+  number: number;
+  title: string;
+  description?: string;
+  complete?: boolean;
+  active?: boolean;
+  isLast?: boolean;
+  children: React.ReactNode;
+}) {
+  const markerClass = complete
+    ? "border-primary bg-primary text-primary-foreground"
+    : active
+      ? "border-primary bg-background text-primary"
+      : "border-border bg-background text-muted-foreground";
+
+  return (
+    <section className="relative grid gap-4 md:grid-cols-[76px_1fr]">
+      <div className="relative hidden md:flex justify-center">
+        <div className={`relative z-10 grid size-12 place-items-center rounded-full border-2 text-sm font-semibold ${markerClass}`}>
+          {complete ? "✓" : number}
+        </div>
+        {!isLast && <div className="absolute left-1/2 top-12 h-[calc(100%+2rem)] -translate-x-1/2 border-l-2 border-dashed border-border" />}
+      </div>
+      <div className="min-w-0">
+        <div className="relative pb-4">
+          <div className="pointer-events-none absolute right-0 top-[-18px] hidden select-none font-display text-8xl font-bold leading-none text-primary/5 md:block">
+            {String(number).padStart(2, "0")}
+          </div>
+          <div className="flex items-center gap-3 md:hidden">
+            <div className={`grid size-10 place-items-center rounded-full border-2 text-sm font-semibold ${markerClass}`}>
+              {complete ? "✓" : number}
+            </div>
+            <div className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Step {number}</div>
+          </div>
+          <div className="hidden text-sm font-semibold uppercase tracking-widest text-muted-foreground md:block">Step {number}</div>
+          <h3 className="mt-1 font-display text-2xl font-bold leading-tight text-foreground">{title}</h3>
+          {description && <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground/85">{description}</p>}
+        </div>
+        <div className="overflow-hidden rounded-2xl border border-border/70 bg-white shadow-sm">
+          <div className={`h-1 ${active ? "bg-primary" : complete ? "bg-success" : "bg-border"}`} />
+          <div className="p-5 md:p-6">{children}</div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function ScholarshipDetailsCard({
   scholarship,
   updateScholarship,
@@ -2348,6 +2407,8 @@ function ScholarshipDetailsCard({
   extracting,
   extractionStatus,
   extractionError,
+  complete,
+  active,
 }: {
   scholarship: ActiveScholarship;
   updateScholarship: (patch: ActiveScholarship) => void;
@@ -2355,13 +2416,17 @@ function ScholarshipDetailsCard({
   extracting: boolean;
   extractionStatus: string | null;
   extractionError: string | null;
+  complete?: boolean;
+  active?: boolean;
 }) {
   return (
-    <section>
-      <div className="max-w-3xl font-display text-[42px] font-extrabold leading-[0.98] tracking-tight">Scholarship details for extraction</div>
-      <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground/85">
-        After using the Wiki to find a real opportunity, paste its name, link, or copied description here. Scholar-E will extract requirements into editable fields.
-      </p>
+    <WorkflowStep
+      number={1}
+      title="Scholarship details for extraction"
+      description="After using the Wiki to find a real opportunity, paste its name, link, or copied description here. Scholar-E will extract requirements into editable fields."
+      complete={complete}
+      active={active}
+    >
       <div className="mt-4 grid sm:grid-cols-2 gap-3">
         <Input
           label="Scholarship name"
@@ -2371,7 +2436,7 @@ function ScholarshipDetailsCard({
           className="sm:col-span-2"
         />
         <Input
-          label="Scholarship link or source"
+          label="Scholarship URL"
           value={scholarship.url ?? ""}
           onChange={(url) => updateScholarship({ url })}
           placeholder="https://... or source name"
@@ -2379,10 +2444,10 @@ function ScholarshipDetailsCard({
         />
       </div>
       <Textarea
-        label="Additional notes"
+        label="Additional Notes (Optional)"
         value={scholarship.additionalNotes ?? ""}
         onChange={(additionalNotes) => updateScholarship({ additionalNotes })}
-        placeholder="Optional notes about selection criteria, recommender deadlines, submission portal details, or anything else."
+        placeholder="Paste copied scholarship text, eligibility details, award amount, deadlines, essay prompts, or anything else that may help Scholar-E extract requirements."
         rows={3}
       />
       <div className="mt-5 flex justify-end">
@@ -2392,121 +2457,406 @@ function ScholarshipDetailsCard({
           disabled={extracting}
           className="rounded-full bg-primary text-primary-foreground px-5 py-2.5 text-sm font-medium hover:opacity-90 disabled:opacity-50"
         >
-          {extracting ? "Extracting requirements..." : "Extract Scholarship Information"}
+          {extracting ? "Extracting requirements..." : "Extract Requirements"}
         </button>
       </div>
       {extractionStatus && <p className="mt-3 text-xs text-muted-foreground text-right">{extractionStatus}</p>}
       {extractionError && <p className="mt-3 text-xs text-destructive text-right">{extractionError}</p>}
+    </WorkflowStep>
+  );
+}
+
+const REVIEW_MISSING_TEXT = "Not found — add manually";
+
+function isReviewFieldMissing(value?: string) {
+  const text = String(value ?? "").trim();
+  return !text || /^(not found|n\/a|none|unknown|unclear)$/i.test(text);
+}
+
+function reviewFieldTone(value?: string) {
+  return isReviewFieldMissing(value) ? "warning" : "success";
+}
+
+function ReviewSection({
+  title,
+  icon,
+  children,
+  defaultExpanded = true,
+}: {
+  title: string;
+  icon?: React.ReactNode;
+  children: React.ReactNode;
+  defaultExpanded?: boolean;
+}) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
+
+  return (
+    <section className="rounded-2xl border border-border/55 bg-white/95 p-4 shadow-sm transition-shadow hover:shadow-md">
+      <button
+        type="button"
+        onClick={() => setExpanded((current) => !current)}
+        className="flex w-full items-center justify-between gap-3 border-b border-border/30 pb-2 text-left"
+      >
+        <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm font-semibold uppercase tracking-widest text-foreground">
+          {icon && <span className="grid size-7 shrink-0 place-items-center rounded-full bg-primary/5 text-primary">{icon}</span>}
+          <span>{title}</span>
+        </span>
+        <ChevronDown className={`size-4 text-muted-foreground transition-transform ${expanded ? "rotate-180" : ""}`} aria-hidden="true" />
+      </button>
+      {expanded && <div className="pt-3">{children}</div>}
     </section>
+  );
+}
+
+function ReviewField({
+  label,
+  value,
+  onChange,
+  placeholder,
+  className = "",
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  className?: string;
+}) {
+  const tone = reviewFieldTone(value);
+  const [editing, setEditing] = useState(false);
+  const displayValue = tone === "warning" ? "Not found" : value;
+
+  if (!editing) {
+    return (
+      <div className={`min-w-0 ${className}`}>
+        <div className="mb-0.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+          {tone === "warning" && <AlertCircle className="size-3 text-warning/70" aria-hidden="true" />}
+          {label}
+        </div>
+        <button
+          type="button"
+          onClick={() => setEditing(true)}
+          className={`group flex min-h-8 w-full min-w-0 items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left transition-colors ${
+            tone === "success" ? "text-foreground hover:bg-muted/35" : "bg-warning/[0.035] text-muted-foreground hover:bg-warning/[0.06]"
+          }`}
+        >
+          <span className={`min-w-0 truncate ${tone === "success" ? "text-[15px] font-medium" : "text-sm"}`}>{displayValue}</span>
+          {tone === "warning" ? (
+            <span className="shrink-0 rounded-full border border-primary/10 bg-white px-2 py-0.5 text-[10px] font-semibold text-primary shadow-sm transition-colors group-hover:bg-primary/5">
+              Add manually
+            </span>
+          ) : (
+            <PencilLine className="size-3 shrink-0 text-muted-foreground/0 transition-colors group-hover:text-muted-foreground/60" aria-hidden="true" />
+          )}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <label className={`block ${className}`}>
+      <span className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground">
+        <span className={`size-1.5 rounded-full ${tone === "success" ? "bg-success" : "bg-warning/70"}`} />
+        {label}
+      </span>
+      <input
+        type="text"
+        value={value}
+        placeholder={placeholder ?? (tone === "warning" ? REVIEW_MISSING_TEXT : undefined)}
+        onChange={(event) => onChange(event.target.value)}
+        onBlur={() => setEditing(false)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === "Escape") event.currentTarget.blur();
+        }}
+        autoFocus
+        className={`h-8 w-full rounded-lg border px-2.5 text-sm transition-colors ${
+          tone === "success" ? "border-border/80 bg-white" : "border-warning/15 bg-warning/[0.025] placeholder:text-muted-foreground/40"
+        }`}
+      />
+    </label>
+  );
+}
+
+function ReviewTextArea({
+  label,
+  value,
+  onChange,
+  rows = 3,
+  className = "",
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  rows?: number;
+  className?: string;
+}) {
+  const tone = reviewFieldTone(value);
+  const [editing, setEditing] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const shouldClamp = value.length > 160 || value.split("\n").length > 3;
+  const displayValue = tone === "warning" ? "Not found" : value;
+
+  if (!editing) {
+    return (
+      <div className={`min-w-0 ${className}`}>
+        <div className="mb-0.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+          {tone === "warning" && <AlertCircle className="size-3 text-warning/70" aria-hidden="true" />}
+          {label}
+        </div>
+        <div className={`rounded-lg px-2 py-1.5 transition-colors ${tone === "success" ? "text-foreground hover:bg-muted/30" : "bg-warning/[0.035] text-muted-foreground"}`}>
+          <button type="button" onClick={() => setEditing(true)} className="block w-full text-left">
+            <span className={`whitespace-pre-wrap text-sm leading-snug ${tone === "success" && shouldClamp && !expanded ? "line-clamp-3" : ""}`}>
+              {displayValue}
+            </span>
+          </button>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            {tone === "warning" ? (
+              <>
+                <span className="inline-flex items-center gap-1 rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold text-muted-foreground shadow-sm">
+                  <AlertCircle className="size-3 text-warning/70" aria-hidden="true" />
+                  Not found
+                </span>
+                <button type="button" onClick={() => setEditing(true)} className="text-xs font-medium text-primary hover:underline">
+                  Add manually
+                </button>
+              </>
+            ) : (
+              <>
+                {shouldClamp && (
+                  <button type="button" onClick={() => setExpanded((current) => !current)} className="text-xs font-medium text-primary hover:underline">
+                    {expanded ? "Show less" : "Show more"}
+                  </button>
+                )}
+                <button type="button" onClick={() => setEditing(true)} className="text-xs font-medium text-muted-foreground hover:text-primary">
+                  Edit
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <label className={`block ${className}`}>
+      <span className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground">
+        <span className={`size-1.5 rounded-full ${tone === "success" ? "bg-success" : "bg-warning/70"}`} />
+        {label}
+      </span>
+      <textarea
+        value={value}
+        rows={rows}
+        placeholder={tone === "warning" ? REVIEW_MISSING_TEXT : undefined}
+        onChange={(event) => onChange(event.target.value)}
+        onBlur={() => setEditing(false)}
+        autoFocus
+        className={`w-full rounded-lg border px-2.5 py-1.5 text-sm leading-snug transition-colors ${
+          tone === "success" ? "border-border/80 bg-white" : "border-warning/15 bg-warning/[0.025] placeholder:text-muted-foreground/40"
+        }`}
+      />
+    </label>
   );
 }
 
 function EditableScholarshipFields({
   scholarship,
   updateScholarship,
+  onAnalyze,
+  analyzing,
+  analysisStatus,
+  complete,
+  active,
 }: {
   scholarship: ActiveScholarship;
   updateScholarship: (patch: ActiveScholarship) => void;
+  onAnalyze: () => void;
+  analyzing: boolean;
+  analysisStatus: string | null;
+  complete?: boolean;
+  active?: boolean;
 }) {
   const docsValue = (scholarship.requiredDocumentTypes ?? []).join(", ");
   const hasExtractedDetails = !!scholarship.extractionCompletedAt;
   const listValue = (items?: string[]) => (items ?? []).join("\n");
-  const parseList = (value: string) =>
-    value
-      .split("\n")
-      .map((item) => item.trim())
-      .filter(Boolean);
+  const parseList = (value: string) => value.split("\n").filter((item) => item.length > 0);
+  const extractedValues = [
+    scholarship.name,
+    scholarship.organization,
+    scholarship.type,
+    scholarship.country,
+    scholarship.officialWebsite ?? scholarship.url,
+    scholarship.awardAmount,
+    scholarship.applicationOpens,
+    scholarship.applicationDeadline,
+    scholarship.notificationDate,
+    scholarship.programStart,
+    scholarship.programEnd,
+    scholarship.currentStatus,
+    scholarship.description,
+    scholarship.minimumGpa,
+    scholarship.enrollmentLevel,
+    scholarship.citizenshipRequirement,
+    scholarship.financialNeedRequirement,
+    scholarship.locationRequirement,
+    scholarship.eligibleMajors,
+    scholarship.otherEligibilityRules,
+    docsValue,
+    scholarship.otherRequiredMaterials,
+    scholarship.essayPrompts,
+    listValue(scholarship.eligibilityRequirements),
+    listValue(scholarship.requiredApplicationMaterials),
+    listValue(scholarship.benefits),
+    listValue(scholarship.selectionCriteria),
+    listValue(scholarship.applicationProcess),
+    ...(scholarship.missingInformation?.length ? [listValue(scholarship.missingInformation)] : []),
+  ];
+  const extractedCount = extractedValues.filter((value) => !isReviewFieldMissing(value)).length;
+  const needsReviewCount = extractedValues.length - extractedCount;
+  const sourceUrl = scholarship.officialWebsite || scholarship.url;
+  const sourceDomain = (() => {
+    if (!sourceUrl) return "";
+    try {
+      return new URL(sourceUrl.startsWith("http") ? sourceUrl : `https://${sourceUrl}`).hostname.replace(/^www\./, "");
+    } catch {
+      return sourceUrl;
+    }
+  })();
 
-  if (!hasExtractedDetails) return null;
+  if (!hasExtractedDetails) {
+    return (
+      <WorkflowStep
+        number={2}
+        title="Extracted requirements"
+        description="Review and edit anything the extractor found before analyzing fit."
+        complete={complete}
+        active={active}
+      >
+        <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-white px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm font-medium text-foreground">No requirements extracted yet</p>
+            <p className="mt-1 text-sm text-muted-foreground">Run Extract Requirements to review the editable fields Scholar-E finds.</p>
+          </div>
+          <button type="button" disabled className="w-fit rounded-xl border border-border px-4 py-2 text-sm font-medium text-muted-foreground opacity-60">
+            Edit
+          </button>
+        </div>
+      </WorkflowStep>
+    );
+  }
 
   return (
-    <section>
-      <div className="max-w-3xl font-display text-[42px] font-extrabold leading-[0.98] tracking-tight">Extracted requirements</div>
-      <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground/85">
-        Review and edit anything the extractor found before analyzing fit.
-      </p>
-
-      <div className="mt-4 grid sm:grid-cols-2 gap-3">
-        <Input label="Scholarship name" value={scholarship.name ?? ""} onChange={(name) => updateScholarship({ name })} />
-        <Input label="Sponsoring organization" value={scholarship.organization ?? ""} onChange={(organization) => updateScholarship({ organization })} />
-        <Input label="Scholarship type" value={scholarship.type ?? ""} onChange={(type) => updateScholarship({ type })} />
-        <Input label="Country / region" value={scholarship.country ?? ""} onChange={(country) => updateScholarship({ country })} />
-        <Input label="Official website" value={scholarship.officialWebsite ?? scholarship.url ?? ""} onChange={(officialWebsite) => updateScholarship({ officialWebsite, url: officialWebsite })} />
-        <Input label="Award amount" value={scholarship.awardAmount ?? ""} onChange={(awardAmount) => updateScholarship({ awardAmount })} />
-        <Input label="Application opens" value={scholarship.applicationOpens ?? ""} onChange={(applicationOpens) => updateScholarship({ applicationOpens })} />
-        <Input label="Application deadline" value={scholarship.applicationDeadline ?? ""} onChange={(applicationDeadline) => updateScholarship({ applicationDeadline })} />
-        <Input label="Notification date" value={scholarship.notificationDate ?? ""} onChange={(notificationDate) => updateScholarship({ notificationDate })} />
-        <Input label="Program start" value={scholarship.programStart ?? ""} onChange={(programStart) => updateScholarship({ programStart })} />
-        <Input label="Program end" value={scholarship.programEnd ?? ""} onChange={(programEnd) => updateScholarship({ programEnd })} />
-        <Input label="Current status" value={scholarship.currentStatus ?? ""} onChange={(currentStatus) => updateScholarship({ currentStatus })} />
-      </div>
-
-      <div className="mt-3 space-y-3">
-        <Textarea label="Scholarship description" value={scholarship.description ?? ""} onChange={(description) => updateScholarship({ description })} rows={3} />
-        <div className="grid sm:grid-cols-2 gap-3">
-          <Input label="Minimum GPA" value={scholarship.minimumGpa ?? ""} onChange={(minimumGpa) => updateScholarship({ minimumGpa })} />
-          <Input label="Enrollment level" value={scholarship.enrollmentLevel ?? ""} onChange={(enrollmentLevel) => updateScholarship({ enrollmentLevel })} />
-          <Input label="Citizenship / residency requirement" value={scholarship.citizenshipRequirement ?? ""} onChange={(citizenshipRequirement) => updateScholarship({ citizenshipRequirement })} />
-          <Input label="Financial need requirement" value={scholarship.financialNeedRequirement ?? ""} onChange={(financialNeedRequirement) => updateScholarship({ financialNeedRequirement })} />
-          <Input label="Location / residency requirement" value={scholarship.locationRequirement ?? ""} onChange={(locationRequirement) => updateScholarship({ locationRequirement })} />
-          <Input label="Eligible majors / fields" value={scholarship.eligibleMajors ?? ""} onChange={(eligibleMajors) => updateScholarship({ eligibleMajors })} />
+    <WorkflowStep
+      number={2}
+      title="Extracted requirements"
+      description="Review and edit anything the extractor found before analyzing fit."
+      complete={complete}
+      active={active}
+    >
+      <div className="mt-1 rounded-2xl border border-border/50 bg-white px-4 py-3 shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+              <span className="size-2.5 rounded-full bg-success" />
+              Extraction Complete
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">{extractedCount} of {extractedValues.length} fields extracted successfully.</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">{needsReviewCount} fields require review or manual entry.</p>
+          </div>
+          {sourceUrl && (
+            <a
+              href={sourceUrl.startsWith("http") ? sourceUrl : `https://${sourceUrl}`}
+              target="_blank"
+              rel="noreferrer"
+              className="max-w-full truncate rounded-full bg-muted/45 px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            >
+              Source: {sourceDomain}
+            </a>
+          )}
         </div>
-        <Textarea label="Other eligibility rules" value={scholarship.otherEligibilityRules ?? ""} onChange={(otherEligibilityRules) => updateScholarship({ otherEligibilityRules })} rows={4} />
-        <Input
-          label="Required document types"
-          value={docsValue}
-          onChange={(value) =>
-            updateScholarship({
-              requiredDocumentTypes: value
-                .split(",")
-                .map((item) => item.trim())
-                .filter(Boolean),
-            })
-          }
-          placeholder="Essay, transcript, recommendation letter..."
-        />
-        <Textarea label="Other required materials" value={scholarship.otherRequiredMaterials ?? ""} onChange={(otherRequiredMaterials) => updateScholarship({ otherRequiredMaterials })} rows={3} />
-        <Textarea label="Essay prompts" value={scholarship.essayPrompts ?? ""} onChange={(essayPrompts) => updateScholarship({ essayPrompts })} rows={5} />
-        <Textarea
-          label="Eligibility requirements"
-          value={listValue(scholarship.eligibilityRequirements)}
-          onChange={(value) => updateScholarship({ eligibilityRequirements: parseList(value) })}
-          rows={6}
-        />
-        <Textarea
-          label="Required application materials"
-          value={listValue(scholarship.requiredApplicationMaterials)}
-          onChange={(value) => updateScholarship({ requiredApplicationMaterials: parseList(value) })}
-          rows={5}
-        />
-        <Textarea
-          label="Benefits"
-          value={listValue(scholarship.benefits)}
-          onChange={(value) => updateScholarship({ benefits: parseList(value) })}
-          rows={5}
-        />
-        <Textarea
-          label="Selection criteria"
-          value={listValue(scholarship.selectionCriteria)}
-          onChange={(value) => updateScholarship({ selectionCriteria: parseList(value) })}
-          rows={5}
-        />
-        <Textarea
-          label="Application process"
-          value={listValue(scholarship.applicationProcess)}
-          onChange={(value) => updateScholarship({ applicationProcess: parseList(value) })}
-          rows={5}
-        />
-        {!!scholarship.missingInformation?.length && (
-          <Textarea
-            label="Missing information"
-            value={listValue(scholarship.missingInformation)}
-            onChange={(value) => updateScholarship({ missingInformation: parseList(value) })}
-            rows={4}
-          />
-        )}
       </div>
-    </section>
+
+      <div className="mt-5 space-y-5">
+        <ReviewSection title="Overview" icon={<ClipboardList className="size-3.5" aria-hidden="true" />}>
+          <div className="grid gap-x-2.5 gap-y-2 md:grid-cols-3">
+            <ReviewField label="Scholarship name" value={scholarship.name ?? ""} onChange={(name) => updateScholarship({ name })} />
+            <ReviewField label="Sponsoring organization" value={scholarship.organization ?? ""} onChange={(organization) => updateScholarship({ organization })} />
+            <ReviewField label="Scholarship type" value={scholarship.type ?? ""} onChange={(type) => updateScholarship({ type })} />
+            <ReviewField label="Country / region" value={scholarship.country ?? ""} onChange={(country) => updateScholarship({ country })} />
+            <ReviewField label="Award amount" value={scholarship.awardAmount ?? ""} onChange={(awardAmount) => updateScholarship({ awardAmount })} />
+            <ReviewField label="Official website" value={scholarship.officialWebsite ?? scholarship.url ?? ""} onChange={(officialWebsite) => updateScholarship({ officialWebsite, url: officialWebsite })} />
+            <ReviewTextArea label="Scholarship description" value={scholarship.description ?? ""} onChange={(description) => updateScholarship({ description })} rows={2} className="md:col-span-3" />
+          </div>
+        </ReviewSection>
+
+        <ReviewSection title="Timeline" icon={<CalendarDays className="size-3.5" aria-hidden="true" />} defaultExpanded={false}>
+          <div className="grid gap-x-2.5 gap-y-2 md:grid-cols-3">
+            <ReviewField label="Application opens" value={scholarship.applicationOpens ?? ""} onChange={(applicationOpens) => updateScholarship({ applicationOpens })} />
+            <ReviewField label="Application deadline" value={scholarship.applicationDeadline ?? ""} onChange={(applicationDeadline) => updateScholarship({ applicationDeadline })} />
+            <ReviewField label="Notification date" value={scholarship.notificationDate ?? ""} onChange={(notificationDate) => updateScholarship({ notificationDate })} />
+            <ReviewField label="Program start" value={scholarship.programStart ?? ""} onChange={(programStart) => updateScholarship({ programStart })} />
+            <ReviewField label="Program end" value={scholarship.programEnd ?? ""} onChange={(programEnd) => updateScholarship({ programEnd })} />
+            <ReviewField label="Current status" value={scholarship.currentStatus ?? ""} onChange={(currentStatus) => updateScholarship({ currentStatus })} />
+          </div>
+        </ReviewSection>
+
+        <ReviewSection title="Eligibility" icon={<ShieldCheck className="size-3.5" aria-hidden="true" />} defaultExpanded={false}>
+          <div className="grid gap-x-2.5 gap-y-2 md:grid-cols-3">
+            <ReviewField label="Minimum GPA" value={scholarship.minimumGpa ?? ""} onChange={(minimumGpa) => updateScholarship({ minimumGpa })} />
+            <ReviewField label="Enrollment level" value={scholarship.enrollmentLevel ?? ""} onChange={(enrollmentLevel) => updateScholarship({ enrollmentLevel })} />
+            <ReviewField label="Citizenship / residency requirement" value={scholarship.citizenshipRequirement ?? ""} onChange={(citizenshipRequirement) => updateScholarship({ citizenshipRequirement })} />
+            <ReviewField label="Financial need requirement" value={scholarship.financialNeedRequirement ?? ""} onChange={(financialNeedRequirement) => updateScholarship({ financialNeedRequirement })} />
+            <ReviewField label="Location / residency requirement" value={scholarship.locationRequirement ?? ""} onChange={(locationRequirement) => updateScholarship({ locationRequirement })} />
+            <ReviewField label="Eligible majors / fields" value={scholarship.eligibleMajors ?? ""} onChange={(eligibleMajors) => updateScholarship({ eligibleMajors })} />
+            <ReviewTextArea label="Other eligibility rules" value={scholarship.otherEligibilityRules ?? ""} onChange={(otherEligibilityRules) => updateScholarship({ otherEligibilityRules })} rows={2} className="md:col-span-3" />
+            <ReviewTextArea label="Eligibility requirements" value={listValue(scholarship.eligibilityRequirements)} onChange={(value) => updateScholarship({ eligibilityRequirements: parseList(value) })} rows={3} className="md:col-span-3" />
+          </div>
+        </ReviewSection>
+
+        <ReviewSection title="Materials & prompts" icon={<FileUp className="size-3.5" aria-hidden="true" />} defaultExpanded={false}>
+          <div className="grid gap-x-2.5 gap-y-2 md:grid-cols-3">
+            <ReviewField
+              label="Required document types"
+              value={docsValue}
+              onChange={(value) =>
+                updateScholarship({
+                  requiredDocumentTypes: value
+                    .split(",")
+                    .map((item) => item.replace(/^\s+/, ""))
+                    .filter(Boolean),
+                })
+              }
+              placeholder="Essay, transcript, recommendation letter..."
+            />
+            <ReviewTextArea label="Other required materials" value={scholarship.otherRequiredMaterials ?? ""} onChange={(otherRequiredMaterials) => updateScholarship({ otherRequiredMaterials })} rows={2} className="md:col-span-2" />
+            <ReviewTextArea label="Essay prompts" value={scholarship.essayPrompts ?? ""} onChange={(essayPrompts) => updateScholarship({ essayPrompts })} rows={3} className="md:col-span-3" />
+            <ReviewTextArea label="Required application materials" value={listValue(scholarship.requiredApplicationMaterials)} onChange={(value) => updateScholarship({ requiredApplicationMaterials: parseList(value) })} rows={3} className="md:col-span-3" />
+          </div>
+        </ReviewSection>
+
+        <ReviewSection title="Additional details" icon={<ReceiptText className="size-3.5" aria-hidden="true" />} defaultExpanded={false}>
+          <div className="grid gap-x-2.5 gap-y-2 md:grid-cols-3">
+            <ReviewTextArea label="Benefits" value={listValue(scholarship.benefits)} onChange={(value) => updateScholarship({ benefits: parseList(value) })} rows={3} />
+            <ReviewTextArea label="Selection criteria" value={listValue(scholarship.selectionCriteria)} onChange={(value) => updateScholarship({ selectionCriteria: parseList(value) })} rows={3} className="md:col-span-2" />
+            <ReviewTextArea label="Application process" value={listValue(scholarship.applicationProcess)} onChange={(value) => updateScholarship({ applicationProcess: parseList(value) })} rows={3} className="md:col-span-3" />
+            {!!scholarship.missingInformation?.length && (
+              <ReviewTextArea label="Missing information" value={listValue(scholarship.missingInformation)} onChange={(value) => updateScholarship({ missingInformation: parseList(value) })} rows={3} className="md:col-span-3" />
+            )}
+          </div>
+        </ReviewSection>
+      </div>
+
+      <div className="mt-7 flex flex-col items-end gap-2">
+        <button
+          type="button"
+          onClick={onAnalyze}
+          disabled={analyzing}
+          className="rounded-full bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
+        >
+          {analyzing ? "Analyzing fit..." : "Accept and Analyze Fit"}
+        </button>
+        {analysisStatus && <p className="mt-2 text-right text-xs text-muted-foreground">{analysisStatus}</p>}
+      </div>
+    </WorkflowStep>
   );
 }
 
@@ -2542,6 +2892,12 @@ function StepRequirementsAndFit() {
         extractionCompletedAt: new Date().toISOString(),
       });
       setExtractionStatus("Requirements extracted. Review and edit the fields below.");
+      window.setTimeout(() => {
+        document.getElementById("extracted-requirements-review")?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        });
+      }, 100);
     } catch (err) {
       setExtractionError(err instanceof Error ? err.message : "Scholarship extraction failed.");
       setExtractionStatus(null);
@@ -2567,9 +2923,10 @@ function StepRequirementsAndFit() {
     }
   }
   const fitAnalysis = user?.fitAnalysis;
+  const hasExtractedDetails = !!scholarship.extractionCompletedAt;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       <ScholarshipDetailsCard
         scholarship={scholarship}
         updateScholarship={updateScholarship}
@@ -2577,26 +2934,31 @@ function StepRequirementsAndFit() {
         extracting={extracting}
         extractionStatus={extractionStatus}
         extractionError={extractionError}
+        complete={hasExtractedDetails}
+        active={!hasExtractedDetails}
       />
 
-      <EditableScholarshipFields scholarship={scholarship} updateScholarship={updateScholarship} />
+      <div id="extracted-requirements-review" className="scroll-mt-6">
+        <EditableScholarshipFields
+          scholarship={scholarship}
+          updateScholarship={updateScholarship}
+          onAnalyze={runFitAnalysis}
+          analyzing={fitAnalyzing}
+          analysisStatus={fitStatus}
+          complete={!!fitAnalysis}
+          active={hasExtractedDetails && !fitAnalysis}
+        />
+      </div>
 
-      <div>
+      <WorkflowStep
+        number={3}
+        title="Fit & application readiness"
+        description={fitAnalysis ? "Fit analysis complete. Review the results below." : "Extract and review scholarship requirements, then use Accept and Analyze Fit."}
+        complete={!!fitAnalysis}
+        active={hasExtractedDetails}
+        isLast
+      >
         <div className="space-y-6">
-          <section>
-            <div className="flex justify-end">
-              <button
-                type="button"
-                onClick={runFitAnalysis}
-                disabled={fitAnalyzing}
-                className="rounded-full bg-primary text-primary-foreground px-5 py-2.5 text-sm font-medium hover:opacity-90 disabled:opacity-40"
-              >
-                {fitAnalyzing ? "Analyzing fit..." : "Accept and Analyze Fit"}
-              </button>
-            </div>
-            {fitStatus && <p className="mt-3 text-xs text-muted-foreground text-right">{fitStatus}</p>}
-          </section>
-
           {!fitAnalysis && (
             <section>
               <div className="font-medium">No analysis yet</div>
@@ -2682,8 +3044,6 @@ function StepRequirementsAndFit() {
                 </div>
               </Card>
 
-              <ApplicationReadinessMatrixCard matrix={buildReadinessFallback(fitAnalysis)} />
-
               {!!fitAnalysis.application_materials_check?.length && (
                 <Card className="md:col-span-3">
                   <div className="text-xs uppercase tracking-widest text-muted-foreground">Application materials</div>
@@ -2720,7 +3080,7 @@ function StepRequirementsAndFit() {
             </div>
           )}
         </div>
-      </div>
+      </WorkflowStep>
     </div>
   );
 }
