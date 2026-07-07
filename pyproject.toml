@@ -6,6 +6,7 @@ dependencies = [
   "langchain-community",
   "langchain-openai",
   "langchain-text-splitters",
+  "langchain-chroma",
   "langgraph",
   "openai",
   "chromadb",

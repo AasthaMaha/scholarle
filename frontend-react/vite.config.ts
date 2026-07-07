@@ -6,11 +6,14 @@
 // You can pass additional config via defineConfig({ vite: { ... }, etc... }) if needed.
 import { defineConfig } from "@lovable.dev/vite-tanstack-config";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
 const apiBase = "http://127.0.0.1:8000";
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const venvPython = resolve(repoRoot, ".venv/bin/python");
+const backendPython = process.env.PYTHON ?? (existsSync(venvPython) ? venvPython : "python3");
 let backendProcess: ChildProcessWithoutNullStreams | null = null;
 let backendStartPromise: Promise<void> | null = null;
 
@@ -39,7 +42,7 @@ function startBackendIfNeeded() {
     if (await backendIsReady()) return;
 
     console.log("[scholar-e] Starting FastAPI backend on http://127.0.0.1:8000...");
-    backendProcess = spawn(process.env.PYTHON ?? "python", ["server.py"], {
+    backendProcess = spawn(backendPython, ["server.py"], {
       cwd: repoRoot,
       stdio: "inherit",
       shell: false,

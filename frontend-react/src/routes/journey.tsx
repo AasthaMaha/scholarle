@@ -141,7 +141,7 @@ function Journey() {
             onOpen={() => setIsSidebarOpen(true)}
           />
           <main className="flex-1 overflow-y-auto">
-            <div className={`mx-auto px-6 md:px-10 py-10 ${["profile", "discovery"].includes(step.slug) ? "max-w-7xl" : "max-w-5xl"}`}>
+            <div className={`mx-auto px-6 md:px-10 ${["discovery", "requirements"].includes(step.slug) ? "max-w-7xl py-6" : step.slug === "profile" ? "max-w-7xl py-10" : "max-w-5xl py-10"}`}>
               {exampleStatus && (
                 <div className="mb-4 rounded-xl border border-gold/30 bg-gold/10 px-4 py-3 text-sm text-foreground/90">
                   {exampleStatus}
@@ -805,7 +805,7 @@ const SCHOLARSHIP_TYPE_OPTIONS = [
   "Merit award",
 ];
 
-const PROFILE_SECTION_CLASS = "!rounded-xl !border-border/60 !bg-white/75 !p-6 !shadow-none";
+const PROFILE_SECTION_CLASS = "!rounded-none !border-0 !bg-transparent !p-0 !shadow-none";
 const PROFILE_ENTRY_CLASS = "rounded-lg border border-border/60 bg-white/60 p-4";
 
 /* ---------------- Step 2: Profile (with materials before story prompts) ---------------- */
@@ -1928,10 +1928,10 @@ function StepDiscovery({
 
   return (
     <div className="space-y-8">
-      <Card className={PROFILE_SECTION_CLASS}>
+      <div>
         <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div>
-            <div className="text-xs uppercase tracking-widest text-muted-foreground">Scholarship Discovery Wiki</div>
+            <div className="text-sm font-semibold uppercase tracking-widest text-muted-foreground">Scholarship Discovery Wiki</div>
             <h2 className="mt-2 max-w-3xl font-display text-[42px] font-extrabold leading-[0.98] tracking-tight">
               Search scholarships from your profile.
             </h2>
@@ -1971,10 +1971,10 @@ function StepDiscovery({
             </p>
           </div>
         )}
-      </Card>
+      </div>
 
-      {hasWiki && <Card className={PROFILE_SECTION_CLASS}>
-        <SectionLabel>Profile used for discovery</SectionLabel>
+      {hasWiki && <section>
+        <div className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Profile used for discovery</div>
         <div className="mt-4 grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {Object.entries(profileSummary).map(([key, value]) => (
             <div key={key} className="rounded-lg border border-border/60 bg-white/60 p-3">
@@ -1988,11 +1988,11 @@ function StepDiscovery({
             Add more profile details to improve recommendations: {wiki.missing_profile_fields.join(", ")}.
           </p>
         )}
-      </Card>}
+      </section>}
 
       {hasWiki && (
         <div className="space-y-8">
-          <Card className={PROFILE_SECTION_CLASS}>
+          <section>
             <div className="text-sm font-semibold uppercase tracking-widest text-muted-foreground">Top 5 direct scholarship sources</div>
             <p className="mt-1 text-xs text-muted-foreground">
               Send one into Step 4 with its name, link, and notes filled for requirement extraction.
@@ -2009,9 +2009,9 @@ function StepDiscovery({
               ))}
               {!directSources.length && <p className="text-sm text-muted-foreground">No direct sources matched this profile.</p>}
             </div>
-          </Card>
+          </section>
 
-          <Card className={PROFILE_SECTION_CLASS}>
+          <section>
             <div className="text-sm font-semibold uppercase tracking-widest text-muted-foreground">Top 5 scholarship platforms</div>
             <p className="mt-1 text-xs text-muted-foreground">
               Use these platforms to continue searching for real opportunities.
@@ -2027,12 +2027,12 @@ function StepDiscovery({
               ))}
               {!platformSources.length && <p className="text-sm text-muted-foreground">No platforms matched this profile.</p>}
             </div>
-          </Card>
+          </section>
         </div>
       )}
 
-      {hasWiki && <Card className={PROFILE_SECTION_CLASS}>
-        <SectionLabel>Funding categories</SectionLabel>
+      {hasWiki && <section>
+        <div className="text-sm font-semibold uppercase tracking-widest text-muted-foreground">Funding categories</div>
         <div className="mt-4 grid md:grid-cols-2 lg:grid-cols-3 gap-3">
           {(wiki?.funding_categories ?? []).map((category) => (
             <div key={category.category_name} className="rounded-lg border border-border/60 bg-white/60 p-4">
@@ -2044,10 +2044,10 @@ function StepDiscovery({
             </div>
           ))}
         </div>
-      </Card>}
+      </section>}
 
-      {hasWiki && <Card className={PROFILE_SECTION_CLASS}>
-            <SectionLabel>Personalized search queries</SectionLabel>
+      {hasWiki && <section>
+            <div className="text-sm font-semibold uppercase tracking-widest text-muted-foreground">Personalized search queries</div>
           <div className="mt-4 space-y-2">
             {(wiki?.personalized_search_queries ?? []).slice(0, 3).map((query) => (
               <div key={query} className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-white/60 p-3">
@@ -2058,7 +2058,7 @@ function StepDiscovery({
               </div>
             ))}
           </div>
-      </Card>}
+      </section>}
     </div>
   );
 }
@@ -2338,9 +2338,9 @@ function ScholarshipDetailsCard({
   extractionError: string | null;
 }) {
   return (
-    <Card>
-      <SectionLabel>Scholarship details for extraction</SectionLabel>
-      <p className="mt-1 text-xs text-muted-foreground">
+    <section>
+      <div className="max-w-3xl font-display text-[42px] font-extrabold leading-[0.98] tracking-tight">Scholarship details for extraction</div>
+      <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground/85">
         After using the Wiki to find a real opportunity, paste its name, link, or copied description here. Scholar-E will extract requirements into editable fields.
       </p>
       <div className="mt-4 grid sm:grid-cols-2 gap-3">
@@ -2378,7 +2378,7 @@ function ScholarshipDetailsCard({
       </div>
       {extractionStatus && <p className="mt-3 text-xs text-muted-foreground text-right">{extractionStatus}</p>}
       {extractionError && <p className="mt-3 text-xs text-destructive text-right">{extractionError}</p>}
-    </Card>
+    </section>
   );
 }
 
@@ -2401,9 +2401,9 @@ function EditableScholarshipFields({
   if (!hasExtractedDetails) return null;
 
   return (
-    <Card>
-      <SectionLabel>Extracted requirements</SectionLabel>
-      <p className="mt-1 text-xs text-muted-foreground">
+    <section>
+      <div className="max-w-3xl font-display text-[42px] font-extrabold leading-[0.98] tracking-tight">Extracted requirements</div>
+      <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground/85">
         Review and edit anything the extractor found before analyzing fit.
       </p>
 
@@ -2502,7 +2502,7 @@ function EditableScholarshipFields({
           />
         )}
       </div>
-    </Card>
+    </section>
   );
 }
 
@@ -2579,7 +2579,7 @@ function StepRequirementsAndFit() {
 
       <div>
         <div className="space-y-6">
-          <Card className="bg-secondary/40">
+          <section>
             <div className="flex justify-end">
               <button
                 type="button"
@@ -2591,16 +2591,16 @@ function StepRequirementsAndFit() {
               </button>
             </div>
             {fitStatus && <p className="mt-3 text-xs text-muted-foreground text-right">{fitStatus}</p>}
-          </Card>
+          </section>
 
           {!fitAnalysis && (
-            <Card>
+            <section>
               <div className="font-medium">No analysis yet</div>
               <p className="mt-1 text-sm text-muted-foreground">
                 Extract and review scholarship requirements, then use Accept and Analyze Fit.
                 Scholar-E will compare your profile against the cleaned scholarship requirements.
               </p>
-            </Card>
+            </section>
           )}
 
           {!!fitAnalysis && (
