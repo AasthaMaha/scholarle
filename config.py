@@ -19,7 +19,7 @@ class Settings:
 
     profile_vector_db_path: str = "./chroma_db_profile"
     chroma_persist_directory: str = os.getenv("CHROMA_PERSIST_DIRECTORY", "./chroma_db")
-    database_url: str = os.getenv("DATABASE_URL", "")
+    database_url: str = os.getenv("DATABASE_URL", "sqlite:///scholar_e.db")
     default_user_id: str = os.getenv("DEFAULT_USER_ID", "demo-user")
 
 settings = Settings()

@@ -20,9 +20,9 @@ target_metadata = Base.metadata
 
 
 def _database_url() -> str:
-    url = os.getenv("DATABASE_URL", "")
-    if not url:
-        raise RuntimeError("DATABASE_URL must be set before running Alembic migrations.")
+    url = os.getenv("DATABASE_URL") or config.get_main_option("sqlalchemy.url") or "sqlite:///scholar_e.db"
+    if not url.startswith("sqlite"):
+        raise RuntimeError("Scholar-E migrations are configured for SQLite only. Use sqlite:///scholar_e.db.")
     return url
 
 

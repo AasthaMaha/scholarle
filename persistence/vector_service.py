@@ -252,7 +252,7 @@ class VectorService:
         if not user_id:
             raise ValueError("user_id is required when re-embedding private memory.")
         if not is_database_enabled():
-            raise RuntimeError("DATABASE_URL is required to re-embed a stored knowledge item.")
+            raise RuntimeError("SQLite persistence is required to re-embed a stored knowledge item.")
         from persistence.models import KnowledgeItem
 
         with session_scope() as session:

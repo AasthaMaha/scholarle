@@ -414,7 +414,7 @@ changes with what each student actually submits).
 pip install -r requirements.txt
 # .env at project root:
 #   OPENAI_API_KEY=sk-...
-#   DATABASE_URL=postgresql+psycopg2://user:password@localhost:5432/scholare
+#   DATABASE_URL=sqlite:///scholar_e.db   # optional; this is the default
 #   CHROMA_PERSIST_DIRECTORY=./chroma_db
 python server.py            # http://127.0.0.1:8000  (POST /api/analyze, GET /health)
 ```
@@ -434,23 +434,20 @@ journey UI.
 
 ### Persistence setup
 
-Scholar-E now has a PostgreSQL-ready persistence layer for durable user data,
-agent runs, version history, and future RAG memory. The current UI still works
-without PostgreSQL; when `DATABASE_URL` is set, current agent routes write
-`agent_runs` through the shared persistence wrapper.
+Scholar-E uses SQLite for durable local user data, agent runs, version history,
+and future RAG memory. By default, the database file is `scholar_e.db` in the
+project root.
 
 Recommended local database setup:
 
 ```bash
-createdb scholare
-set DATABASE_URL=postgresql+psycopg2://user:password@localhost:5432/scholare
 alembic upgrade head
 python scripts/seed_demo_data.py
 ```
 
 Storage rules:
 
-* PostgreSQL is the source of truth for structured records.
+* SQLite is the source of truth for structured records.
 * Chroma is only for searchable embedded chunks.
 * Private memory must always carry `user_id` and explicit collection filters.
 * Do not put `.env`, `chroma_db/`, `uploads/`, `local_data/`, SQLite files, or

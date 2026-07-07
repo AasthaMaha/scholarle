@@ -19,9 +19,6 @@ from persistence.agent_registry import CURRENT_AGENT_DEFINITIONS, agent_definiti
 
 
 def main() -> None:
-    if not settings.database_url:
-        raise SystemExit("Set DATABASE_URL before running scripts/seed_demo_data.py")
-
     with session_scope() as session:
         user = session.query(User).filter_by(email="demo@scholar-e.local").one_or_none()
         if user is None:
@@ -134,4 +131,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

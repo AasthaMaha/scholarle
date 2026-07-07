@@ -22,6 +22,8 @@ def is_database_enabled() -> bool:
 def get_engine():
     if not settings.database_url:
         return None
+    if not settings.database_url.startswith("sqlite"):
+        raise RuntimeError("Scholar-E is configured for SQLite only. Use sqlite:///scholar_e.db.")
     create_engine, _ = _load_sqlalchemy()
     return create_engine(settings.database_url, pool_pre_ping=True, future=True)
 
@@ -50,4 +52,3 @@ def session_scope() -> Iterator[object | None]:
         raise
     finally:
         session.close()
-

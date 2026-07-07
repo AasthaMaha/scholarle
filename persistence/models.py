@@ -4,7 +4,6 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text
-from sqlalchemy.dialects.postgresql import JSONB as PG_JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -20,7 +19,7 @@ class Base(DeclarativeBase):
     pass
 
 
-JSONB = JSON().with_variant(PG_JSONB, "postgresql")
+JSONData = JSON
 
 
 class TimestampMixin:
@@ -55,16 +54,16 @@ class StudentProfile(Base, TimestampMixin):
     residency: Mapped[str] = mapped_column(String(255), default="", nullable=False)
     current_country: Mapped[str] = mapped_column(String(255), default="", nullable=False)
     gpa: Mapped[str] = mapped_column(String(80), default="", nullable=False)
-    research_interests: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
-    skills: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
-    leadership_experience: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
-    work_experience: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
-    awards: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
-    publications: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
-    career_goals: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
-    available_documents: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    research_interests: Mapped[dict] = mapped_column(JSONData, default=dict, nullable=False)
+    skills: Mapped[dict] = mapped_column(JSONData, default=dict, nullable=False)
+    leadership_experience: Mapped[dict] = mapped_column(JSONData, default=dict, nullable=False)
+    work_experience: Mapped[dict] = mapped_column(JSONData, default=dict, nullable=False)
+    awards: Mapped[dict] = mapped_column(JSONData, default=dict, nullable=False)
+    publications: Mapped[dict] = mapped_column(JSONData, default=dict, nullable=False)
+    career_goals: Mapped[dict] = mapped_column(JSONData, default=dict, nullable=False)
+    available_documents: Mapped[dict] = mapped_column(JSONData, default=dict, nullable=False)
     raw_profile_text: Mapped[str] = mapped_column(Text, default="", nullable=False)
-    profile_json: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    profile_json: Mapped[dict] = mapped_column(JSONData, default=dict, nullable=False)
 
 
 class ProfileVersion(Base):
@@ -75,8 +74,8 @@ class ProfileVersion(Base):
     user_id: Mapped[str] = mapped_column(String(100), ForeignKey("users.id"), index=True, nullable=False)
     profile_id: Mapped[str] = mapped_column(String(36), ForeignKey("student_profiles.id"), index=True, nullable=False)
     source_document_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("user_documents.id"))
-    extracted_json: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
-    cleaned_json: Mapped[dict | None] = mapped_column(JSONB)
+    extracted_json: Mapped[dict] = mapped_column(JSONData, default=dict, nullable=False)
+    cleaned_json: Mapped[dict | None] = mapped_column(JSONData)
     version_number: Mapped[int] = mapped_column(Integer, nullable=False)
     created_by_agent_run_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("agent_runs.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
@@ -106,13 +105,13 @@ class ScholarshipSource(Base, TimestampMixin):
     url: Mapped[str] = mapped_column(String(2000), default="", nullable=False)
     category: Mapped[str] = mapped_column(String(255), default="", nullable=False)
     cost: Mapped[str] = mapped_column(String(255), default="", nullable=False)
-    best_for: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
-    degree_levels: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
-    student_types: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
-    regions: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
-    fields: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
-    opportunity_types: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
-    search_tips: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
+    best_for: Mapped[list] = mapped_column(JSONData, default=list, nullable=False)
+    degree_levels: Mapped[list] = mapped_column(JSONData, default=list, nullable=False)
+    student_types: Mapped[list] = mapped_column(JSONData, default=list, nullable=False)
+    regions: Mapped[list] = mapped_column(JSONData, default=list, nullable=False)
+    fields: Mapped[list] = mapped_column(JSONData, default=list, nullable=False)
+    opportunity_types: Mapped[list] = mapped_column(JSONData, default=list, nullable=False)
+    search_tips: Mapped[list] = mapped_column(JSONData, default=list, nullable=False)
     notes: Mapped[str] = mapped_column(Text, default="", nullable=False)
     is_curated: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
@@ -127,7 +126,7 @@ class SavedScholarshipSource(Base, TimestampMixin):
     name: Mapped[str] = mapped_column(String(500), nullable=False)
     url: Mapped[str] = mapped_column(String(2000), default="", nullable=False)
     category: Mapped[str] = mapped_column(String(255), default="", nullable=False)
-    tags: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
+    tags: Mapped[list] = mapped_column(JSONData, default=list, nullable=False)
     notes: Mapped[str] = mapped_column(Text, default="", nullable=False)
     saved_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
 
@@ -158,8 +157,8 @@ class ScholarshipExtraction(Base):
     user_id: Mapped[str] = mapped_column(String(100), ForeignKey("users.id"), index=True, nullable=False)
     opportunity_id: Mapped[str] = mapped_column(String(36), ForeignKey("scholarship_opportunities.id"), index=True, nullable=False)
     agent_run_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("agent_runs.id"), index=True)
-    raw_input: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
-    raw_output: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    raw_input: Mapped[dict] = mapped_column(JSONData, default=dict, nullable=False)
+    raw_output: Mapped[dict] = mapped_column(JSONData, default=dict, nullable=False)
     extracted_markdown: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
 
@@ -172,7 +171,7 @@ class ScholarshipCleanRecord(Base, TimestampMixin):
     user_id: Mapped[str] = mapped_column(String(100), ForeignKey("users.id"), index=True, nullable=False)
     opportunity_id: Mapped[str] = mapped_column(String(36), ForeignKey("scholarship_opportunities.id"), index=True, nullable=False)
     agent_run_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("agent_runs.id"), index=True)
-    clean_json: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    clean_json: Mapped[dict] = mapped_column(JSONData, default=dict, nullable=False)
     version_number: Mapped[int] = mapped_column(Integer, nullable=False)
     is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
@@ -191,13 +190,13 @@ class ScholarshipFitAnalysis(Base):
     fit_score: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     likely_eligible: Mapped[str] = mapped_column(String(120), default="", nullable=False)
     summary: Mapped[str] = mapped_column(Text, default="", nullable=False)
-    eligibility_analysis: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
-    strengths: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
-    gaps_or_risks: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
-    missing_student_information: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
-    application_materials_check: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
-    selection_criteria_alignment: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
-    recommended_next_steps: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
+    eligibility_analysis: Mapped[list] = mapped_column(JSONData, default=list, nullable=False)
+    strengths: Mapped[list] = mapped_column(JSONData, default=list, nullable=False)
+    gaps_or_risks: Mapped[list] = mapped_column(JSONData, default=list, nullable=False)
+    missing_student_information: Mapped[list] = mapped_column(JSONData, default=list, nullable=False)
+    application_materials_check: Mapped[list] = mapped_column(JSONData, default=list, nullable=False)
+    selection_criteria_alignment: Mapped[list] = mapped_column(JSONData, default=list, nullable=False)
+    recommended_next_steps: Mapped[list] = mapped_column(JSONData, default=list, nullable=False)
     version_number: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
@@ -214,8 +213,8 @@ class ScholarshipTrackerItem(Base, TimestampMixin):
     priority: Mapped[str] = mapped_column(String(80), default="medium", nullable=False)
     deadline: Mapped[datetime | None] = mapped_column(DateTime)
     notes: Mapped[str] = mapped_column(Text, default="", nullable=False)
-    tasks: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
-    required_materials: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
+    tasks: Mapped[list] = mapped_column(JSONData, default=list, nullable=False)
+    required_materials: Mapped[list] = mapped_column(JSONData, default=list, nullable=False)
     completion_percent: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
 
@@ -255,8 +254,8 @@ class EssayCoachingFeedback(Base):
     essay_version_id: Mapped[str] = mapped_column(String(36), ForeignKey("essay_versions.id"), index=True, nullable=False)
     opportunity_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("scholarship_opportunities.id"), index=True)
     agent_run_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("agent_runs.id"), index=True)
-    feedback_json: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
-    score_json: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    feedback_json: Mapped[dict] = mapped_column(JSONData, default=dict, nullable=False)
+    score_json: Mapped[dict] = mapped_column(JSONData, default=dict, nullable=False)
     summary: Mapped[str] = mapped_column(Text, default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
 
@@ -277,11 +276,11 @@ class EssayAlignmentMatrix(Base, TimestampMixin):
     completion_percent: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     word_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     word_limit_status: Mapped[str] = mapped_column(String(120), default="", nullable=False)
-    matrix_json: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
-    missing_or_weak_items_json: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
-    unsupported_claims_json: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
-    strengths_json: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
-    recommended_revision_tasks_json: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
+    matrix_json: Mapped[list] = mapped_column(JSONData, default=list, nullable=False)
+    missing_or_weak_items_json: Mapped[list] = mapped_column(JSONData, default=list, nullable=False)
+    unsupported_claims_json: Mapped[list] = mapped_column(JSONData, default=list, nullable=False)
+    strengths_json: Mapped[list] = mapped_column(JSONData, default=list, nullable=False)
+    recommended_revision_tasks_json: Mapped[list] = mapped_column(JSONData, default=list, nullable=False)
     final_submission_readiness: Mapped[str] = mapped_column(Text, default="", nullable=False)
     version_number: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
@@ -295,13 +294,13 @@ class AgentDefinition(Base, TimestampMixin):
     display_name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, default="", nullable=False)
     agent_type: Mapped[str] = mapped_column(String(80), nullable=False)
-    input_schema: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
-    output_schema: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    input_schema: Mapped[dict] = mapped_column(JSONData, default=dict, nullable=False)
+    output_schema: Mapped[dict] = mapped_column(JSONData, default=dict, nullable=False)
     prompt_version: Mapped[str] = mapped_column(String(80), default="v1", nullable=False)
     model_provider: Mapped[str] = mapped_column(String(80), default="openai", nullable=False)
     model_name: Mapped[str] = mapped_column(String(120), default="", nullable=False)
     uses_rag: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    rag_sources: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
+    rag_sources: Mapped[list] = mapped_column(JSONData, default=list, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
 
@@ -314,14 +313,14 @@ class AgentRun(Base):
     agent_name: Mapped[str] = mapped_column(String(160), index=True, nullable=False)
     agent_version: Mapped[str | None] = mapped_column(String(80))
     workflow_name: Mapped[str | None] = mapped_column(String(160))
-    input_json: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
-    output_json: Mapped[dict | None] = mapped_column(JSONB)
+    input_json: Mapped[dict] = mapped_column(JSONData, default=dict, nullable=False)
+    output_json: Mapped[dict | None] = mapped_column(JSONData)
     status: Mapped[str] = mapped_column(String(80), default="running", nullable=False)
     error_message: Mapped[str | None] = mapped_column(Text)
     model_provider: Mapped[str | None] = mapped_column(String(80))
     model_name: Mapped[str | None] = mapped_column(String(120))
     prompt_version: Mapped[str | None] = mapped_column(String(80))
-    token_usage: Mapped[dict | None] = mapped_column(JSONB)
+    token_usage: Mapped[dict | None] = mapped_column(JSONData)
     latency_ms: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime)
@@ -337,7 +336,7 @@ class KnowledgeItem(Base, TimestampMixin):
     source_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
     title: Mapped[str] = mapped_column(String(500), default="", nullable=False)
     canonical_text: Mapped[str] = mapped_column(Text, default="", nullable=False)
-    structured_json: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    structured_json: Mapped[dict] = mapped_column(JSONData, default=dict, nullable=False)
     visibility: Mapped[str] = mapped_column(String(80), default="private", nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
@@ -358,7 +357,7 @@ class KnowledgeChunk(Base, TimestampMixin):
     chroma_id: Mapped[str] = mapped_column(String(255), nullable=False)
     embedding_model: Mapped[str] = mapped_column(String(160), default="", nullable=False)
     token_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    metadata_json: Mapped[dict] = mapped_column("metadata", JSONB, default=dict, nullable=False)
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSONData, default=dict, nullable=False)
 
 
 class AgentContextChunk(Base):
@@ -383,5 +382,5 @@ class AppEvent(Base):
     event_type: Mapped[str] = mapped_column(String(160), index=True, nullable=False)
     entity_type: Mapped[str] = mapped_column(String(160), default="", nullable=False)
     entity_id: Mapped[str] = mapped_column(String(36), default="", nullable=False)
-    payload: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONData, default=dict, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
