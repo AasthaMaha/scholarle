@@ -1,6 +1,7 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { useUser } from "@/lib/userStore";
+import scholarELogoUrl from "../../logo/logoPic.png";
 
 export const Route = createFileRoute("/auth")({
   head: () => ({
@@ -35,8 +36,8 @@ function AuthPage() {
       <div className="flex flex-col">
         <header className="flex items-center justify-between px-6 h-16 border-b border-border/60">
           <Link to="/" className="flex items-center gap-2">
-            <div className="size-8 rounded-lg bg-primary text-primary-foreground grid place-items-center font-display font-bold">
-              S<span className="text-gold">e</span>
+            <div className="size-8 overflow-hidden rounded-lg">
+              <img src={scholarELogoUrl} alt="" className="size-full object-contain" />
             </div>
             <span className="font-display font-semibold tracking-tight">Scholar-E</span>
           </Link>
@@ -91,8 +92,8 @@ function AsidePanel() {
   return (
     <aside className="hidden lg:flex flex-col justify-between bg-primary text-primary-foreground p-12">
       <Link to="/" className="flex items-center gap-2">
-        <div className="size-9 rounded-lg bg-primary-foreground/15 grid place-items-center font-display font-bold">
-          S<span className="text-gold">e</span>
+        <div className="size-9 overflow-hidden rounded-lg bg-primary-foreground/15">
+          <img src={scholarELogoUrl} alt="" className="size-full object-contain" />
         </div>
         <span className="font-display font-semibold text-lg tracking-tight">Scholar-E</span>
       </Link>
