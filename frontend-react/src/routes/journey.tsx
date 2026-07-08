@@ -1,5 +1,6 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
+import scholarELogoUrl from "../../logo/logoPic.png";
 import {
   AlertCircle,
   ArrowLeft,
@@ -110,7 +111,6 @@ function Journey() {
   const { user, updateProfile, resetProfile } = useUser();
   const [stepIdx, setStepIdx] = useState(0);
   const [profileError, setProfileError] = useState("");
-  const [exampleStatus, setExampleStatus] = useState<string | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   function handleLoadExample() {
@@ -121,7 +121,6 @@ function Journey() {
         id: user?.id,
       }),
     );
-    setExampleStatus("Example loaded — jump to Essay Workspace to run the AI coach.");
     const essayStepIdx = journeySteps.findIndex((s) => s.slug === "essay-workspace");
     if (essayStepIdx >= 0) setStepIdx(essayStepIdx);
   }
@@ -130,7 +129,6 @@ function Journey() {
     resetProfile();
     setStepIdx(0);
     setProfileError("");
-    setExampleStatus(null);
   }
 
   const step = journeySteps[stepIdx];
@@ -175,11 +173,6 @@ function Journey() {
           />
           <main className="flex-1 overflow-y-auto">
             <div className={`mx-auto px-6 md:px-10 ${["discovery", "requirements"].includes(step.slug) ? "max-w-7xl py-6" : step.slug === "profile" ? "max-w-7xl py-10" : "max-w-5xl py-10"}`}>
-              {exampleStatus && (
-                <div className="mb-4 rounded-xl border border-gold/30 bg-gold/10 px-4 py-3 text-sm text-foreground/90">
-                  {exampleStatus}
-                </div>
-              )}
               <div>
               <StepBody
                 slug={step.slug}
@@ -246,8 +239,8 @@ function Sidebar({
         }`}
       >
         <Link to="/" className="flex items-center gap-2 px-6 h-16 border-b border-border">
-          <div className="size-8 rounded-lg bg-primary text-primary-foreground grid place-items-center font-display font-bold">
-            S<span className="text-gold">e</span>
+          <div className="size-8 overflow-hidden rounded-lg">
+            <img src={scholarELogoUrl} alt="" className="size-full object-contain" />
           </div>
           <div className="font-display font-semibold tracking-tight">Scholar-E</div>
           <span className="ml-auto text-[10px] uppercase tracking-widest text-muted-foreground">journey</span>
@@ -324,8 +317,8 @@ function TopBar({
     <div className="sticky top-0 z-20 border-b border-border bg-background/85 backdrop-blur">
       <div className="px-6 md:px-10 h-16 flex items-center gap-4">
         <Link to="/" className="flex items-center gap-2 rounded-lg px-2.5 py-1.5">
-          <div className="size-7 rounded-md bg-primary text-primary-foreground grid place-items-center font-display font-bold text-sm">
-            S<span className="text-gold">e</span>
+          <div className="size-7 overflow-hidden rounded-md">
+            <img src={scholarELogoUrl} alt="" className="size-full object-contain" />
           </div>
           <span className="font-display font-semibold">Scholar-E</span>
         </Link>
@@ -404,8 +397,8 @@ function FloatingSidebarToggle({
         isOpen ? "opacity-0 pointer-events-none" : "opacity-100"
       }`}
     >
-      <span className="size-6 rounded-md bg-primary text-primary-foreground grid place-items-center font-display font-bold text-xs">
-        S<span className="text-gold">e</span>
+      <span className="size-6 overflow-hidden rounded-md">
+        <img src={scholarELogoUrl} alt="" className="size-full object-contain" />
       </span>
       <Menu className="size-5 text-muted-foreground" strokeWidth={2.5} />
     </button>
@@ -2140,16 +2133,25 @@ function WikiSourceCard({
     source.competitiveness && { label: "Signal", value: source.competitiveness },
   ].filter(Boolean) as { label: string; value: string }[];
   const headerLabel = mode === "direct" ? "Direct source" : source.cost ? `${source.cost} platform` : "Platform";
+  const isDirect = mode === "direct";
+  const headerClass = "bg-gradient-to-br from-[#26385F] via-[#33406F] to-[#5550A4] text-primary-foreground";
+  const accentClass = "bg-[#6d5df6]/65";
+  const headerTextClass = "text-primary-foreground/70";
+  const headerSubtextClass = "text-primary-foreground/90";
+  const headerLabelSize = "text-[11px]";
+  const headerSubtextSize = "text-[15px]";
+  const headerSubtextWeight = "font-semibold";
+  const titleSize = isDirect ? "text-[1.35rem]" : "text-xl";
 
   return (
     <div className="group flex h-full min-h-[300px] flex-col overflow-hidden rounded-xl border border-border/70 bg-white shadow-sm shadow-black/5 transition-shadow hover:shadow-lg hover:shadow-black/10">
-      <div className="bg-primary text-primary-foreground">
-        <div className="h-3 bg-gold" />
+      <div className={headerClass}>
+        <div className={`h-3 ${accentClass}`} />
         <div className="min-h-[88px] p-4">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <div className="text-xs font-semibold uppercase tracking-widest text-primary-foreground/75">{headerLabel}</div>
-              <div className="mt-3 text-xs text-primary-foreground/80">
+              <div className={`${headerLabelSize} font-semibold uppercase tracking-widest ${headerTextClass}`}>{headerLabel}</div>
+              <div className={`mt-4 ${headerSubtextSize} ${headerSubtextWeight} ${headerSubtextClass}`}>
                 {source.category || (mode === "direct" ? "Scholarship source" : "Search platform")}
               </div>
             </div>
@@ -2159,7 +2161,7 @@ function WikiSourceCard({
 
       <div className="flex flex-1 flex-col p-4">
         <div>
-          <div className="font-display text-xl font-bold leading-tight text-foreground">{source.name}</div>
+          <div className={`font-display ${titleSize} font-bold leading-tight text-foreground`}>{source.name}</div>
           {source.cost && <div className="mt-2 text-xs text-muted-foreground">{source.cost}</div>}
         </div>
 
@@ -3192,6 +3194,25 @@ function FitRubricDialog({
 /* ---------------- Step 5: Essay Workspace ---------------- */
 
 type WorkspaceTab = "outline" | "coach" | "evaluation" | "highlights";
+type WritingSupportLevel = "grammar_only" | "sentence_polish" | "rewrite_help";
+
+const WRITING_SUPPORT_OPTIONS: Array<{ id: WritingSupportLevel; label: string; description: string }> = [
+  {
+    id: "grammar_only",
+    label: "Grammar only",
+    description: "Fix spelling, punctuation, and grammar without changing meaning.",
+  },
+  {
+    id: "sentence_polish",
+    label: "Sentence polish",
+    description: "Improve clarity and flow while preserving the student's meaning and voice.",
+  },
+  {
+    id: "rewrite_help",
+    label: "Rewrite help",
+    description: "Suggest rewritten versions, but require user approval.",
+  },
+];
 
 /** Pull the largest 2–5 digit number out of a word-limit string (e.g. "400-500 words" → 500). */
 function parseWordTarget(limit?: string): number | null {
@@ -3230,6 +3251,20 @@ function levelWord(score: number): string {
   if (score >= 80) return "Strong — competitive draft";
   if (score >= 60) return "Developing — keep refining";
   return "Needs work — focus on the priorities";
+}
+
+function relativeTimeLabel(timestamp: number | null, now: number): string {
+  if (!timestamp) return "Not run yet";
+  const mins = Math.floor((now - timestamp) / 60000);
+  if (mins < 1) return "just now";
+  if (mins === 1) return "1 minute ago";
+  if (mins < 60) return `${mins} minutes ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours === 1) return "1 hour ago";
+  if (hours < 24) return `${hours} hours ago`;
+  const days = Math.floor(hours / 24);
+  if (days === 1) return "1 day ago";
+  return `${days} days ago`;
 }
 
 /** Grammarly-style circular score badge with a colored ring. */
@@ -3297,6 +3332,8 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   const [coachSummary, setCoachSummary] = useState<string | null>(null);
   const [coachWarnings, setCoachWarnings] = useState<string[]>([]);
   const [coachResult, setCoachResult] = useState<EssayCoachResult | null>(null);
+  const [coachUpdatedAt, setCoachUpdatedAt] = useState<number | null>(null);
+  const [coachDraftAtRun, setCoachDraftAtRun] = useState<string>("");
   // Outline coverage is layered: `autoCovered` comes from the AI coverage agent;
   // `manualChecked`/`manualUnchecked` are the student's overrides, which persist
   // across auto-runs. Displayed = (auto ∪ manualChecked) − manualUnchecked.
@@ -3419,6 +3456,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   async function runCoach(mode: EssayCoachMode = "full") {
     if (coachLoading) return;
     const silent = mode === "auto_check";
+    const draftForRun = draft;
     if (silent && draft === lastAutoCheckRef.current) return; // dedupe unchanged drafts
     if (wordCount < 20) {
       if (!silent) {
@@ -3451,6 +3489,8 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
         setCoachResult(result);
         setCoachSummary(result.coach_summary ?? null);
         setCoachWarnings(result.warnings ?? []);
+        setCoachUpdatedAt(Date.now());
+        setCoachDraftAtRun(draftForRun);
       }
       // A full coach run is a checkpoint: snapshot the draft + its 8-dim scores
       // so Progress can chart improvement across drafts (deduped on draft text).
@@ -3749,6 +3789,9 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
             coachSummary={coachSummary}
             coachWarnings={coachWarnings}
             coachResult={coachResult}
+            coachUpdatedAt={coachUpdatedAt}
+            coachDraftChanged={!!coachUpdatedAt && draft !== coachDraftAtRun}
+            now={nowTick}
             covered={coveredPoints}
             onToggleCovered={toggleCovered}
           />
@@ -3774,6 +3817,9 @@ function EssayWorkspacePanel({
   coachSummary,
   coachWarnings,
   coachResult,
+  coachUpdatedAt,
+  coachDraftChanged,
+  now,
   covered,
   onToggleCovered,
 }: {
@@ -3792,6 +3838,9 @@ function EssayWorkspacePanel({
   coachSummary: string | null;
   coachWarnings: string[];
   coachResult: EssayCoachResult | null;
+  coachUpdatedAt: number | null;
+  coachDraftChanged: boolean;
+  now: number;
   covered: Set<string>;
   onToggleCovered: (id: string) => void;
 }) {
@@ -3901,7 +3950,16 @@ function EssayWorkspacePanel({
           />
         )}
         {activeTab === "coach" && (
-          <WorkspaceCoachTab result={coachResult} loading={coachLoading} onRunCoach={onRunCoach} coachSummary={coachSummary} coachWarnings={coachWarnings} />
+          <WorkspaceCoachTab
+            result={coachResult}
+            loading={coachLoading}
+            onRunCoach={onRunCoach}
+            coachSummary={coachSummary}
+            coachWarnings={coachWarnings}
+            updatedAt={coachUpdatedAt}
+            draftChanged={coachDraftChanged}
+            now={now}
+          />
         )}
         {activeTab === "evaluation" && <WorkspaceEvaluationTab isEvaluating={isEvaluating} />}
         {activeTab === "highlights" && (
@@ -4067,7 +4125,7 @@ function PersonalizedOutlinePanel({
   onToggleCovered: (id: string) => void;
 }) {
   const [copyStatus, setCopyStatus] = useState("");
-  const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set(["core", "strategy", "structure", "keypoints"]));
+  const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set(["core"]));
   const toggleGroup = (id: string) =>
     setOpenGroups((prev) => {
       const next = new Set(prev);
@@ -4076,6 +4134,12 @@ function PersonalizedOutlinePanel({
       return next;
     });
   const data = outline?.outline;
+
+  useEffect(() => {
+    if (!loading && data) {
+      setOpenGroups(new Set(["core"]));
+    }
+  }, [loading, Boolean(data), outline?.generatedForKey]);
 
   async function copyOutline() {
     const text = outlineToText(outline);
@@ -4182,14 +4246,6 @@ function PersonalizedOutlinePanel({
                 ))}
               </OutlineGroup>
 
-              {!!strategyPoints.length && (
-                <OutlineGroup id="strategy" title="Strategy Notes" icon={Lightbulb} total={strategyPoints.length} coveredCount={cc(strategyPoints)} open={openGroups.has("strategy")} onToggle={toggleGroup}>
-                  {strategyPoints.map((p) => (
-                    <OutlineCheckRow key={p.id} id={p.id} label={p.label} covered={covered} onToggle={onToggleCovered} />
-                  ))}
-                </OutlineGroup>
-              )}
-
               {!!structurePoints.length && (
                 <OutlineGroup id="structure" title="Structure" icon={ClipboardList} total={structurePoints.length} coveredCount={cc(structurePoints)} open={openGroups.has("structure")} onToggle={toggleGroup}>
                   {sections.map((s, i) => (
@@ -4225,9 +4281,17 @@ function PersonalizedOutlinePanel({
                 </OutlineGroup>
               )}
 
+              {!!strategyPoints.length && (
+                <OutlineGroup id="strategy" title="Strategy Notes" icon={Lightbulb} total={strategyPoints.length} coveredCount={cc(strategyPoints)} open={openGroups.has("strategy")} onToggle={toggleGroup}>
+                  {strategyPoints.map((p) => (
+                    <OutlineCheckRow key={p.id} id={p.id} label={p.label} covered={covered} onToggle={onToggleCovered} />
+                  ))}
+                </OutlineGroup>
+              )}
+
               {(data.recommended_opening || data.recommended_conclusion) && (
                 <div className="rounded-xl border border-border bg-background p-3">
-                  <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Opening &amp; Closing</div>
+                  <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Opening &amp; Closing Tips</div>
                   {data.recommended_opening && <p className="mt-2 text-[13px] leading-relaxed"><span className="font-medium">Opening:</span> {data.recommended_opening}</p>}
                   {data.recommended_conclusion && <p className="mt-2 text-[13px] leading-relaxed"><span className="font-medium">Conclusion:</span> {data.recommended_conclusion}</p>}
                 </div>
@@ -4345,8 +4409,11 @@ function CoachSkeleton() {
 type CoachTone = "success" | "warning" | "danger" | "info" | "muted";
 
 function CoachList({ label, items, tone, icon: Icon }: { label: string; items?: string[]; tone: CoachTone; icon?: typeof Check }) {
+  const [showAll, setShowAll] = useState(false);
   const clean = (items ?? []).filter(Boolean);
   if (!clean.length) return null;
+  const visible = showAll ? clean : clean.slice(0, 2);
+  const hiddenCount = Math.max(0, clean.length - 2);
   const toneText: Record<CoachTone, string> = {
     success: "text-success",
     warning: "text-warning",
@@ -4368,13 +4435,64 @@ function CoachList({ label, items, tone, icon: Icon }: { label: string; items?: 
         {label}
       </div>
       <ul className="mt-1.5 space-y-1 text-[13px] leading-relaxed text-foreground/85">
-        {clean.map((item) => (
-          <li key={item} className="flex gap-2">
+        {visible.map((item, index) => (
+          <li key={`${item}-${index}`} className="flex gap-2">
             <span className={`mt-1.5 size-1.5 shrink-0 rounded-full ${toneDot[tone]}`} />
             <span>{item}</span>
           </li>
         ))}
       </ul>
+      {hiddenCount > 0 && (
+        <button
+          type="button"
+          onClick={() => setShowAll((open) => !open)}
+          className="mt-1 inline-flex items-center rounded-md px-2 py-1 text-[12px] font-semibold text-info transition-colors hover:bg-info/10 hover:text-info"
+          aria-expanded={showAll}
+        >
+          {showAll ? "Show less ▲" : `Show ${hiddenCount} more ▼`}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function CoachAccordion({
+  id,
+  title,
+  score,
+  open,
+  onToggle,
+  icon: Icon,
+  children,
+}: {
+  id: string;
+  title: string;
+  score?: number;
+  open: boolean;
+  onToggle: (id: string) => void;
+  icon?: typeof Check;
+  children: React.ReactNode;
+}) {
+  const hasScore = typeof score === "number";
+  return (
+    <div className="overflow-hidden rounded-xl border border-border bg-background">
+      <button
+        type="button"
+        onClick={() => onToggle(id)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-2 bg-accent/40 px-3 py-2.5 text-left transition-colors duration-150 hover:bg-accent/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/30"
+      >
+        {Icon && <Icon className="size-4 text-info" />}
+        <span className="min-w-0 flex-1 text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">{title}</span>
+        <span
+          className="shrink-0 text-[12px] font-semibold tabular-nums text-muted-foreground"
+          style={hasScore ? { color: scoreColor(score) } : undefined}
+        >
+          {hasScore ? `${score}/100` : "Not scored"}
+        </span>
+        <ChevronDown className={`size-4 shrink-0 text-muted-foreground transition-transform duration-200 ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && <div className="space-y-2.5 p-3">{children}</div>}
     </div>
   );
 }
@@ -4431,13 +4549,22 @@ function WorkspaceCoachTab({
   onRunCoach,
   coachSummary,
   coachWarnings,
+  updatedAt,
+  draftChanged,
+  now,
 }: {
   result: EssayCoachResult | null;
   loading: boolean;
   onRunCoach: (mode?: EssayCoachMode) => void;
   coachSummary: string | null;
   coachWarnings: string[];
+  updatedAt: number | null;
+  draftChanged: boolean;
+  now: number;
 }) {
+  const [showAllPriorities, setShowAllPriorities] = useState(false);
+  const [showAllParagraphFeedback, setShowAllParagraphFeedback] = useState(false);
+  const [openCoachSections, setOpenCoachSections] = useState<Set<string>>(() => new Set());
   const hasContent = <T extends object>(obj: T | undefined | null): T | undefined =>
     obj && Object.values(obj).some((v) => (Array.isArray(v) ? v.length > 0 : typeof v === "number" ? v > 0 : !!v))
       ? obj
@@ -4450,27 +4577,51 @@ function WorkspaceCoachTab({
   const reviewer = hasContent(result?.reviewer_simulation);
   const finalCheck = hasContent(result?.final_check);
   const priorities = result?.revision_priorities ?? [];
+  const visiblePriorities = showAllPriorities ? priorities : priorities.slice(0, 2);
+  const hiddenPriorityCount = Math.max(0, priorities.length - 2);
   const quickFixes = result?.quick_fixes ?? [];
   const deeperTasks = result?.deeper_revision_tasks ?? [];
   const scoreEntries = Object.entries(result?.overall_scores ?? {});
+  const paragraphFeedback = structure?.paragraph_feedback ?? [];
+  const visibleParagraphFeedback = showAllParagraphFeedback ? paragraphFeedback : paragraphFeedback.slice(0, 2);
+  const hiddenParagraphFeedbackCount = Math.max(0, paragraphFeedback.length - 2);
   const hasData =
     !loading &&
     !!(result && (align || ground || structure || specificity || tone || reviewer || finalCheck || priorities.length || scoreEntries.length));
 
+  function toggleCoachSection(id: string) {
+    setOpenCoachSections((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
 
   return (
     <div className="space-y-3">
-      <PanelLabel>Coach</PanelLabel>
-
-      <button
-        type="button"
-        onClick={() => onRunCoach()}
-        disabled={loading}
-        className="flex w-full items-center justify-center gap-2 rounded-lg bg-info px-3 py-2 text-[13px] font-semibold text-white transition-opacity duration-150 hover:opacity-90 disabled:opacity-60"
-      >
-        <Wand2 className={`size-4 ${loading ? "animate-pulse" : ""}`} />
-        {loading ? "Coaching your draft…" : hasData ? "Re-run coach" : "Run writing coach"}
-      </button>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <PanelLabel>Coach</PanelLabel>
+          <div className="mt-1 text-[12px] text-muted-foreground">
+            Last updated: {relativeTimeLabel(updatedAt, now)}
+          </div>
+          {draftChanged && (
+            <div className="mt-1 text-[12px] font-medium text-warning">
+              Essay changed since last coach run.
+            </div>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={() => onRunCoach()}
+          disabled={loading}
+          className="inline-flex min-w-[158px] shrink-0 items-center justify-center gap-2 rounded-lg border border-border bg-background px-3 py-1.5 text-[12px] font-semibold text-foreground transition-colors duration-150 hover:border-info/40 hover:bg-info/10 hover:text-info focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/30 disabled:opacity-50"
+        >
+          <RefreshCw className={`size-3.5 ${loading ? "animate-spin" : ""}`} />
+          {loading ? "Running..." : "Re-run Coach"}
+        </button>
+      </div>
 
       <button
         type="button"
@@ -4522,9 +4673,18 @@ function WorkspaceCoachTab({
       {!!priorities.length && (
         <div className="space-y-2">
           <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Top revision priorities</div>
-          {priorities.map((p, i) => (
+          {visiblePriorities.map((p, i) => (
             <RevisionPriorityCard key={i} item={p} index={i} />
           ))}
+          {hiddenPriorityCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowAllPriorities((open) => !open)}
+              className="inline-flex items-center rounded-md px-2 py-1 text-[12px] font-semibold text-info transition-colors hover:bg-info/10 hover:text-info"
+            >
+              {showAllPriorities ? "Show less ▲" : `Show ${hiddenPriorityCount} more ▼`}
+            </button>
+          )}
         </div>
       )}
 
@@ -4550,16 +4710,7 @@ function WorkspaceCoachTab({
       )}
 
       {reviewer && (reviewer.reviewer_reaction || reviewer.likely_strengths_seen_by_reviewer?.length || reviewer.likely_concerns_seen_by_reviewer?.length) && (
-        <div className="space-y-2.5 rounded-xl border border-border bg-background p-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-1.5 text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-              <MessageSquare className="size-3.5" />
-              Reviewer Simulation
-            </div>
-            {typeof reviewer.competitiveness_score === "number" && (
-              <span className="text-[12px] font-semibold tabular-nums" style={{ color: scoreColor(reviewer.competitiveness_score) }}>{reviewer.competitiveness_score}/100</span>
-            )}
-          </div>
+        <CoachAccordion id="reviewer" title="Reviewer Simulation" icon={MessageSquare} score={reviewer.competitiveness_score} open={openCoachSections.has("reviewer")} onToggle={toggleCoachSection}>
           {reviewer.reviewer_reaction && (
             <p className="border-l-2 border-info/40 pl-2.5 text-[13px] italic leading-relaxed text-foreground/85">{reviewer.reviewer_reaction}</p>
           )}
@@ -4567,45 +4718,33 @@ function WorkspaceCoachTab({
           <CoachList label="Concerns a reviewer may have" items={reviewer.likely_concerns_seen_by_reviewer} tone="warning" />
           <CoachList label="Questions a reviewer may ask" items={reviewer.questions_reviewer_may_have} tone="muted" />
           <CoachList label="To raise competitiveness" items={reviewer.competitiveness_notes} tone="info" />
-        </div>
+        </CoachAccordion>
       )}
 
       {align && (
-        <div className="space-y-2.5 rounded-xl border border-border bg-background p-3">
-          <div className="flex items-center justify-between">
-            <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Prompt Alignment</div>
-            <span className="text-[12px] font-semibold tabular-nums" style={{ color: scoreColor(align.alignment_score ?? 0) }}>{align.alignment_score ?? 0}/100</span>
-          </div>
+        <CoachAccordion id="alignment" title="Prompt Alignment" score={align.alignment_score} open={openCoachSections.has("alignment")} onToggle={toggleCoachSection}>
           <CoachList label="Covered" items={align.covered_requirements} tone="success" icon={Check} />
           <CoachList label="Weakly covered" items={align.weakly_covered_requirements} tone="warning" />
           <CoachList label="Missing" items={align.missing_requirements} tone="danger" />
           <CoachList label="Notes" items={align.comments} tone="muted" />
           <CoachList label="Revision tasks" items={align.revision_tasks} tone="info" />
-        </div>
+        </CoachAccordion>
       )}
 
       {ground && (
-        <div className="space-y-2.5 rounded-xl border border-border bg-background p-3">
-          <div className="flex items-center justify-between">
-            <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Profile Grounding</div>
-            <span className="text-[12px] font-semibold tabular-nums" style={{ color: scoreColor(ground.grounding_score ?? 0) }}>{ground.grounding_score ?? 0}/100</span>
-          </div>
+        <CoachAccordion id="grounding" title="Profile Grounding" score={ground.grounding_score} open={openCoachSections.has("grounding")} onToggle={toggleCoachSection}>
           <CoachList label="Supported by your profile" items={ground.supported_claims} tone="success" icon={Check} />
           <CoachList label="Unsupported — verify or soften" items={ground.unsupported_or_risky_claims} tone="danger" />
           <CoachList label="Strong evidence you haven't used" items={ground.unused_relevant_profile_evidence} tone="info" />
           <CoachList label="Recommendations" items={ground.recommendations} tone="muted" />
-        </div>
+        </CoachAccordion>
       )}
 
       {structure && (
-        <div className="space-y-2.5 rounded-xl border border-border bg-background p-3">
-          <div className="flex items-center justify-between">
-            <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Structure &amp; Flow</div>
-            <span className="text-[12px] font-semibold tabular-nums" style={{ color: scoreColor(structure.structure_score ?? 0) }}>{structure.structure_score ?? 0}/100</span>
-          </div>
-          {!!structure.paragraph_feedback?.length && (
+        <CoachAccordion id="structure-flow" title="Structure & Flow" score={structure.structure_score} open={openCoachSections.has("structure-flow")} onToggle={toggleCoachSection}>
+          {!!paragraphFeedback.length && (
             <div className="space-y-1.5">
-              {structure.paragraph_feedback.map((pf, i) => (
+              {visibleParagraphFeedback.map((pf, i) => (
                 <div key={i} className="rounded-md border border-border/70 p-2">
                   <div className="text-[12px] font-semibold">
                     Paragraph {pf.paragraph_number || i + 1}
@@ -4616,38 +4755,40 @@ function WorkspaceCoachTab({
                   {pf.suggestion && <div className="mt-0.5 text-[12px] leading-relaxed text-muted-foreground">{pf.suggestion}</div>}
                 </div>
               ))}
+              {hiddenParagraphFeedbackCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowAllParagraphFeedback((open) => !open)}
+                  className="inline-flex items-center rounded-md px-2 py-1 text-[12px] font-semibold text-info transition-colors hover:bg-info/10 hover:text-info"
+                  aria-expanded={showAllParagraphFeedback}
+                >
+                  {showAllParagraphFeedback ? "Show less ▲" : `Show ${hiddenParagraphFeedbackCount} more ▼`}
+                </button>
+              )}
             </div>
           )}
           <CoachList label="Flow issues" items={structure.flow_issues} tone="warning" />
           <CoachList label="Suggested reordering" items={structure.recommended_reordering} tone="info" />
           <CoachList label="Structure tasks" items={structure.revision_tasks} tone="muted" />
-        </div>
+        </CoachAccordion>
       )}
 
       {specificity && (
-        <div className="space-y-2.5 rounded-xl border border-border bg-background p-3">
-          <div className="flex items-center justify-between">
-            <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Specificity &amp; Impact</div>
-            <span className="text-[12px] font-semibold tabular-nums" style={{ color: scoreColor(specificity.specificity_score ?? 0) }}>{specificity.specificity_score ?? 0}/100</span>
-          </div>
+        <CoachAccordion id="specificity" title="Specificity & Impact" score={specificity.specificity_score} open={openCoachSections.has("specificity")} onToggle={toggleCoachSection}>
           <CoachList label="Vague statements" items={specificity.vague_statements} tone="warning" />
           <CoachList label="Add concrete detail here" items={specificity.places_to_add_detail} tone="info" />
           <CoachList label="Impact opportunities" items={specificity.impact_opportunities} tone="success" />
           <CoachList label="Questions to answer" items={specificity.recommended_questions} tone="muted" />
-        </div>
+        </CoachAccordion>
       )}
 
       {tone && (
-        <div className="space-y-2.5 rounded-xl border border-border bg-background p-3">
-          <div className="flex items-center justify-between">
-            <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Tone &amp; Authenticity</div>
-            <span className="text-[12px] font-semibold tabular-nums" style={{ color: scoreColor(tone.authenticity_score ?? 0) }}>{tone.authenticity_score ?? 0}/100</span>
-          </div>
+        <CoachAccordion id="tone" title="Tone & Authenticity" score={tone.authenticity_score} open={openCoachSections.has("tone")} onToggle={toggleCoachSection}>
           <CoachList label="Voice worth keeping" items={tone.voice_preservation_notes} tone="success" icon={Check} />
           <CoachList label="AI-like phrases" items={tone.ai_like_phrases} tone="danger" />
           <CoachList label="Generic phrases" items={tone.generic_phrases} tone="warning" />
           <CoachList label="Tone suggestions" items={tone.tone_improvement_suggestions} tone="info" />
-        </div>
+        </CoachAccordion>
       )}
     </div>
   );
@@ -4875,6 +5016,7 @@ function WorkspaceHighlightsTab({
   coachSummary: string | null;
   coachWarnings: string[];
 }) {
+  const [writingSupportLevel, setWritingSupportLevel] = useState<WritingSupportLevel>("sentence_polish");
   const { user } = useUser();
   const analysis = user?.lastAnalysis;
   const priorities = analysis?.revision_priorities ?? [];
@@ -4882,26 +5024,67 @@ function WorkspaceHighlightsTab({
   const strengths = analysis?.essay_alignment_matrix?.strengths ?? [];
   const counts = countByCategory(suggestions);
   const hasBackend = priorities.length || reviewers.length || strengths.length;
-  const coachCount = suggestions.filter((s) => s.source === "coach").length;
 
   if (isEvaluating) return <HighlightsSkeleton />;
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <PanelLabel>Sentence Fixes</PanelLabel>
-        <span className="text-[12px] font-semibold text-muted-foreground">{suggestions.length} open</span>
+      <div className="rounded-xl border border-border bg-background p-3">
+        <div className="text-[12px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Writing Support Level</div>
+        <div className="mt-1 text-[12px] leading-relaxed text-muted-foreground">
+          Choose how much help you want. You stay in control of every change.
+        </div>
+        <div className="mt-3 inline-flex w-full rounded-xl border border-border bg-card p-1 shadow-sm" aria-label="Writing support level">
+          {WRITING_SUPPORT_OPTIONS.map((option) => {
+            const selected = writingSupportLevel === option.id;
+            return (
+              <button
+                key={option.id}
+                type="button"
+                onClick={() => setWritingSupportLevel(option.id)}
+                aria-pressed={selected}
+                title={option.description}
+                className={`flex-1 rounded-lg px-2 py-1.5 text-[11px] font-semibold transition-colors duration-150 ${
+                  selected
+                    ? "bg-gradient-to-br from-[#26385F] to-[#5550A4] text-white shadow-sm"
+                    : "text-muted-foreground hover:bg-info/10 hover:text-info"
+                }`}
+              >
+                {option.label}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
-      <button
-        type="button"
-        onClick={() => onRunCoach()}
-        disabled={coachLoading}
-        className="flex w-full items-center justify-center gap-2 rounded-lg bg-info px-3 py-2 text-[13px] font-semibold text-white transition-opacity duration-150 hover:opacity-90 disabled:opacity-60"
-      >
-        <Wand2 className={`size-4 ${coachLoading ? "animate-pulse" : ""}`} />
-        {coachLoading ? "Coaching your draft…" : coachCount ? "Re-run writing coach" : "Run writing coach"}
-      </button>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <PanelLabel>Sentence Fixes</PanelLabel>
+          <div className="mt-1 text-[12px] font-semibold text-muted-foreground">{suggestions.length} open</div>
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            // TODO: When the fixes-generation API accepts a support level, pass
+            // `writingSupportLevel` so Grammar only / Sentence polish / Rewrite help
+            // can tune suggestion depth without auto-applying changes.
+            void writingSupportLevel;
+            onRunCoach("grammar_tone");
+          }}
+          disabled={coachLoading}
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 py-1.5 text-[12px] font-semibold text-foreground transition-colors duration-150 hover:border-info/40 hover:bg-info/10 hover:text-info focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/30 disabled:opacity-50"
+        >
+          <RefreshCw className={`size-3.5 ${coachLoading ? "animate-spin" : ""}`} />
+          {coachLoading ? (
+            "Updating..."
+          ) : (
+            <span className="leading-tight">
+              <span className="block">Update coaching</span>
+              <span className="block">to regenerate fixes</span>
+            </span>
+          )}
+        </button>
+      </div>
 
       {quickFixCount > 0 && (
         <button
