@@ -18,6 +18,17 @@ export type Suggestion = {
   title: string;
   explanation: string;
   replacement: string;
+  severity?: "low" | "medium" | "high";
+  source?: "auto" | "coach";
+};
+
+// Raw sentence suggestion returned by the backend Sentence Corrector.
+export type CoachSentenceSuggestion = {
+  original_text: string;
+  suggested_text: string;
+  suggestion_type: string;
+  reason: string;
+  severity: "low" | "medium" | "high" | string;
 };
 
 export const CATEGORY_ORDER: SuggestionCategory[] = ["correctness", "clarity", "engagement", "tone"];
@@ -247,4 +258,124 @@ export function countByCategory(suggestions: Suggestion[]): Record<SuggestionCat
   const counts: Record<SuggestionCategory, number> = { correctness: 0, clarity: 0, engagement: 0, tone: 0 };
   for (const s of suggestions) counts[s.category] += 1;
   return counts;
+}
+
+// Map the backend's richer suggestion_type onto the four underline categories.
+const COACH_TYPE_MAP: Record<string, { category: SuggestionCategory; title: string }> = {
+  grammar: { category: "correctness", title: "Grammar" },
+  word_choice: { category: "correctness", title: "Word choice" },
+  clarity: { category: "clarity", title: "Clarity" },
+  flow: { category: "clarity", title: "Flow" },
+  transition: { category: "clarity", title: "Transition" },
+  concision: { category: "clarity", title: "Concision" },
+  specificity: { category: "engagement", title: "Specificity" },
+  tone: { category: "tone", title: "Tone" },
+  ai_like_language: { category: "tone", title: "AI-like language" },
+};
+
+function coachType(type: string): { category: SuggestionCategory; title: string } {
+  return COACH_TYPE_MAP[type] ?? { category: "clarity", title: "Suggestion" };
+}
+
+/**
+ * Anchor backend sentence suggestions to the current draft by locating each
+ * `original_text` verbatim (LLM char offsets are unreliable). Suggestions whose
+ * anchor no longer exists — because the student edited that text — are dropped,
+ * so accepted/edited sentences naturally stop showing.
+ */
+// Locate `original` in `text`, tolerating the drift LLMs introduce (casing and
+// collapsed/normalized whitespace). Returns the REAL [start, end] span in the
+// draft, skipping ranges already claimed by another suggestion.
+function findRealSpan(
+  text: string,
+  textLower: string,
+  original: string,
+  used: Array<[number, number]>,
+): [number, number] | null {
+  const overlaps = (a: number, b: number) => used.some(([x, y]) => a < y && b > x);
+
+  // 1. Exact match.
+  for (let from = 0; (from = text.indexOf(original, from)) !== -1; from += 1) {
+    const end = from + original.length;
+    if (!overlaps(from, end)) return [from, end];
+  }
+
+  // 2. Case-insensitive match (same length, so real indices line up).
+  const lower = original.toLowerCase();
+  for (let from = 0; (from = textLower.indexOf(lower, from)) !== -1; from += 1) {
+    const end = from + original.length;
+    if (!overlaps(from, end)) return [from, end];
+  }
+
+  // 3. Whitespace-tolerant, case-insensitive regex (runs of whitespace flex).
+  const pattern = escapeRegExp(original).replace(/\s+/g, "\\s+");
+  try {
+    const re = new RegExp(pattern, "gi");
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      if (m[0].length === 0) {
+        re.lastIndex += 1;
+        continue;
+      }
+      const start = m.index;
+      const end = start + m[0].length;
+      if (!overlaps(start, end)) return [start, end];
+    }
+  } catch {
+    /* invalid regex — give up on this suggestion */
+  }
+  return null;
+}
+
+export function anchorCoachSuggestions(raw: CoachSentenceSuggestion[], text: string): Suggestion[] {
+  const used: Array<[number, number]> = [];
+  const results: Suggestion[] = [];
+  const textLower = text.toLowerCase();
+  for (const item of raw) {
+    const original = (item.original_text ?? "").trim();
+    const replacement = (item.suggested_text ?? "").trim();
+    if (!original || !replacement) continue;
+
+    const span = findRealSpan(text, textLower, original, used);
+    if (!span) continue;
+    const [start, end] = span;
+    // Use the ACTUAL draft substring so the card shows — and Accept replaces —
+    // exactly what is in the essay, even when matched case-/whitespace-insensitively.
+    const realOriginal = text.slice(start, end);
+    if (realOriginal === replacement) continue;
+    used.push([start, end]);
+
+    const meta = coachType(item.suggestion_type);
+    const severity = (["low", "medium", "high"] as const).includes(item.severity as "low")
+      ? (item.severity as "low" | "medium" | "high")
+      : "medium";
+    results.push({
+      id: `coach:${start}:${realOriginal.slice(0, 40)}`,
+      category: meta.category,
+      start,
+      end,
+      original: realOriginal,
+      title: meta.title,
+      explanation: item.reason ?? "",
+      replacement,
+      severity,
+      source: "coach",
+    });
+  }
+  return results;
+}
+
+/**
+ * Merge coach suggestions (authoritative) with the instant heuristic ones,
+ * dropping any heuristic suggestion that overlaps a coach suggestion.
+ */
+export function mergeSuggestions(coach: Suggestion[], auto: Suggestion[]): Suggestion[] {
+  const kept: Suggestion[] = [...coach].sort((a, b) => a.start - b.start);
+  const spans: Array<[number, number]> = kept.map((s) => [s.start, s.end]);
+  for (const s of auto) {
+    if (spans.some(([a, b]) => s.start < b && s.end > a)) continue;
+    kept.push(s);
+    spans.push([s.start, s.end]);
+  }
+  return kept.sort((a, b) => a.start - b.start);
 }

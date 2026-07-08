@@ -9,9 +9,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.routes import (
     AnalyzeRequest,
+    EssayCoachRequest,
     FitAnalyzeRequest,
     OpportunityExtractRequest,
     OutlineGenerateRequest,
+    RewriteRequest,
     WikiDiscoverRequest,
     analyze_application,
     analyze_scholarship_fit,
@@ -19,6 +21,8 @@ from api.routes import (
     discover_scholarship_wiki,
     extract_scholarship_opportunity,
     generate_personalized_outline,
+    rewrite_selection,
+    run_essay_coach,
 )
 
 app = FastAPI(title="Scholar-E", version="0.1.0")
@@ -91,6 +95,26 @@ def discover_wiki(request: WikiDiscoverRequest):
 def generate_outline(request: OutlineGenerateRequest):
     try:
         return generate_personalized_outline(request)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/apply/essay-coach")
+def essay_coach(request: EssayCoachRequest):
+    try:
+        return run_essay_coach(request)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/apply/rewrite-selection")
+def rewrite_selection_endpoint(request: RewriteRequest):
+    try:
+        return rewrite_selection(request)
     except HTTPException:
         raise
     except Exception as exc:

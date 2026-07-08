@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from fastapi import HTTPException, UploadFile
 
 from config import settings
+from essay_coaching_service import run_essay_workspace_coach, run_selection_rewrite
 from graph.builder import build_application_graph
 from graph.fit_builder import build_fit_analysis_graph
 from graph.opportunity_builder import build_opportunity_extraction_graph
@@ -148,6 +149,28 @@ class WikiDiscoverResponse(BaseModel):
     personalized_search_queries: list[str] = Field(default_factory=list)
     next_steps: list[str] = Field(default_factory=list)
     missing_profile_fields: list[str] = Field(default_factory=list)
+
+
+class EssayCoachRequest(BaseModel):
+    user_id: str = Field(default="", max_length=100)
+    student_profile: dict = Field(default_factory=dict)
+    clean_scholarship_record: dict = Field(default_factory=dict)
+    essay_prompt: str = Field(default="", max_length=12000)
+    essay_draft: str = Field(default="", max_length=20000)
+    personalized_outline: dict = Field(default_factory=dict)
+    user_notes: str = Field(default="", max_length=5000)
+    word_limit: str = Field(default="", max_length=120)
+    outline_points: list[dict] = Field(default_factory=list)
+    mode: str = Field(default="full", max_length=40)
+
+
+class RewriteRequest(BaseModel):
+    action: str = Field(default="rewrite", max_length=40)
+    selected_text: str = Field(..., min_length=1, max_length=6000)
+    surrounding_text: str = Field(default="", max_length=20000)
+    essay_prompt: str = Field(default="", max_length=12000)
+    clean_scholarship_record: dict = Field(default_factory=dict)
+    student_profile: dict = Field(default_factory=dict)
 
 
 class OutlineGenerateRequest(BaseModel):
@@ -590,17 +613,23 @@ def generate_personalized_outline(request: OutlineGenerateRequest) -> dict:
             [
                 (
                     "system",
-                    "You are an AI scholarship essay planning team. Create a personalized, read-only essay outline "
-                    "for a student applying to a specific scholarship. Use only the provided student profile, cleaned "
-                    "scholarship requirements, essay prompt, selection criteria, and word limit. Do not invent student "
-                    "experiences or scholarship requirements. Do not write the full essay. Do not make the outline generic. "
+                    "You are an AI scholarship essay planning team coaching a student. Create a personalized, "
+                    "read-only essay outline for a student applying to a specific scholarship. Use only the provided "
+                    "student profile, cleaned scholarship requirements, essay prompt, selection criteria, and word limit. "
+                    "Do not invent student experiences or scholarship requirements. Do not write the full essay. Do not "
+                    "make the outline generic. "
+                    "VOICE: Address the student directly in the second person ('you', 'your'). Never write in the first "
+                    "person from the student's point of view — do not use 'I', 'me', 'my', or 'we'. For example, write "
+                    "'Open with your experience tutoring…' or 'Use your research on…', never 'Open with my experience' or "
+                    "'my research'. This is coaching guidance TO the student, not the essay itself. "
                     "Return structured data only.",
                 ),
                 (
                     "human",
                     "Generate the final personalized outline through these internal steps: identify relevant profile evidence, "
                     "analyze essay requirements, choose an essay strategy, draft a structured outline, then review coverage. "
-                    "Keep confirmed requirements separate from suggestions. Use meaningful section names, not generic paragraph labels.\n\n"
+                    "Keep confirmed requirements separate from suggestions. Use meaningful section names, not generic paragraph labels. "
+                    "Write ALL guidance addressed to the student in the second person ('you', 'your') — never first person ('I', 'my', 'me', 'we').\n\n"
                     f"Scholarship name:\n{request.scholarship_name or scholarship.get('name', '')}\n\n"
                     f"Clean scholarship record:\n{json.dumps(scholarship, indent=2, default=str)}\n\n"
                     f"Essay prompt or writing requirement:\n{essay_prompt}\n\n"
@@ -738,6 +767,49 @@ def analyze_application(request: AnalyzeRequest) -> dict:
         "revision_priorities": result.get("revision_priorities", []),
         "draft_number": result.get("draft_number", request.draft_number),
     }
+
+
+def run_essay_coach(request: EssayCoachRequest) -> dict:
+    if not settings.openai_api_key:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Missing OPENAI_API_KEY. Add a .env file in the project root "
+                "with OPENAI_API_KEY=your_key, then restart the server."
+            ),
+        )
+
+    return run_essay_workspace_coach(
+        student_profile=request.student_profile,
+        clean_scholarship_record=request.clean_scholarship_record,
+        essay_prompt=request.essay_prompt,
+        essay_draft=request.essay_draft,
+        personalized_outline=request.personalized_outline,
+        user_notes=request.user_notes,
+        word_limit=request.word_limit,
+        outline_points=request.outline_points,
+        mode=request.mode or "full",
+    )
+
+
+def rewrite_selection(request: RewriteRequest) -> dict:
+    if not settings.openai_api_key:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Missing OPENAI_API_KEY. Add a .env file in the project root "
+                "with OPENAI_API_KEY=your_key, then restart the server."
+            ),
+        )
+
+    return run_selection_rewrite(
+        action=request.action,
+        selected_text=request.selected_text,
+        surrounding_text=request.surrounding_text,
+        essay_prompt=request.essay_prompt,
+        clean_scholarship_record=request.clean_scholarship_record,
+        student_profile=request.student_profile,
+    )
 
 
 async def autofill_profile_from_resume(file: UploadFile, user_id: str = "") -> dict:

@@ -11,6 +11,7 @@ import {
 import { createPortal } from "react-dom";
 import {
   Bold,
+  Copy,
   Expand,
   Heading2,
   Italic,
@@ -30,12 +31,23 @@ export type EssayEditorHandle = {
   reveal: (s: Suggestion) => void;
 };
 
+export type RewriteAction = "rewrite" | "shorten" | "expand" | "improve_tone";
+
+const REWRITE_LABEL: Record<RewriteAction, string> = {
+  rewrite: "Rewrite",
+  shorten: "Shorten",
+  expand: "Expand",
+  improve_tone: "Improve tone",
+};
+
 type Props = {
   value: string;
   onChange: (value: string) => void;
   suggestions: Suggestion[];
   onDismiss: (s: Suggestion) => void;
   onOpenHighlights: () => void;
+  onAutoCheck?: () => void;
+  onRequestRewrite?: (action: RewriteAction, text: string, surrounding: string) => Promise<{ rewritten_text: string; note: string }>;
   className?: string;
 };
 
@@ -100,17 +112,28 @@ function rangeRect(backdrop: HTMLElement | null, start: number, end: number): DO
 let flashSeq = 0;
 
 export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEditor(
-  { value, onChange, suggestions, onDismiss, onOpenHighlights, className = "" },
+  { value, onChange, suggestions, onDismiss, onOpenHighlights, onAutoCheck, onRequestRewrite, className = "" },
   ref,
 ) {
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const backdropRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
-  const [card, setCard] = useState<{ sugg: Suggestion; top: number; left: number } | null>(null);
-  const [selBar, setSelBar] = useState<{ top: number; left: number; start: number; end: number } | null>(null);
+  const [card, setCard] = useState<{ sugg: Suggestion; left: number; top: number } | null>(null);
+  const [selBar, setSelBar] = useState<{ top: number; left: number; start: number; end: number; below: boolean } | null>(null);
   const [flashes, setFlashes] = useState<Array<{ id: number; top: number; left: number; width: number; height: number; pulse: boolean }>>([]);
   const [gutter, setGutter] = useState<{ top: number } | null>(null);
+  const [rewrite, setRewrite] = useState<{
+    action: RewriteAction;
+    start: number;
+    end: number;
+    original: string;
+    status: "loading" | "ready" | "stale";
+    result: string;
+    note: string;
+    top: number;
+    left: number;
+  } | null>(null);
   const [mounted, setMounted] = useState(false);
   const pendingFlash = useRef<{ start: number; len: number; pulse: boolean } | null>(null);
 
@@ -180,7 +203,22 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
   function openCardFor(s: Suggestion) {
     const rect = rangeRect(backdropRef.current, s.start, s.end);
     if (!rect) return;
-    setCard({ sugg: s, top: rect.bottom + 6, left: rect.left });
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const left = Math.max(8, Math.min(rect.left, vw - 296));
+    const estimatedHeight = 260;
+    // Open below the underline when there's room; otherwise flip above; and if
+    // neither fits, clamp into the viewport. Combined with max-h + scroll, the
+    // card (and its Accept/Ignore buttons) always stay reachable on screen.
+    let top: number;
+    if (rect.bottom + estimatedHeight + 12 <= vh) {
+      top = rect.bottom + 6;
+    } else if (rect.top - estimatedHeight - 6 >= 8) {
+      top = rect.top - estimatedHeight - 6;
+    } else {
+      top = Math.max(8, vh - estimatedHeight - 8);
+    }
+    setCard({ sugg: s, left, top });
     setSelBar(null);
   }
 
@@ -203,7 +241,15 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
     }
     const rect = rangeRect(backdropRef.current, ta.selectionStart, ta.selectionEnd);
     if (!rect) return;
-    setSelBar({ top: rect.top - 8, left: rect.left + rect.width / 2, start: ta.selectionStart, end: ta.selectionEnd });
+    // Flip below the selection when it's too close to the viewport top.
+    const below = rect.top < 96;
+    setSelBar({
+      top: below ? rect.bottom + 8 : rect.top - 8,
+      left: rect.left + rect.width / 2,
+      start: ta.selectionStart,
+      end: ta.selectionEnd,
+      below,
+    });
     setCard(null);
   }
 
@@ -246,27 +292,63 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
     replaceRange(lineStart, e, prefixed);
   }
 
-  // Selection transforms for the AI mini-toolbar (safe, no fabricated content).
-  function transformSelection(kind: "rewrite" | "shorten" | "expand" | "tone") {
+  // Local, offline fallback transforms (used only if the AI rewrite call fails).
+  // These never fabricate content.
+  function localRewrite(action: RewriteAction, sel: string): string {
+    if (action === "shorten") {
+      return sel
+        .replace(/\b(very|really|extremely|basically|actually|literally|just|simply|in order to)\b\s*/gi, (m) => (m.trim().toLowerCase() === "in order to" ? "to " : ""))
+        .replace(/[^\S\n]{2,}/g, " ")
+        .trim();
+    }
+    if (action === "improve_tone") {
+      const out = sel.replace(/\bI (?:think|believe|feel)(?: that)?\b\s*/gi, "").replace(/[^\S\n]{2,}/g, " ").trimStart();
+      return out.charAt(0).toUpperCase() + out.slice(1);
+    }
+    if (action === "expand") {
+      return `${sel.trimEnd()} [add a specific example or detail]`;
+    }
+    const out = sel.replace(/[^\S\n]{2,}/g, " ").replace(/[^\S\n]+([,.;:!?])/g, "$1").trim();
+    return out.charAt(0).toUpperCase() + out.slice(1);
+  }
+
+  // Ask the AI rewrite agent for a version of the selection, shown as a preview
+  // the student accepts or rejects (never applied automatically).
+  async function requestRewrite(action: RewriteAction) {
     const ta = taRef.current;
     if (!ta) return;
-    const { selectionStart: s, selectionEnd: e } = ta;
-    const sel = value.slice(s, e);
-    if (!sel.trim()) return;
-    let out = sel;
-    if (kind === "shorten") {
-      out = sel.replace(/\b(very|really|extremely|basically|actually|literally|just|simply|in order to)\b\s*/gi, (m) => (m.trim().toLowerCase() === "in order to" ? "to " : "")).replace(/[^\S\n]{2,}/g, " ").trim();
-    } else if (kind === "tone") {
-      out = sel.replace(/\bI (?:think|believe|feel)(?: that)?\b\s*/gi, "").replace(/[^\S\n]{2,}/g, " ").trimStart();
-      out = out.charAt(0).toUpperCase() + out.slice(1);
-    } else if (kind === "rewrite") {
-      out = sel.replace(/[^\S\n]{2,}/g, " ").replace(/[^\S\n]+([,.;:!?])/g, "$1").trim();
-      out = out.charAt(0).toUpperCase() + out.slice(1);
-    } else if (kind === "expand") {
-      out = `${sel.trimEnd()} [add a specific example or detail]`;
-    }
-    replaceRange(s, e, out, true);
+    const start = ta.selectionStart;
+    const end = ta.selectionEnd;
+    const original = value.slice(start, end);
+    if (!original.trim()) return;
+    const rect = rangeRect(backdropRef.current, start, end);
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const left = rect ? Math.max(8, Math.min(rect.left, vw - 328)) : 24;
+    const top = rect ? (rect.bottom + 300 <= vh ? rect.bottom + 8 : Math.max(8, rect.top - 300)) : 80;
     setSelBar(null);
+    setCard(null);
+    setRewrite({ action, start, end, original, status: "loading", result: "", note: "", top, left });
+    try {
+      if (!onRequestRewrite) throw new Error("no handler");
+      const res = await onRequestRewrite(action, original, value);
+      const rewritten = (res.rewritten_text || "").trim();
+      setRewrite((prev) => (prev ? { ...prev, status: "ready", result: rewritten || original, note: res.note || "" } : null));
+    } catch {
+      setRewrite((prev) => (prev ? { ...prev, status: "ready", result: localRewrite(action, original), note: "Offline suggestion — the AI coach was unavailable." } : null));
+    }
+  }
+
+  function acceptRewrite() {
+    if (!rewrite || rewrite.status !== "ready") return;
+    const { start, end, original, result } = rewrite;
+    // Range guard: only apply if the underlying text is still exactly what we rewrote.
+    if (value.slice(start, end) !== original) {
+      setRewrite((prev) => (prev ? { ...prev, status: "stale" } : null));
+      return;
+    }
+    if (result && result !== original) replaceRange(start, end, result, true);
+    setRewrite(null);
   }
 
   function improveParagraph() {
@@ -279,15 +361,19 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
     const end = after === -1 ? value.length : after;
     ta.focus();
     ta.setSelectionRange(start, end);
-    requestAnimationFrame(refreshSelectionUi);
+    void requestRewrite("rewrite");
   }
 
   useEffect(() => {
     function onDocClick(e: MouseEvent) {
-      const target = e.target as Node;
+      const target = e.target as HTMLElement;
+      // Clicks inside a floating overlay (card / mini-toolbar / rewrite preview)
+      // must not dismiss it — those are portaled to <body>, outside the container.
+      if (target?.closest?.("[data-editor-overlay]")) return;
       if (containerRef.current && !containerRef.current.contains(target)) {
         setCard(null);
         setSelBar(null);
+        setRewrite(null);
       }
     }
     document.addEventListener("mousedown", onDocClick);
@@ -313,10 +399,10 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
   ];
 
   const aiTools: Array<{ label: string; icon: typeof Wand2; run: () => void }> = [
-    { label: "Rewrite", icon: Wand2, run: () => transformSelection("rewrite") },
-    { label: "Shorten", icon: Scissors, run: () => transformSelection("shorten") },
-    { label: "Expand", icon: Expand, run: () => transformSelection("expand") },
-    { label: "Improve tone", icon: Palette, run: () => transformSelection("tone") },
+    { label: "Rewrite", icon: Wand2, run: () => void requestRewrite("rewrite") },
+    { label: "Shorten", icon: Scissors, run: () => void requestRewrite("shorten") },
+    { label: "Expand", icon: Expand, run: () => void requestRewrite("expand") },
+    { label: "Improve tone", icon: Palette, run: () => void requestRewrite("improve_tone") },
   ];
 
   return (
@@ -361,6 +447,7 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
           value={value}
           spellCheck={false}
           onChange={(e) => onChange(e.target.value)}
+          onPaste={() => onAutoCheck?.()}
           onScroll={syncScroll}
           onClick={handleClick}
           onKeyUp={refreshSelectionUi}
@@ -426,7 +513,8 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
         selBar &&
         createPortal(
         <div
-          className="fixed z-40 flex -translate-x-1/2 -translate-y-full items-center gap-0.5 rounded-lg border border-border bg-popover p-1 shadow-xl animate-in fade-in zoom-in-95 duration-150"
+          data-editor-overlay
+          className={`fixed z-40 flex -translate-x-1/2 items-center gap-0.5 rounded-lg border border-border bg-popover p-1 shadow-xl animate-in fade-in zoom-in-95 duration-150 ${selBar.below ? "" : "-translate-y-full"}`}
           style={{ top: selBar.top, left: selBar.left }}
           onMouseDown={(e) => e.preventDefault()}
         >
@@ -461,8 +549,9 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
         card &&
         createPortal(
         <div
-          className="fixed z-40 w-72 rounded-xl border border-border bg-popover p-3 shadow-2xl animate-in fade-in slide-in-from-top-1 duration-150"
-          style={{ top: card.top, left: Math.max(8, Math.min(card.left, (typeof window !== "undefined" ? window.innerWidth : 1200) - 296)) }}
+          data-editor-overlay
+          className="fixed z-40 flex max-h-[70vh] w-72 flex-col overflow-y-auto rounded-xl border border-border bg-popover p-3 shadow-2xl animate-in fade-in duration-150"
+          style={{ top: card.top, left: card.left }}
         >
           <div className="flex items-start justify-between gap-2">
             <div className="flex items-center gap-1.5">
@@ -500,10 +589,74 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
               }}
               className="rounded-lg border border-border px-3 py-1.5 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             >
-              Dismiss
+              Ignore
+            </button>
+            <button
+              type="button"
+              onClick={() => void navigator.clipboard?.writeText(card.sugg.replacement)}
+              title="Copy suggested text"
+              aria-label="Copy suggested text"
+              className="grid size-8 place-items-center rounded-lg border border-border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            >
+              <Copy className="size-3.5" />
             </button>
           </div>
         </div>,
+          document.body,
+        )}
+
+      {/* AI rewrite preview (Accept / Reject) */}
+      {mounted &&
+        rewrite &&
+        createPortal(
+          <div
+            data-editor-overlay
+            className="fixed z-40 flex max-h-[70vh] w-80 flex-col overflow-y-auto rounded-xl border border-border bg-popover p-3 shadow-2xl animate-in fade-in duration-150"
+            style={{ top: rewrite.top, left: rewrite.left }}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="flex items-center gap-1.5 text-[13px] font-semibold">
+                <Wand2 className="size-3.5 text-info" />
+                {REWRITE_LABEL[rewrite.action]}
+              </span>
+              <button type="button" onClick={() => setRewrite(null)} className="text-muted-foreground hover:text-foreground" aria-label="Close">
+                <X className="size-3.5" />
+              </button>
+            </div>
+            {rewrite.status === "loading" ? (
+              <div className="mt-3 flex items-center gap-2 text-[13px] text-muted-foreground">
+                <span className="size-3 animate-spin rounded-full border-2 border-info/30 border-t-info" />
+                Rewriting…
+              </div>
+            ) : (
+              <>
+                <div className="mt-2 rounded-lg border border-border bg-background p-2 text-[13px]">
+                  <div className="text-muted-foreground line-through decoration-muted-foreground/40">{rewrite.original}</div>
+                  <div className="my-1 text-center text-muted-foreground">↓</div>
+                  <div className="font-medium text-foreground">{rewrite.result}</div>
+                </div>
+                {rewrite.note && <p className="mt-1.5 text-[12px] leading-relaxed text-muted-foreground">{rewrite.note}</p>}
+                {rewrite.status === "stale" && <p className="mt-1.5 text-[12px] text-warning">Your text changed — select it again to rewrite.</p>}
+                <div className="mt-2.5 flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={acceptRewrite}
+                    disabled={rewrite.status === "stale" || rewrite.result === rewrite.original}
+                    className="flex-1 rounded-lg bg-info px-3 py-1.5 text-[12px] font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+                  >
+                    Accept
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRewrite(null)}
+                    className="rounded-lg border border-border px-3 py-1.5 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  >
+                    Reject
+                  </button>
+                </div>
+              </>
+            )}
+          </div>,
           document.body,
         )}
 
