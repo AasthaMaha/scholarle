@@ -141,7 +141,7 @@ function Field({
 }
 
 function SignInForm() {
-  const { user, updateProfile } = useUser();
+  const { user, signIn } = useUser();
   const navigate = useNavigate();
   const [email, setEmail] = useState(user?.email ?? "");
   const [password, setPassword] = useState("");
@@ -153,11 +153,8 @@ function SignInForm() {
       setError("Enter the email you used for your profile.");
       return;
     }
-    // No authentication — we just record who is using the app and continue.
-    updateProfile({
-      email: email.trim(),
-      name: user?.name || nameFromEmail(email),
-    });
+    // No authentication — sign in restores any saved work for this email on this device.
+    signIn(email.trim(), user?.name || nameFromEmail(email));
     navigate({ to: "/journey" });
   }
 
@@ -181,7 +178,7 @@ function SignInForm() {
 }
 
 function CreateAccountForm() {
-  const { updateProfile } = useUser();
+  const { signIn } = useUser();
   const navigate = useNavigate();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -207,8 +204,8 @@ function CreateAccountForm() {
       setError("Passwords do not match.");
       return;
     }
-    // No authentication — store the account locally and continue.
-    updateProfile({ name: name.trim(), email: email.trim() });
+    // No authentication — create the account locally and continue.
+    signIn(email.trim(), name.trim());
     navigate({ to: "/journey" });
   }
 

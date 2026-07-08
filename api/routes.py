@@ -528,6 +528,56 @@ def run_application_pipeline(
         structured_json={"profile_text": profile_text},
         collection_name="user_profile_memory",
     )
+    _upsert_memory(
+        vector_service,
+        user_id=user_id,
+        source_type="opportunity",
+        source_id=_stable_source_id("opportunity", opportunity_text),
+        title="Current scholarship opportunity",
+        canonical_text=opportunity_text,
+        structured_json={"opportunity_text": opportunity_text},
+        collection_name="user_opportunity_memory",
+    )
+    if student_draft.strip():
+        _upsert_memory(
+            vector_service,
+            user_id=user_id,
+            source_type="essay_draft",
+            source_id=_stable_source_id(f"essay-draft-{draft_number}", student_draft),
+            title=f"Essay draft {draft_number}",
+            canonical_text=student_draft,
+            structured_json={"draft_number": draft_number, "essay_text": student_draft},
+            collection_name="user_application_memory",
+        )
+
+    graph = build_application_graph(vector_service, user_id)
+    result = graph.invoke(
+        {
+            "opportunity_text": opportunity_text,
+            "student_profile_docs": profile_docs,
+            "student_draft": student_draft,
+            "previous_readiness": previous_readiness or {},
+            "draft_number": draft_number,
+        }
+    )
+    feedback_text = build_feedback_memory_text(
+        {
+            "summary": result.get("feedback", ""),
+            "strengths": result.get("revision_priorities", []),
+            "recommended_next_steps": result.get("essay_alignment_matrix", {}).get("recommended_revision_tasks", []),
+        }
+    )
+    _upsert_memory(
+        vector_service,
+        user_id=user_id,
+        source_type="coaching_feedback",
+        source_id=_stable_source_id(f"coaching-{draft_number}", result.get("feedback", "")),
+        title=f"Coaching feedback draft {draft_number}",
+        canonical_text=feedback_text,
+        structured_json=result,
+        collection_name="user_feedback_memory",
+    )
+    return result
 
 
 def _outline_fallback(request: OutlineGenerateRequest, message: str = "") -> dict:
@@ -662,56 +712,6 @@ def generate_personalized_outline(request: OutlineGenerateRequest) -> dict:
         warnings.append("Scholarship requirements are limited, so this outline is based mainly on the essay prompt and profile.")
     data["warnings"] = list(dict.fromkeys(warnings))
     return data
-    _upsert_memory(
-        vector_service,
-        user_id=user_id,
-        source_type="opportunity",
-        source_id=_stable_source_id("opportunity", opportunity_text),
-        title="Current scholarship opportunity",
-        canonical_text=opportunity_text,
-        structured_json={"opportunity_text": opportunity_text},
-        collection_name="user_opportunity_memory",
-    )
-    if student_draft.strip():
-        _upsert_memory(
-            vector_service,
-            user_id=user_id,
-            source_type="essay_draft",
-            source_id=_stable_source_id(f"essay-draft-{draft_number}", student_draft),
-            title=f"Essay draft {draft_number}",
-            canonical_text=student_draft,
-            structured_json={"draft_number": draft_number, "essay_text": student_draft},
-            collection_name="user_application_memory",
-        )
-
-    graph = build_application_graph(vector_service, user_id)
-    result = graph.invoke(
-        {
-            "opportunity_text": opportunity_text,
-            "student_profile_docs": profile_docs,
-            "student_draft": student_draft,
-            "previous_readiness": previous_readiness or {},
-            "draft_number": draft_number,
-        }
-    )
-    feedback_text = build_feedback_memory_text(
-        {
-            "summary": result.get("feedback", ""),
-            "strengths": result.get("revision_priorities", []),
-            "recommended_next_steps": result.get("essay_alignment_matrix", {}).get("recommended_revision_tasks", []),
-        }
-    )
-    _upsert_memory(
-        vector_service,
-        user_id=user_id,
-        source_type="coaching_feedback",
-        source_id=_stable_source_id(f"coaching-{draft_number}", result.get("feedback", "")),
-        title=f"Coaching feedback draft {draft_number}",
-        canonical_text=feedback_text,
-        structured_json=result,
-        collection_name="user_feedback_memory",
-    )
-    return result
 
 
 def analyze_application(request: AnalyzeRequest) -> dict:

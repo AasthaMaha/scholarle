@@ -499,6 +499,58 @@ export function buildOutlinePoints(outline?: PersonalizedOutlineResult): Outline
   return points;
 }
 
+export type SelectionRewritePayload = {
+  action: string;
+  selected_text: string;
+  surrounding_text: string;
+  essay_prompt: string;
+  clean_scholarship_record: ActiveScholarship;
+  student_profile: Record<string, unknown>;
+};
+
+export type SelectionRewriteResult = { status?: string; rewritten_text?: string; note?: string };
+
+export function buildRewritePayload(
+  user: UserProfile | null,
+  action: string,
+  selectedText: string,
+  surroundingText: string,
+): SelectionRewritePayload {
+  const scholarship = user?.activeScholarship ?? {};
+  const essayPrompt = scholarship.essayPrompts || scholarship.otherRequiredMaterials || scholarship.requirementsPreview || "";
+  const { lastAnalysis, fitAnalysis, wikiDiscovery, savedWikiSources, activeScholarship, personalizedOutline, drafts, ...studentProfile } =
+    user ?? { name: "", email: "" };
+  void lastAnalysis;
+  void fitAnalysis;
+  void wikiDiscovery;
+  void savedWikiSources;
+  void activeScholarship;
+  void personalizedOutline;
+  void drafts;
+  return {
+    action,
+    selected_text: selectedText,
+    surrounding_text: surroundingText,
+    essay_prompt: essayPrompt,
+    clean_scholarship_record: scholarship,
+    student_profile: { ...studentProfile, profile_text: profileToText(user) },
+  };
+}
+
+export async function runSelectionRewrite(payload: SelectionRewritePayload): Promise<SelectionRewriteResult> {
+  const response = await fetch(`${API_BASE}/api/apply/rewrite-selection`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    const detail = data?.detail;
+    throw new Error(typeof detail === "string" ? detail : "Rewrite failed.");
+  }
+  return data as SelectionRewriteResult;
+}
+
 export async function generatePersonalizedOutline(payload: OutlineGeneratePayload): Promise<PersonalizedOutlineResult> {
   const response = await fetch(`${API_BASE}/api/apply/generate-outline`, {
     method: "POST",

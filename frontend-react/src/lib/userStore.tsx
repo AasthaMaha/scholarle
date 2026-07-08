@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -112,6 +113,12 @@ export type EssayDraft = {
   wordCount: number;
   score?: number;
   savedAt: string;
+  // Per-version evaluation snapshots (progress tracking).
+  coachScores?: Record<string, number>;
+  coachOverall?: number;
+  coachSummary?: string;
+  readinessScores?: Record<string, number>;
+  readinessOverall?: number;
 };
 
 export type ActiveScholarship = {
@@ -443,38 +450,121 @@ type Ctx = {
   user: UserProfile | null;
   updateProfile: (patch: Partial<UserProfile>) => void;
   resetProfile: () => void;
+  signIn: (email: string, name?: string) => void;
+  signOut: () => void;
 };
 
-// Legacy key — older builds persisted the profile here and re-hydrated it on
-// load, which made fields appear pre-filled. We now keep the profile in memory
-// only, so the app always starts empty and fields are filled solely via the
-// "Load example" button (or by the user typing).
 const LEGACY_STORAGE_KEY = "scholar-e:user";
+// On-device persistence: one blob holding the signed-in email and a per-account
+// map of the full profile (incl. draft, versions, scores). Lets the student log
+// out / refresh and resume where they stopped on this device.
+const STORAGE_KEY = "scholar-e:state:v2";
+const MAX_VERSIONS = 20;
+
+type PersistShape = { currentEmail: string; accounts: Record<string, UserProfile> };
+
+function readStore(): PersistShape {
+  if (typeof window === "undefined") return { currentEmail: "", accounts: {} };
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return { currentEmail: "", accounts: {} };
+    const parsed = JSON.parse(raw) as Partial<PersistShape>;
+    return { currentEmail: parsed.currentEmail ?? "", accounts: parsed.accounts ?? {} };
+  } catch {
+    return { currentEmail: "", accounts: {} };
+  }
+}
+
+function writeStore(shape: PersistShape) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(shape));
+  } catch {
+    /* quota or serialization error — never break the app */
+  }
+}
+
+// Bound stored size: keep only the most recent draft versions.
+function forStorage(user: UserProfile): UserProfile {
+  if (user.drafts && user.drafts.length > MAX_VERSIONS) {
+    return { ...user, drafts: user.drafts.slice(-MAX_VERSIONS) };
+  }
+  return user;
+}
 
 const UserContext = createContext<Ctx | null>(null);
 
 export function UserProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<UserProfile | null>(null);
+  const hydrated = useRef(false);
 
-  // One-time cleanup of any profile saved by older builds so reopening the app
-  // never shows stale pre-filled data.
+  // Hydrate once on the client from the saved account for the current email.
   useEffect(() => {
     try {
-      if (typeof window !== "undefined") localStorage.removeItem(LEGACY_STORAGE_KEY);
+      window.localStorage.removeItem(LEGACY_STORAGE_KEY);
     } catch {}
+    const store = readStore();
+    const saved = store.accounts[store.currentEmail] ?? store.accounts[""];
+    if (saved) setUser(saved);
+    hydrated.current = true;
   }, []);
+
+  // Persist (debounced) whenever the profile changes, keyed by email.
+  useEffect(() => {
+    if (!hydrated.current) return;
+    const id = window.setTimeout(() => {
+      const store = readStore();
+      const email = user?.email || "";
+      if (user) {
+        store.accounts[email] = forStorage(user);
+        store.currentEmail = email;
+      }
+      writeStore(store);
+    }, 500);
+    return () => window.clearTimeout(id);
+  }, [user]);
 
   const updateProfile = useCallback((patch: Partial<UserProfile>) => {
     setUser((prev) => ({ ...(prev ?? { name: "", email: "" }), ...patch }));
   }, []);
 
   const resetProfile = useCallback(() => {
+    // "Clear all" wipes the current account's saved data too.
+    const store = readStore();
+    delete store.accounts[store.currentEmail || ""];
+    store.currentEmail = "";
+    writeStore(store);
+    setUser(null);
+  }, []);
+
+  const signIn = useCallback((email: string, name = "") => {
+    const key = email.trim();
+    const store = readStore();
+    setUser((prev) => {
+      const existing = store.accounts[key];
+      if (existing) {
+        // Resume this account exactly where it left off.
+        return { ...existing, email: key, name: existing.name || name };
+      }
+      // New account: carry over any guest edits made before signing in.
+      const guest = prev && !prev.email ? prev : null;
+      return { ...(guest ?? {}), name: name || (guest?.name ?? ""), email: key } as UserProfile;
+    });
+    store.currentEmail = key;
+    writeStore(store);
+  }, []);
+
+  const signOut = useCallback(() => {
+    // Keep the saved account so re-login resumes; just leave the session.
+    const store = readStore();
+    store.currentEmail = "";
+    writeStore(store);
     setUser(null);
   }, []);
 
   const value = useMemo<Ctx>(
-    () => ({ user, updateProfile, resetProfile }),
-    [user, updateProfile, resetProfile],
+    () => ({ user, updateProfile, resetProfile, signIn, signOut }),
+    [user, updateProfile, resetProfile, signIn, signOut],
   );
 
   return <UserContext.Provider value={value}>{children}</UserContext.Provider>;

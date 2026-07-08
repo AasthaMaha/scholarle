@@ -27,7 +27,7 @@ import {
   Wand2,
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
-import { EssayEditor, type EssayEditorHandle } from "@/components/EssayEditor";
+import { EssayEditor, type EssayEditorHandle, type RewriteAction } from "@/components/EssayEditor";
 import {
   analyzeText,
   anchorCoachSuggestions,
@@ -51,9 +51,11 @@ import {
   buildOutlinePoints,
   buildWikiPayload,
   discoverScholarshipWiki,
+  buildRewritePayload,
   extractScholarshipOpportunity,
   generatePersonalizedOutline,
   runEssayCoach,
+  runSelectionRewrite,
   type EssayCoachMode,
   type EssayCoachResult,
   type RevisionPriority,
@@ -3207,6 +3209,13 @@ function overallEssayScore(analysis?: AnalysisResult): number | null {
   return Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
 }
 
+/** Mean of a flat score map (e.g. the coach's 8-dim overall_scores) → 0–100. */
+function meanScore(scores?: Record<string, number> | null): number | null {
+  const vals = Object.values(scores ?? {}).filter((v): v is number => typeof v === "number");
+  if (!vals.length) return null;
+  return Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
+}
+
 function scoreColor(score: number): string {
   if (score >= 80) return "var(--success)";
   if (score >= 60) return "var(--warning)";
@@ -3303,6 +3312,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   const [isEvaluating, setIsEvaluating] = useState(false);
   const [pdfStatus, setPdfStatus] = useState<string | null>(null);
   const [analysisStatus, setAnalysisStatus] = useState<string | null>(null);
+  const [bgStatus, setBgStatus] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [nowTick, setNowTick] = useState(() => Date.now());
 
@@ -3421,6 +3431,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     setCoachLoading(true);
     if (silent) {
       lastAutoCheckRef.current = draft;
+      setBgStatus("Checking grammar and outline coverage…");
     } else {
       setCoachSummary(mode === "final_check" ? "Running your final readiness check…" : "Scholar-E is reading your draft…");
       setCoachWarnings([]);
@@ -3441,6 +3452,15 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
         setCoachSummary(result.coach_summary ?? null);
         setCoachWarnings(result.warnings ?? []);
       }
+      // A full coach run is a checkpoint: snapshot the draft + its 8-dim scores
+      // so Progress can chart improvement across drafts (deduped on draft text).
+      if (mode === "full" && result.overall_scores && Object.keys(result.overall_scores).length) {
+        upsertVersion({
+          coachScores: result.overall_scores,
+          coachOverall: meanScore(result.overall_scores) ?? undefined,
+          coachSummary: result.coach_summary ?? undefined,
+        });
+      }
     } catch (error) {
       if (!silent) {
         setCoachResult(null);
@@ -3450,6 +3470,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
       }
     } finally {
       setCoachLoading(false);
+      if (silent) setBgStatus(null);
     }
   }
 
@@ -3469,6 +3490,14 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   }, [pasteNonce]);
   function triggerAutoCheck() {
     setPasteNonce((n) => n + 1);
+  }
+
+  async function requestRewrite(action: RewriteAction, text: string, surrounding: string) {
+    const res = await runSelectionRewrite(buildRewritePayload(user, action, text, surrounding));
+    if (res.status === "error" || !res.rewritten_text) {
+      throw new Error(res.note || "The rewrite could not be generated.");
+    }
+    return { rewritten_text: res.rewritten_text, note: res.note ?? "" };
   }
 
   async function handlePdf(file: File) {
@@ -3519,20 +3548,51 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     }
   }
 
-  function saveAsDraft() {
-    if (wordCount < 1) return;
+  // Record/update a draft version snapshot. Dedupes on draft text so re-running
+  // the coach without editing merges scores into the current version instead of
+  // creating a duplicate.
+  function upsertVersion(patch: Partial<EssayDraft> = {}) {
+    const content = draft;
+    if (!content.trim()) return;
     const prev = user?.drafts ?? [];
-    const newDraft: EssayDraft = {
-      id: crypto.randomUUID(),
-      version: (prev[prev.length - 1]?.version ?? 0) + 1,
-      content: draft,
-      wordCount,
-      score: score ?? undefined,
-      savedAt: new Date().toISOString(),
-    };
-    updateProfile({ drafts: [...prev, newDraft] });
+    const last = prev[prev.length - 1];
+    if (last && last.content === content) {
+      const merged = [...prev];
+      merged[merged.length - 1] = { ...last, ...patch, wordCount, savedAt: new Date().toISOString() };
+      updateProfile({ drafts: merged });
+    } else {
+      const newVersion: EssayDraft = {
+        id: crypto.randomUUID(),
+        version: (last?.version ?? 0) + 1,
+        content,
+        wordCount,
+        savedAt: new Date().toISOString(),
+        ...patch,
+      };
+      updateProfile({ drafts: [...prev, newVersion] });
+    }
     setSavedAt(Date.now());
   }
+
+  function saveAsDraft() {
+    if (wordCount < 1) return;
+    upsertVersion({ score: score ?? undefined });
+  }
+
+  // When a deep Evaluate (readiness index) completes, attach its scores to the
+  // current draft version so the Progress view can show both metrics per draft.
+  useEffect(() => {
+    const analysis = user?.lastAnalysis;
+    const idx = analysis?.readiness_index;
+    if (!idx) return;
+    const readinessScores: Record<string, number> = {};
+    for (const [key, value] of Object.entries(idx)) {
+      if (typeof value?.score === "number") readinessScores[key] = value.score;
+    }
+    if (!Object.keys(readinessScores).length) return;
+    upsertVersion({ readinessScores, readinessOverall: overallEssayScore(analysis) ?? undefined });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.lastAnalysis]);
 
   return (
     <div className="relative left-1/2 w-screen -translate-x-1/2 -mt-10 border-t border-border bg-background">
@@ -3646,9 +3706,10 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
           </div>
         </div>
 
-        {(pdfStatus || analysisStatus) && (
-          <div className="border-t border-border bg-accent/40 px-4 py-1.5 text-[11px] text-muted-foreground">
-            {pdfStatus ?? analysisStatus}
+        {(pdfStatus || analysisStatus || bgStatus) && (
+          <div className="flex items-center gap-1.5 border-t border-border bg-accent/40 px-4 py-1.5 text-[11px] text-muted-foreground">
+            {bgStatus && <span className="size-2.5 shrink-0 animate-spin rounded-full border-2 border-info/30 border-t-info" />}
+            {bgStatus ?? pdfStatus ?? analysisStatus}
           </div>
         )}
       </header>
@@ -3665,6 +3726,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
               onDismiss={dismissSuggestion}
               onOpenHighlights={openHighlights}
               onAutoCheck={triggerAutoCheck}
+              onRequestRewrite={requestRewrite}
               className="flex-1"
             />
           </div>
@@ -4111,6 +4173,7 @@ function PersonalizedOutlinePanel({
                 <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-border">
                   <div className="h-full rounded-full bg-info transition-all duration-500" style={{ width: `${pct}%` }} />
                 </div>
+                <div className="mt-1.5 text-[11px] text-muted-foreground">AI-detected from your draft — tap any point to adjust.</div>
               </div>
 
               <OutlineGroup id="core" title="Core Message" icon={Target} total={corePoints.length} coveredCount={cc(corePoints)} open={openGroups.has("core")} onToggle={toggleGroup}>
@@ -4590,44 +4653,138 @@ function WorkspaceCoachTab({
   );
 }
 
+function Sparkline({ points }: { points: number[] }) {
+  const w = 320;
+  const h = 40;
+  const pad = 5;
+  const step = points.length > 1 ? (w - pad * 2) / (points.length - 1) : 0;
+  const coords = points.map((p, i) => [pad + i * step, h - pad - (Math.max(0, Math.min(100, p)) / 100) * (h - pad * 2)] as const);
+  const d = coords.map(([x, y], i) => `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} className="h-10 w-full" preserveAspectRatio="none" aria-hidden>
+      <path d={d} fill="none" stroke="var(--info)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      {coords.map(([x, y], i) => (
+        <circle key={i} cx={x} cy={y} r={i === coords.length - 1 ? 3 : 2} fill="var(--info)" />
+      ))}
+    </svg>
+  );
+}
+
+function ProgressCard({ versions }: { versions: EssayDraft[] }) {
+  const scored = versions.filter((v) => typeof v.coachOverall === "number");
+  if (!scored.length) return null;
+  const latest = scored[scored.length - 1];
+  const prev = scored.length > 1 ? scored[scored.length - 2] : null;
+  const overall = latest.coachOverall ?? 0;
+  const overallDelta = prev ? overall - (prev.coachOverall ?? 0) : null;
+  const deltas =
+    prev?.coachScores && latest.coachScores
+      ? Object.entries(latest.coachScores)
+          .map(([k, v]) => ({ key: k, delta: v - (prev.coachScores?.[k] ?? v) }))
+          .filter((x) => x.delta !== 0)
+          .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta))
+      : [];
+  return (
+    <div className="space-y-3 rounded-xl border border-border bg-background p-3">
+      <div className="flex items-center gap-3">
+        <ScoreRing score={overall} size={52} stroke={4} />
+        <div className="min-w-0 flex-1">
+          <div className="text-[13px] font-semibold">Overall coach score</div>
+          <div className="text-[12px] text-muted-foreground">
+            {prev && overallDelta != null ? (
+              <>
+                Draft {prev.version} → {latest.version}:{" "}
+                <span className="font-semibold" style={{ color: overallDelta >= 0 ? "var(--success)" : "var(--destructive)" }}>
+                  {overallDelta >= 0 ? `▲ +${overallDelta}` : `▼ ${overallDelta}`}
+                </span>{" "}
+                · {scored.length} drafts
+              </>
+            ) : (
+              `Draft ${latest.version} · first scored draft`
+            )}
+          </div>
+        </div>
+      </div>
+      {scored.length > 1 && <Sparkline points={scored.map((v) => v.coachOverall ?? 0)} />}
+      {deltas.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {deltas.slice(0, 5).map((x) => (
+            <span
+              key={x.key}
+              className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${x.delta > 0 ? "bg-success/10 text-success" : "bg-destructive/10 text-destructive"}`}
+            >
+              {x.delta > 0 ? `▲ +${x.delta}` : `▼ ${x.delta}`} {labelize(x.key)}
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="space-y-1 border-t border-border pt-2">
+        {[...scored].reverse().slice(0, 6).map((v) => (
+          <div key={v.id} className="flex items-center justify-between text-[12px]">
+            <span className="text-muted-foreground">Draft {v.version} · {v.wordCount} words</span>
+            <span className="font-semibold tabular-nums" style={{ color: scoreColor(v.coachOverall ?? 0) }}>{v.coachOverall}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function WorkspaceEvaluationTab({ isEvaluating }: { isEvaluating: boolean }) {
   const { user } = useUser();
+  const [localEvaluating, setLocalEvaluating] = useState(false);
+  const [evalStatus, setEvalStatus] = useState<string | null>(null);
+  const evaluating = isEvaluating || localEvaluating;
   const analysis = user?.lastAnalysis;
   const entries = Object.entries(analysis?.readiness_index ?? {});
   const score = overallEssayScore(analysis);
-
-  if (isEvaluating) return <EvaluationSkeleton />;
-
-  if (!entries.length) {
-    return (
-      <PanelEmpty
-        label="Application Evaluation"
-        message="Run an evaluation to see your readiness scores, the coach's message, and the essay alignment matrix."
-      />
-    );
-  }
+  const scoredVersions = (user?.drafts ?? []).filter((v) => typeof v.coachOverall === "number");
 
   return (
     <div className="space-y-3">
-      <PanelLabel>Application Evaluation</PanelLabel>
-      <div className="flex items-center gap-3 rounded-xl border border-border bg-background p-3">
-        <ScoreRing score={score} size={52} stroke={4} />
-        <div className="min-w-0">
-          <div className="text-[13px] font-semibold">Overall essay score</div>
-          <div className="text-[12px] text-muted-foreground">{score != null ? levelWord(score) : "Not scored yet"}</div>
-        </div>
-      </div>
-      <div className="space-y-2">
-        {entries.map(([key, value]) => (
-          <ReadinessRow key={key} label={labelize(key)} value={value} />
-        ))}
-      </div>
-      {analysis?.coaching_brief?.coach_message && (
-        <div className="rounded-xl border border-info/20 bg-info/5 p-3 text-[13px] leading-relaxed text-foreground/85">
-          {analysis.coaching_brief.coach_message}
+      <PanelLabel>Progress &amp; Evaluation</PanelLabel>
+
+      {scoredVersions.length > 0 && <ProgressCard versions={scoredVersions} />}
+
+      <CoachRunButton
+        label="Run deep evaluation"
+        loadingLabel="Evaluating…"
+        onRunningChange={setLocalEvaluating}
+        onStatus={setEvalStatus}
+        className="flex w-full items-center justify-center gap-2 rounded-lg border border-border px-3 py-2 text-[13px] font-semibold text-foreground transition-colors duration-150 hover:bg-accent disabled:opacity-50"
+      />
+      {evalStatus && <div className="rounded-md bg-accent px-3 py-2 text-[12px] text-muted-foreground">{evalStatus}</div>}
+
+      {evaluating && <EvaluationSkeleton />}
+
+      {!evaluating && entries.length > 0 && (
+        <>
+          <div className="flex items-center gap-3 rounded-xl border border-border bg-background p-3">
+            <ScoreRing score={score} size={52} stroke={4} />
+            <div className="min-w-0">
+              <div className="text-[13px] font-semibold">Readiness index</div>
+              <div className="text-[12px] text-muted-foreground">{score != null ? levelWord(score) : "Not scored yet"}</div>
+            </div>
+          </div>
+          <div className="space-y-2">
+            {entries.map(([key, value]) => (
+              <ReadinessRow key={key} label={labelize(key)} value={value} />
+            ))}
+          </div>
+          {analysis?.coaching_brief?.coach_message && (
+            <div className="rounded-xl border border-info/20 bg-info/5 p-3 text-[13px] leading-relaxed text-foreground/85">
+              {analysis.coaching_brief.coach_message}
+            </div>
+          )}
+          <EssayAlignmentMatrixCard matrix={analysis?.essay_alignment_matrix} />
+        </>
+      )}
+
+      {!evaluating && !entries.length && scoredVersions.length === 0 && (
+        <div className="rounded-xl border border-dashed border-border bg-background p-4 text-[13px] leading-relaxed text-muted-foreground">
+          Run the coach to start tracking your draft scores, or run a deep evaluation for the readiness index, coach message, and alignment matrix.
         </div>
       )}
-      <EssayAlignmentMatrixCard matrix={analysis?.essay_alignment_matrix} />
     </div>
   );
 }
