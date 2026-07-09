@@ -7,9 +7,9 @@ pip install -r requirements.txt
 ```
 
 2. Add a `.env` file at the project root.
-3. ''' conda activate <your_virtual_enviroment>'''
-4. ''' cd ./frontend-react '''
-5. ''' npm run dev '''
+3. ``` conda activate <your_virtual_enviroment>```
+4. ``` cd ./frontend-react ```
+5. ``` npm run dev ```
 
 
 
