@@ -149,19 +149,22 @@ function Journey() {
   };
   const selectStep = (idx: number) => {
     setStepIdx(idx);
-    setIsSidebarOpen(false);
   };
 
   return (
     <TooltipProvider delayDuration={150}>
-      <div className="min-h-screen flex">
+      <div className="min-h-screen flex overflow-x-hidden">
         <Sidebar
           activeIdx={stepIdx}
           isOpen={isSidebarOpen}
           onClose={() => setIsSidebarOpen(false)}
           onSelect={selectStep}
         />
-        <div className="flex-1 flex flex-col min-w-0">
+        <div
+          className={`flex flex-col min-w-0 transition-[margin,width] duration-300 ease-out ${
+            isSidebarOpen ? "w-full md:ml-80 md:w-[calc(100%-20rem)]" : "w-full md:ml-0"
+          }`}
+        >
           <TopBar
             step={step}
             onNext={goNext}
@@ -174,7 +177,19 @@ function Journey() {
             onOpen={() => setIsSidebarOpen(true)}
           />
           <main className="flex-1 overflow-y-auto">
-            <div className={`mx-auto px-6 md:px-10 ${["discovery", "requirements"].includes(step.slug) ? "max-w-7xl py-6" : step.slug === "profile" ? "max-w-7xl py-10" : "max-w-5xl py-10"}`}>
+            <div
+              className={`mx-auto ${
+                step.slug === "essay-workspace"
+                  ? "w-full max-w-none px-0 py-0"
+                  : `px-6 md:px-10 ${
+                      ["discovery", "requirements"].includes(step.slug)
+                        ? "max-w-7xl py-6"
+                        : step.slug === "profile"
+                          ? "max-w-7xl py-10"
+                          : "max-w-5xl py-10"
+                    }`
+              }`}
+            >
               <div>
               <StepBody
                 slug={step.slug}
@@ -231,7 +246,7 @@ function Sidebar({
         type="button"
         aria-label="Close sidebar"
         onClick={onClose}
-        className={`fixed inset-0 z-30 bg-background/60 transition-opacity duration-300 ${
+        className={`fixed inset-0 z-30 bg-background/60 transition-opacity duration-300 md:hidden ${
           isOpen ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"
         }`}
       />
@@ -240,11 +255,21 @@ function Sidebar({
           isOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
-        <Link to="/" className="flex items-center gap-2 px-6 h-16 border-b border-border">
-          <img src={scholarELogoUrl} alt="" className="size-8 object-contain" />
-          <div className="font-display font-semibold tracking-tight">Scholar-E</div>
-          <span className="ml-auto text-[10px] uppercase tracking-widest text-muted-foreground">journey</span>
-        </Link>
+        <div className="flex items-center gap-2 px-6 h-16 border-b border-border">
+          <Link to="/" className="flex min-w-0 flex-1 items-center gap-2">
+            <img src={scholarELogoUrl} alt="" className="size-8 object-contain" />
+            <div className="font-display font-semibold tracking-tight">Scholar-E</div>
+            <span className="ml-auto text-[10px] uppercase tracking-widest text-muted-foreground">journey</span>
+          </Link>
+          <button
+            type="button"
+            aria-label="Close sidebar"
+            onClick={onClose}
+            className="grid size-8 shrink-0 place-items-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            <Menu className="size-5" strokeWidth={2.5} />
+          </button>
+        </div>
 
         <div className="px-6 py-5 border-b border-border">
           <SidebarUser />
@@ -3620,7 +3645,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   }, [user?.lastAnalysis]);
 
   return (
-    <div className="relative left-1/2 w-screen -translate-x-1/2 -mt-10 border-t border-border bg-background">
+    <div className="w-full border-t border-border bg-background">
       {/* Zone 1 — slim top bar (Grammarly-style) */}
       <header className="sticky top-0 z-20 border-b border-border bg-background/90 backdrop-blur">
         <div className="mx-auto flex h-14 max-w-[1440px] items-center gap-2 px-3 md:px-4">
@@ -3770,7 +3795,13 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
           </div>
         </div>
 
-        {panelOpen && (
+        <div
+          className={`w-full overflow-hidden transition-[max-height,opacity,width] duration-300 ease-out lg:shrink-0 ${
+            panelOpen
+              ? "max-h-[1200px] opacity-100 lg:w-[440px]"
+              : "max-h-0 opacity-0 pointer-events-none lg:max-h-none lg:w-0"
+          }`}
+        >
           <EssayWorkspacePanel
             activeTab={activeTab}
             onTabChange={setActiveTab}
@@ -3793,7 +3824,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
             covered={coveredPoints}
             onToggleCovered={toggleCovered}
           />
-        )}
+        </div>
       </div>
     </div>
   );
@@ -3899,7 +3930,7 @@ function EssayWorkspacePanel({
   ];
 
   return (
-    <aside className="w-full shrink-0 border-t border-border bg-card lg:sticky lg:top-[56px] lg:h-[calc(100vh-120px)] lg:w-[380px] lg:overflow-y-auto lg:border-l lg:border-t-0">
+    <aside className="w-full shrink-0 border-t border-border bg-card lg:sticky lg:top-[56px] lg:h-[calc(100vh-120px)] lg:w-[440px] lg:overflow-y-auto lg:border-l lg:border-t-0">
       <div className="sticky top-0 z-10 flex items-center gap-1 border-b border-border bg-card/95 p-2 backdrop-blur">
         <div className="flex flex-1 items-center gap-1 rounded-lg bg-muted/60 p-1">
           {tabs.map((tab) => {
@@ -3934,7 +3965,7 @@ function EssayWorkspacePanel({
           <ChevronRight className="size-4" />
         </button>
       </div>
-      <div key={activeTab} className="animate-in fade-in slide-in-from-bottom-1 p-3 duration-200">
+      <div key={activeTab} className="animate-in fade-in slide-in-from-bottom-1 p-4 duration-200">
         {activeTab === "outline" && (
           <PersonalizedOutlinePanel
             outline={user?.personalizedOutline}
