@@ -733,3 +733,272 @@ persistence/services.py
 persistence/models.py
 persistence/vector_service.py
 ```
+
+---
+
+## 15. Agents and Their Functions
+
+Scholar-E uses several agent groups. Some are registered in the persistence
+registry, some are LangGraph nodes, and some are specialist functions inside the
+Essay Workspace Coach.
+
+### Registered Agents
+
+Registered agent definitions live in:
+
+```text
+persistence/agent_registry.py
+```
+
+| Agent name | Type | Function |
+| --- | --- | --- |
+| `resume_profile_extraction` | profile | Extracts editable student profile fields from uploaded resume text. |
+| `scholarship_discovery_wiki` | discovery | Recommends scholarship platforms, source pages, and opportunities from the saved profile. |
+| `scholarship_requirements_extraction` | extraction | Extracts scholarship facts and requirements from names, links, notes, and fetched source text. |
+| `scholarship_information_cleaner` | cleaning | Normalizes extracted scholarship information for editable UI display. |
+| `scholarship_fit_analysis` | analysis | Compares the student profile against the cleaned scholarship record. |
+| `essay_application_coaching` | coaching | Runs the deep application coaching graph. |
+| `essay_alignment_matrix` | analysis | Checks whether the essay answers the prompt, themes, criteria, and length guidance. |
+
+### Profile Agents
+
+Files:
+
+```text
+graph/profile_builder.py
+nodes/profile_extraction.py
+```
+
+| Agent/node | Function |
+| --- | --- |
+| `profile_extraction_agent` | Uses resume text to extract structured profile fields. |
+| `profile_cleanup` | Cleans and normalizes extracted profile fields for the UI. |
+
+Used by:
+
+```text
+POST /api/profile/autofill-resume
+```
+
+### Scholarship Extraction Agents
+
+Files:
+
+```text
+graph/opportunity_builder.py
+nodes/opportunity_extraction.py
+```
+
+| Agent/node | Function |
+| --- | --- |
+| `opportunity_extraction_agent` | Extracts scholarship name, organization, website, award, dates, eligibility, materials, criteria, and process. |
+| `opportunity_cleanup` | Normalizes the first extraction into consistent fields. |
+| `information_cleaner_agent` | Cleans the scholarship record for editable UI display and removes noisy or unsupported artifacts. |
+
+Used by:
+
+```text
+POST /api/opportunity/extract
+```
+
+### Scholarship Discovery Wiki Agents
+
+File:
+
+```text
+graph/wiki_builder.py
+```
+
+| Agent/node | Function |
+| --- | --- |
+| `platform_source_agent` | Recommends scholarship search platforms and source categories. |
+| `specific_open_source_agent` | Recommends specific opportunities or source pages. |
+| `wiki_output_cleaner_agent` | Cleans and organizes discovery output for the UI. |
+
+Used by:
+
+```text
+POST /api/wiki/discover
+```
+
+### Scholarship Fit Agents
+
+File:
+
+```text
+graph/fit_builder.py
+```
+
+| Agent/node | Function |
+| --- | --- |
+| `fit_analysis_agent` | Compares profile facts against scholarship requirements and estimates fit. |
+| `fit_result_cleanup` | Cleans the fit result and prepares the application readiness matrix. |
+
+Used by:
+
+```text
+POST /api/fit/analyze
+```
+
+### Personalized Outline Agent
+
+File:
+
+```text
+api/routes.py
+```
+
+Function:
+
+```python
+generate_personalized_outline(...)
+```
+
+This is not a LangGraph node, but it is an LLM agent-style flow. It creates:
+
+- thesis/core message
+- essay sections
+- suggested content
+- profile evidence to use
+- requirements addressed
+- coaching notes
+- opening/conclusion guidance
+- questions for the student
+
+Used by:
+
+```text
+POST /api/apply/generate-outline
+```
+
+### Essay Workspace Coach Agents
+
+File:
+
+```text
+essay_coaching_service.py
+```
+
+Main coordinator:
+
+```python
+run_essay_workspace_coach(...)
+```
+
+| Specialist | Function |
+| --- | --- |
+| Sentence Corrector | Produces sentence-level clarity, grammar, flow, concision, and word choice suggestions. |
+| Prompt Alignment Coach | Checks whether the essay answers the scholarship prompt and requirements. |
+| Profile Grounding Coach | Checks whether claims are supported by the student profile. |
+| Structure & Flow Coach | Reviews paragraph order, flow, transitions, and structure. |
+| Specificity Coach | Finds vague claims and places to add concrete detail or impact. |
+| Tone & Authenticity Coach | Checks voice, authenticity, generic phrasing, and AI-like language. |
+| Reviewer Simulation | Simulates likely reviewer reaction, strengths, concerns, and questions. |
+| Outline Coverage Agent | Checks which personalized outline points are covered by the draft. |
+| Guardrail Critic | Removes unsafe sentence suggestions that risk adding unsupported claims. |
+| Final Check Agent | Checks whether the essay is ready for final review or submission. |
+| Revision Combiner | Synthesizes specialist outputs into priorities, quick fixes, deeper tasks, and summary. |
+| Selection Rewrite Agent | Rewrites, shortens, expands, or improves tone for selected text only. |
+
+Used by:
+
+```text
+POST /api/apply/essay-coach
+POST /api/apply/rewrite-selection
+```
+
+### Deep Application Coach Graph
+
+File:
+
+```text
+graph/builder.py
+```
+
+Used by:
+
+```text
+POST /api/analyze
+```
+
+| Agent/node | Function |
+| --- | --- |
+| `insufficient_input` | Short-circuits if profile/draft content is too empty to coach. |
+| `analyze_opportunity` | Extracts opportunity type, requirements, deadlines, and evaluation themes. |
+| `retrieve_profile` | Retrieves relevant profile/application memory from vector storage. |
+| `prepare_context` | Builds shared grounded context for all downstream coaching agents. |
+| `strategy_agent` | Explains what the opportunity actually evaluates. |
+| `eligibility_agent` | Builds requirement-by-requirement eligibility comparison. |
+| `discovery_agent` | Finds useful student strengths from profile evidence. |
+| `narrative_agent` | Reviews essay story structure: beginning, middle, end, reflection. |
+| `coach_sections` | Gives section-by-section coaching using essay templates. |
+| `reviewer_agent` | Simulates reviewer reactions to the draft. |
+| `combine_coaching` | Combines all specialist outputs into readiness index, brief, feedback, and priorities. |
+| `critic_review` | Audits the combined coaching for grounding and hallucinations. |
+| `essay_alignment_matrix` | Checks whether the draft covers the prompt, requirements, criteria, evidence, and word guidance. |
+| `assemble_package` | Builds the final markdown coaching package. |
+
+### Deep Coaching Functions
+
+File:
+
+```text
+nodes/coaching/agents.py
+```
+
+| Function | Agent role |
+| --- | --- |
+| `run_strategy_coach` | Opportunity Strategy Coach |
+| `run_discovery_coach` | Experience Discovery Coach |
+| `run_eligibility_matrix` | Eligibility & Requirements Matrix Coach |
+| `run_narrative_coach` | Narrative Coach |
+| `run_reviewer_simulation_coach` | Reviewer Simulation Coach |
+| `run_combiner` | Combiner Coach |
+| `run_critic_review` | Critic / quality-control agent |
+
+### Section Coach
+
+File:
+
+```text
+nodes/coach_sections.py
+```
+
+Function:
+
+```python
+coach_sections(state)
+```
+
+It runs one batched LLM call over three templates:
+
+- Personal Statement
+- Leadership & Impact
+- Experience & Achievements
+
+It returns:
+
+```python
+section_coaching
+```
+
+### Python-Only Helper Coach
+
+File:
+
+```text
+nodes/coaching/readiness.py
+```
+
+| Function | Role |
+| --- | --- |
+| Growth Coach | Compares readiness across drafts without an LLM. |
+| Readiness helpers | Normalize readiness scores and labels. |
+
+### Summary
+
+- Profile agents build the student profile.
+- Scholarship agents discover, extract, clean, and analyze opportunities.
+- Essay Workspace Coach agents help the student revise live inside the editor.
+- Deep Application Coach agents evaluate the whole application package.
+- Critic and guardrail agents protect against hallucinated or unsupported coaching.
