@@ -342,20 +342,22 @@ function TopBar({
           <div className="text-xs text-muted-foreground truncate">Goal: {step.goal}</div>
         </div>
         <div className="flex items-center gap-2">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                onClick={onLoadExample}
-                className="rounded-full border border-border bg-card px-3 py-1.5 text-sm hover:bg-accent"
-              >
-                Load example
-              </button>
-            </TooltipTrigger>
-            <TooltipContent>
-              Fill profile, scholarship, and essay with a sample application for testing
-            </TooltipContent>
-          </Tooltip>
+          {step.slug === "essay-workspace" && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={onLoadExample}
+                  className="rounded-full border border-border bg-card px-3 py-1.5 text-sm hover:bg-accent"
+                >
+                  Load example
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>
+                Fill profile, scholarship, and essay with a sample application for testing
+              </TooltipContent>
+            </Tooltip>
+          )}
           <Tooltip>
             <TooltipTrigger asChild>
               <button
