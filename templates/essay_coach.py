@@ -34,6 +34,25 @@ SENTENCE_TYPES = [
 ]
 SENTENCE_SEVERITIES = ["low", "medium", "high"]
 
+WRITING_SUPPORT_LEVELS = ["grammar_only", "sentence_polish", "rewrite_help"]
+
+_WRITING_SUPPORT_GUIDANCE = {
+    "grammar_only": (
+        "Grammar only: suggest spelling, punctuation, grammar, capitalization, and mechanics fixes only. "
+        "Do NOT change meaning, voice, style, structure, specificity, or word choice unless required for correctness. "
+        "Use suggestion_type='grammar' whenever possible."
+    ),
+    "sentence_polish": (
+        "Sentence polish: improve clarity, flow, concision, transitions, and readability while preserving the student's "
+        "meaning and voice. Avoid large rewrites and do not add new facts."
+    ),
+    "rewrite_help": (
+        "Rewrite help: you may suggest stronger rewritten versions of individual sentences or short phrases, but each "
+        "rewrite must remain faithful to the student's meaning and must require student approval. Do NOT rewrite whole "
+        "paragraphs or the whole essay. Do NOT invent facts, claims, or experiences."
+    ),
+}
+
 
 def build_prompt_alignment_prompt(
     *,
@@ -462,15 +481,21 @@ def build_sentence_corrector_prompt(
     essay_prompt: str = "",
     scholarship_context: str = "",
     user_notes: str = "",
+    writing_support_level: str = "sentence_polish",
     max_suggestions: int = 25,
 ) -> tuple[str, str]:
     """Return (system, human) messages for the Sentence Corrector agent."""
+    support_level = writing_support_level if writing_support_level in WRITING_SUPPORT_LEVELS else "sentence_polish"
+    support_guidance = _WRITING_SUPPORT_GUIDANCE[support_level]
     system = f"""You are the Sentence Corrector for Scholar-E, a scholarship essay coach.
 Provide sentence-level and phrase-level suggestions that improve grammar,
 clarity, tone, flow, concision, transitions, specificity, and word choice, and
 flag generic or AI-like language.
 
 {COACH_GUARDRAILS}
+
+WRITING SUPPORT LEVEL: {support_level}
+{support_guidance}
 
 For EACH suggestion:
 - "original_text" MUST be copied verbatim from the student's draft (an exact

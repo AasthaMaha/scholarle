@@ -250,12 +250,14 @@ def _run_sentence_corrector(
     essay_prompt: str,
     scholarship_context: str,
     user_notes: str,
+    writing_support_level: str = "sentence_polish",
 ) -> list:
     system, human = build_sentence_corrector_prompt(
         essay_draft=essay_draft,
         essay_prompt=essay_prompt,
         scholarship_context=scholarship_context,
         user_notes=user_notes,
+        writing_support_level=writing_support_level,
     )
     model = llm._get_client().with_structured_output(SentenceCorrectorOutput)
     result = model.invoke([("system", system), ("human", human)])
@@ -528,6 +530,7 @@ def run_essay_workspace_coach(
     word_limit: str = "",
     outline_points: Optional[list] = None,
     mode: str = "full",
+    writing_support_level: str = "sentence_polish",
 ) -> dict:
     """Coordinate the Essay Workspace coaching specialists and return one package.
 
@@ -601,7 +604,7 @@ def run_essay_workspace_coach(
         "coverage": mode in ("full", "auto_check") and bool(outline_points),
     }
     runners = {
-        "sentence": lambda: _run_sentence_corrector(essay_draft, essay_prompt, scholarship_context, user_notes or ""),
+        "sentence": lambda: _run_sentence_corrector(essay_draft, essay_prompt, scholarship_context, user_notes or "", writing_support_level),
         "alignment": lambda: _run_prompt_alignment(essay_draft, essay_prompt, scholarship_context),
         "grounding": lambda: _run_profile_grounding(essay_draft, profile_text, scholarship_context),
         "structure": lambda: _run_structure_flow(essay_draft, essay_prompt, outline_text),

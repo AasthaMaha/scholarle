@@ -1,6 +1,6 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
-import scholarELogoUrl from "../../logo/logoPic.png";
+import scholarELogoUrl from "../../logo/logoPic2.png";
 import {
   AlertCircle,
   ArrowLeft,
@@ -60,6 +60,7 @@ import {
   type EssayCoachMode,
   type EssayCoachResult,
   type RevisionPriority,
+  type WritingSupportLevel,
 } from "@/lib/api/scholarE";
 import {
   useUser,
@@ -254,9 +255,7 @@ function Sidebar({
         }`}
       >
         <Link to="/" className="flex items-center gap-2 px-6 h-16 border-b border-border">
-          <div className="size-8 overflow-hidden rounded-lg">
-            <img src={scholarELogoUrl} alt="" className="size-full object-contain" />
-          </div>
+          <img src={scholarELogoUrl} alt="" className="size-8 object-contain" />
           <div className="font-display font-semibold tracking-tight">Scholar-E</div>
           <span className="ml-auto text-[10px] uppercase tracking-widest text-muted-foreground">journey</span>
         </Link>
@@ -332,9 +331,7 @@ function TopBar({
     <div className="sticky top-0 z-20 border-b border-border bg-background/85 backdrop-blur">
       <div className="px-6 md:px-10 h-16 flex items-center gap-4">
         <Link to="/" className="flex items-center gap-2 rounded-lg px-2.5 py-1.5">
-          <div className="size-7 overflow-hidden rounded-md">
-            <img src={scholarELogoUrl} alt="" className="size-full object-contain" />
-          </div>
+          <img src={scholarELogoUrl} alt="" className="size-7 object-contain" />
           <span className="font-display font-semibold">Scholar-E</span>
         </Link>
         <div className="flex-1 min-w-0">
@@ -412,9 +409,7 @@ function FloatingSidebarToggle({
         isOpen ? "opacity-0 pointer-events-none" : "opacity-100"
       }`}
     >
-      <span className="size-6 overflow-hidden rounded-md">
-        <img src={scholarELogoUrl} alt="" className="size-full object-contain" />
-      </span>
+      <img src={scholarELogoUrl} alt="" className="size-6 object-contain" />
       <Menu className="size-5 text-muted-foreground" strokeWidth={2.5} />
     </button>
   );
@@ -3209,7 +3204,6 @@ function FitRubricDialog({
 /* ---------------- Step 5: Essay Workspace ---------------- */
 
 type WorkspaceTab = "outline" | "coach" | "evaluation" | "highlights";
-type WritingSupportLevel = "grammar_only" | "sentence_polish" | "rewrite_help";
 
 const WRITING_SUPPORT_OPTIONS: Array<{ id: WritingSupportLevel; label: string; description: string }> = [
   {
@@ -3468,7 +3462,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     if (suggestions[0]) requestAnimationFrame(() => editorApiRef.current?.reveal(suggestions[0]));
   }
 
-  async function runCoach(mode: EssayCoachMode = "full") {
+  async function runCoach(mode: EssayCoachMode = "full", writingSupportLevel?: WritingSupportLevel) {
     if (coachLoading) return;
     const silent = mode === "auto_check";
     const draftForRun = draft;
@@ -3492,7 +3486,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
       setActiveTab(mode === "grammar_tone" ? "highlights" : "coach");
     }
     try {
-      const result = await runEssayCoach(buildEssayCoachPayload(user, mode));
+      const result = await runEssayCoach(buildEssayCoachPayload(user, mode, writingSupportLevel));
       const coveredIds = result.outline_coverage?.covered_point_ids;
       if (coveredIds) {
         // Intersect with known point ids so a hallucinated id can never tick a box.
@@ -3848,7 +3842,7 @@ function EssayWorkspacePanel({
   onReveal: (s: Suggestion) => void;
   onAcceptAllQuickFixes: () => void;
   quickFixCount: number;
-  onRunCoach: (mode?: EssayCoachMode) => void;
+  onRunCoach: (mode?: EssayCoachMode, writingSupportLevel?: WritingSupportLevel) => void;
   coachLoading: boolean;
   coachSummary: string | null;
   coachWarnings: string[];
@@ -4570,7 +4564,7 @@ function WorkspaceCoachTab({
 }: {
   result: EssayCoachResult | null;
   loading: boolean;
-  onRunCoach: (mode?: EssayCoachMode) => void;
+  onRunCoach: (mode?: EssayCoachMode, writingSupportLevel?: WritingSupportLevel) => void;
   coachSummary: string | null;
   coachWarnings: string[];
   updatedAt: number | null;
@@ -5026,7 +5020,7 @@ function WorkspaceHighlightsTab({
   onReveal: (s: Suggestion) => void;
   onAcceptAllQuickFixes: () => void;
   quickFixCount: number;
-  onRunCoach: (mode?: EssayCoachMode) => void;
+  onRunCoach: (mode?: EssayCoachMode, writingSupportLevel?: WritingSupportLevel) => void;
   coachLoading: boolean;
   coachSummary: string | null;
   coachWarnings: string[];
@@ -5080,11 +5074,7 @@ function WorkspaceHighlightsTab({
         <button
           type="button"
           onClick={() => {
-            // TODO: When the fixes-generation API accepts a support level, pass
-            // `writingSupportLevel` so Grammar only / Sentence polish / Rewrite help
-            // can tune suggestion depth without auto-applying changes.
-            void writingSupportLevel;
-            onRunCoach("grammar_tone");
+            onRunCoach("grammar_tone", writingSupportLevel);
           }}
           disabled={coachLoading}
           className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 py-1.5 text-[12px] font-semibold text-foreground transition-colors duration-150 hover:border-info/40 hover:bg-info/10 hover:text-info focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/30 disabled:opacity-50"

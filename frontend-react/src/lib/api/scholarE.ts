@@ -298,6 +298,7 @@ export function buildOutlinePayload(user: UserProfile | null): OutlineGeneratePa
 }
 
 export type EssayCoachMode = "full" | "grammar_tone" | "prompt_alignment" | "structure" | "reviewer" | "final_check" | "auto_check";
+export type WritingSupportLevel = "grammar_only" | "sentence_polish" | "rewrite_help";
 
 export type EssayCoachSentenceSuggestion = {
   original_text: string;
@@ -407,6 +408,7 @@ export type EssayCoachPayload = {
   word_limit: string;
   outline_points: Array<{ id: string; label: string }>;
   mode: EssayCoachMode;
+  writing_support_level?: WritingSupportLevel;
 };
 
 export type GuardrailAudit = {
@@ -423,7 +425,7 @@ export type FinalCheck = {
   submission_warning?: string;
 };
 
-export function buildEssayCoachPayload(user: UserProfile | null, mode: EssayCoachMode = "full"): EssayCoachPayload {
+export function buildEssayCoachPayload(user: UserProfile | null, mode: EssayCoachMode = "full", writingSupportLevel?: WritingSupportLevel): EssayCoachPayload {
   const scholarship = user?.activeScholarship ?? {};
   const essayPrompt = scholarship.essayPrompts || scholarship.otherRequiredMaterials || scholarship.requirementsPreview || "";
   const { lastAnalysis, fitAnalysis, wikiDiscovery, savedWikiSources, activeScholarship, personalizedOutline, drafts, ...studentProfile } =
@@ -446,6 +448,7 @@ export function buildEssayCoachPayload(user: UserProfile | null, mode: EssayCoac
     word_limit: findWordLimit([essayPrompt, scholarship.otherRequiredMaterials, scholarship.requirementsPreview].filter(Boolean).join("\n")),
     outline_points: buildOutlinePoints(user?.personalizedOutline).map((p) => ({ id: p.id, label: p.label })),
     mode,
+    ...(writingSupportLevel ? { writing_support_level: writingSupportLevel } : {}),
   };
 }
 

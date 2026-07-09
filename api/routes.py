@@ -162,6 +162,7 @@ class EssayCoachRequest(BaseModel):
     word_limit: str = Field(default="", max_length=120)
     outline_points: list[dict] = Field(default_factory=list)
     mode: str = Field(default="full", max_length=40)
+    writing_support_level: str = Field(default="sentence_polish", max_length=40)
 
 
 class RewriteRequest(BaseModel):
@@ -789,6 +790,7 @@ def run_essay_coach(request: EssayCoachRequest) -> dict:
         word_limit=request.word_limit,
         outline_points=request.outline_points,
         mode=request.mode or "full",
+        writing_support_level=request.writing_support_level or "sentence_polish",
     )
 
 
