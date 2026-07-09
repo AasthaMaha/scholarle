@@ -155,7 +155,79 @@ DATABASE_URL=sqlite:///scholar_e.db
 
 ---
 
-## 5. Scholarship Extraction
+## 5. Scholarship Discovery Wiki
+
+The Scholarship Discovery Wiki flow starts after the student has profile
+information available. The user clicks Search in the discovery step, and
+Scholar-E recommends scholarship platforms, source pages, specific
+opportunities, funding categories, and search queries that match the profile.
+
+Frontend:
+
+```text
+frontend-react/src/routes/journey.tsx
+frontend-react/src/lib/api/scholarE.ts
+```
+
+Frontend functions:
+
+```ts
+buildWikiPayload(user)
+discoverScholarshipWiki(payload)
+```
+
+Backend endpoint:
+
+```text
+POST /api/wiki/discover
+```
+
+Backend function:
+
+```python
+discover_scholarship_wiki(...)
+```
+
+Location:
+
+```text
+api/routes.py
+```
+
+The backend loads the curated scholarship source library, combines it with the
+student profile, and runs:
+
+```text
+graph/wiki_builder.py
+nodes/wiki_discovery.py
+state/wiki_state.py
+```
+
+The Wiki discovery graph runs these nodes in order:
+
+```text
+platform_source_agent
+specific_open_source_agent
+wiki_output_cleaner_agent
+```
+
+The output includes:
+
+- profile summary used for discovery
+- missing profile fields that would improve recommendations
+- top free scholarship platforms
+- specific scholarship opportunities or official source pages
+- funding categories
+- personalized search queries
+
+The UI displays the recommendations in the discovery step. When the user picks
+a real opportunity from the Wiki, Scholar-E carries that scholarship name, link,
+and notes into the requirements step so the extraction flow can fetch and
+structure the official scholarship details.
+
+---
+
+## 6. Scholarship Extraction
 
 The scholarship extraction flow starts after the user enters a scholarship name,
 link, or copied description.
@@ -230,7 +302,7 @@ output or important notes.
 
 ---
 
-## 6. Scholarship Fit Analysis
+## 7. Scholarship Fit Analysis
 
 Fit analysis compares the cleaned scholarship record against the student
 profile.
@@ -277,7 +349,7 @@ The result includes:
 
 ---
 
-## 7. Personalized Outline
+## 8. Personalized Outline
 
 The personalized outline helps the student plan an essay from their profile and
 the scholarship requirements.
@@ -332,7 +404,7 @@ personalized outline output.
 
 ---
 
-## 8. Essay Workspace Coach
+## 9. Essay Workspace Coach
 
 The Essay Workspace Coach is the interactive writing coach used while the
 student is drafting.
@@ -423,7 +495,7 @@ workspace.
 
 ---
 
-## 9. Sentence Suggestions
+## 10. Sentence Suggestions
 
 Sentence suggestions are returned by the Essay Workspace Coach as text anchors,
 not raw character offsets.
@@ -457,7 +529,7 @@ ignore, or copy suggestions.
 
 ---
 
-## 10. Rewrite Selection
+## 11. Rewrite Selection
 
 The essay editor can ask the backend to rewrite, shorten, expand, or improve
 the tone of selected text.
@@ -497,7 +569,7 @@ fabricated expansions.
 
 ---
 
-## 11. Deep Application Coach
+## 12. Deep Application Coach
 
 The Deep Application Coach is the larger application-evaluation graph.
 
@@ -581,7 +653,7 @@ This system is designed for full application evaluation, not live editing.
 
 ---
 
-## 12. Two Coaching Systems
+## 13. Two Coaching Systems
 
 Scholar-E currently has two coaching systems.
 
@@ -640,7 +712,7 @@ Deep Application Coach = full application review board
 
 ---
 
-## 13. Local Setup
+## 14. Local Setup
 
 Install Python dependencies:
 
@@ -678,7 +750,7 @@ In development, Vite can lazy-start the backend when API routes are called.
 
 ---
 
-## 14. Main Files by Folder
+## 15. Main Files by Folder
 
 Frontend:
 
@@ -736,7 +808,7 @@ persistence/vector_service.py
 
 ---
 
-## 15. Agents and Their Functions
+## 16. Agents and Their Functions
 
 Scholar-E uses several agent groups. Some are registered in the persistence
 registry, some are LangGraph nodes, and some are specialist functions inside the
