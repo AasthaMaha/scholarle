@@ -40,8 +40,7 @@ import {
   type CoachSentenceSuggestion,
   type Suggestion,
 } from "@/lib/suggestions";
-import { journeySteps } from "@/lib/persona";
-import { loadExampleProfile } from "@/lib/loadExample";
+import { essayDraft as exampleEssayDraft, journeySteps } from "@/lib/persona";
 import { CoachRunButton } from "@/components/CoachRunButton";
 import {
   analyzeScholarshipFit,
@@ -129,18 +128,6 @@ function Journey() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stepIdx]);
 
-  function handleLoadExample() {
-    updateProfile(
-      loadExampleProfile({
-        name: user?.name ?? "",
-        email: user?.email ?? "",
-        id: user?.id,
-      }),
-    );
-    const essayStepIdx = journeySteps.findIndex((s) => s.slug === "essay-workspace");
-    if (essayStepIdx >= 0) setStepIdx(essayStepIdx);
-  }
-
   function handleClearAll() {
     resetProfile();
     setStepIdx(0);
@@ -180,7 +167,6 @@ function Journey() {
             onNext={goNext}
             onPrev={goPrev}
             stepIdx={stepIdx}
-            onLoadExample={handleLoadExample}
             onClearAll={handleClearAll}
           />
           <FloatingSidebarToggle
@@ -316,14 +302,12 @@ function TopBar({
   onNext,
   onPrev,
   stepIdx,
-  onLoadExample,
   onClearAll,
 }: {
   step: (typeof journeySteps)[number];
   onNext: () => void;
   onPrev: () => void;
   stepIdx: number;
-  onLoadExample: () => void;
   onClearAll: () => void;
 }) {
   const pct = ((stepIdx + 1) / journeySteps.length) * 100;
@@ -342,20 +326,6 @@ function TopBar({
           <div className="text-xs text-muted-foreground truncate">Goal: {step.goal}</div>
         </div>
         <div className="flex items-center gap-2">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                onClick={onLoadExample}
-                className="rounded-full border border-border bg-card px-3 py-1.5 text-sm hover:bg-accent"
-              >
-                Load example
-              </button>
-            </TooltipTrigger>
-            <TooltipContent>
-              Fill profile, scholarship, and essay with a sample application for testing
-            </TooltipContent>
-          </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
               <button
@@ -3628,6 +3598,12 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     upsertVersion({ score: score ?? undefined });
   }
 
+  function loadExampleEssay() {
+    updateProfile({ essayDraft: exampleEssayDraft });
+    setSavedAt(Date.now());
+    triggerAutoCheck();
+  }
+
   // When a deep Evaluate (readiness index) completes, attach its scores to the
   // current draft version so the Progress view can show both metrics per draft.
   useEffect(() => {
@@ -3675,6 +3651,19 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
           <div className="flex shrink-0 items-center gap-1 md:gap-1.5">
             <WordCountMeter wordCount={wordCount} characterCount={characterCount} target={wordTarget} />
             <div className="mx-1 hidden h-6 w-px bg-border sm:block" />
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={loadExampleEssay}
+                  className="hidden rounded-lg border border-border px-3 py-2 text-[13px] font-medium text-foreground transition-colors duration-150 hover:bg-accent sm:inline-flex"
+                >
+                  Load example
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>Load only the example essay draft</TooltipContent>
+            </Tooltip>
 
             <Tooltip>
               <TooltipTrigger asChild>
