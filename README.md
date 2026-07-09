@@ -1,3 +1,18 @@
+## Setup
+
+1. Create / activate your environment, then install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+2. Add a `.env` file at the project root.
+3. ''' conda activate <your_virtual_enviroment>'''
+4. ''' cd ./frontend-react '''
+5. ''' npm run dev '''
+
+
+
 # Scholar-E UI-to-Backend Workflow
 
 Scholar-E is an AI scholarship coaching application. The user works through a
