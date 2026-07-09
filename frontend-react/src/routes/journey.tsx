@@ -113,6 +113,21 @@ function Journey() {
   const [profileError, setProfileError] = useState("");
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
+  // Resume the last step once the saved profile hydrates from storage.
+  const restoredStep = useRef(false);
+  useEffect(() => {
+    if (restoredStep.current || !user) return;
+    restoredStep.current = true;
+    if (typeof user.lastStep === "number" && user.lastStep > 0 && user.lastStep < journeySteps.length) {
+      setStepIdx(user.lastStep);
+    }
+  }, [user]);
+  useEffect(() => {
+    if (!restoredStep.current || !user || user.lastStep === stepIdx) return;
+    updateProfile({ lastStep: stepIdx });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stepIdx]);
+
   function handleLoadExample() {
     updateProfile(
       loadExampleProfile({

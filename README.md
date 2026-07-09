@@ -1,496 +1,735 @@
-# Scholar-E — AI Scholarship Coaching Workflow
+# Scholar-E UI-to-Backend Workflow
 
-Scholar-E is an AI coaching platform for **scholarships, college applications,
-and internships**. It analyzes an opportunity, compares it against the student's
-real profile, simulates reviewers, scores the draft, and assembles a coaching
-package — **it coaches, it never ghostwrites, and it never invents student
-facts.**
+Scholar-E is an AI scholarship coaching application. The user works through a
+React journey UI, and the backend provides profile extraction, scholarship
+extraction, fit analysis, essay outlining, essay coaching, rewriting, and full
+application evaluation.
 
-This document explains how the workflow runs end to end: every agent, what it
-reads and writes, and how control flows (and branches) from one agent to the
-next.
+This README explains the current workflow from the UI to the backend, focusing
+on the folders and files actively used in the app.
 
 ---
 
-## 1. High-level architecture
+## 1. Main Frontend Entry Point
+
+The main user journey lives in:
 
 ```text
-React frontend (frontend-react, TanStack Start)
-        │   POST /api/analyze
-        ▼
-FastAPI server (server.py)  ──►  api/routes.py
-        │                          • validates input
-        │                          • builds the Chroma profile store
-        ▼
-LangGraph pipeline (graph/builder.py)
-        │   a branched, multi-agent graph over a shared ApplicationState
-        ▼
-JSON response  ──►  rendered in the journey UI
+frontend-react/src/routes/journey.tsx
 ```
 
-* **LLM:** OpenAI `gpt-4o-mini`, `temperature=0.2` (`config.py`, `llm/client.py`).
-* **Retrieval:** ChromaDB vector store over the student's profile text
-  (`rag/store.py`), embedded with `OpenAIEmbeddings`.
-* **Orchestration:** LangGraph `StateGraph` over `ApplicationState`
-  (`state/application_state.py`) — a shared dict every node reads from and
-  writes to.
+This file owns the screens for:
 
-The graph is **not linear**. Agents run only when they can add value, decided by
-four branch points (entry, fan-out, reviewer gate, critic loop).
+- profile creation
+- resume autofill
+- scholarship discovery and extraction
+- scholarship fit analysis
+- personalized outline generation
+- essay workspace
+- writing coach
+- evaluation and highlights
+
+The UI calls frontend API helpers from:
+
+```text
+frontend-react/src/lib/api/scholarE.ts
+```
+
+That file builds request payloads and sends `fetch()` requests to the FastAPI
+backend.
 
 ---
 
-## 2. The full workflow at a glance
+## 2. Frontend Dev Server Starts Backend
 
-```mermaid
-flowchart TD
-    START([POST /api/analyze]) --> ENTRY{route_entry\nis there real content?}
+The frontend dev server lazy-starts FastAPI from:
 
-    ENTRY -- "empty / placeholder" --> INSUF[insufficient_input\nzero-LLM short-circuit]
-    INSUF --> ASM
+```text
+frontend-react/vite.config.ts
+```
 
-    ENTRY -- "has draft or profile" --> AN[analyze_opportunity\nAnalyzer agent]
-    AN --> RET[retrieve_profile\nRetriever agent]
-    RET --> PREP[prepare_context\nshared grounding]
+When the UI calls `/api/...`, Vite starts:
 
-    PREP --> FAN{route_generators\nconditional fan-out}
+```text
+server.py
+```
 
-    FAN -- always --> STR[strategy_agent]
-    FAN -- always --> ELI[eligibility_agent]
-    FAN -- if profile --> DIS[discovery_agent]
-    FAN -- if draft --> NAR[narrative_agent]
-    FAN -- if draft --> SEC[coach_sections]
+The backend runs at:
 
-    STR --> JOIN[post_generation\njoin]
-    ELI --> JOIN
-    DIS --> JOIN
-    NAR --> JOIN
-    SEC --> JOIN
+```text
+http://127.0.0.1:8000
+```
 
-    JOIN --> GATE{route_after_generation\nis there a draft?}
-    GATE -- yes --> REV[reviewer_agent\n4 persona simulation]
-    GATE -- no --> COMB
-    REV --> COMB[combine_coaching\nCombiner agent]
+The Python resolver in `vite.config.ts` supports Windows, Conda, and local
+virtual environments so the backend starts with the correct Python interpreter.
 
-    COMB --> CRIT[critic_review\nCritic agent]
-    CRIT --> AFTER{route_after_critic\nneeds revision?}
-    AFTER -- "revise (max 1 retry)" --> COMB
-    AFTER -- done --> ASM[assemble_package\nmarkdown package]
-    ASM --> END([JSON response])
+---
+
+## 3. Backend Route Layer
+
+The backend entry point is:
+
+```text
+server.py
+```
+
+`server.py` registers FastAPI endpoints and delegates work to:
+
+```text
+api/routes.py
+```
+
+Important endpoints:
+
+```text
+POST /api/profile/autofill-resume
+POST /api/opportunity/extract
+POST /api/fit/analyze
+POST /api/apply/generate-outline
+POST /api/apply/essay-coach
+POST /api/apply/rewrite-selection
+POST /api/analyze
+```
+
+`server.py` is intentionally thin. Most validation, request shaping, and
+workflow orchestration starts in `api/routes.py`.
+
+---
+
+## 4. Profile Autofill
+
+The profile autofill flow starts in the UI when the student uploads a resume.
+
+Frontend:
+
+```text
+frontend-react/src/routes/journey.tsx
+frontend-react/src/lib/api/scholarE.ts
+```
+
+Frontend function:
+
+```ts
+autofillProfileFromResume(file)
+```
+
+Backend endpoint:
+
+```text
+POST /api/profile/autofill-resume
+```
+
+Backend function:
+
+```python
+autofill_profile_from_resume(...)
+```
+
+Location:
+
+```text
+api/routes.py
+```
+
+The backend extracts text from the uploaded PDF, then uses:
+
+```text
+graph/profile_builder.py
+nodes/profile_extraction.py
+```
+
+to produce editable student profile fields.
+
+The extracted profile may be persisted through:
+
+```text
+persistence/services.py
+persistence/database.py
+```
+
+Local persistence uses SQLite:
+
+```text
+DATABASE_URL=sqlite:///scholar_e.db
 ```
 
 ---
 
-## 3. The shared state (`ApplicationState`)
+## 5. Scholarship Extraction
 
-Every node receives the state and returns a partial dict that is merged back in.
-Key fields, grouped by who writes them:
+The scholarship extraction flow starts after the user enters a scholarship name,
+link, or copied description.
 
-| Field | Written by | Purpose |
-| --- | --- | --- |
-| `opportunity_text`, `student_draft`, `student_profile_docs`, `previous_readiness`, `draft_number` | API (input) | The raw submission |
-| `opportunity_analysis` | Analyzer | Structured opportunity facts |
-| `retrieved_profile_chunks` | Retriever | Profile evidence from Chroma |
-| `shared_context`, `profile_text`, `submitted_summary` | prepare_context | One grounded context string reused by all generators |
-| `strategy_report` | strategy_agent | What the opportunity really evaluates |
-| `eligibility_report` | eligibility_agent | Raw requirement-by-requirement comparison |
-| `discovery_report` | discovery_agent | Strengths grounded in the profile |
-| `narrative_report` | narrative_agent | Story-construction feedback |
-| `section_coaching` | coach_sections | Section-by-section essay feedback |
-| `reviewer_report` | reviewer_agent | Four reviewer-persona comments |
-| `readiness_index`, `coaching_brief`, `growth_report`, `reviewer_comments`, `coaching_reports`, `eligibility_matrix`, `feedback`, `revision_priorities`, `scores` | combine_coaching | Consumer-facing synthesis |
-| `essay_alignment_matrix` | Essay Alignment Matrix | Checks whether the current essay draft covers the prompt, themes, criteria, length guidance, and profile-grounded evidence |
-| `critique`, `critic_attempts`, `needs_revision` | critic_review | Quality audit + loop control |
-| `final_application_package` | assemble_package | Final markdown package |
+Frontend:
 
----
+```text
+frontend-react/src/routes/journey.tsx
+frontend-react/src/lib/api/scholarE.ts
+```
 
-## 4. Agent-by-agent walkthrough
+Frontend function:
 
-### Branch point 0 — `route_entry` (entry router)
-**File:** `nodes/routing.py` · **LLM:** no
+```ts
+extractScholarshipOpportunity(payload)
+```
 
-Before spending any tokens, the graph checks whether the submission has real
-content. If there is **no draft** (`< 20` words) **and no profile**
-(`< 15` words), it routes to `insufficient_input`. Otherwise it starts the real
-pipeline at `analyze_opportunity`.
+Backend endpoint:
 
-> This is the first strategic `if`: it protects against empty/placeholder
-> submissions making LLM calls.
+```text
+POST /api/opportunity/extract
+```
 
----
+Backend function:
 
-### `insufficient_input` (short-circuit node)
-**File:** `nodes/insufficient.py` · **LLM:** no
+```python
+extract_scholarship_opportunity(...)
+```
 
-Returns a complete, honest result with zero scores, a "add your draft and
-profile, then run again" coaching message, and an empty eligibility matrix. Then
-jumps straight to `assemble_package`. No agent runs.
+Location:
 
----
+```text
+api/routes.py
+```
 
-### Agent 1 — Analyzer (`analyze_opportunity`)
-**File:** `graph/builder.py` · **LLM:** yes
+Before calling the extraction agent, the backend gathers source text with:
 
-Reads `opportunity_text` and extracts structured JSON:
+```python
+_gather_opportunity_source_text(...)
+```
 
-* `opportunity_type`
-* `requirements`
-* `deadlines`
-* `evaluation_themes`
+That function tries to:
 
-**Writes** `opportunity_analysis`. This both feeds retrieval queries and seeds
-the eligibility matrix downstream.
+- use a complete pasted URL
+- treat broken URLs as search clues
+- discover likely URLs from scholarship name and notes
+- fetch source page text
+- fall back to user-provided notes if online fetch fails
 
----
+Then the extraction graph runs:
 
-### Agent 2 — Retriever (`retrieve_profile`)
-**File:** `graph/builder.py` + `rag/retrieve.py` + `rag/store.py` · **LLM:** embeddings only
+```text
+graph/opportunity_builder.py
+nodes/opportunity_extraction.py
+```
 
-Builds search queries from the analyzer's `requirements` + `evaluation_themes`
-(plus the draft, or the opportunity text as a fallback), then runs similarity
-search against the student's **Chroma profile store**. Deduplicates and caps the
-results.
+The extractor fills structured fields such as:
 
-**Writes** `retrieved_profile_chunks` — the grounded evidence every later agent
-is allowed to cite. (The profile store is built per-profile in
-`api/routes.py`, ephemeral in-memory for new profiles to avoid Windows file
-locks.)
+- scholarship name
+- organization
+- official website
+- award amount
+- deadlines
+- eligibility
+- required materials
+- selection criteria
+- application process
+- missing fields
+
+The UI displays structured editable fields. It does not show raw extraction
+output or important notes.
 
 ---
 
-### `prepare_context` (grounding node)
-**File:** `nodes/prepare.py` · **LLM:** no
+## 6. Scholarship Fit Analysis
 
-Assembles **one** shared context string so the expensive concatenation happens
-once instead of inside every agent. It combines:
+Fit analysis compares the cleaned scholarship record against the student
+profile.
 
-* the opportunity text + analysis,
-* a verbatim `submitted_summary` (exact word counts + raw text, from
-  `utils/input_validation.py`),
-* the profile evidence (retrieved chunks, or raw CV text as fallback),
-* the student draft.
+Frontend function:
 
-**Writes** `shared_context`, `profile_text`, `submitted_summary`. Every
-generation agent reads `shared_context` and the shared **grounding rules**
-(`nodes/coaching/agents.py::_grounding_rules`) that forbid inventing facts.
+```ts
+analyzeScholarshipFit(payload)
+```
 
----
+Backend endpoint:
 
-### Branch point 1 — `route_generators` (conditional fan-out)
-**File:** `nodes/routing.py` · **LLM:** no
+```text
+POST /api/fit/analyze
+```
 
-Returns the list of generation agents to run **in parallel**, based on what was
-submitted:
+Backend function:
 
-| Agent | Runs when |
-| --- | --- |
-| `strategy_agent` | always |
-| `eligibility_agent` | always |
-| `discovery_agent` | profile has ≥ 15 words |
-| `narrative_agent` | draft has ≥ 20 words |
-| `coach_sections` | draft has ≥ 20 words |
+```python
+analyze_scholarship_fit(...)
+```
 
-> Second strategic `if`: a profile-only submission runs just strategy +
-> eligibility + discovery; a draft-only submission skips discovery; both skip
-> nothing they can actually use.
+Location:
 
----
+```text
+api/routes.py
+```
 
-### Agent 3 — Opportunity Strategy (`strategy_agent`)
-**File:** `nodes/generation.py` → `run_strategy_coach` · **LLM:** yes
+The backend invokes:
 
-Explains what the opportunity *actually* evaluates vs. what students think it
-asks. **Writes** `strategy_report` with `surface_prompt`,
-`actual_evaluation_focus`, `strategic_insight`, `reflection_vs_story_ratio`.
-This output is later fed into the reviewer simulation.
+```text
+graph/fit_builder.py
+```
 
----
+The result includes:
 
-### Agent 4 — Eligibility / Requirements Matrix (`eligibility_agent`)
-**File:** `nodes/generation.py` → `run_eligibility_matrix` · **LLM:** yes
-
-Builds a **row-per-requirement comparison** of the opportunity's rules against
-the student's profile, grounded only in submitted text. Each row gets a status:
-
-* `met` — the profile clearly satisfies it,
-* `not_met` — the profile clearly **violates** it (e.g. requires 3.0 GPA,
-  profile shows 2.4),
-* `missing` — the requirement exists but the profile lacks the info to verify
-  it (the student must fill it in).
-
-**Writes** `eligibility_report`. The combiner later normalizes this into
-`eligibility_matrix` with violation/missing/met counts, which the UI surfaces
-prominently (red for violations, amber for missing, with a "what to fill in"
-action per row).
-
-### Application Readiness Matrix
-**File:** `nodes/readiness_matrix.py` · **LLM:** no
-
-The dedicated scholarship fit flow also creates an **Application Readiness
-Matrix** from the fit agent's eligibility checks and required-material checks.
-It answers: do we have the required eligibility evidence and application
-materials ready?
-
-This matrix is separate from the essay-writing review. It includes each
-eligibility item or material, readiness status, risk level, evidence, action
-needed, blockers, and preparation tasks. It is returned by `/api/fit/analyze`
-as `application_readiness_matrix` and displayed in the scholarship fit step.
+- fit label
+- fit score
+- likely eligibility
+- strengths
+- gaps or risks
+- missing student information
+- application readiness matrix
 
 ---
 
-### Agent 5 — Experience Discovery (`discovery_agent`)
-**File:** `nodes/generation.py` → `run_discovery_coach` · **LLM:** yes
+## 7. Personalized Outline
 
-Identifies strengths **only** from the profile text (says so if the profile is
-empty). **Writes** `discovery_report` with `hidden_strengths`,
-`strongest_match_for_opportunity`, `underused_experiences`,
-`recommended_experience_to_feature`, `coaching_message`.
+The personalized outline helps the student plan an essay from their profile and
+the scholarship requirements.
 
----
+Frontend function:
 
-### Agent 6 — Narrative Coach (`narrative_agent`)
-**File:** `nodes/generation.py` → `run_narrative_coach` · **LLM:** yes
+```ts
+generatePersonalizedOutline(buildOutlinePayload(user))
+```
 
-Evaluates story construction in the **draft only**: beginning / middle / end /
-reflection, plus the single biggest narrative gap. **Writes** `narrative_report`.
+Backend endpoint:
 
----
+```text
+POST /api/apply/generate-outline
+```
 
-### Agent 7 — Section Coaching (`coach_sections`)
-**File:** `nodes/coach_sections.py` · **LLM:** yes (one batched call)
+Backend function:
 
-Generates section-by-section feedback for configured templates (Personal
-Statement, Leadership & Impact, Experience & Achievements) in a single LLM call.
-**Writes** `section_coaching`.
+```python
+generate_personalized_outline(...)
+```
 
----
+Location:
 
-### `post_generation` (join node)
-**File:** `nodes/routing.py` · **LLM:** no
+```text
+api/routes.py
+```
 
-A pass-through join so the variable set of parallel generators fans back in to a
-single point before the reviewer gate. Handles partial fan-in correctly (e.g.
-only 2 of 5 generators ran).
+The payload includes:
 
----
+- cleaned scholarship record
+- student profile
+- essay prompt or writing requirements
+- word limit
+- user notes
 
-### Branch point 2 — `route_after_generation` (reviewer gate)
-**File:** `nodes/routing.py` · **LLM:** no
+The backend returns:
 
-> Third strategic `if`: reviewer simulation only makes sense when there is an
-> actual draft to react to. If there's a draft → `reviewer_agent`; otherwise skip
-> straight to `combine_coaching`.
+- outline title
+- core message
+- sections
+- suggested content
+- profile evidence to use
+- scholarship requirements addressed
+- coaching notes
+- opening and conclusion guidance
+- questions for the student
+- warnings
 
----
-
-### Agent 8 — Reviewer Simulation (`reviewer_agent`)
-**File:** `nodes/generation.py` → `run_reviewer_simulation_coach` · **LLM:** yes
-
-Simulates **four reviewer personas** reacting to the draft — Scholarship
-Reviewer, Admissions Officer, Recruiter, and a Skeptical Reviewer — using the
-strategy agent's output as context. **Writes** `reviewer_report`.
-
----
-
-### Agent 9 — Combiner (`combine_coaching`)
-**File:** `nodes/combine.py` → `run_combiner` · **LLM:** yes (+ Python synthesis)
-
-The synthesis hub. It:
-
-1. Calls the LLM to produce the **Application Readiness Index** (5 dimensions:
-   opportunity fit, evidence strength, narrative quality, authenticity,
-   competitiveness) and a **coaching brief**, grounded in the submitted text.
-2. Normalizes scores → levels (`nodes/coaching/readiness.py`).
-3. Computes the **Growth Report** in pure Python by diffing this draft's
-   readiness against `previous_readiness` (no LLM).
-4. Normalizes the eligibility report into `eligibility_matrix` with
-   violation/missing/met counts and explicit "violations" and "missing_info"
-   lists.
-5. Flattens reviewer comments and assembles `revision_priorities` + overall
-   `scores`.
-
-**If the Critic requested a revision**, the combiner re-runs with the
-`critique` injected into its prompt so it can fix the flagged issues.
+The essay prompt is used internally for generation but is not displayed in the
+personalized outline output.
 
 ---
 
-### Agent 10 — Critic (`critic_review`)
-**File:** `nodes/critic.py` → `run_critic_review` · **LLM:** yes
+## 8. Essay Workspace Coach
 
-A strict quality-control auditor (it does **not** coach the student). It audits
-the combined output against the submitted text and the grounding rules:
+The Essay Workspace Coach is the interactive writing coach used while the
+student is drafting.
 
-* Is every readiness score justified by specific words in the submission?
-* Did any agent invent experiences, awards, metrics, or facts?
-* Is placeholder content (e.g. "N/A") correctly scored low, not praised?
-* Are comments specific to this submission rather than generic praise?
+Frontend:
 
-**Writes** `critique` (`verdict`, `confidence`, `grounding_pass`,
-`guardrail_pass`, `issues`, `revision_guidance`, `attempt`), plus
-`critic_attempts` and `needs_revision`.
+```text
+frontend-react/src/routes/journey.tsx
+frontend-react/src/lib/api/scholarE.ts
+frontend-react/src/lib/suggestions.ts
+```
+
+Frontend function:
+
+```ts
+runEssayCoach(buildEssayCoachPayload(user, mode))
+```
+
+Backend endpoint:
+
+```text
+POST /api/apply/essay-coach
+```
+
+Backend route function:
+
+```python
+run_essay_coach(...)
+```
+
+Backend service:
+
+```text
+essay_coaching_service.py
+```
+
+Main service function:
+
+```python
+run_essay_workspace_coach(...)
+```
+
+This coach supports modes:
+
+```text
+full
+grammar_tone
+prompt_alignment
+structure
+reviewer
+final_check
+auto_check
+```
+
+It can run these specialists:
+
+- Sentence Corrector
+- Prompt Alignment Coach
+- Profile Grounding Coach
+- Structure & Flow Coach
+- Specificity Coach
+- Tone & Authenticity Coach
+- Reviewer Simulation
+- Outline Coverage
+- Guardrail Critic
+- Final Check
+- Combiner
+
+The UI displays:
+
+- sentence-level suggestions
+- coach summary
+- warnings
+- top revision priorities
+- quick fixes
+- deeper revision tasks
+- scores
+- prompt alignment
+- profile grounding
+- structure and flow feedback
+- specificity and impact feedback
+- tone and authenticity feedback
+- reviewer simulation
+- final check status
+
+This system is designed for live writing and revision inside the essay
+workspace.
 
 ---
 
-### Essay Alignment Matrix
-**File:** `nodes/essay_alignment.py` · **LLM:** no
+## 9. Sentence Suggestions
 
-After the critic approves the coaching synthesis, Scholar-E runs an **Essay
-Alignment Matrix** over the current draft. It does not rewrite the essay and
-does not invent student experiences. It checks whether the draft responds to
-the prompt, required themes, selection criteria, profile-grounded evidence, and
-word-limit guidance.
+Sentence suggestions are returned by the Essay Workspace Coach as text anchors,
+not raw character offsets.
 
-The output includes overall alignment status, completion percent, word count,
-word-limit status, requirement-by-requirement rows, missing or weak items,
-supported strengths, revision tasks, and final submission readiness. The UI
-shows it in the Essay Workspace and Application Evaluation areas.
+Backend returns each suggestion with:
 
-The two matrices serve different jobs:
+```text
+original_text
+suggested_text
+suggestion_type
+reason
+severity
+```
 
-| Matrix | Main question | Runs in |
-| --- | --- | --- |
-| Application Readiness Matrix | Are eligibility evidence and required materials ready? | Scholarship fit flow |
-| Essay Alignment Matrix | Does this essay draft answer what the scholarship asks for? | Essay/application coaching flow |
+Frontend anchoring happens in:
 
----
+```text
+frontend-react/src/lib/suggestions.ts
+```
 
-### Branch point 3 — `route_after_critic` (bounded revision loop)
-**File:** `graph/builder.py` · **LLM:** no
+Important functions:
 
-> Fourth strategic `if`: if the critic flagged a real problem **and** we are
-> still within the retry budget (`MAX_CRITIC_ATTEMPTS = 2`), loop back to
-> `combine_coaching` with the critique. Otherwise proceed to `assemble_package`.
-> The bound guarantees termination.
+```ts
+anchorCoachSuggestions(...)
+mergeSuggestions(...)
+```
 
----
-
-### `assemble_package` (final node)
-**File:** `nodes/assemble_package.py` · **LLM:** no
-
-Renders everything into a single markdown coaching package: coaching brief,
-readiness index table, **eligibility & requirements matrix**, **essay alignment
-matrix**, growth across drafts, reviewer simulation, coach reports, opportunity
-analysis, retrieved evidence, section coaching, and the critic's quality check.
-**Writes** `final_application_package`.
-
-The API (`api/routes.py`) then returns the consumer-facing fields as JSON.
+The frontend anchors each suggestion into the current draft, merges coach
+suggestions with instant local suggestions, and lets the student reveal, accept,
+ignore, or copy suggestions.
 
 ---
 
-## 5. Why the flow branches (summary of the four `if`s)
+## 10. Rewrite Selection
 
-| Branch point | Decision | Effect |
-| --- | --- | --- |
-| `route_entry` | Real content submitted? | Skip the entire LLM pipeline for empty input |
-| `route_generators` | Profile? Draft? | Run only the generation agents that have usable input |
-| `route_after_generation` | Draft present? | Run reviewer simulation only when there's a draft |
-| `route_after_critic` | Revision needed & budget left? | Self-correct once, then finish |
+The essay editor can ask the backend to rewrite, shorten, expand, or improve
+the tone of selected text.
 
-This keeps the system efficient (no wasted agent calls) and adaptive (the path
-changes with what each student actually submits).
+Frontend function:
+
+```ts
+rewriteSelection(...)
+```
+
+Backend endpoint:
+
+```text
+POST /api/apply/rewrite-selection
+```
+
+Backend route function:
+
+```python
+rewrite_selection(...)
+```
+
+Actual service function:
+
+```python
+run_selection_rewrite(...)
+```
+
+Location:
+
+```text
+essay_coaching_service.py
+```
+
+This rewrite path only works on selected text. It has guardrails to avoid large,
+fabricated expansions.
 
 ---
 
-## 6. Grounding & guardrails
+## 11. Deep Application Coach
 
-* **Shared grounding rules** (`nodes/coaching/agents.py::_grounding_rules`) are
-  injected into every generation/critic prompt: read the submitted text exactly,
-  justify every score with specific words, score placeholders low, never invent
-  facts or assume unstated profile details.
-* **Input validation** (`api/routes.py`) caps field lengths to bound token use.
-* **The Critic agent** is an explicit guardrail that can force one revision pass.
-* **The eligibility matrix** explicitly reports where the profile *violates* a
-  requirement or is *missing* information, so the student knows exactly what to
-  fix.
+The Deep Application Coach is the larger application-evaluation graph.
+
+It is separate from the Essay Workspace Coach.
+
+Frontend trigger:
+
+```text
+frontend-react/src/components/CoachRunButton.tsx
+```
+
+Frontend function:
+
+```ts
+analyzeApplication(...)
+```
+
+Backend endpoint:
+
+```text
+POST /api/analyze
+```
+
+Backend function:
+
+```python
+analyze_application(...)
+```
+
+Location:
+
+```text
+api/routes.py
+```
+
+The backend invokes:
+
+```text
+graph/builder.py
+```
+
+That graph runs:
+
+- analyzer
+- retriever
+- strategy coach
+- eligibility matrix coach
+- discovery coach
+- narrative coach
+- section coach
+- reviewer simulation
+- combiner
+- critic
+- essay alignment matrix
+- final package assembler
+
+Important files:
+
+```text
+nodes/coaching/agents.py
+nodes/coach_sections.py
+nodes/combine.py
+nodes/critic.py
+nodes/assemble_package.py
+```
+
+The response includes:
+
+- readiness index
+- coaching brief
+- growth report
+- reviewer comments
+- coaching reports
+- eligibility matrix
+- essay alignment matrix
+- section-by-section coaching
+- final application package
+- revision priorities
+
+This system is designed for full application evaluation, not live editing.
 
 ---
 
-## 7. Running it
+## 12. Two Coaching Systems
 
-**Backend**
+Scholar-E currently has two coaching systems.
+
+### Essay Workspace Coach
+
+```text
+POST /api/apply/essay-coach
+essay_coaching_service.py
+```
+
+Purpose:
+
+```text
+How do I improve this draft right now?
+```
+
+Used for:
+
+- sentence fixes
+- prompt alignment
+- grounding checks
+- structure feedback
+- tone feedback
+- reviewer-style feedback
+- final check
+- live editing support
+
+### Deep Application Coach
+
+```text
+POST /api/analyze
+graph/builder.py
+```
+
+Purpose:
+
+```text
+How strong is my full application for this scholarship?
+```
+
+Used for:
+
+- readiness scoring
+- full coaching brief
+- eligibility matrix
+- essay alignment matrix
+- reviewer simulation
+- final application package
+
+In short:
+
+```text
+Essay Workspace Coach = live writing coach inside the editor
+Deep Application Coach = full application review board
+```
+
+---
+
+## 13. Local Setup
+
+Install Python dependencies:
 
 ```bash
 pip install -r requirements.txt
-# .env at project root:
-#   OPENAI_API_KEY=sk-...
-#   DATABASE_URL=sqlite:///scholar_e.db   # optional; this is the default
-#   CHROMA_PERSIST_DIRECTORY=./chroma_db
-python server.py            # http://127.0.0.1:8000  (POST /api/analyze, GET /health)
 ```
 
-**Frontend**
+Use SQLite locally:
+
+```text
+DATABASE_URL=sqlite:///scholar_e.db
+```
+
+Run migrations:
+
+```bash
+python -c "from alembic.config import main; main(argv=['upgrade','head'])"
+```
+
+Start backend directly:
+
+```bash
+python server.py
+```
+
+Start frontend:
 
 ```bash
 cd frontend-react
 npm install
-npm run dev                 # http://localhost:8080  (proxies /api to :8000)
+npm run dev
 ```
 
-Open the app, create an account (or "Fill demo details" / "Load example"), paste
-a draft and scholarship details, and run the coach. The readiness scores,
-eligibility matrix, reviewer comments, and critic quality check appear in the
-journey UI.
-
-### Persistence setup
-
-Scholar-E uses SQLite for durable local user data, agent runs, version history,
-and future RAG memory. By default, the database file is `scholar_e.db` in the
-project root.
-
-Recommended local database setup:
-
-```bash
-alembic upgrade head
-python scripts/seed_demo_data.py
-```
-
-Storage rules:
-
-* SQLite is the source of truth for structured records.
-* Chroma is only for searchable embedded chunks.
-* Private memory must always carry `user_id` and explicit collection filters.
-* Do not put `.env`, `chroma_db/`, `uploads/`, `local_data/`, SQLite files, or
-  local database files in git.
-* The shared `VectorService` contract is the path for new durable RAG features;
-  agents should not invent one-off retrieval paths.
-* Current endpoints remain backward compatible; `user_id` is optional until the
-  auth layer is implemented, and defaults to the local demo user.
+In development, Vite can lazy-start the backend when API routes are called.
 
 ---
 
-## 8. Project structure (current)
+## 14. Main Files by Folder
+
+Frontend:
 
 ```text
-.
-├── server.py                     # FastAPI app: /health, POST /api/analyze
-├── config.py                     # Settings + .env (model, OpenAI key, Chroma path)
-├── api/
-│   └── routes.py                 # Request validation, profile store, pipeline runner
-├── graph/
-│   └── builder.py                # LangGraph wiring + Analyzer/Retriever + routers
-├── state/
-│   └── application_state.py      # ApplicationState (shared state schema)
-├── nodes/
-│   ├── routing.py                # Branch logic (entry, fan-out, gate, join)
-│   ├── insufficient.py           # Zero-LLM short-circuit
-│   ├── prepare.py                # Shared grounded context
-│   ├── generation.py             # strategy / eligibility / discovery / narrative / reviewer nodes
-│   ├── coach_sections.py         # Section-by-section coaching (batched)
-│   ├── combine.py                # Combiner synthesis + eligibility matrix + growth
-│   ├── critic.py                 # Critic audit + revision loop control
-│   ├── assemble_package.py       # Final markdown package
-│   └── coaching/
-│       ├── agents.py             # All LLM agent prompts (strategy, eligibility, ...)
-│       └── readiness.py          # Score normalization + growth report (no LLM)
-├── rag/
-│   ├── store.py                  # Chroma vector store (persistent / ephemeral)
-│   └── retrieve.py               # Similarity retrieval + dedupe
-├── llm/
-│   └── client.py                 # OpenAI client (gpt-4o-mini)
-├── utils/
-│   ├── parsing.py                # safe JSON parsing of LLM output
-│   └── input_validation.py       # Verbatim submission summary
-├── templates/                    # Section coaching prompt templates
-└── frontend-react/               # React + TanStack Start UI
+frontend-react/src/routes/journey.tsx
+frontend-react/src/lib/api/scholarE.ts
+frontend-react/src/lib/suggestions.ts
+frontend-react/src/components/CoachRunButton.tsx
+frontend-react/vite.config.ts
+```
+
+Backend API:
+
+```text
+server.py
+api/routes.py
+```
+
+Essay workspace coach:
+
+```text
+essay_coaching_service.py
+templates/essay_coach.py
+```
+
+Graphs:
+
+```text
+graph/profile_builder.py
+graph/opportunity_builder.py
+graph/fit_builder.py
+graph/builder.py
+```
+
+Nodes:
+
+```text
+nodes/profile_extraction.py
+nodes/opportunity_extraction.py
+nodes/coaching/agents.py
+nodes/coach_sections.py
+nodes/combine.py
+nodes/critic.py
+nodes/assemble_package.py
+```
+
+Persistence:
+
+```text
+persistence/database.py
+persistence/services.py
+persistence/models.py
+persistence/vector_service.py
 ```

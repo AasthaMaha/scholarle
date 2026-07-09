@@ -430,6 +430,8 @@ export type UserProfile = {
   // essay (current working draft)
   essayTitle?: string;
   essayDraft?: string;
+  // last journey step index, so the student resumes where they left off
+  lastStep?: number;
   // scholarship currently being analyzed
   activeScholarship?: ActiveScholarship;
   // latest result returned by the Scholar-E AI coach
