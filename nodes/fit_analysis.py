@@ -30,7 +30,7 @@ FIT_ANALYSIS_INSTRUCTIONS = (
     "- Use only provided data. Do not invent student facts or scholarship requirements.\n"
     "- Check every stated mandatory eligibility requirement. If the scholarship does "
     "not state a requirement, omit it (do not invent it).\n"
-    "- For each eligibility item set status to exactly one of: Met, Not met, Unclear, "
+    "- For each eligibility item set status to exactly one of the following: Met, Not met, Unclear, "
     "Not applicable.\n"
     "- Use Not met only when profile evidence clearly conflicts with a stated "
     "mandatory requirement (for example undergrad vs postdoc, GPA below minimum, "
