@@ -42,6 +42,7 @@ import {
 } from "@/lib/suggestions";
 import { essayDraft as exampleEssayDraft, journeySteps } from "@/lib/persona";
 import { CoachRunButton } from "@/components/CoachRunButton";
+import { Spinner } from "@/components/Spinner";
 import {
   analyzeScholarshipFit,
   autofillProfileFromResume,
@@ -1150,10 +1151,15 @@ function StepProfile({ error }: { error: string }) {
               type="button"
               onClick={() => startResumeInputRef.current?.click()}
               disabled={!!resumeStatus}
-              className="flex w-full items-center gap-3 rounded-lg border border-border bg-primary px-4 py-3 text-left text-sm font-medium text-primary-foreground hover:opacity-90"
+              aria-busy={!!resumeStatus && !resumeError}
+              className={`flex w-full items-center gap-3 rounded-lg border border-border bg-primary px-4 py-3 text-left text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-90 ${resumeStatus && !resumeError ? "agent-loading" : ""}`}
             >
-              <FileUp className="size-5 shrink-0" />
-              <span>Autofill with Resume</span>
+              {resumeStatus && !resumeError ? (
+                <Spinner className="size-5" />
+              ) : (
+                <FileUp className="size-5 shrink-0" />
+              )}
+              <span>{resumeStatus && !resumeError ? "Reading your resume…" : "Autofill with Resume"}</span>
             </button>
             <button
               type="button"
@@ -2020,8 +2026,9 @@ function StepDiscovery({
             </div>
           </div>
           <div className="flex flex-wrap gap-2">
-            <button onClick={refreshWiki} disabled={loading} className="rounded-full bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-40">
-              {loading ? "Searching..." : "Search"}
+            <button onClick={refreshWiki} disabled={loading} aria-busy={loading} className={`inline-flex items-center justify-center gap-2 rounded-full bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-90 ${loading ? "agent-loading" : ""}`}>
+              {loading && <Spinner className="size-4" />}
+              {loading ? "Searching…" : "Search"}
             </button>
             <button onClick={onUpdateProfile} className="rounded-full border border-border bg-card px-4 py-2 text-sm hover:bg-accent">
               Update profile
@@ -2507,9 +2514,11 @@ function ScholarshipDetailsCard({
           type="button"
           onClick={onExtract}
           disabled={extracting}
-          className="rounded-full bg-primary text-primary-foreground px-5 py-2.5 text-sm font-medium hover:opacity-90 disabled:opacity-50"
+          aria-busy={extracting}
+          className={`inline-flex items-center justify-center gap-2 rounded-full bg-primary text-primary-foreground px-5 py-2.5 text-sm font-medium hover:opacity-90 disabled:opacity-90 ${extracting ? "agent-loading" : ""}`}
         >
-          {extracting ? "Extracting requirements..." : "Extract Requirements"}
+          {extracting && <Spinner className="size-4" />}
+          {extracting ? "Extracting requirements…" : "Extract Requirements"}
         </button>
       </div>
       {extractionStatus && <p className="mt-3 text-xs text-muted-foreground text-right">{extractionStatus}</p>}
@@ -2902,9 +2911,11 @@ function EditableScholarshipFields({
           type="button"
           onClick={onAnalyze}
           disabled={analyzing}
-          className="rounded-full bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
+          aria-busy={analyzing}
+          className={`inline-flex items-center justify-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-90 ${analyzing ? "agent-loading" : ""}`}
         >
-          {analyzing ? "Analyzing fit..." : "Accept and Analyze Fit"}
+          {analyzing && <Spinner className="size-4" />}
+          {analyzing ? "Analyzing fit…" : "Accept and Analyze Fit"}
         </button>
         {analysisStatus && <p className="mt-2 text-right text-xs text-muted-foreground">{analysisStatus}</p>}
       </div>
@@ -3837,9 +3848,10 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
               type="button"
               onClick={() => runCoach()}
               disabled={coachLoading}
-              className="ml-0.5 inline-flex items-center gap-1.5 rounded-lg bg-info px-3 py-2 text-[13px] font-medium text-white transition-opacity duration-150 hover:opacity-90 disabled:opacity-60"
+              aria-busy={coachLoading}
+              className={`ml-0.5 inline-flex items-center gap-1.5 rounded-lg bg-info px-3 py-2 text-[13px] font-medium text-white transition-opacity duration-150 hover:opacity-90 disabled:opacity-60 ${coachLoading ? "agent-loading" : ""}`}
             >
-              <Wand2 className={`size-4 ${coachLoading ? "animate-pulse" : ""}`} />
+              {coachLoading ? <Spinner className="size-4" /> : <Wand2 className="size-4" />}
               {coachLoading ? "Coaching…" : "Run coach"}
             </button>
 
@@ -4314,10 +4326,11 @@ function PersonalizedOutlinePanel({
                 type="button"
                 onClick={onRegenerate}
                 disabled={loading}
-                className="grid size-9 shrink-0 place-items-center rounded-md border border-border text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
+                aria-busy={loading}
+                className={`grid size-9 shrink-0 place-items-center rounded-md border border-border text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-90 ${loading ? "agent-loading text-info" : ""}`}
                 aria-label="Regenerate outline"
               >
-                <RefreshCw className={`size-4 ${loading ? "animate-spin" : ""}`} />
+                {loading ? <Spinner className="size-4" /> : <RefreshCw className="size-4" />}
               </button>
             </TooltipTrigger>
             <TooltipContent>{loading ? "Generating outline" : "Regenerate outline"}</TooltipContent>
@@ -4757,9 +4770,10 @@ function WorkspaceCoachTab({
           type="button"
           onClick={() => onRunCoach()}
           disabled={loading}
-          className="inline-flex min-w-[158px] shrink-0 items-center justify-center gap-2 rounded-lg border border-border bg-background px-3 py-1.5 text-[12px] font-semibold text-foreground transition-colors duration-150 hover:border-info/40 hover:bg-info/10 hover:text-info focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/30 disabled:opacity-50"
+          aria-busy={loading}
+          className={`inline-flex min-w-[158px] shrink-0 items-center justify-center gap-2 rounded-lg border border-border bg-background px-3 py-1.5 text-[12px] font-semibold text-foreground transition-colors duration-150 hover:border-info/40 hover:bg-info/10 hover:text-info focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/30 disabled:opacity-50 ${loading ? "agent-loading text-info" : ""}`}
         >
-          <RefreshCw className={`size-3.5 ${loading ? "animate-spin" : ""}`} />
+          {loading ? <Spinner className="size-3.5" /> : <RefreshCw className="size-3.5" />}
           {loading ? "Running..." : "Re-run Coach"}
         </button>
       </div>
@@ -4768,9 +4782,10 @@ function WorkspaceCoachTab({
         type="button"
         onClick={() => onRunCoach("final_check")}
         disabled={loading}
-        className="flex w-full items-center justify-center gap-2 rounded-lg border border-border px-3 py-1.5 text-[12px] font-semibold text-foreground transition-colors duration-150 hover:bg-accent disabled:opacity-50"
+        aria-busy={loading}
+        className={`flex w-full items-center justify-center gap-2 rounded-lg border border-border px-3 py-1.5 text-[12px] font-semibold text-foreground transition-colors duration-150 hover:bg-accent disabled:opacity-50 ${loading ? "agent-loading" : ""}`}
       >
-        <Check className="size-3.5 text-success" />
+        {loading ? <Spinner className="size-3.5" /> : <Check className="size-3.5 text-success" />}
         Final check
       </button>
 
@@ -5209,9 +5224,10 @@ function WorkspaceHighlightsTab({
             onRunCoach("grammar_tone", writingSupportLevel);
           }}
           disabled={coachLoading}
-          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 py-1.5 text-[12px] font-semibold text-foreground transition-colors duration-150 hover:border-info/40 hover:bg-info/10 hover:text-info focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/30 disabled:opacity-50"
+          aria-busy={coachLoading}
+          className={`inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 py-1.5 text-[12px] font-semibold text-foreground transition-colors duration-150 hover:border-info/40 hover:bg-info/10 hover:text-info focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/30 disabled:opacity-50 ${coachLoading ? "agent-loading text-info" : ""}`}
         >
-          <RefreshCw className={`size-3.5 ${coachLoading ? "animate-spin" : ""}`} />
+          {coachLoading ? <Spinner className="size-3.5" /> : <RefreshCw className="size-3.5" />}
           {coachLoading ? (
             "Updating..."
           ) : (

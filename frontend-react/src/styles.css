@@ -134,3 +134,30 @@
   40% { background-color: rgb(109 93 246 / 0.3); }
 }
 .essay-flash-pulse { animation: essayFlashPulse 0.7s ease-in-out; }
+
+/* Modern "AI working" affordance: a light band sweeps across a button while its
+   agent runs. Colour-adaptive (uses currentColor) so it reads on both filled and
+   outline buttons. Pair with a <Spinner /> in the label. */
+@keyframes agentSheen {
+  0% { transform: translateX(-160%) skewX(-12deg); }
+  100% { transform: translateX(220%) skewX(-12deg); }
+}
+.agent-loading {
+  position: relative;
+  overflow: hidden;
+}
+.agent-loading::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 40%;
+  background: linear-gradient(90deg, transparent, currentColor, transparent);
+  opacity: 0.16;
+  animation: agentSheen 1.25s ease-in-out infinite;
+  pointer-events: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-loading::after { animation: none; opacity: 0; }
+}
