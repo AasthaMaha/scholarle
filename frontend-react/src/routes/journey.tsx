@@ -1086,6 +1086,8 @@ function StepProfile({ error }: { error: string }) {
     "A-U.S. Citizen, U.S. National, Permanent Resident (Green Card Holder), Refugee, or Asylee",
     "B-International Student or Other Visa Status (F-1, J-1, H-4, TN, DACA, TPS, etc.)",
   ];
+  const showRequiredErrors = !!error;
+  const hasEducationLevel = educationHistory.some((entry) => entry.educationLevel?.trim()) || !!user?.educationLevel;
   const uploadedDocsList = docs.length > 0 && (
     <div className="mt-4 divide-y divide-border">
       {docs.map((d) => (
@@ -1231,13 +1233,21 @@ function StepProfile({ error }: { error: string }) {
             value={user?.gender ?? ""}
             onChange={(v) => set("gender", v)}
             options={genderOptions}
+            invalid={showRequiredErrors && !user?.gender?.trim()}
           />
-          <Input label="Location" value={user?.location ?? ""} onChange={(v) => set("location", v)} placeholder="City, State" />
+          <Input
+            label="Location"
+            value={user?.location ?? ""}
+            onChange={(v) => set("location", v)}
+            placeholder="City, State"
+            invalid={showRequiredErrors && !user?.location?.trim()}
+          />
           <Select
             label="Citizenship / Residency Status"
             value={user?.citizenshipStatus ?? ""}
             onChange={(v) => set("citizenshipStatus", v)}
             options={citizenshipOptions}
+            invalid={showRequiredErrors && !user?.citizenshipStatus?.trim()}
           />
           <Select
             label="Please select your Race / Ethnicity"
@@ -1245,6 +1255,7 @@ function StepProfile({ error }: { error: string }) {
             onChange={(v) => set("raceEthnicity", v)}
             options={raceOptions}
             className="sm:col-span-2"
+            invalid={showRequiredErrors && !user?.raceEthnicity}
           />
         </div>
 
@@ -1286,6 +1297,7 @@ function StepProfile({ error }: { error: string }) {
         onAdd={addEducationEntry}
         onRemove={removeEducationEntry}
         onChange={updateEducationEntry}
+        showMissingEducationLevel={showRequiredErrors && !hasEducationLevel}
       />
 
         </div>
@@ -1344,8 +1356,8 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   return <div className="text-xs uppercase tracking-widest text-muted-foreground">{children}</div>;
 }
 function Input({
-  label, value, onChange, placeholder, className = "", type = "text",
-}: { label: string; value: string; onChange: (v: string) => void; placeholder?: string; className?: string; type?: string }) {
+  label, value, onChange, placeholder, className = "", type = "text", invalid = false,
+}: { label: string; value: string; onChange: (v: string) => void; placeholder?: string; className?: string; type?: string; invalid?: boolean }) {
   return (
     <label className={`block ${className}`}>
       <span className="text-xs font-medium text-muted-foreground">{label}</span>
@@ -1354,7 +1366,10 @@ function Input({
         value={value}
         placeholder={placeholder}
         onChange={(e) => onChange(e.target.value)}
-        className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+        aria-invalid={invalid}
+        className={`mt-1 w-full rounded-lg border bg-background px-3 py-2 text-sm ${
+          invalid ? "border-destructive ring-2 ring-destructive/20" : "border-border"
+        }`}
       />
     </label>
   );
@@ -1376,15 +1391,18 @@ function Textarea({
   );
 }
 function Select({
-  label, value, onChange, options, className = "",
-}: { label: string; value: string; onChange: (v: string) => void; options: string[]; className?: string }) {
+  label, value, onChange, options, className = "", invalid = false,
+}: { label: string; value: string; onChange: (v: string) => void; options: string[]; className?: string; invalid?: boolean }) {
   return (
     <label className={`block ${className}`}>
       <span className="text-xs font-medium text-muted-foreground">{label}</span>
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+        aria-invalid={invalid}
+        className={`mt-1 w-full rounded-lg border bg-background px-3 py-2 text-sm ${
+          invalid ? "border-destructive ring-2 ring-destructive/20" : "border-border"
+        }`}
       >
         <option value="">Select…</option>
         {options.map((o) => <option key={o} value={o}>{o}</option>)}
@@ -1613,11 +1631,13 @@ function EducationHistorySection({
   onAdd,
   onRemove,
   onChange,
+  showMissingEducationLevel = false,
 }: {
   entries: EducationHistoryEntry[];
   onAdd: () => void;
   onRemove: (id: string) => void;
   onChange: (id: string, patch: Partial<EducationHistoryEntry>) => void;
+  showMissingEducationLevel?: boolean;
 }) {
   return (
     <Card className={PROFILE_SECTION_CLASS}>
@@ -1635,7 +1655,13 @@ function EducationHistorySection({
 
       <div className="mt-4 space-y-3">
         {entries.length === 0 && (
-          <div className="rounded-lg border border-dashed border-border p-3 text-sm text-muted-foreground">
+          <div
+            className={`rounded-lg border border-dashed p-3 text-sm ${
+              showMissingEducationLevel
+                ? "border-destructive bg-destructive/10 text-destructive"
+                : "border-border text-muted-foreground"
+            }`}
+          >
             No education entries yet. Add an education entry or upload a resume to autofill this section.
           </div>
         )}
@@ -1661,6 +1687,7 @@ function EducationHistorySection({
                   "Professional Degree (JD, MD, DDS, etc.)",
                   "Other",
                 ]}
+                invalid={showMissingEducationLevel && !entry.educationLevel?.trim()}
               />
               <Input label="Institution" value={entry.institution ?? ""} onChange={(value) => onChange(entry.id, { institution: value })} />
               <Input label="Major / field" value={entry.majorField ?? ""} onChange={(value) => onChange(entry.id, { majorField: value })} />
@@ -2212,7 +2239,7 @@ function WikiSourceCard({
       <div className="mt-auto flex flex-wrap gap-2 pt-4">
         {source.url && (
           <button onClick={() => window.open(source.url, "_blank")} className="rounded-full bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:opacity-90">
-            Open source
+            Visit scholarship page
           </button>
         )}
         {!!source.suggested_queries?.[0] && mode === "platform" && (
@@ -2222,7 +2249,7 @@ function WikiSourceCard({
         )}
         {mode === "direct" && (
           <button onClick={() => onUseSource?.(source)} className="rounded-full bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:opacity-90">
-            Copy query to extractor
+            Copy scholarship to extractor
           </button>
         )}
       </div>
@@ -3868,6 +3895,8 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
               ref={editorApiRef}
               value={draft}
               onChange={(v) => updateProfile({ essayDraft: v })}
+              richValue={user?.essayDraftHtml}
+              onRichChange={(v) => updateProfile({ essayDraftHtml: v })}
               suggestions={suggestions}
               onDismiss={dismissSuggestion}
               onOpenHighlights={openHighlights}
