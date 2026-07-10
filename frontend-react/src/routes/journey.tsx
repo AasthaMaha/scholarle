@@ -512,7 +512,25 @@ function matrixTone(status?: string, risk?: string): "default" | "gold" | "succe
 
 function buildReadinessFallback(fitAnalysis?: FitAnalysisResult): ApplicationReadinessMatrix | undefined {
   if (!fitAnalysis) return undefined;
-  if (fitAnalysis.application_readiness_matrix?.matrix?.length) return fitAnalysis.application_readiness_matrix;
+  if (fitAnalysis.application_readiness_matrix?.matrix?.length) {
+    // Prefer eligibility-only rows for profile-fit context; materials come later.
+    const eligibilityOnly = (fitAnalysis.application_readiness_matrix.matrix ?? []).filter(
+      (row) => (row.item_type || "").toLowerCase() !== "application material",
+    );
+    if (eligibilityOnly.length) {
+      const readyCount = eligibilityOnly.filter((row) => row.status === "Ready").length;
+      return {
+        ...fitAnalysis.application_readiness_matrix,
+        matrix: eligibilityOnly,
+        ready_count: readyCount,
+        total_count: eligibilityOnly.length,
+        completion_percent: Math.round((readyCount / eligibilityOnly.length) * 100),
+        blockers: eligibilityOnly.filter((row) => row.risk_level === "High") as Array<Record<string, string>>,
+        summary: `${readyCount} of ${eligibilityOnly.length} eligibility items look ready.`,
+      };
+    }
+    return fitAnalysis.application_readiness_matrix;
+  }
 
   const rows: NonNullable<ApplicationReadinessMatrix["matrix"]> = [
     ...(fitAnalysis.eligibility_analysis ?? []).map((item) => {
@@ -528,19 +546,6 @@ function buildReadinessFallback(fitAnalysis?: FitAnalysisResult): ApplicationRea
         notes: item.explanation,
       };
     }),
-    ...(fitAnalysis.application_materials_check ?? []).map((item) => {
-      const ready = item.status === "Ready";
-      const missing = item.status === "Missing";
-      return {
-        item: item.material,
-        item_type: "Application material",
-        status: ready ? "Ready" : missing ? "Missing" : "Need to confirm",
-        risk_level: ready ? "Low" : missing ? "High" : "Medium",
-        student_evidence: "",
-        action_needed: item.notes,
-        notes: item.notes,
-      };
-    }),
   ].filter((row) => !!row.item);
 
   if (!rows.length) return undefined;
@@ -553,7 +558,7 @@ function buildReadinessFallback(fitAnalysis?: FitAnalysisResult): ApplicationRea
     matrix: rows,
     blockers: rows.filter((row) => row.risk_level === "High") as Array<Record<string, string>>,
     preparation_tasks: rows.filter((row) => row.status !== "Ready").map((row) => row.action_needed || `Confirm ${row.item}`).filter(Boolean) as string[],
-    summary: `${readyCount} of ${rows.length} eligibility/material items look ready.`,
+    summary: `${readyCount} of ${rows.length} eligibility items look ready.`,
   };
 }
 
@@ -563,9 +568,9 @@ function ApplicationReadinessMatrixCard({ matrix }: { matrix?: ApplicationReadin
     <Card className="md:col-span-3">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <div className="text-xs uppercase tracking-widest text-muted-foreground">Application Readiness Matrix</div>
+          <div className="text-xs uppercase tracking-widest text-muted-foreground">Eligibility readiness</div>
           <p className="mt-1 text-sm text-muted-foreground">
-            Checks whether the required eligibility items and materials are ready to apply.
+            Checks whether stated eligibility requirements look met from the current profile.
           </p>
         </div>
         <div className="text-right">
@@ -2972,8 +2977,12 @@ function StepRequirementsAndFit() {
 
       <WorkflowStep
         number={3}
-        title="Fit & application readiness"
-        description={fitAnalysis ? "Fit analysis complete. Review the results below." : "Extract and review scholarship requirements, then use Accept and Analyze Fit."}
+        title="Profile fit analysis"
+        description={
+          fitAnalysis
+            ? "This score answers whether your current profile fits this scholarship."
+            : "Extract and review scholarship requirements, then use Accept and Analyze Fit."
+        }
         complete={!!fitAnalysis}
         active={hasExtractedDetails}
         isLast
@@ -2984,24 +2993,27 @@ function StepRequirementsAndFit() {
               <div className="font-medium">No analysis yet</div>
               <p className="mt-1 text-sm text-muted-foreground">
                 Extract and review scholarship requirements, then use Accept and Analyze Fit.
-                Scholar-E will compare your profile against the cleaned scholarship requirements.
+                Scholar-E will compare your profile to this scholarship’s hard requirements and
+                stated priorities. Document readiness is not part of this score.
               </p>
             </section>
           )}
 
           {!!fitAnalysis && (
             <div className="grid md:grid-cols-3 gap-6">
-              <Card className="md:col-span-1 flex flex-col items-center justify-center text-center">
-                <div className="text-xs uppercase tracking-widest text-muted-foreground">Fit score</div>
-                <div className="relative mt-3 size-44">
-                  <svg viewBox="0 0 100 100" className="size-44 -rotate-90">
-                    <circle cx="50" cy="50" r="42" stroke="var(--border)" strokeWidth="8" fill="none" />
+              <Card className="md:col-span-1 flex flex-col items-center justify-center px-4 py-5 text-center">
+                <div className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+                  Fit score
+                </div>
+                <div className="relative mt-3 size-36">
+                  <svg viewBox="0 0 100 100" className="size-36 -rotate-90">
+                    <circle cx="50" cy="50" r="42" stroke="var(--border)" strokeWidth="7" fill="none" />
                     <circle
                       cx="50"
                       cy="50"
                       r="42"
-                      stroke="var(--gold)"
-                      strokeWidth="8"
+                      stroke={fitScoreStroke(fitAnalysis.fit_score ?? 0, fitAnalysis.fit_label)}
+                      strokeWidth="7"
                       fill="none"
                       strokeLinecap="round"
                       strokeDasharray={`${((fitAnalysis.fit_score ?? 0) / 100) * 2 * Math.PI * 42} 999`}
@@ -3009,23 +3021,28 @@ function StepRequirementsAndFit() {
                   </svg>
                   <div className="absolute inset-0 grid place-items-center">
                     <div>
-                      <div className="font-display text-5xl">{fitAnalysis.fit_score ?? 0}</div>
-                      <div className="text-xs text-muted-foreground">/ 100</div>
+                      <div className="font-display text-4xl tracking-tight">{fitAnalysis.fit_score ?? 0}</div>
+                      <div className="text-[11px] text-muted-foreground">out of 100</div>
                     </div>
                   </div>
                 </div>
-                <Pill tone={fitAnalysis.likely_eligible === "No" ? "danger" : fitAnalysis.likely_eligible === "Yes" ? "success" : "gold"}>
-                  {fitAnalysis.fit_label || "Insufficient Information"}
-                </Pill>
-                <div className="mt-3 text-xs text-muted-foreground">
+                <div className="mt-3">
+                  <Pill tone={fitLabelTone(fitAnalysis.fit_label, fitAnalysis.likely_eligible)}>
+                    {fitAnalysis.fit_label || "Insufficient Information"}
+                  </Pill>
+                </div>
+                <div className="mt-1.5 text-[12px] text-muted-foreground">
                   Likely eligible: {fitAnalysis.likely_eligible || "Unclear"}
                 </div>
+                <p className="mt-3 max-w-[14rem] text-[12px] leading-snug text-muted-foreground">
+                  Based on your profile versus this scholarship’s requirements.
+                </p>
                 <button
                   type="button"
                   onClick={() => setRubricOpen(true)}
-                  className="mt-2 text-xs font-medium text-primary underline-offset-4 hover:underline"
+                  className="mt-2.5 rounded-full border border-border bg-background px-3 py-1 text-[12px] font-medium text-foreground transition-colors hover:bg-accent"
                 >
-                  Rubric
+                  What does this score mean?
                 </button>
                 <FitRubricDialog open={rubricOpen} onOpenChange={setRubricOpen} />
               </Card>
@@ -3036,13 +3053,18 @@ function StepRequirementsAndFit() {
 
                 {!!fitAnalysis.eligibility_analysis?.length && (
                   <div className="mt-5">
-                    <div className="text-xs uppercase tracking-widest text-muted-foreground">Eligibility checks</div>
+                    <div className="text-xs uppercase tracking-widest text-muted-foreground">
+                      Hard requirements
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      If any of these clearly fail, the score stays below 40 as Not Eligible.
+                    </p>
                     <div className="mt-3 space-y-3">
                       {fitAnalysis.eligibility_analysis.map((item, index) => (
                         <div key={`${item.requirement}-${index}`} className="rounded-lg border border-border p-3 text-sm">
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <div className="font-medium">{item.requirement}</div>
-                            <Pill tone={item.status === "Met" ? "success" : item.status === "Not met" ? "danger" : "gold"}>
+                            <Pill tone={eligibilityStatusTone(item.status)}>
                               {item.status || "Unclear"}
                             </Pill>
                           </div>
@@ -3064,33 +3086,25 @@ function StepRequirementsAndFit() {
                 </div>
               </Card>
 
-              {!!fitAnalysis.application_materials_check?.length && (
-                <Card className="md:col-span-3">
-                  <div className="text-xs uppercase tracking-widest text-muted-foreground">Application materials</div>
-                  <div className="mt-3 grid md:grid-cols-2 gap-3">
-                    {fitAnalysis.application_materials_check.map((item, index) => (
-                      <div key={`${item.material}-${index}`} className="rounded-lg border border-border p-3 text-sm">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <div className="font-medium">{item.material}</div>
-                          <Pill tone={item.status === "Ready" ? "success" : item.status === "Missing" ? "danger" : "gold"}>
-                            {item.status || "Need to confirm"}
-                          </Pill>
-                        </div>
-                        {item.notes && <div className="mt-2 text-xs text-muted-foreground">{item.notes}</div>}
-                      </div>
-                    ))}
-                  </div>
-                </Card>
-              )}
-
               {!!fitAnalysis.selection_criteria_alignment?.length && (
                 <Card className="md:col-span-3">
-                  <div className="text-xs uppercase tracking-widest text-muted-foreground">Selection criteria alignment</div>
+                  <div className="text-xs uppercase tracking-widest text-muted-foreground">
+                    Scholarship priorities
+                  </div>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    How well your profile matches what the scholarship says it values. These cannot
+                    override a failed hard requirement.
+                  </p>
                   <div className="mt-3 grid md:grid-cols-2 gap-3">
                     {fitAnalysis.selection_criteria_alignment.map((item, index) => (
                       <div key={`${item.criterion}-${index}`} className="rounded-lg border border-border p-3 text-sm">
-                        <div className="font-medium">{item.criterion}</div>
-                        <div className="mt-1 text-xs text-muted-foreground">{item.alignment}: {item.student_evidence}</div>
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="font-medium">{item.criterion}</div>
+                          <Pill tone={criteriaAlignmentTone(item.alignment)}>
+                            {item.alignment || "Unclear"}
+                          </Pill>
+                        </div>
+                        <div className="mt-2 text-xs text-muted-foreground">{item.student_evidence}</div>
                         {item.notes && <div className="mt-1 text-xs">{item.notes}</div>}
                       </div>
                     ))}
@@ -3114,86 +3128,155 @@ function FitRubricDialog({
 }) {
   const scoreBands = [
     {
-      range: "90-100",
+      range: "90–100",
       label: "Strong Fit",
-      description: "Mandatory eligibility appears met, profile evidence strongly matches the scholarship purpose, and required materials look ready or easy to confirm.",
+      description: "You appear to meet the hard requirements and match the scholarship’s priorities well.",
+      tone: "success" as const,
     },
     {
-      range: "75-89",
+      range: "75–89",
       label: "Good Fit",
-      description: "Eligibility mostly appears met with strong alignment, but one or two details may need confirmation or stronger evidence.",
+      description: "Mostly eligible and well aligned; a few details may need confirmation.",
+      tone: "gold" as const,
     },
     {
-      range: "55-74",
+      range: "55–74",
       label: "Possible Fit",
-      description: "Some requirements or selection criteria match, but missing profile information or unclear scholarship language keeps confidence moderate.",
+      description: "Some match, but missing info or mixed alignment lowers confidence.",
+      tone: "info" as const,
     },
     {
-      range: "40-54",
+      range: "40–54",
       label: "Weak Fit",
-      description: "The student may be eligible, but there are meaningful gaps, weak alignment, missing documents, or important unclear requirements.",
-    },
-    {
-      range: "0-39",
-      label: "Not Eligible / Insufficient Information",
-      description: "A mandatory requirement is clearly not met, or too much information is missing to responsibly score the opportunity higher.",
+      description: "You may still be eligible, but there are important gaps or weak alignment.",
+      tone: "warn" as const,
     },
   ];
-  const factors = [
-    "Mandatory eligibility requirements: enrollment level, citizenship/residency, GPA, location, major/field, identity-based requirements, or other required criteria.",
-    "Student evidence: the score uses only information already in the profile, uploaded/identified documents, essay availability, and reviewed scholarship requirements.",
-    "Missing information: if the profile does not provide enough evidence, the agent marks items as unclear instead of guessing.",
-    "Application materials: required documents are checked as ready, missing, need to prepare, need to confirm, or not applicable.",
-    "Selection criteria alignment: leadership, service, academic fit, community involvement, goals, or other stated selection priorities are scored separately from basic eligibility.",
+
+  const scoringSteps = [
+    "Check each hard requirement against your profile",
+    "Check stated priorities like leadership, goals, or academic fit",
+    "A clear hard fail always stays below 40",
   ];
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] max-w-2xl overflow-hidden p-0">
-        <div className="border-b border-border px-6 py-5">
-        <DialogHeader>
-          <DialogTitle className="font-display text-2xl">Fit Score Rubric</DialogTitle>
-          <DialogDescription>
-            Scholar-E compares the cleaned scholarship requirements against the student profile. The agent separates eligibility from competitiveness and does not invent missing facts.
-          </DialogDescription>
-        </DialogHeader>
+      <DialogContent className="max-h-[min(88vh,640px)] w-[calc(100%-1.5rem)] max-w-2xl gap-0 overflow-hidden rounded-2xl border-border/80 p-0 shadow-xl">
+        <div className="border-b border-border/70 bg-secondary/25 px-4 py-3 pr-10 sm:px-5">
+          <DialogHeader className="space-y-0.5 text-left">
+            <DialogTitle className="font-display text-lg tracking-tight">
+              What this score means
+            </DialogTitle>
+            <DialogDescription className="max-w-xl text-[12px] leading-snug">
+              Does your current profile fit this scholarship? Document readiness is not included.
+            </DialogDescription>
+          </DialogHeader>
         </div>
 
-        <div className="max-h-[calc(90vh-150px)] space-y-5 overflow-y-auto px-6 py-5">
-          <div>
-            <div className="text-xs uppercase tracking-widest text-muted-foreground">Score bands</div>
-            <div className="mt-3 space-y-2">
+        <div className="space-y-3 overflow-y-auto px-4 py-3 sm:px-5">
+          <section>
+            <div className="mb-1.5 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+              Score meaning
+            </div>
+            <div className="grid gap-1.5 sm:grid-cols-2">
               {scoreBands.map((band) => (
-                <div key={band.range} className="rounded-xl border border-border bg-secondary/30 p-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="font-medium">{band.label}</div>
-                    <span className="font-mono text-xs text-muted-foreground">{band.range}</span>
+                <div
+                  key={band.label}
+                  className="flex flex-col rounded-lg border border-border/70 bg-card px-2.5 py-2"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-[13px] font-medium tracking-tight">{band.label}</div>
+                    <Pill tone={band.tone}>{band.range}</Pill>
                   </div>
-                  <p className="mt-1 text-sm text-muted-foreground">{band.description}</p>
+                  <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
+                    {band.description}
+                  </p>
                 </div>
               ))}
             </div>
-          </div>
+          </section>
 
-          <div>
-            <div className="text-xs uppercase tracking-widest text-muted-foreground">What the agent checks</div>
-            <ul className="mt-3 space-y-2 text-sm text-foreground/85">
-              {factors.map((factor) => (
-                <li key={factor} className="flex gap-2">
-                  <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-gold" />
-                  <span>{factor}</span>
+          <section>
+            <div className="mb-1.5 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+              Below 40
+            </div>
+            <div className="grid gap-1.5 sm:grid-cols-2">
+              <div className="rounded-lg border border-destructive/20 bg-destructive/[0.04] px-2.5 py-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-[13px] font-medium tracking-tight">Not Eligible</div>
+                  <Pill tone="danger">0–39</Pill>
+                </div>
+                <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
+                  A hard requirement clearly fails — for example degree level, citizenship, or GPA.
+                </p>
+              </div>
+              <div className="rounded-lg border border-border/70 bg-secondary/30 px-2.5 py-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-[13px] font-medium tracking-tight">Insufficient Information</div>
+                  <Pill tone="gold">0–39</Pill>
+                </div>
+                <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
+                  Your profile is incomplete, so we can’t score higher yet. Missing info is not a fail.
+                </p>
+              </div>
+            </div>
+          </section>
+
+          <section className="rounded-lg border border-border/70 bg-secondary/20 px-2.5 py-2">
+            <div className="mb-1.5 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+              How we score
+            </div>
+            <ol className="grid gap-1.5 sm:grid-cols-3">
+              {scoringSteps.map((step, index) => (
+                <li key={step} className="flex gap-1.5 sm:block">
+                  <div className="flex size-4 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[9px] font-semibold text-primary sm:mb-1">
+                    {index + 1}
+                  </div>
+                  <p className="text-[11px] leading-snug text-foreground/80">{step}</p>
                 </li>
               ))}
-            </ul>
-          </div>
-
-          <div className="rounded-xl border border-warning/30 bg-warning/10 p-3 text-sm text-foreground/85">
-            If a mandatory requirement is clearly not met, the score is kept below 40. If eligibility is unclear because information is missing, the score stays conservative until the student adds more details.
-          </div>
+            </ol>
+          </section>
         </div>
       </DialogContent>
     </Dialog>
   );
+}
+
+function fitScoreStroke(score: number, label?: string) {
+  const normalized = (label || "").toLowerCase();
+  if (normalized.includes("not eligible") || score < 40) return "var(--destructive)";
+  if (score >= 90) return "var(--success, #16a34a)";
+  if (score >= 75) return "var(--gold)";
+  if (score >= 55) return "var(--warning, #d97706)";
+  return "var(--warning, #d97706)";
+}
+
+function fitLabelTone(
+  label?: string,
+  likelyEligible?: string,
+): "default" | "gold" | "success" | "warn" | "info" | "danger" {
+  const value = (label || "").toLowerCase();
+  if (value.includes("not eligible") || likelyEligible === "No") return "danger";
+  if (value.includes("insufficient")) return "gold";
+  if (value.includes("strong") || value.includes("good")) return "success";
+  if (value.includes("weak")) return "warn";
+  return "gold";
+}
+
+function eligibilityStatusTone(status?: string): "default" | "gold" | "success" | "warn" | "info" | "danger" {
+  const value = (status || "").toLowerCase();
+  if (value === "met") return "success";
+  if (value === "not met") return "danger";
+  return "gold";
+}
+
+function criteriaAlignmentTone(alignment?: string): "default" | "gold" | "success" | "warn" | "info" | "danger" {
+  const value = (alignment || "").toLowerCase();
+  if (value === "strong") return "success";
+  if (value === "moderate") return "info";
+  if (value === "weak") return "warn";
+  return "gold";
 }
 
 /* ---------------- Step 5: Essay Workspace ---------------- */

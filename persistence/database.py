@@ -36,6 +36,16 @@ def get_session_factory():
     return sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
 
+def initialize_database() -> None:
+    """Create the local SQLite schema when the app starts with a fresh database."""
+    engine = get_engine()
+    if engine is None:
+        return
+    from persistence.models import Base
+
+    Base.metadata.create_all(bind=engine)
+
+
 @contextmanager
 def session_scope() -> Iterator[object | None]:
     factory = get_session_factory()
