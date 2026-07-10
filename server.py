@@ -24,6 +24,7 @@ from api.routes import (
     rewrite_selection,
     run_essay_coach,
 )
+from persistence.database import initialize_database
 
 app = FastAPI(title="Scholar-E", version="0.1.0")
 
@@ -34,6 +35,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+def startup() -> None:
+    initialize_database()
 
 
 @app.get("/health")
