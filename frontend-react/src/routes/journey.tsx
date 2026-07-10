@@ -4,6 +4,7 @@ import scholarELogoUrl from "../../logo/logoPic.jpeg";
 import {
   AlertCircle,
   ArrowLeft,
+  ArrowRight,
   CalendarDays,
   Check,
   ChevronLeft,
@@ -155,24 +156,26 @@ function Journey() {
   return (
     <TooltipProvider delayDuration={150}>
       <div className="min-h-screen flex overflow-x-hidden">
+        <SidebarRail
+          activeIdx={stepIdx}
+          onSelect={selectStep}
+          onExpand={() => setIsSidebarOpen(true)}
+        />
         <Sidebar
           activeIdx={stepIdx}
           isOpen={isSidebarOpen}
           onClose={() => setIsSidebarOpen(false)}
           onSelect={selectStep}
+          onClearAll={handleClearAll}
         />
         <div
           className={`flex flex-col min-w-0 transition-[margin,width] duration-300 ease-out ${
-            isSidebarOpen ? "w-full md:ml-80 md:w-[calc(100%-20rem)]" : "w-full md:ml-0"
+            isSidebarOpen
+              ? "w-full md:ml-80 md:w-[calc(100%-20rem)]"
+              : "w-full md:ml-14 md:w-[calc(100%-3.5rem)]"
           }`}
         >
-          <TopBar
-            step={step}
-            onNext={goNext}
-            onPrev={goPrev}
-            stepIdx={stepIdx}
-            onClearAll={handleClearAll}
-          />
+          <TopBar step={step} stepIdx={stepIdx} />
           <FloatingSidebarToggle
             isOpen={isSidebarOpen}
             onOpen={() => setIsSidebarOpen(true)}
@@ -225,11 +228,13 @@ function Sidebar({
   isOpen,
   onClose,
   onSelect,
+  onClearAll,
 }: {
   activeIdx: number;
   isOpen: boolean;
   onClose: () => void;
   onSelect: (i: number) => void;
+  onClearAll: () => void;
 }) {
   const groups = useMemo(() => {
     const map = new Map<string, typeof journeySteps>();
@@ -304,7 +309,7 @@ function Sidebar({
                             : "bg-secondary text-secondary-foreground"
                         }`}
                       >
-                        {isDone ? "✓" : s.id}
+                        {isDone ? <Check className="size-3.5" strokeWidth={3} /> : s.id}
                       </span>
                       <span className="truncate">{s.title}</span>
                     </button>
@@ -315,8 +320,16 @@ function Sidebar({
           ))}
         </div>
 
-        <div className="px-6 py-4 border-t border-border text-[11px] text-muted-foreground">
-          A coach, not a ghostwriter.
+        <div className="border-t border-border px-6 py-4">
+          <button
+            type="button"
+            onClick={onClearAll}
+            className="flex items-center gap-1.5 text-[11px] text-muted-foreground transition-colors hover:text-destructive"
+          >
+            <RefreshCw className="size-3.5" />
+            Reset all data
+          </button>
+          <div className="mt-2 text-[11px] text-muted-foreground/60">A coach, not a ghostwriter.</div>
         </div>
       </aside>
     </>
@@ -325,65 +338,29 @@ function Sidebar({
 
 function TopBar({
   step,
-  onNext,
-  onPrev,
   stepIdx,
-  onClearAll,
 }: {
   step: (typeof journeySteps)[number];
-  onNext: () => void;
-  onPrev: () => void;
   stepIdx: number;
-  onClearAll: () => void;
 }) {
   const pct = ((stepIdx + 1) / journeySteps.length) * 100;
   return (
     <div className="sticky top-0 z-20 border-b border-border bg-background/85 backdrop-blur">
-      <div className="px-6 md:px-10 h-16 flex items-center gap-4">
-        <Link to="/" className="flex items-center gap-2 rounded-lg px-2.5 py-1.5">
-          <img src={scholarELogoUrl} alt="" className="size-7 rounded-full object-cover" />
-          <span className="font-display font-semibold">Scholar-E</span>
-        </Link>
-        <div className="flex-1 min-w-0">
-          <div className="text-xs text-muted-foreground">
-            Step {step.id} of {journeySteps.length} · {step.group}
-          </div>
-          <div className="text-sm font-medium truncate">{step.title}</div>
-          <div className="text-xs text-muted-foreground truncate">Goal: {step.goal}</div>
-        </div>
-        <div className="flex items-center gap-2">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                onClick={onClearAll}
-                className="rounded-full border border-border bg-card px-3 py-1.5 text-sm hover:bg-accent"
-              >
-                Clear all
-              </button>
-            </TooltipTrigger>
-            <TooltipContent>Reset every field and return to step 1</TooltipContent>
-          </Tooltip>
-        <div className="hidden md:flex items-center gap-2">
-          <button
-            onClick={onPrev}
-            disabled={stepIdx === 0}
-            className="rounded-full border border-border bg-card px-3 py-1.5 text-sm hover:bg-accent disabled:opacity-40"
-          >
-            ← Back
-          </button>
-          <button
-            onClick={onNext}
-            disabled={stepIdx === journeySteps.length - 1}
-            className="rounded-full bg-primary text-primary-foreground px-4 py-1.5 text-sm hover:opacity-90 disabled:opacity-40"
-          >
-            Next →
-          </button>
-        </div>
-        </div>
+      <div className="flex h-14 items-center gap-4 pl-16 pr-6 md:px-10">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <div className="flex min-w-0 flex-1 items-baseline gap-2">
+              <span className="truncate text-sm font-medium text-foreground">{step.title}</span>
+              <span className="hidden shrink-0 text-xs text-muted-foreground sm:inline">
+                {step.group} · Step {step.id}/{journeySteps.length}
+              </span>
+            </div>
+          </TooltipTrigger>
+          <TooltipContent>Goal: {step.goal}</TooltipContent>
+        </Tooltip>
       </div>
       <div className="h-1 bg-secondary">
-        <div className="h-full bg-gold transition-all duration-500" style={{ width: `${pct}%` }} />
+        <div className="h-full bg-success transition-all duration-500" style={{ width: `${pct}%` }} />
       </div>
     </div>
   );
@@ -399,15 +376,96 @@ function FloatingSidebarToggle({
   return (
     <button
       type="button"
-      aria-label="Open sidebar"
+      aria-label="Open menu"
       onClick={onOpen}
-      className={`fixed left-0 top-[70px] z-30 flex h-10 items-center gap-3 rounded-full rounded-l-none border border-l-0 border-border/70 bg-white px-3 text-foreground shadow-md shadow-black/10 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg ${
+      className={`fixed left-3 top-3 z-30 grid size-10 place-items-center rounded-lg border border-border bg-card text-foreground shadow-sm transition-opacity duration-200 md:hidden ${
         isOpen ? "opacity-0 pointer-events-none" : "opacity-100"
       }`}
     >
-      <img src={scholarELogoUrl} alt="" className="size-6 rounded-full object-cover" />
-      <Menu className="size-5 text-muted-foreground" strokeWidth={2.5} />
+      <Menu className="size-5" strokeWidth={2.5} />
     </button>
+  );
+}
+
+/**
+ * Persistent slim navigation rail (md+). Replaces the old floating toggle pill:
+ * it stays docked to the left edge, shows the logo once, the journey steps as
+ * hover-labelled markers (teal = done, gold = current, gray = upcoming), and the
+ * user avatar. The logo, avatar, and chevron expand the full sidebar panel.
+ */
+function SidebarRail({
+  activeIdx,
+  onSelect,
+  onExpand,
+}: {
+  activeIdx: number;
+  onSelect: (i: number) => void;
+  onExpand: () => void;
+}) {
+  const { user } = useUser();
+  return (
+    <aside className="fixed inset-y-0 left-0 z-30 hidden w-14 flex-col items-center border-r border-border bg-card/95 backdrop-blur md:flex">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={onExpand}
+            aria-label="Expand menu"
+            className="mt-2.5 grid size-9 place-items-center rounded-lg transition-transform hover:scale-105"
+          >
+            <img src={scholarELogoUrl} alt="" className="size-8 rounded-full object-cover" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="right">Expand menu</TooltipContent>
+      </Tooltip>
+
+      <div className="mt-4 flex flex-1 flex-col items-center gap-1.5 overflow-y-auto py-1">
+        {journeySteps.map((s, idx) => {
+          const isActive = idx === activeIdx;
+          const isDone = idx < activeIdx;
+          return (
+            <Tooltip key={s.id}>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={() => onSelect(idx)}
+                  aria-label={s.title}
+                  aria-current={isActive ? "step" : undefined}
+                  className={`grid size-8 shrink-0 place-items-center rounded-full text-[11px] font-mono transition-colors ${
+                    isActive
+                      ? "bg-gold text-gold-foreground"
+                      : isDone
+                        ? "bg-success/20 text-success hover:bg-success/30"
+                        : "bg-secondary text-muted-foreground hover:bg-accent hover:text-foreground"
+                  }`}
+                >
+                  {isDone ? <Check className="size-4" strokeWidth={3} /> : s.id}
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right">
+                {s.group} · {s.title}
+              </TooltipContent>
+            </Tooltip>
+          );
+        })}
+      </div>
+
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={onExpand}
+            aria-label="Your profile"
+            className="mb-3 mt-1 grid size-9 place-items-center rounded-full"
+          >
+            <span className="grid size-8 place-items-center rounded-full bg-primary text-[11px] font-display text-primary-foreground">
+              {toInitials(user?.name)}
+            </span>
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="right">Your profile</TooltipContent>
+      </Tooltip>
+    </aside>
   );
 }
 
@@ -417,9 +475,10 @@ function Nav({ stepIdx, onNext, onPrev }: { stepIdx: number; onNext: () => void;
       <button
         onClick={onPrev}
         disabled={stepIdx === 0}
-        className="rounded-full border border-border bg-card px-5 py-2 text-sm hover:bg-accent disabled:opacity-40"
+        className="inline-flex items-center gap-2 rounded-lg border border-border bg-card px-5 py-2 text-sm hover:bg-accent disabled:opacity-40"
       >
-        ← Previous
+        <ArrowLeft className="size-4" />
+        Previous
       </button>
       <div className="text-xs text-muted-foreground font-mono">
         {stepIdx + 1} / {journeySteps.length}
@@ -427,9 +486,10 @@ function Nav({ stepIdx, onNext, onPrev }: { stepIdx: number; onNext: () => void;
       <button
         onClick={onNext}
         disabled={stepIdx === journeySteps.length - 1}
-        className="rounded-full bg-primary text-primary-foreground px-6 py-2 text-sm hover:opacity-90 disabled:opacity-40"
+        className="inline-flex items-center gap-2 rounded-lg bg-primary text-primary-foreground px-6 py-2 text-sm hover:opacity-90 disabled:opacity-40"
       >
-        Continue →
+        Continue
+        <ArrowRight className="size-4" />
       </button>
     </div>
   );
@@ -1093,7 +1153,7 @@ function StepProfile({ error }: { error: string }) {
     <div className="mt-4 divide-y divide-border">
       {docs.map((d) => (
         <div key={d.name} className="py-3 flex items-center gap-4">
-          <div className="size-10 rounded-lg bg-success/15 text-success grid place-items-center text-xs font-mono">✓</div>
+          <div className="size-10 rounded-lg bg-success/15 text-success grid place-items-center"><Check className="size-5" strokeWidth={2.5} /></div>
           <div className="flex-1 min-w-0">
             <div className="text-sm font-medium truncate">{d.name}</div>
             <div className="text-xs text-muted-foreground">{d.kind}</div>
@@ -1430,7 +1490,7 @@ function FileField({ label, fileName, onFile }: { label: string; fileName?: stri
           }}
           className="text-sm"
         />
-        {fileName && <span className="text-xs text-success">✓ {fileName}</span>}
+        {fileName && <span className="inline-flex items-center gap-1 text-xs text-success"><Check className="size-3.5" strokeWidth={2.5} /> {fileName}</span>}
       </div>
     </div>
   );
@@ -1654,7 +1714,7 @@ function EducationHistorySection({
             Review every school or program parsed from your resume in one place.
           </p>
         </div>
-        <button type="button" onClick={onAdd} className="rounded-full border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent">
+        <button type="button" onClick={onAdd} className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent">
           + Add education
         </button>
       </div>
@@ -1733,10 +1793,10 @@ function ResearchExperienceSection({
           </p>
         </button>
         <div className="flex gap-2">
-          <button type="button" onClick={onToggle} className="rounded-full border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent">
+          <button type="button" onClick={onToggle} className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent">
             {isOpen ? "Collapse" : "Expand"}
           </button>
-          <button type="button" onClick={onAdd} className="rounded-full border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent">
+          <button type="button" onClick={onAdd} className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent">
             + Add research
           </button>
         </div>
@@ -1794,7 +1854,7 @@ function WorkExperienceSection({
             Work, internships, research assistantships, teaching assistantships, volunteer roles, and leadership experience.
           </p>
         </div>
-        <button type="button" onClick={onAdd} className="rounded-full border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent">
+        <button type="button" onClick={onAdd} className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent">
           + Add experience
         </button>
       </div>
@@ -2007,7 +2067,7 @@ function StepDiscovery({
             <h2 className="mt-2 max-w-3xl font-display text-[42px] font-extrabold leading-[0.98] tracking-tight">
               Search scholarships from your profile.
             </h2>
-            <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground/85">
+            <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">
               Scholar-E recommends trusted platforms, source pages, funding categories, and search queries based on your profile.
             </p>
             <div className="mt-5 grid max-w-xl grid-cols-3 gap-3">
@@ -2026,11 +2086,11 @@ function StepDiscovery({
             </div>
           </div>
           <div className="flex flex-wrap gap-2">
-            <button onClick={refreshWiki} disabled={loading} aria-busy={loading} className={`inline-flex items-center justify-center gap-2 rounded-full bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-90 ${loading ? "agent-loading" : ""}`}>
+            <button onClick={refreshWiki} disabled={loading} aria-busy={loading} className={`inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-90 ${loading ? "agent-loading" : ""}`}>
               {loading && <Spinner className="size-4" />}
               {loading ? "Searching…" : "Search"}
             </button>
-            <button onClick={onUpdateProfile} className="rounded-full border border-border bg-card px-4 py-2 text-sm hover:bg-accent">
+            <button onClick={onUpdateProfile} className="rounded-lg border border-border bg-card px-4 py-2 text-sm hover:bg-accent">
               Update profile
             </button>
           </div>
@@ -2039,7 +2099,7 @@ function StepDiscovery({
         {!wiki && !loading && (
           <div className="mt-5 rounded-lg border border-dashed border-border bg-white/60 p-4">
             <div className="font-medium">Ready to search from your saved profile</div>
-            <p className="mt-1 text-sm text-muted-foreground/85">
+            <p className="mt-1 text-sm text-muted-foreground">
               Click Search to generate profile-specific scholarship sources. Results appear after the Wiki agents finish.
             </p>
           </div>
@@ -2110,7 +2170,7 @@ function StepDiscovery({
           {(wiki?.funding_categories ?? []).map((category) => (
             <div key={category.category_name} className="rounded-lg border border-border/60 bg-white/60 p-4">
               <div className="font-display text-[18px] font-bold">{category.category_name}</div>
-              <p className="mt-2 text-sm text-muted-foreground/85">{category.description}</p>
+              <p className="mt-2 text-sm text-muted-foreground">{category.description}</p>
               <div className="mt-3 flex flex-wrap gap-1.5">
                 {(category.best_for ?? []).map((item) => <Pill key={item}>{item}</Pill>)}
               </div>
@@ -2126,7 +2186,7 @@ function StepDiscovery({
               <div key={query} className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-white/60 p-3">
                 <span className="text-sm">{query}</span>
                 <div className="flex shrink-0 gap-2">
-                  <button onClick={() => window.open(`https://www.google.com/search?q=${encodeURIComponent(query)}`, "_blank")} className="rounded-full bg-primary px-2.5 py-1 text-xs text-primary-foreground hover:opacity-90">Search</button>
+                  <button onClick={() => window.open(`https://www.google.com/search?q=${encodeURIComponent(query)}`, "_blank")} className="rounded-lg bg-primary px-2.5 py-1 text-xs text-primary-foreground hover:opacity-90">Search</button>
                 </div>
               </div>
             ))}
@@ -2210,7 +2270,7 @@ function WikiSourceCard({
         </div>
 
         {source.why_recommended && (
-          <p className="mt-3 text-sm leading-6 text-muted-foreground/90">{source.why_recommended}</p>
+          <p className="mt-3 text-sm leading-6 text-muted-foreground">{source.why_recommended}</p>
         )}
 
         {!!metaItems.length && (
@@ -2245,17 +2305,17 @@ function WikiSourceCard({
 
       <div className="mt-auto flex flex-wrap gap-2 pt-4">
         {source.url && (
-          <button onClick={() => window.open(source.url, "_blank")} className="rounded-full bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:opacity-90">
+          <button onClick={() => window.open(source.url, "_blank")} className="rounded-lg bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:opacity-90">
             Visit scholarship page
           </button>
         )}
         {!!source.suggested_queries?.[0] && mode === "platform" && (
-          <button onClick={() => onCopy(source.suggested_queries?.[0] ?? "")} className="rounded-full border border-border px-3 py-1.5 text-xs hover:bg-accent">
+          <button onClick={() => onCopy(source.suggested_queries?.[0] ?? "")} className="rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-accent">
             Copy query
           </button>
         )}
         {mode === "direct" && (
-          <button onClick={() => onUseSource?.(source)} className="rounded-full bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:opacity-90">
+          <button onClick={() => onUseSource?.(source)} className="rounded-lg bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:opacity-90">
             Copy scholarship to extractor
           </button>
         )}
@@ -2372,9 +2432,10 @@ function StepOpportunities({ onAnalyze }: { onAnalyze: () => void }) {
                   });
                   onAnalyze();
                 }}
-                className="rounded-full px-3 py-1.5 text-xs bg-primary text-primary-foreground hover:opacity-90"
+                className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs bg-primary text-primary-foreground hover:opacity-90"
               >
-                Paste real opportunity →
+                Paste real opportunity
+                <ArrowRight className="size-3.5" />
               </button>
             </div>
           </Card>
@@ -2431,7 +2492,7 @@ function WorkflowStep({
     <section className="relative grid gap-4 md:grid-cols-[76px_1fr]">
       <div className="relative hidden md:flex justify-center">
         <div className={`relative z-10 grid size-12 place-items-center rounded-full border-2 text-sm font-semibold ${markerClass}`}>
-          {complete ? "✓" : number}
+          {complete ? <Check className="size-5" strokeWidth={3} /> : number}
         </div>
         {!isLast && <div className="absolute left-1/2 top-12 h-[calc(100%+2rem)] -translate-x-1/2 border-l-2 border-dashed border-border" />}
       </div>
@@ -2442,13 +2503,13 @@ function WorkflowStep({
           </div>
           <div className="flex items-center gap-3 md:hidden">
             <div className={`grid size-10 place-items-center rounded-full border-2 text-sm font-semibold ${markerClass}`}>
-              {complete ? "✓" : number}
+              {complete ? <Check className="size-4" strokeWidth={3} /> : number}
             </div>
             <div className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Step {number}</div>
           </div>
           <div className="hidden text-sm font-semibold uppercase tracking-widest text-muted-foreground md:block">Step {number}</div>
           <h3 className="mt-1 font-display text-2xl font-bold leading-tight text-foreground">{title}</h3>
-          {description && <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground/85">{description}</p>}
+          {description && <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">{description}</p>}
         </div>
         <div className="overflow-hidden rounded-2xl border border-border/70 bg-white shadow-sm">
           <div className={`h-1 ${active ? "bg-primary" : complete ? "bg-success" : "bg-border"}`} />
@@ -2515,7 +2576,7 @@ function ScholarshipDetailsCard({
           onClick={onExtract}
           disabled={extracting}
           aria-busy={extracting}
-          className={`inline-flex items-center justify-center gap-2 rounded-full bg-primary text-primary-foreground px-5 py-2.5 text-sm font-medium hover:opacity-90 disabled:opacity-90 ${extracting ? "agent-loading" : ""}`}
+          className={`inline-flex items-center justify-center gap-2 rounded-lg bg-primary text-primary-foreground px-5 py-2.5 text-sm font-medium hover:opacity-90 disabled:opacity-90 ${extracting ? "agent-loading" : ""}`}
         >
           {extracting && <Spinner className="size-4" />}
           {extracting ? "Extracting requirements…" : "Extract Requirements"}
@@ -2912,7 +2973,7 @@ function EditableScholarshipFields({
           onClick={onAnalyze}
           disabled={analyzing}
           aria-busy={analyzing}
-          className={`inline-flex items-center justify-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-90 ${analyzing ? "agent-loading" : ""}`}
+          className={`inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-90 ${analyzing ? "agent-loading" : ""}`}
         >
           {analyzing && <Spinner className="size-4" />}
           {analyzing ? "Analyzing fit…" : "Accept and Analyze Fit"}
@@ -3078,7 +3139,7 @@ function StepRequirementsAndFit() {
                 <button
                   type="button"
                   onClick={() => setRubricOpen(true)}
-                  className="mt-2.5 rounded-full border border-border bg-background px-3 py-1 text-[12px] font-medium text-foreground transition-colors hover:bg-accent"
+                  className="mt-2.5 rounded-lg border border-border bg-background px-3 py-1 text-[12px] font-medium text-foreground transition-colors hover:bg-accent"
                 >
                   What does this score mean?
                 </button>
@@ -3922,7 +3983,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
         <div
           className={`w-full overflow-hidden transition-[max-height,opacity,width] duration-300 ease-out lg:shrink-0 ${
             panelOpen
-              ? "max-h-[1200px] opacity-100 lg:w-[440px]"
+              ? "max-h-[1200px] opacity-100 lg:w-[380px]"
               : "max-h-0 opacity-0 pointer-events-none lg:max-h-none lg:w-0"
           }`}
         >
@@ -4054,7 +4115,7 @@ function EssayWorkspacePanel({
   ];
 
   return (
-    <aside className="w-full shrink-0 border-t border-border bg-card lg:sticky lg:top-[56px] lg:h-[calc(100vh-120px)] lg:w-[440px] lg:overflow-y-auto lg:border-l lg:border-t-0">
+    <aside className="w-full shrink-0 border-t border-border bg-card lg:sticky lg:top-[56px] lg:h-[calc(100vh-120px)] lg:w-[380px] lg:overflow-y-auto lg:border-l lg:border-t-0">
       <div className="sticky top-0 z-10 flex items-center gap-1 border-b border-border bg-card/95 p-2 backdrop-blur">
         <div className="flex flex-1 items-center gap-1 rounded-lg bg-muted/60 p-1">
           {tabs.map((tab) => {
@@ -5523,7 +5584,7 @@ function StepEssayUpload() {
           <button
             onClick={saveAsDraft}
             disabled={wordCount < 30}
-            className="rounded-full bg-card border border-border px-4 py-2 text-sm hover:bg-accent disabled:opacity-40"
+            className="rounded-lg bg-card border border-border px-4 py-2 text-sm hover:bg-accent disabled:opacity-40"
           >
             Save as new draft
           </button>
@@ -5531,12 +5592,12 @@ function StepEssayUpload() {
             label={
               wordCount < 30
                 ? "Write at least a paragraph to send to the coach"
-                : "Send to AI Coach for evaluation →"
+                : "Send to AI Coach for evaluation"
             }
             loadingLabel="Analyzing…"
             disabled={wordCount < 30}
             onStatus={setAnalysisStatus}
-            className="flex-1 rounded-full bg-primary text-primary-foreground py-2 text-sm font-medium hover:opacity-90 disabled:opacity-40"
+            className="flex-1 rounded-lg bg-primary text-primary-foreground py-2 text-sm font-medium hover:opacity-90 disabled:opacity-40"
           />
         </div>
         {analysisStatus && <p className="mt-3 text-xs text-muted-foreground">{analysisStatus}</p>}
@@ -5607,7 +5668,7 @@ function StepScores() {
         <div className="mt-4 grid sm:grid-cols-5 gap-2 text-xs">
           {stages.map((s) => (
             <div key={s} className="rounded-lg bg-success/10 text-success p-2 flex items-center gap-1.5">
-              <span className="font-mono">✓</span>
+              <Check className="size-3.5 shrink-0" strokeWidth={2.5} />
               <span className="truncate">{s}</span>
             </div>
           ))}
@@ -6104,7 +6165,7 @@ function StepFinalCheck() {
           <div className="size-16 rounded-2xl bg-warning/20 grid place-items-center font-display text-2xl">!</div>
         </div>
         <div className="mt-4 h-2 rounded-full bg-secondary overflow-hidden">
-          <div className="h-full bg-gold" style={{ width: `${(done / checklist.length) * 100}%` }} />
+          <div className="h-full bg-success" style={{ width: `${(done / checklist.length) * 100}%` }} />
         </div>
       </Card>
 
@@ -6113,8 +6174,8 @@ function StepFinalCheck() {
         <ul className="mt-3 divide-y divide-border">
           {checklist.map((c) => (
             <li key={c.item} className="py-3 flex items-center gap-3">
-              <div className={`size-5 rounded-md grid place-items-center text-[11px] ${c.done ? "bg-success text-white" : "border-2 border-warning"}`}>
-                {c.done ? "✓" : ""}
+              <div className={`size-5 rounded-md grid place-items-center ${c.done ? "bg-success text-white" : "border-2 border-warning"}`}>
+                {c.done && <Check className="size-3.5" strokeWidth={3} />}
               </div>
               <div className={`text-sm flex-1 ${c.done ? "" : "text-foreground font-medium"}`}>{c.item}</div>
               {!c.done && <Pill tone="warn">action needed</Pill>}
@@ -6199,8 +6260,9 @@ function StepTracker() {
         <p className="text-primary-foreground/80 mt-2 text-sm">
           From landing on the homepage to a polished, sponsor-aligned submission — all without anyone writing your essay for you.
         </p>
-        <Link to="/" className="mt-4 inline-flex rounded-full bg-gold text-gold-foreground px-5 py-2 text-sm font-medium">
-          ← Back to landing
+        <Link to="/" className="mt-4 inline-flex items-center gap-2 rounded-lg bg-gold text-gold-foreground px-5 py-2 text-sm font-medium">
+          <ArrowLeft className="size-4" />
+          Back to landing
         </Link>
       </Card>
     </div>
