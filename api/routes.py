@@ -1061,6 +1061,15 @@ def _load_wiki_source_library() -> list[dict]:
 
 
 def discover_scholarship_wiki(request: WikiDiscoverRequest) -> dict:
+    if not settings.openai_api_key:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Missing OPENAI_API_KEY. Add a .env file in the project root "
+                "with OPENAI_API_KEY=your_key, then restart the server."
+            ),
+        )
+
     user_id = default_user_id(request.user_id)
     profile_text = build_profile_memory_text(request.student_profile)
     _persist_domain_record(ProfileService.save_current_profile, user_id, request.student_profile, profile_text, None)
@@ -1076,8 +1085,8 @@ def discover_scholarship_wiki(request: WikiDiscoverRequest) -> dict:
     )
     graph = build_wiki_discovery_graph()
     payload = {
-            "student_profile": request.student_profile,
-            "source_library": _load_wiki_source_library(),
+        "student_profile": request.student_profile,
+        "source_library": _load_wiki_source_library(),
     }
     result, _ = run_agent_with_persistence(
         user_id=request.user_id,
