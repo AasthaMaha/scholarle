@@ -54,35 +54,94 @@ CRITICAL GROUNDING RULES:
 """
 
 
-def run_strategy_and_discovery_coach(context: str) -> dict:
+def run_strategy_coach(context: str) -> dict:
+    """Opportunity Strategy agent — what this opportunity actually evaluates."""
     prompt = f"""
-You are two coaches working together for ScholarlE Engen.
-
-COACH 1 — Opportunity Strategy Coach:
+You are the Opportunity Strategy Coach for ScholarlE Engen.
 Explain what this opportunity actually evaluates based on the opportunity text.
-
-COACH 2 — Experience Discovery Coach:
-Identify strengths ONLY from the profile text shown. If profile is placeholder
-or empty, say so — do not invent experiences.
 
 {context}
 {_grounding_rules()}
 
 Return ONLY valid JSON:
 {{
-  "strategy": {{
-    "surface_prompt": "what students usually think it asks",
-    "actual_evaluation_focus": ["what reviewers really weight"],
-    "strategic_insight": "2-3 sentences tied to THIS opportunity text",
-    "reflection_vs_story_ratio": "e.g. challenge is 30%, reflection is 70%"
-  }},
-  "discovery": {{
-    "hidden_strengths": ["only from profile text, or empty list"],
-    "strongest_match_for_opportunity": "from profile or 'none in submitted profile'",
-    "underused_experiences": ["from profile vs draft comparison"],
-    "recommended_experience_to_feature": "specific or 'add profile content first'",
-    "coaching_message": "actionable advice based on what was submitted"
-  }}
+  "surface_prompt": "what students usually think it asks",
+  "actual_evaluation_focus": ["what reviewers really weight"],
+  "strategic_insight": "2-3 sentences tied to THIS opportunity text",
+  "reflection_vs_story_ratio": "e.g. challenge is 30%, reflection is 70%"
+}}
+"""
+    return safe_json_parse(llm.generate(prompt))
+
+
+def run_discovery_coach(context: str) -> dict:
+    """Experience Discovery agent — strengths grounded ONLY in profile text."""
+    prompt = f"""
+You are the Experience Discovery Coach for ScholarlE Engen.
+Identify strengths ONLY from the profile text shown. If the profile is
+placeholder or empty, say so — do not invent experiences.
+
+{context}
+{_grounding_rules()}
+
+Return ONLY valid JSON:
+{{
+  "hidden_strengths": ["only from profile text, or empty list"],
+  "strongest_match_for_opportunity": "from profile or 'none in submitted profile'",
+  "underused_experiences": ["from profile vs draft comparison"],
+  "recommended_experience_to_feature": "specific or 'add profile content first'",
+  "coaching_message": "actionable advice based on what was submitted"
+}}
+"""
+    return safe_json_parse(llm.generate(prompt))
+
+
+def run_eligibility_matrix(context: str) -> dict:
+    """Eligibility / Requirements Matrix agent.
+
+    Builds a row-by-row comparison of every requirement the opportunity states
+    against what the student's profile + draft actually provide. This is a REAL
+    LLM evaluation grounded in the submitted text — never a hardcoded mapping.
+
+    Each row's status is one of:
+      - "met"     : the submitted profile clearly satisfies the requirement
+      - "not_met" : the submitted profile contradicts/violates the requirement
+      - "missing" : the requirement exists but the profile lacks the info to verify
+    """
+    prompt = f"""
+You are the Eligibility & Requirements Matrix Coach for ScholarlE Engen.
+Compare EACH requirement, eligibility rule, and required material stated in the
+opportunity against what the student actually provided in their profile and draft.
+
+{context}
+{_grounding_rules()}
+
+Build one row per distinct requirement you find in the opportunity text
+(eligibility rules, GPA, citizenship/residency, enrollment level, major/field,
+required documents, deadlines, essay prompts, financial-need, etc.).
+
+For each row decide a status using ONLY the submitted text:
+- "met": the profile clearly satisfies it (quote the supporting profile detail).
+- "not_met": the profile clearly violates it (e.g. requires 3.0 GPA, profile shows 2.4).
+- "missing": the requirement exists but the profile does not contain enough
+  information to verify it — the student must add this.
+
+Do NOT assume unstated details. If you cannot find it in the profile, it is "missing".
+
+Return ONLY valid JSON:
+{{
+  "rows": [
+    {{
+      "requirement": "the requirement, short and specific",
+      "category": "Eligibility|Academic|Documents|Deadline|Essay|Financial|Other",
+      "student_value": "what the profile shows, or 'Not provided'",
+      "status": "met|not_met|missing",
+      "explanation": "one sentence grounded in the submitted text",
+      "action_needed": "what the student must add/fix, or empty string if met"
+    }}
+  ],
+  "overall": "eligible|not_eligible|incomplete",
+  "summary": "1-2 sentences on overall eligibility based on the rows"
 }}
 """
     return safe_json_parse(llm.generate(prompt))
@@ -131,14 +190,30 @@ Return ONLY valid JSON:
     return safe_json_parse(llm.generate(prompt))
 
 
-def run_readiness_and_brief_coach(
+def run_combiner(
     context: str,
-    strategy_discovery: dict,
+    strategy: dict,
+    discovery: dict,
     narrative: dict,
     reviewers: dict,
+    critique: dict | None = None,
 ) -> dict:
+    """Combiner agent — synthesize all specialist outputs into the readiness
+    index and coaching brief. Re-runs with critique guidance when the Critic
+    requests a revision."""
+    critique_block = ""
+    if critique:
+        critique_block = f"""
+CRITIC FEEDBACK (a prior pass was flagged — you MUST fix these issues):
+{json.dumps(critique, indent=2)}
+
+Re-evaluate carefully. Correct any ungrounded scores or comments the critic
+identified, and make sure every score is justified by the submitted text.
+"""
+
     prompt = f"""
-You are the ScholarlE Readiness Coach.
+You are the ScholarlE Combiner Coach. You synthesize the work of several
+specialist agents into one coherent evaluation.
 
 Assign Application Readiness Index scores (0–100) by evaluating ONLY the
 submitted CV, essay, and opportunity text. Scores must match content quality:
@@ -147,14 +222,18 @@ says why.
 
 {context}
 
-STRATEGY & DISCOVERY:
-{json.dumps(strategy_discovery, indent=2)}
+OPPORTUNITY STRATEGY AGENT:
+{json.dumps(strategy, indent=2)}
 
-NARRATIVE COACH:
+EXPERIENCE DISCOVERY AGENT:
+{json.dumps(discovery, indent=2)}
+
+NARRATIVE AGENT:
 {json.dumps(narrative, indent=2)}
 
-REVIEWER SIMULATIONS:
+REVIEWER SIMULATION AGENT:
 {json.dumps(reviewers, indent=2)}
+{critique_block}
 {_grounding_rules()}
 
 Return ONLY valid JSON:
@@ -173,6 +252,42 @@ Return ONLY valid JSON:
     "expected_improvement": "High|Medium|Low",
     "coach_message": "2-4 sentences — specific to submitted text, no generic praise"
   }}
+}}
+"""
+    return safe_json_parse(llm.generate(prompt))
+
+
+def run_critic_review(context: str, combined: dict) -> dict:
+    """Critic agent — verify the combined evaluation is grounded in the
+    submitted text and obeys the coaching guardrails. Flags revisions."""
+    prompt = f"""
+You are the ScholarlE Critic. You are a strict quality-control reviewer of the
+OTHER agents' work. You do NOT coach the student. You audit the evaluation
+below against the submitted text and the grounding rules.
+
+{context}
+
+EVALUATION TO AUDIT (produced by the combiner from specialist agents):
+{json.dumps(combined, indent=2)}
+{_grounding_rules()}
+
+Check specifically:
+- Is every readiness score justified by specific words in the submitted text?
+- Did any agent invent experiences, awards, metrics, or facts not present?
+- Is placeholder/empty content (e.g. "N/A") correctly scored low, not praised?
+- Are comments specific to THIS submission rather than generic template praise?
+
+Set "verdict" to "needs_revision" ONLY if you find a concrete grounding or
+guardrail violation that materially changes the evaluation. Otherwise "approved".
+
+Return ONLY valid JSON:
+{{
+  "grounding_pass": true,
+  "guardrail_pass": true,
+  "confidence": 0,
+  "issues": ["concrete problems found, or empty list"],
+  "revision_guidance": "what the combiner must fix, or empty string",
+  "verdict": "approved"
 }}
 """
     return safe_json_parse(llm.generate(prompt))

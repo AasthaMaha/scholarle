@@ -1,9 +1,9 @@
 # config.py
 from dataclasses import dataclass
-#from dotenv import load_dotenv
+from dotenv import load_dotenv
 import os
 
-#load_dotenv()
+load_dotenv()
 
 @dataclass
 class Settings:
@@ -12,13 +12,14 @@ class Settings:
 
     # API Keys
     openai_api_key: str = os.getenv("OPENAI_API_KEY")
+    google_api_key: str = os.getenv("GOOGLE_API_KEY", "")
+    llm_provider: str = os.getenv("LLM_PROVIDER", "openai")
+    secret_key: str = os.getenv("SECRET_KEY", "")
+    environment: str = os.getenv("ENVIRONMENT", "development")
 
-    # Separate vector DBs
-    rfp_vector_db_path: str = "./chroma_db_rfp"
-    kb_vector_db_path: str = "./chroma_db_kb"
-
-    # Document locations
-    rfp_docs_path: str = "./documents/rfp_docs"
-    knowledge_base_path: str = "./documents/knowledge_base"
+    profile_vector_db_path: str = "./chroma_db_profile"
+    chroma_persist_directory: str = os.getenv("CHROMA_PERSIST_DIRECTORY", "./chroma_db")
+    database_url: str = os.getenv("DATABASE_URL", "sqlite:///scholar_e.db")
+    default_user_id: str = os.getenv("DEFAULT_USER_ID", "demo-user")
 
 settings = Settings()

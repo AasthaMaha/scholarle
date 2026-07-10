@@ -1,22 +1,31 @@
 # server.py
 """
-FastAPI server for ScholarlE Engen MVP prototype.
-Serves ScholarlE Engen.html and exposes POST /api/analyze.
+FastAPI server for Scholar-E MVP.
+Exposes POST /api/analyze and auth routes for frontend-react.
 """
 
-from pathlib import Path
-
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
 
-from api.routes import AnalyzeRequest, analyze_application
+from api.routes import (
+    AnalyzeRequest,
+    EssayCoachRequest,
+    FitAnalyzeRequest,
+    OpportunityExtractRequest,
+    OutlineGenerateRequest,
+    RewriteRequest,
+    WikiDiscoverRequest,
+    analyze_application,
+    analyze_scholarship_fit,
+    autofill_profile_from_resume,
+    discover_scholarship_wiki,
+    extract_scholarship_opportunity,
+    generate_personalized_outline,
+    rewrite_selection,
+    run_essay_coach,
+)
 
-ROOT = Path(__file__).resolve().parent
-FRONTEND = ROOT / "frontend"
-HTML_FILE = FRONTEND / "ScholarlE Engen.html"
-
-app = FastAPI(title="ScholarlE Engen", version="0.1.0")
+app = FastAPI(title="Scholar-E", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -27,25 +36,85 @@ app.add_middleware(
 )
 
 
-@app.get("/")
-def index():
-    return FileResponse(HTML_FILE)
-
-
-@app.get("/styles.css")
-def styles():
-    return FileResponse(FRONTEND / "styles.css", media_type="text/css")
-
-
-@app.get("/app.js")
-def app_js():
-    return FileResponse(FRONTEND / "app.js", media_type="application/javascript")
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
 
 @app.post("/api/analyze")
 def analyze(request: AnalyzeRequest):
     try:
         return analyze_application(request)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/profile/autofill-resume")
+async def autofill_resume(file: UploadFile = File(...), user_id: str = Form(default="")):
+    try:
+        return await autofill_profile_from_resume(file, user_id=user_id)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/opportunity/extract")
+def extract_opportunity(request: OpportunityExtractRequest):
+    try:
+        return extract_scholarship_opportunity(request)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/fit/analyze")
+def analyze_fit(request: FitAnalyzeRequest):
+    try:
+        return analyze_scholarship_fit(request)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/wiki/discover")
+def discover_wiki(request: WikiDiscoverRequest):
+    try:
+        return discover_scholarship_wiki(request)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/apply/generate-outline")
+def generate_outline(request: OutlineGenerateRequest):
+    try:
+        return generate_personalized_outline(request)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/apply/essay-coach")
+def essay_coach(request: EssayCoachRequest):
+    try:
+        return run_essay_coach(request)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/apply/rewrite-selection")
+def rewrite_selection_endpoint(request: RewriteRequest):
+    try:
+        return rewrite_selection(request)
     except HTTPException:
         raise
     except Exception as exc:
