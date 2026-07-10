@@ -1,7 +1,7 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { useUser } from "@/lib/userStore";
-import scholarELogoUrl from "../../logo/logoPic2.png";
+import scholarELogoUrl from "../../logo/logoPic.jpeg";
 
 export const Route = createFileRoute("/auth")({
   head: () => ({
@@ -36,7 +36,7 @@ function AuthPage() {
       <div className="flex flex-col">
         <header className="flex items-center justify-between px-6 h-16 border-b border-border/60">
           <Link to="/" className="flex items-center gap-2">
-            <img src={scholarELogoUrl} alt="" className="size-8 object-contain" />
+            <img src={scholarELogoUrl} alt="" className="size-8 rounded-full object-cover" />
             <span className="font-display font-semibold tracking-tight">Scholar-E</span>
           </Link>
           <Link to="/journey" className="text-sm text-muted-foreground hover:text-foreground">
@@ -90,7 +90,7 @@ function AsidePanel() {
   return (
     <aside className="hidden lg:flex flex-col justify-between bg-primary text-primary-foreground p-12">
       <Link to="/" className="flex items-center gap-2">
-        <img src={scholarELogoUrl} alt="" className="size-9 object-contain" />
+        <img src={scholarELogoUrl} alt="" className="size-9 rounded-full object-cover" />
         <span className="font-display font-semibold text-lg tracking-tight">Scholar-E</span>
       </Link>
       <div>

@@ -1,6 +1,6 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
-import scholarELogoUrl from "../../logo/logoPic2.png";
+import scholarELogoUrl from "../../logo/logoPic.jpeg";
 import {
   AlertCircle,
   ArrowLeft,
@@ -257,7 +257,7 @@ function Sidebar({
       >
         <div className="flex items-center gap-2 px-6 h-16 border-b border-border">
           <Link to="/" className="flex min-w-0 flex-1 items-center gap-2">
-            <img src={scholarELogoUrl} alt="" className="size-8 object-contain" />
+            <img src={scholarELogoUrl} alt="" className="size-8 rounded-full object-cover" />
             <div className="font-display font-semibold tracking-tight">Scholar-E</div>
             <span className="ml-auto text-[10px] uppercase tracking-widest text-muted-foreground">journey</span>
           </Link>
@@ -340,7 +340,7 @@ function TopBar({
     <div className="sticky top-0 z-20 border-b border-border bg-background/85 backdrop-blur">
       <div className="px-6 md:px-10 h-16 flex items-center gap-4">
         <Link to="/" className="flex items-center gap-2 rounded-lg px-2.5 py-1.5">
-          <img src={scholarELogoUrl} alt="" className="size-7 object-contain" />
+          <img src={scholarELogoUrl} alt="" className="size-7 rounded-full object-cover" />
           <span className="font-display font-semibold">Scholar-E</span>
         </Link>
         <div className="flex-1 min-w-0">
@@ -404,7 +404,7 @@ function FloatingSidebarToggle({
         isOpen ? "opacity-0 pointer-events-none" : "opacity-100"
       }`}
     >
-      <img src={scholarELogoUrl} alt="" className="size-6 object-contain" />
+      <img src={scholarELogoUrl} alt="" className="size-6 rounded-full object-cover" />
       <Menu className="size-5 text-muted-foreground" strokeWidth={2.5} />
     </button>
   );

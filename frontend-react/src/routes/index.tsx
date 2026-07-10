@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import scholarELogoUrl from "../../logo/logoPic2.png";
+import scholarELogoUrl from "../../logo/logoPic.jpeg";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -69,7 +69,7 @@ function Header() {
 
 function LogoMark() {
   return (
-    <img src={scholarELogoUrl} alt="" className="size-8 object-contain" />
+    <img src={scholarELogoUrl} alt="" className="size-8 rounded-full object-cover" />
   );
 }
 
