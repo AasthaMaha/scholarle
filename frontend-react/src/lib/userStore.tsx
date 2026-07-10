@@ -430,6 +430,7 @@ export type UserProfile = {
   // essay (current working draft)
   essayTitle?: string;
   essayDraft?: string;
+  essayDraftHtml?: string;
   // last journey step index, so the student resumes where they left off
   lastStep?: number;
   // scholarship currently being analyzed
