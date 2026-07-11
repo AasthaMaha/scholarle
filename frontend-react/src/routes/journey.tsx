@@ -11,13 +11,17 @@ import {
   ChevronRight,
   ChevronDown,
   ClipboardList,
+  Compass,
   Copy,
   FileUp,
   Gauge,
   Lightbulb,
+  LineChart,
   ListChecks,
   Menu,
   MessageSquare,
+  PanelLeftClose,
+  PanelLeftOpen,
   PencilLine,
   Power,
   ReceiptText,
@@ -26,6 +30,7 @@ import {
   ShieldCheck,
   Sparkles,
   Target,
+  UserRound,
   Wand2,
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -223,6 +228,20 @@ function isProfileComplete(user: UserProfile | null) {
   );
 }
 
+/** Related icon per journey step (shown in the rail + expanded sidebar instead of a number). */
+const STEP_ICONS: Record<string, typeof Target> = {
+  profile: UserRound,
+  discovery: Compass,
+  requirements: Target,
+  "essay-workspace": PencilLine,
+  revise: Sparkles,
+  "final-check": ShieldCheck,
+  tracker: LineChart,
+};
+function stepIcon(slug: string) {
+  return STEP_ICONS[slug] ?? Target;
+}
+
 function Sidebar({
   activeIdx,
   isOpen,
@@ -267,18 +286,19 @@ function Sidebar({
             <div className="font-display font-semibold tracking-tight">Scholar-E</div>
             <span className="ml-auto text-[10px] uppercase tracking-widest text-muted-foreground">journey</span>
           </Link>
-          <button
-            type="button"
-            aria-label="Close sidebar"
-            onClick={onClose}
-            className="grid size-8 shrink-0 place-items-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground"
-          >
-            <Menu className="size-5" strokeWidth={2.5} />
-          </button>
-        </div>
-
-        <div className="px-6 py-5 border-b border-border">
-          <SidebarUser />
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                aria-label="Collapse sidebar"
+                onClick={onClose}
+                className="grid size-8 shrink-0 place-items-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                <PanelLeftClose className="size-5" strokeWidth={2} />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>Collapse sidebar</TooltipContent>
+          </Tooltip>
         </div>
 
         <div className="flex-1 overflow-y-auto px-3 py-4 space-y-5">
@@ -290,6 +310,7 @@ function Sidebar({
                   const idx = journeySteps.findIndex((x) => x.id === s.id);
                   const isActive = idx === activeIdx;
                   const isDone = idx < activeIdx;
+                  const Icon = stepIcon(s.slug);
                   return (
                     <button
                       key={s.id}
@@ -301,15 +322,20 @@ function Sidebar({
                       }`}
                     >
                       <span
-                        className={`size-6 shrink-0 rounded-full grid place-items-center text-[11px] font-mono ${
+                        className={`relative size-7 shrink-0 rounded-lg grid place-items-center ${
                           isActive
                             ? "bg-gold text-gold-foreground"
                             : isDone
                             ? "bg-success/20 text-success"
-                            : "bg-secondary text-secondary-foreground"
+                            : "bg-secondary text-muted-foreground"
                         }`}
                       >
-                        {isDone ? <Check className="size-3.5" strokeWidth={3} /> : s.id}
+                        <Icon className="size-4" strokeWidth={2} />
+                        {isDone && (
+                          <span className="absolute -bottom-0.5 -right-0.5 grid size-3.5 place-items-center rounded-full bg-success text-white ring-2 ring-card">
+                            <Check className="size-2.5" strokeWidth={3.5} />
+                          </span>
+                        )}
                       </span>
                       <span className="truncate">{s.title}</span>
                     </button>
@@ -321,6 +347,10 @@ function Sidebar({
         </div>
 
         <div className="border-t border-border px-6 py-4">
+          <SidebarUser />
+        </div>
+
+        <div className="border-t border-border px-6 py-3">
           <button
             type="button"
             onClick={onClearAll}
@@ -389,9 +419,9 @@ function FloatingSidebarToggle({
 
 /**
  * Persistent slim navigation rail (md+). Replaces the old floating toggle pill:
- * it stays docked to the left edge, shows the logo once, the journey steps as
- * hover-labelled markers (teal = done, gold = current, gray = upcoming), and the
- * user avatar. The logo, avatar, and chevron expand the full sidebar panel.
+ * docked to the left edge with the logo (home), a dedicated panel-toggle button,
+ * the journey steps as icon markers (teal = done, gold = current, gray = upcoming),
+ * and the user avatar. The toggle and avatar expand the full sidebar panel.
  */
 function SidebarRail({
   activeIdx,
@@ -405,24 +435,33 @@ function SidebarRail({
   const { user } = useUser();
   return (
     <aside className="fixed inset-y-0 left-0 z-30 hidden w-14 flex-col items-center border-r border-border bg-card/95 backdrop-blur md:flex">
+      <Link
+        to="/"
+        aria-label="Scholar-E home"
+        className="mt-2.5 grid size-9 place-items-center rounded-lg transition-transform hover:scale-105"
+      >
+        <img src={scholarELogoUrl} alt="" className="size-8 rounded-full object-cover" />
+      </Link>
+
       <Tooltip>
         <TooltipTrigger asChild>
           <button
             type="button"
             onClick={onExpand}
-            aria-label="Expand menu"
-            className="mt-2.5 grid size-9 place-items-center rounded-lg transition-transform hover:scale-105"
+            aria-label="Expand sidebar"
+            className="mt-1.5 grid size-8 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           >
-            <img src={scholarELogoUrl} alt="" className="size-8 rounded-full object-cover" />
+            <PanelLeftOpen className="size-5" strokeWidth={2} />
           </button>
         </TooltipTrigger>
-        <TooltipContent side="right">Expand menu</TooltipContent>
+        <TooltipContent side="right">Expand sidebar</TooltipContent>
       </Tooltip>
 
-      <div className="mt-4 flex flex-1 flex-col items-center gap-1.5 overflow-y-auto py-1">
+      <div className="mt-3 flex flex-1 flex-col items-center gap-1.5 overflow-y-auto py-1">
         {journeySteps.map((s, idx) => {
           const isActive = idx === activeIdx;
           const isDone = idx < activeIdx;
+          const Icon = stepIcon(s.slug);
           return (
             <Tooltip key={s.id}>
               <TooltipTrigger asChild>
@@ -431,15 +470,20 @@ function SidebarRail({
                   onClick={() => onSelect(idx)}
                   aria-label={s.title}
                   aria-current={isActive ? "step" : undefined}
-                  className={`grid size-8 shrink-0 place-items-center rounded-full text-[11px] font-mono transition-colors ${
+                  className={`relative grid size-9 shrink-0 place-items-center rounded-lg transition-colors ${
                     isActive
                       ? "bg-gold text-gold-foreground"
                       : isDone
                         ? "bg-success/20 text-success hover:bg-success/30"
-                        : "bg-secondary text-muted-foreground hover:bg-accent hover:text-foreground"
+                        : "text-muted-foreground hover:bg-accent hover:text-foreground"
                   }`}
                 >
-                  {isDone ? <Check className="size-4" strokeWidth={3} /> : s.id}
+                  <Icon className="size-5" strokeWidth={2} />
+                  {isDone && (
+                    <span className="absolute -bottom-0.5 -right-0.5 grid size-3.5 place-items-center rounded-full bg-success text-white ring-2 ring-card">
+                      <Check className="size-2.5" strokeWidth={3.5} />
+                    </span>
+                  )}
                 </button>
               </TooltipTrigger>
               <TooltipContent side="right">
