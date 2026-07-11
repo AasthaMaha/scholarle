@@ -92,6 +92,9 @@
 
 @layer base {
   * { border-color: var(--color-border); }
+  /* Slightly smaller rem base → more compact main content (Tailwind text-* / spacing
+     are rem-based). Sidebar/topbar text is set in fixed px, so it stays crisp. */
+  html { font-size: 15px; }
   body {
     background-color: var(--color-background);
     color: var(--color-foreground);

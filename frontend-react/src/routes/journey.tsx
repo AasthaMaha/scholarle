@@ -114,11 +114,31 @@ export const Route = createFileRoute("/journey")({
   component: Journey,
 });
 
+const SIDEBAR_MIN_WIDTH = 232;
+const SIDEBAR_MAX_WIDTH = 420;
+const SIDEBAR_DEFAULT_WIDTH = 288;
+const SIDEBAR_WIDTH_KEY = "scholar-e:sidebarWidth";
+
 function Journey() {
   const { user, updateProfile, resetProfile } = useUser();
   const [stepIdx, setStepIdx] = useState(0);
   const [profileError, setProfileError] = useState("");
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [panelWidth, setPanelWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
+  const [sidebarDragging, setSidebarDragging] = useState(false);
+
+  // Restore the user's chosen sidebar width (client-only; SSR-safe).
+  useEffect(() => {
+    const saved = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY));
+    if (saved >= SIDEBAR_MIN_WIDTH && saved <= SIDEBAR_MAX_WIDTH) setPanelWidth(saved);
+  }, []);
+  useEffect(() => {
+    try {
+      localStorage.setItem(SIDEBAR_WIDTH_KEY, String(panelWidth));
+    } catch {
+      /* ignore quota / privacy-mode errors */
+    }
+  }, [panelWidth]);
 
   // Resume the last step once the saved profile hydrates from storage.
   const restoredStep = useRef(false);
@@ -160,7 +180,10 @@ function Journey() {
 
   return (
     <TooltipProvider delayDuration={150}>
-      <div className="min-h-screen flex overflow-x-hidden">
+      <div
+        className="min-h-screen flex overflow-x-hidden"
+        style={{ ["--sw" as string]: `${panelWidth}px` } as React.CSSProperties}
+      >
         <SidebarRail
           activeIdx={stepIdx}
           onSelect={selectStep}
@@ -172,13 +195,13 @@ function Journey() {
           onClose={() => setIsSidebarOpen(false)}
           onSelect={selectStep}
           onClearAll={handleClearAll}
+          onResize={(w) => setPanelWidth(Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, w)))}
+          onResizeActive={setSidebarDragging}
         />
         <div
-          className={`flex flex-col min-w-0 transition-[margin,width] duration-300 ease-out ${
-            isSidebarOpen
-              ? "w-full md:ml-80 md:w-[calc(100%-20rem)]"
-              : "w-full md:ml-14 md:w-[calc(100%-3.5rem)]"
-          }`}
+          className={`flex w-full min-w-0 flex-col ${
+            sidebarDragging ? "" : "transition-[padding] duration-300 ease-out"
+          } ${isSidebarOpen ? "md:pl-[var(--sw)]" : "md:pl-14"}`}
         >
           <TopBar step={step} stepIdx={stepIdx} />
           <FloatingSidebarToggle
@@ -248,13 +271,30 @@ function Sidebar({
   onClose,
   onSelect,
   onClearAll,
+  onResize,
+  onResizeActive,
 }: {
   activeIdx: number;
   isOpen: boolean;
   onClose: () => void;
   onSelect: (i: number) => void;
   onClearAll: () => void;
+  onResize: (width: number) => void;
+  onResizeActive: (active: boolean) => void;
 }) {
+  function startResize(e: React.MouseEvent) {
+    e.preventDefault();
+    onResizeActive(true);
+    const onMove = (ev: MouseEvent) => onResize(ev.clientX);
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      onResizeActive(false);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
+
   const groups = useMemo(() => {
     const map = new Map<string, typeof journeySteps>();
     journeySteps.forEach((s) => {
@@ -276,14 +316,14 @@ function Sidebar({
         }`}
       />
       <aside
-        className={`fixed inset-y-0 left-0 z-40 flex w-80 max-w-[85vw] shrink-0 flex-col border-r border-border bg-card/95 backdrop-blur transition-transform duration-300 ease-out ${
+        className={`fixed inset-y-0 left-0 z-40 flex w-80 max-w-[85vw] shrink-0 flex-col border-r border-border bg-card/95 backdrop-blur transition-transform duration-300 ease-out md:w-[var(--sw)] md:max-w-none ${
           isOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
-        <div className="flex items-center gap-2 px-6 h-16 border-b border-border">
+        <div className="flex items-center gap-2 px-5 h-14 border-b border-border">
           <Link to="/" className="flex min-w-0 flex-1 items-center gap-2">
-            <img src={scholarELogoUrl} alt="" className="size-8 rounded-full object-cover" />
-            <div className="font-display font-semibold tracking-tight">Scholar-E</div>
+            <img src={scholarELogoUrl} alt="" className="size-7 rounded-full object-cover" />
+            <div className="text-sm font-display font-semibold tracking-tight">Scholar-E</div>
             <span className="ml-auto text-[10px] uppercase tracking-widest text-muted-foreground">journey</span>
           </Link>
           <Tooltip>
@@ -315,14 +355,14 @@ function Sidebar({
                     <button
                       key={s.id}
                       onClick={() => onSelect(idx)}
-                      className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-left text-sm transition-colors ${
+                      className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-left text-[13px] transition-colors ${
                         isActive
                           ? "bg-primary text-primary-foreground"
                           : "hover:bg-accent text-foreground/80"
                       }`}
                     >
                       <span
-                        className={`relative size-7 shrink-0 rounded-lg grid place-items-center ${
+                        className={`relative size-6 shrink-0 rounded-md grid place-items-center ${
                           isActive
                             ? "bg-gold text-gold-foreground"
                             : isDone
@@ -330,10 +370,10 @@ function Sidebar({
                             : "bg-secondary text-muted-foreground"
                         }`}
                       >
-                        <Icon className="size-4" strokeWidth={2} />
+                        <Icon className="size-3.5" strokeWidth={2} />
                         {isDone && (
-                          <span className="absolute -bottom-0.5 -right-0.5 grid size-3.5 place-items-center rounded-full bg-success text-white ring-2 ring-card">
-                            <Check className="size-2.5" strokeWidth={3.5} />
+                          <span className="absolute -bottom-0.5 -right-0.5 grid size-3 place-items-center rounded-full bg-success text-white ring-2 ring-card">
+                            <Check className="size-2" strokeWidth={4} />
                           </span>
                         )}
                       </span>
@@ -360,6 +400,17 @@ function Sidebar({
             Reset all data
           </button>
           <div className="mt-2 text-[11px] text-muted-foreground/60">A coach, not a ghostwriter.</div>
+        </div>
+
+        {/* Drag-to-resize handle (desktop). Widens/narrows the panel; width persists. */}
+        <div
+          onMouseDown={startResize}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize sidebar"
+          className="group absolute inset-y-0 -right-1 hidden w-2 cursor-col-resize md:block"
+        >
+          <div className="mx-auto h-full w-px bg-transparent transition-colors group-hover:bg-info/60" />
         </div>
       </aside>
     </>
@@ -837,18 +888,18 @@ function SidebarUser() {
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center gap-3">
-        <div className="size-10 rounded-full bg-primary text-primary-foreground grid place-items-center font-display">
+      <div className="flex items-center gap-2.5">
+        <div className="size-8 rounded-full bg-primary text-primary-foreground grid place-items-center text-[11px] font-display">
           {toInitials(user?.name)}
         </div>
         <div className="min-w-0">
-          <div className="text-sm font-medium truncate">{user?.name || "Your profile"}</div>
+          <div className="text-[13px] font-medium truncate">{user?.name || "Your profile"}</div>
           <button
             type="button"
             onClick={handleSignOut}
-            className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
+            className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
           >
-            <Power className="size-3.5" strokeWidth={2.5} />
+            <Power className="size-3" strokeWidth={2.5} />
             <span>Sign Out</span>
           </button>
         </div>
