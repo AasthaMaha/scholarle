@@ -10,6 +10,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import {
+  ArrowRight,
   Bold,
   Copy,
   Expand,
@@ -415,8 +416,9 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
     const rect = rangeRect(backdropRef.current, start, end);
     const vw = window.innerWidth;
     const vh = window.innerHeight;
-    const left = rect ? Math.max(8, Math.min(rect.left, vw - 328)) : 24;
-    const top = rect ? (rect.bottom + 300 <= vh ? rect.bottom + 8 : Math.max(8, rect.top - 300)) : 80;
+    const previewWidth = vw >= 640 ? Math.min(608, vw - 16) : vw - 16;
+    const left = rect ? Math.max(8, Math.min(rect.left, vw - previewWidth - 8)) : 8;
+    const top = rect ? (rect.bottom + 360 <= vh ? rect.bottom + 8 : Math.max(8, rect.top - 360)) : 80;
     setSelBar(null);
     setCard(null);
     setRewrite({ action, start, end, original, status: "loading", result: "", note: "", top, left });
@@ -702,7 +704,7 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
         createPortal(
           <div
             data-editor-overlay
-            className="fixed z-40 flex max-h-[70vh] w-80 flex-col overflow-y-auto rounded-xl border border-border bg-popover p-3 shadow-2xl animate-in fade-in duration-150"
+            className="fixed z-40 flex max-h-[70vh] w-[calc(100vw-1rem)] flex-col overflow-y-auto rounded-xl border border-border bg-popover p-2 shadow-2xl animate-in fade-in duration-150 sm:w-[38rem] sm:max-w-[calc(100vw-1rem)]"
             style={{ top: rewrite.top, left: rewrite.left }}
           >
             <div className="flex items-center justify-between gap-2">
@@ -721,26 +723,38 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
               </div>
             ) : (
               <>
-                <div className="mt-2 rounded-lg border border-border bg-background p-2 text-[13px]">
-                  <div className="text-muted-foreground line-through decoration-muted-foreground/40">{rewrite.original}</div>
-                  <div className="my-1 text-center text-muted-foreground">↓</div>
-                  <div className="font-medium text-foreground">{rewrite.result}</div>
+                <div className="mt-1.5 grid grid-cols-1 items-stretch gap-1.5 text-[13px] sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] sm:gap-2">
+                  <section className="flex min-w-0 flex-col" aria-label="Original text">
+                    <div className="mb-0.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Original</div>
+                    <div className="min-h-[4.75rem] max-h-40 flex-1 overflow-y-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-background p-4 text-muted-foreground line-through decoration-muted-foreground/40">
+                      {rewrite.original}
+                    </div>
+                  </section>
+                  <div className="flex items-center justify-center text-muted-foreground/70" aria-hidden="true">
+                    <ArrowRight className="size-4 rotate-90 sm:rotate-0" />
+                  </div>
+                  <section className="flex min-w-0 flex-col" aria-label="Suggested revision">
+                    <div className="mb-0.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Suggested</div>
+                    <div className="min-h-[4.75rem] max-h-40 flex-1 overflow-y-auto whitespace-pre-wrap break-words rounded-lg border border-info/20 bg-background p-4 font-medium text-foreground">
+                      {rewrite.result}
+                    </div>
+                  </section>
                 </div>
-                {rewrite.note && <p className="mt-1.5 text-[12px] leading-relaxed text-muted-foreground">{rewrite.note}</p>}
-                {rewrite.status === "stale" && <p className="mt-1.5 text-[12px] text-warning">Your text changed — select it again to rewrite.</p>}
-                <div className="mt-2.5 flex items-center gap-2">
+                {rewrite.note && <p className="mt-1 text-[13px] leading-snug text-muted-foreground">{rewrite.note}</p>}
+                {rewrite.status === "stale" && <p className="mt-1 text-[12px] leading-snug text-warning">Your text changed — select it again to rewrite.</p>}
+                <div className="mt-1.5 flex items-center gap-2">
                   <button
                     type="button"
                     onClick={acceptRewrite}
                     disabled={rewrite.status === "stale" || rewrite.result === rewrite.original}
-                    className="flex-1 rounded-lg bg-info px-3 py-1.5 text-[12px] font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+                    className="h-11 flex-1 rounded-lg bg-info px-3 text-[12px] font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
                   >
                     Accept
                   </button>
                   <button
                     type="button"
                     onClick={() => setRewrite(null)}
-                    className="rounded-lg border border-border px-3 py-1.5 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                    className="h-11 rounded-lg border border-border px-3 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                   >
                     Reject
                   </button>

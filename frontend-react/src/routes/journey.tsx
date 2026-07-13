@@ -3477,6 +3477,15 @@ function criteriaAlignmentTone(alignment?: string): "default" | "gold" | "succes
 
 type WorkspaceTab = "outline" | "coach" | "evaluation" | "highlights";
 
+function normalizePdfDraftText(pages: string[]) {
+  return pages
+    .map((page) => page.replace(/[ \t]+/g, " ").trim())
+    .filter(Boolean)
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 const WRITING_SUPPORT_OPTIONS: Array<{ id: WritingSupportLevel; label: string; description: string }> = [
   {
     id: "grammar_only",
@@ -3855,13 +3864,13 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
 
       const buf = await file.arrayBuffer();
       const pdf: PdfDoc = await w.pdfjsLib.getDocument({ data: buf }).promise;
-      let full = "";
+      const pages: string[] = [];
       for (let p = 1; p <= pdf.numPages; p++) {
         const page = await pdf.getPage(p);
         const tc = await page.getTextContent();
-        full += tc.items.map((i) => i.str ?? "").join(" ") + "\n\n";
+        pages.push(tc.items.map((i) => i.str ?? "").join(" "));
       }
-      updateProfile({ essayDraft: full.trim() });
+      updateProfile({ essayDraft: normalizePdfDraftText(pages) });
       setPdfStatus(`Imported ${pdf.numPages} pages from ${file.name}.`);
       triggerAutoCheck();
     } catch (e) {
@@ -5605,13 +5614,13 @@ function StepEssayUpload() {
 
       const buf = await file.arrayBuffer();
       const pdf: PdfDoc = await w.pdfjsLib.getDocument({ data: buf }).promise;
-      let full = "";
+      const pages: string[] = [];
       for (let p = 1; p <= pdf.numPages; p++) {
         const page = await pdf.getPage(p);
         const tc = await page.getTextContent();
-        full += tc.items.map((i) => i.str ?? "").join(" ") + "\n\n";
+        pages.push(tc.items.map((i) => i.str ?? "").join(" "));
       }
-      updateProfile({ essayDraft: full.trim() });
+      updateProfile({ essayDraft: normalizePdfDraftText(pages) });
       setPdfStatus(`Imported ${pdf.numPages} pages from ${file.name}.`);
     } catch (e) {
       setPdfStatus(`Could not parse PDF: ${(e as Error).message}`);
