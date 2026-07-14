@@ -58,6 +58,7 @@ import {
   buildOutlinePoints,
   buildWikiPayload,
   discoverScholarshipWiki,
+  getScholarshipDiscoveryBootstrap,
   buildRewritePayload,
   extractScholarshipOpportunity,
   generatePersonalizedOutline,
@@ -177,7 +178,6 @@ function Journey() {
   const selectStep = (idx: number) => {
     setStepIdx(idx);
   };
-
   return (
     <TooltipProvider delayDuration={150}>
       <div
@@ -193,7 +193,10 @@ function Journey() {
           activeIdx={stepIdx}
           isOpen={isSidebarOpen}
           onClose={() => setIsSidebarOpen(false)}
-          onSelect={selectStep}
+          onSelect={(idx) => {
+            selectStep(idx);
+            setIsSidebarOpen(false);
+          }}
           onClearAll={handleClearAll}
           onResize={(w) => setPanelWidth(Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, w)))}
           onResizeActive={setSidebarDragging}
@@ -208,7 +211,13 @@ function Journey() {
             isOpen={isSidebarOpen}
             onOpen={() => setIsSidebarOpen(true)}
           />
-          <main className="flex-1 overflow-y-auto">
+          <main className={`flex-1 overflow-y-auto transition-colors duration-500 ${
+            step.slug === "discovery"
+              ? user?.wikiDiscovery
+                ? "bg-[radial-gradient(circle_at_85%_8%,rgba(109,93,246,0.10),transparent_28%),linear-gradient(180deg,#f4f6fb_0%,#ffffff_48%,#f4f2fb_100%)]"
+                : "bg-[radial-gradient(circle_at_18%_15%,rgba(109,93,246,0.18),transparent_34%),radial-gradient(circle_at_82%_75%,rgba(46,196,182,0.12),transparent_30%),linear-gradient(145deg,#f7f8ff_0%,#eef2fb_52%,#f8f5ff_100%)]"
+              : ""
+          }`}>
             <div
               className={`mx-auto ${
                 step.slug === "essay-workspace"
@@ -232,7 +241,12 @@ function Journey() {
                 profileError={profileError}
               />
               </div>
-              <Nav stepIdx={stepIdx} onNext={goNext} onPrev={goPrev} />
+              <Nav
+                stepIdx={stepIdx}
+                onNext={goNext}
+                onPrev={goPrev}
+                hideNext={step.slug === "discovery"}
+              />
             </div>
           </main>
         </div>
@@ -564,7 +578,17 @@ function SidebarRail({
   );
 }
 
-function Nav({ stepIdx, onNext, onPrev }: { stepIdx: number; onNext: () => void; onPrev: () => void }) {
+function Nav({
+  stepIdx,
+  onNext,
+  onPrev,
+  hideNext = false,
+}: {
+  stepIdx: number;
+  onNext: () => void;
+  onPrev: () => void;
+  hideNext?: boolean;
+}) {
   return (
     <div className="mt-12 flex items-center justify-between border-t border-border pt-6">
       <button
@@ -581,7 +605,9 @@ function Nav({ stepIdx, onNext, onPrev }: { stepIdx: number; onNext: () => void;
       <button
         onClick={onNext}
         disabled={stepIdx === journeySteps.length - 1}
-        className="inline-flex items-center gap-2 rounded-lg bg-primary text-primary-foreground px-6 py-2 text-sm hover:opacity-90 disabled:opacity-40"
+        aria-hidden={hideNext}
+        tabIndex={hideNext ? -1 : undefined}
+        className={`inline-flex items-center gap-2 rounded-lg bg-primary px-6 py-2 text-sm text-primary-foreground hover:opacity-90 disabled:opacity-40 ${hideNext ? "invisible" : ""}`}
       >
         Continue
         <ArrowRight className="size-4" />
@@ -2083,7 +2109,12 @@ function GradForm({ value, setBranch, level }: { value: Record<string, unknown>;
   );
 }
 
-/* ---------------- Step 3: Scholarship Discovery Wiki ---------------- */
+/* ---------------- Step 2: Scholarship Discovery ---------------- */
+
+type DiscoverySource = NonNullable<WikiDiscoveryResult["specific_opportunities"]>[number] & {
+  access_note?: string;
+  source_authority?: string;
+};
 
 function StepDiscovery({
   onUpdateProfile,
@@ -2096,327 +2127,434 @@ function StepDiscovery({
   const wiki = user?.wikiDiscovery;
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
+  const [focus, setFocus] = useState(user?.discoveryFocus ?? "");
+  const [intentOptions, setIntentOptions] = useState(user?.discoveryIntentOptions ?? []);
+  const [platformDefaults, setPlatformDefaults] = useState(user?.discoveryPlatformDefaults ?? []);
+  const [bootstrapSummary, setBootstrapSummary] = useState<Record<string, string>>({});
+  const [bootstrapLoading, setBootstrapLoading] = useState(!user?.discoveryIntentOptions?.length);
+  const [bootstrapError, setBootstrapError] = useState("");
+  const [selectedIntentIds, setSelectedIntentIds] = useState<string[]>(
+    () => user?.discoveryIntents?.map((intent) => intent.id) ?? [],
+  );
+  const [bringValue, setBringValue] = useState("");
+  const [platformContext, setPlatformContext] = useState("");
+  const [showBring, setShowBring] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    const studentProfile = buildWikiPayload(user).student_profile;
+    getScholarshipDiscoveryBootstrap(studentProfile)
+      .then((result) => {
+        if (!active) return;
+        setIntentOptions(result.intent_options ?? []);
+        setPlatformDefaults(result.platform_defaults ?? []);
+        setBootstrapSummary(result.profile_summary ?? {});
+        setBootstrapError("");
+        updateProfile({
+          discoveryIntentOptions: result.intent_options ?? [],
+          discoveryPlatformDefaults: result.platform_defaults ?? [],
+        });
+      })
+      .catch(() => {
+        if (!active) return;
+        setBootstrapError("We couldn’t prepare profile suggestions. You can still describe what you want below.");
+      })
+      .finally(() => {
+        if (active) setBootstrapLoading(false);
+      });
+    return () => { active = false; };
+    // Step 2 remounts after profile updates; bootstrap once per visit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function refreshWiki() {
     setLoading(true);
-    setStatus("Building your discovery wiki...");
+    setStatus("Looking for scholarships related to your profile...");
+    const progressTimer = window.setTimeout(
+      () => setStatus("Checking trusted sources and organizing useful places to search..."),
+      5000,
+    );
     try {
-      const result = await discoverScholarshipWiki(buildWikiPayload(user));
-      updateProfile({ wikiDiscovery: result });
-      setStatus("Wiki recommendations refreshed.");
+      const discoveryFocus = focus.trim();
+      const selectedIntents = intentOptions.filter((intent) => selectedIntentIds.includes(intent.id));
+      const result = await discoverScholarshipWiki({
+        ...buildWikiPayload(user),
+        discovery_focus: discoveryFocus,
+        selected_intents: selectedIntents,
+        free_text_intent: discoveryFocus,
+      });
+      updateProfile({ wikiDiscovery: result, discoveryFocus, discoveryIntents: selectedIntents });
+      setStatus(result.result_note || "Your discovery results are ready.");
     } catch (err) {
-      setStatus(err instanceof Error ? err.message : "Wiki discovery failed.");
+      setStatus(err instanceof Error ? err.message : "We couldn't complete this search. Please try again.");
     } finally {
+      window.clearTimeout(progressTimer);
       setLoading(false);
     }
   }
 
-  function copyText(value: string) {
-    void navigator.clipboard?.writeText(value);
-    setStatus("Copied.");
-  }
-
-  function useSourceForExtraction(source: {
-    name?: string;
-    url?: string;
-    category?: string;
-    status_note?: string;
-    why_recommended?: string;
-    award_amount?: string;
-    deadline_window?: string;
-    competitiveness?: string;
-    search_tips?: string[];
-    suggested_queries?: string[];
-  }) {
+  function useSourceForExtraction(source: DiscoverySource) {
     updateProfile({
       activeScholarship: {
-        ...(user?.activeScholarship ?? {}),
         name: source.name ?? "",
         url: source.url ?? "",
+        discoverySource: "Scholar-E discovery",
+        discoverySourceKind: "scholarship",
         additionalNotes: [
           source.category && `Source category: ${source.category}`,
           source.award_amount && `Award amount: ${source.award_amount}`,
           source.deadline_window && `Deadline window: ${source.deadline_window}`,
-          source.competitiveness && `Ranking / likelihood signal: ${source.competitiveness}`,
-          source.why_recommended && `Why Scholar-E recommended it: ${source.why_recommended}`,
+          source.why_recommended && `Why this appeared in discovery: ${source.why_recommended}`,
           source.status_note,
-          ...(source.search_tips ?? []).map((tip) => `Search tip: ${tip}`),
-          ...(source.suggested_queries ?? []).map((query) => `Suggested query: ${query}`),
         ].filter(Boolean).join("\n"),
       },
+      fitAnalysis: undefined,
+      personalizedOutline: undefined,
+    });
+    onUseSource();
+  }
+
+  function toggleSaved(source: DiscoverySource, kind: "scholarship" | "platform") {
+    const id = (source.url || source.name || "").toLowerCase();
+    if (!id) return;
+    const saved = user?.savedWikiSources ?? [];
+    const exists = saved.some((item) => item.id === id);
+    updateProfile({
+      savedWikiSources: exists
+        ? saved.filter((item) => item.id !== id)
+        : [...saved, {
+            id,
+            name: source.name || "Saved discovery source",
+            url: source.url,
+            category: source.category || kind,
+            notes: source.why_recommended,
+            saved_at: new Date().toISOString(),
+          }],
+    });
+    setStatus(exists ? "Removed from saved opportunities." : "Saved for later.");
+  }
+
+  function openPlatform(source: DiscoverySource) {
+    setPlatformContext(source.name || "the platform");
+    if (source.url) window.open(source.url, "_blank", "noopener,noreferrer");
+  }
+
+  function continueWithOwnOpportunity() {
+    const raw = bringValue.trim();
+    if (!raw) {
+      setStatus("Paste a scholarship link, name, or the details you found first.");
+      return;
+    }
+    const platformOnly = platformSources.some(
+      (platform) => (platform.name || "").trim().toLowerCase() === raw.toLowerCase(),
+    );
+    if (platformOnly) {
+      setPlatformContext(raw);
+      setStatus(`${raw} is a search platform. Paste a particular scholarship name, listing, or link from it.`);
+      return;
+    }
+    const url = raw.match(/https?:\/\/[^\s]+/i)?.[0]?.replace(/[),.;]+$/, "") ?? "";
+    const withoutUrl = raw.replace(url, "").replace(/^\s*(found on [^:]+:)?\s*/i, "").trim();
+    const name = withoutUrl.length <= 180 ? withoutUrl : withoutUrl.split(/\r?\n|[.!?]/)[0].slice(0, 180);
+    updateProfile({
+      activeScholarship: {
+        name,
+        url,
+        additionalNotes: [platformContext && `Discovered on platform: ${platformContext}`, raw].filter(Boolean).join("\n"),
+        discoverySource: platformContext || "User-provided discovery",
+        discoverySourceKind: "user_entry",
+      },
+      fitAnalysis: undefined,
+      personalizedOutline: undefined,
     });
     onUseSource();
   }
 
   const hasWiki = !!wiki;
-  const directSources = wiki?.specific_opportunities?.slice(0, 5) ?? [];
-  const platformSources = wiki?.top_free_platforms?.slice(0, 5) ?? [];
-  const profileSummary = wiki?.profile_summary ?? {};
+  const dismissedUrls = new Set(user?.dismissedDiscoveryUrls ?? []);
+  const directSources = (wiki?.specific_opportunities ?? []).filter((source) => !dismissedUrls.has(source.url ?? "")).slice(0, 3);
+  const apiPlatforms = (wiki?.top_free_platforms ?? []).filter((source) => source.name && source.url);
+  const platformSources = [...apiPlatforms, ...platformDefaults]
+    .filter((source, index, sources) => sources.findIndex((candidate) => candidate.url === source.url) === index)
+    .slice(0, 3);
+  const savedIds = new Set((user?.savedWikiSources ?? []).map((item) => item.id));
+  const presentSummary = (value?: string) => value && value !== "unknown"
+    ? value.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase())
+    : "";
+  const preSearchProfileChips = [
+    presentSummary(bootstrapSummary.education_level),
+    presentSummary(bootstrapSummary.field_of_study),
+    presentSummary(bootstrapSummary.student_type),
+  ].filter(Boolean);
+  const resultIntentLabels = (wiki?.selected_intents ?? user?.discoveryIntents ?? [])
+    .map((intent) => intent.label)
+    .filter(Boolean);
+
+  function toggleDiscoveryIntent(intentId: string) {
+    setSelectedIntentIds((current) => current.includes(intentId)
+      ? current.filter((id) => id !== intentId)
+      : [...current, intentId]);
+  }
 
   return (
-    <div className="space-y-8">
-      <div>
-        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-          <div>
-            <div className="text-sm font-semibold uppercase tracking-widest text-muted-foreground">Scholarship Discovery Wiki</div>
-            <h2 className="mt-2 max-w-3xl font-display text-[42px] font-extrabold leading-[0.98] tracking-tight">
-              Search scholarships from your profile.
-            </h2>
-            <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">
-              Scholar-E recommends trusted platforms, source pages, funding categories, and search queries based on your profile.
-            </p>
-            <div className="mt-5 grid max-w-xl grid-cols-3 gap-3">
-              <div className="rounded-lg border border-border/60 bg-white/60 p-3">
-                <div className="text-2xl font-bold">{directSources.length || "-"}</div>
-                <div className="text-xs text-muted-foreground">Direct sources</div>
+    <div className={hasWiki ? "space-y-7 pb-3" : "flex min-h-[calc(100vh-190px)] items-center justify-center py-6"}>
+      {!hasWiki && !loading && (
+        <section className="w-full max-w-6xl overflow-hidden rounded-[2rem] border border-white/80 bg-white/90 p-10 shadow-[0_28px_90px_-45px_rgba(38,56,95,0.5)] backdrop-blur-xl">
+          <header className="flex items-start justify-between border-b border-border/70 pb-7">
+            <div className="max-w-3xl">
+              <div className="flex items-center gap-3">
+                <span className="grid size-11 place-items-center rounded-2xl bg-primary text-primary-foreground shadow-lg shadow-primary/20"><Compass className="size-5" /></span>
+                <div className="text-xs font-semibold uppercase tracking-[0.22em] text-primary">Scholarship discovery</div>
               </div>
-              <div className="rounded-lg border border-border/60 bg-white/60 p-3">
-                <div className="text-2xl font-bold">{platformSources.length || "-"}</div>
-                <div className="text-xs text-muted-foreground">Platforms</div>
-              </div>
-              <div className="rounded-lg border border-border/60 bg-white/60 p-3">
-                <div className="text-2xl font-bold">{wiki?.personalized_search_queries?.length || "-"}</div>
-                <div className="text-xs text-muted-foreground">Searches</div>
-              </div>
+              <h2 className="mt-5 font-display text-[42px] font-extrabold leading-[1.05] tracking-tight">Build a search around what matters to you</h2>
+              <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">Follow the three steps below. We’ll combine your verified profile, the priorities you choose, and any detail you add into one grounded search.</p>
             </div>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <button onClick={refreshWiki} disabled={loading} aria-busy={loading} className={`inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-90 ${loading ? "agent-loading" : ""}`}>
-              {loading && <Spinner className="size-4" />}
-              {loading ? "Searching…" : "Search"}
-            </button>
-            <button onClick={onUpdateProfile} className="rounded-lg border border-border bg-card px-4 py-2 text-sm hover:bg-accent">
-              Update profile
-            </button>
-          </div>
-        </div>
-        {status && <p className="mt-3 text-xs text-muted-foreground">{status}</p>}
-        {!wiki && !loading && (
-          <div className="mt-5 rounded-lg border border-dashed border-border bg-white/60 p-4">
-            <div className="font-medium">Ready to search from your saved profile</div>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Click Search to generate profile-specific scholarship sources. Results appear after the Wiki agents finish.
-            </p>
-          </div>
-        )}
-      </div>
+            <button onClick={onUpdateProfile} className="rounded-full border border-border bg-white px-4 py-2 text-xs font-semibold text-muted-foreground hover:border-primary/30 hover:text-primary">Edit profile</button>
+          </header>
 
-      {hasWiki && <section>
-        <div className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Profile used for discovery</div>
-        <div className="mt-4 grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
-          {Object.entries(profileSummary).map(([key, value]) => (
-            <div key={key} className="rounded-lg border border-border/60 bg-white/60 p-3">
-              <div className="text-xs uppercase tracking-widest text-muted-foreground">{key.replace(/_/g, " ")}</div>
-              <div className="mt-1 text-sm font-medium">{Array.isArray(value) ? value.join(", ") : String(value)}</div>
-            </div>
-          ))}
-        </div>
-        {!!wiki?.missing_profile_fields?.length && (
-          <p className="mt-3 text-xs text-muted-foreground">
-            Add more profile details to improve recommendations: {wiki.missing_profile_fields.join(", ")}.
-          </p>
-        )}
-      </section>}
-
-      {hasWiki && (
-        <div className="space-y-8">
-          <section>
-            <div className="text-sm font-semibold uppercase tracking-widest text-muted-foreground">Top 5 direct scholarship sources</div>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Send one into Step 4 with its name, link, and notes filled for requirement extraction.
-            </p>
-            <div className="mt-4 grid gap-4 xl:grid-cols-2">
-              {directSources.map((source) => (
-                <WikiSourceCard
-                  key={`direct-${source.name}`}
-                  source={source}
-                  onCopy={copyText}
-                  onUseSource={useSourceForExtraction}
-                  mode="direct"
-                />
-              ))}
-              {!directSources.length && <p className="text-sm text-muted-foreground">No direct sources matched this profile.</p>}
-            </div>
-          </section>
-
-          <section>
-            <div className="text-sm font-semibold uppercase tracking-widest text-muted-foreground">Top 5 scholarship platforms</div>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Use these platforms to continue searching for real opportunities.
-            </p>
-            <div className="mt-4 grid gap-4 xl:grid-cols-2">
-              {platformSources.map((source) => (
-                <WikiSourceCard
-                  key={`platform-${source.name}`}
-                  source={{ ...source, cost: "Free" }}
-                  onCopy={copyText}
-                  mode="platform"
-                />
-              ))}
-              {!platformSources.length && <p className="text-sm text-muted-foreground">No platforms matched this profile.</p>}
-            </div>
-          </section>
-        </div>
-      )}
-
-      {hasWiki && <section>
-        <div className="text-sm font-semibold uppercase tracking-widest text-muted-foreground">Funding categories</div>
-        <div className="mt-4 grid md:grid-cols-2 lg:grid-cols-3 gap-3">
-          {(wiki?.funding_categories ?? []).map((category) => (
-            <div key={category.category_name} className="rounded-lg border border-border/60 bg-white/60 p-4">
-              <div className="font-display text-[18px] font-bold">{category.category_name}</div>
-              <p className="mt-2 text-sm text-muted-foreground">{category.description}</p>
-              <div className="mt-3 flex flex-wrap gap-1.5">
-                {(category.best_for ?? []).map((item) => <Pill key={item}>{item}</Pill>)}
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>}
-
-      {hasWiki && <section>
-            <div className="text-sm font-semibold uppercase tracking-widest text-muted-foreground">Personalized search queries</div>
-          <div className="mt-4 space-y-2">
-            {(wiki?.personalized_search_queries ?? []).slice(0, 3).map((query) => (
-              <div key={query} className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-white/60 p-3">
-                <span className="text-sm">{query}</span>
-                <div className="flex shrink-0 gap-2">
-                  <button onClick={() => window.open(`https://www.google.com/search?q=${encodeURIComponent(query)}`, "_blank")} className="rounded-lg bg-primary px-2.5 py-1 text-xs text-primary-foreground hover:opacity-90">Search</button>
+          <div className="mt-8 grid grid-cols-[240px_minmax(0,1fr)] gap-10">
+            <aside className="rounded-2xl border border-[#dfe3f3] bg-[#f3f5fb] p-5">
+              <div className="text-xs font-semibold uppercase tracking-[0.16em] text-[#53608d]">Your search path</div>
+              <ol className="mt-5 space-y-5">
+                {[
+                  ["1", "Confirm context", "We use your saved profile."],
+                  ["2", "Choose priorities", "Select what matters today."],
+                  ["3", "Add details & search", "Optional notes make it sharper."],
+                ].map(([number, title, detail], index) => (
+                  <li key={number} className="flex gap-3">
+                    <span className={`grid size-7 shrink-0 place-items-center rounded-full text-xs font-bold ${index === 0 ? "bg-success text-white" : "bg-white text-[#53608d] ring-1 ring-[#d7dced]"}`}>{index === 0 ? <Check className="size-3.5" /> : number}</span>
+                    <div><div className="text-sm font-semibold">{title}</div><p className="mt-0.5 text-xs leading-5 text-muted-foreground">{detail}</p></div>
+                  </li>
+                ))}
+              </ol>
+              <div className="mt-6 border-t border-[#dce1f0] pt-5">
+                <div className="text-xs font-semibold text-foreground">Profile context</div>
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {preSearchProfileChips.length
+                    ? preSearchProfileChips.map((value) => <Pill key={value}>{value}</Pill>)
+                    : <span className="text-xs leading-5 text-muted-foreground">Add your education and field to receive stronger suggestions.</span>}
                 </div>
               </div>
-            ))}
+            </aside>
+
+            <div className="min-w-0">
+              <section aria-labelledby="discovery-priorities-heading">
+                <div className="flex items-start gap-3">
+                  <span className="grid size-8 shrink-0 place-items-center rounded-full bg-primary text-sm font-bold text-primary-foreground">2</span>
+                  <div>
+                    <h3 id="discovery-priorities-heading" className="font-display text-2xl font-bold">Choose your priorities</h3>
+                    <p className="mt-1 text-sm text-muted-foreground">These suggestions come from your profile. Select any that match what you want now.</p>
+                  </div>
+                </div>
+                {bootstrapLoading ? (
+                  <div className="mt-5 grid grid-cols-2 gap-3">{[0, 1, 2, 3].map((item) => <Skeleton key={item} className="h-14 rounded-xl" />)}</div>
+                ) : intentOptions.length ? (
+                  <div className="mt-5 grid grid-cols-2 gap-3">
+                    {intentOptions.map((intent) => {
+                      const selected = selectedIntentIds.includes(intent.id);
+                      return (
+                        <button key={intent.id} type="button" aria-pressed={selected} onClick={() => toggleDiscoveryIntent(intent.id)} className={`flex min-h-14 items-center gap-3 rounded-xl border px-4 py-3 text-left text-sm font-medium transition ${selected ? "border-primary bg-primary/8 text-primary shadow-sm ring-2 ring-primary/10" : "border-border/80 bg-white text-foreground hover:border-primary/40 hover:bg-primary/[0.03]"}`}>
+                          <span className={`grid size-5 shrink-0 place-items-center rounded-full border ${selected ? "border-primary bg-primary text-primary-foreground" : "border-border bg-background"}`}>{selected && <Check className="size-3" />}</span>
+                          {intent.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="mt-4 rounded-xl bg-muted/50 p-3 text-sm text-muted-foreground">No profile priorities are available yet. Use the detail box below or update your profile.</p>
+                )}
+                {bootstrapError && <p className="mt-3 text-xs text-amber-700">{bootstrapError}</p>}
+              </section>
+
+              <section aria-labelledby="discovery-details-heading" className="mt-8 border-t border-border/70 pt-7">
+                <div className="flex items-start gap-3">
+                  <span className="grid size-8 shrink-0 place-items-center rounded-full bg-primary text-sm font-bold text-primary-foreground">3</span>
+                  <div>
+                    <h3 id="discovery-details-heading" className="font-display text-2xl font-bold">Add any detail, then search</h3>
+                    <p className="mt-1 text-sm text-muted-foreground">Optional. Mention a topic, funding need, location, or something you want excluded.</p>
+                  </div>
+                </div>
+                <div className="mt-5 rounded-2xl border border-border/80 bg-white p-2 shadow-sm ring-primary/15 focus-within:ring-4">
+                  <label htmlFor="discovery-focus" className="sr-only">Additional scholarship search details</label>
+                  <textarea id="discovery-focus" rows={3} value={focus} onChange={(event) => setFocus(event.target.value)} placeholder="For example: Battery-materials research funding without a service commitment" className="w-full resize-none border-0 bg-transparent px-3 py-2 text-base leading-6 outline-none placeholder:text-muted-foreground" />
+                  <div className="flex items-center justify-between gap-4 border-t border-border/70 px-2 pt-3">
+                    <p className="text-xs text-muted-foreground">We’ll search curated sources and the live web together.</p>
+                    <button onClick={refreshWiki} disabled={loading || bootstrapLoading} className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-xl bg-primary px-6 py-2.5 text-sm font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-60">Find scholarships <ArrowRight className="size-4" /></button>
+                  </div>
+                </div>
+              </section>
+
+              <div className="mt-5 border-t border-border/60 pt-5 text-center">
+                {!showBring ? (
+                  <button onClick={() => setShowBring(true)} className="text-sm font-medium text-muted-foreground hover:text-primary">Already found a scholarship? Bring it here instead</button>
+                ) : (
+                  <div className="flex gap-2 rounded-2xl border border-border/70 bg-white/75 p-3 text-left">
+                    <input value={bringValue} onChange={(event) => setBringValue(event.target.value)} placeholder="Paste a scholarship link, name, or details" className="min-w-0 flex-1 rounded-xl border border-input bg-white px-4 py-3 text-sm outline-none focus:ring-4 focus:ring-primary/15" />
+                    <button onClick={continueWithOwnOpportunity} className="rounded-xl border border-primary bg-primary px-5 py-3 text-sm font-semibold text-primary-foreground">Continue to Step 3</button>
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
-      </section>}
+        </section>
+      )}
+
+      {loading && (
+        <section className="w-full max-w-5xl space-y-5 rounded-[2rem] border border-white/80 bg-white/80 p-8 shadow-xl backdrop-blur-xl">
+          <div className="flex items-center gap-3">
+            <Spinner className="size-5 text-primary" />
+            <div>
+              <h2 className="font-display text-2xl font-bold">Building your discovery shortlist</h2>
+              <p role="status" aria-live="polite" className="mt-1 text-sm text-muted-foreground">{status}</p>
+            </div>
+          </div>
+          <div className="space-y-3">
+            {[0, 1, 2].map((item) => <Skeleton key={item} className="h-32 rounded-2xl" />)}
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            {[0, 1, 2].map((item) => <Skeleton key={item} className="h-24 rounded-2xl" />)}
+          </div>
+        </section>
+      )}
+
+      {hasWiki && !loading && (
+        <>
+          <section className="rounded-3xl border border-white/80 bg-white/80 px-7 py-5 shadow-sm backdrop-blur-xl">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-success">
+                  <span className="grid size-6 place-items-center rounded-full bg-success/10"><Check className="size-3.5" /></span>
+                  Discovery complete
+                </div>
+                <h2 className="mt-2 font-display text-3xl font-bold">Your scholarship shortlist</h2>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Grounded in your student profile{resultIntentLabels.length ? ` · ${resultIntentLabels.join(" · ")}` : ""}
+                </p>
+                {(wiki?.free_text_intent || user?.discoveryFocus) && (
+                  <p className="mt-1 line-clamp-1 text-xs text-muted-foreground">Also requested: {wiki?.free_text_intent || user?.discoveryFocus}</p>
+                )}
+              </div>
+              <button onClick={onUpdateProfile} className="self-start rounded-full border border-border bg-white px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent">
+                Profile used for this search
+              </button>
+            </div>
+          </section>
+
+          <section>
+            <div className="mb-4 flex items-end justify-between gap-3">
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">Scholarships to explore</div>
+                <p className="mt-1 text-sm text-muted-foreground">Discovery suggestions only—eligibility is checked in the next step.</p>
+              </div>
+            </div>
+            <div className="space-y-3">
+              {directSources.map((source) => (
+                <DiscoverySourceCard
+                  key={`direct-${source.url || source.name}`}
+                  source={source}
+                  mode="scholarship"
+                  saved={savedIds.has((source.url || source.name || "").toLowerCase())}
+                  onExplore={() => useSourceForExtraction(source)}
+                  onSave={() => toggleSaved(source, "scholarship")}
+                />
+              ))}
+            </div>
+            {!directSources.length && (
+              <div className="rounded-2xl border border-dashed border-border bg-white/70 p-5">
+                <h3 className="font-semibold">We couldn’t confirm a close scholarship.</h3>
+                <p className="mt-1 text-sm text-muted-foreground">We left out weaker matches. The profile-matched platforms below are the best places to continue.</p>
+              </div>
+            )}
+          </section>
+
+          <section className="rounded-3xl border border-[#d9def3] bg-[#eef1fb]/90 p-6 shadow-sm">
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-[0.18em] text-[#4a5685]">Continue searching elsewhere</div>
+              <h3 className="mt-2 font-display text-2xl font-bold">Places selected for your profile</h3>
+              <p className="mt-1 text-sm text-muted-foreground">Open a platform, find a scholarship, then paste it into the return bar below.</p>
+            </div>
+            <div className="mt-4 grid grid-cols-3 gap-3">
+              {platformSources.map((source) => (
+                <button key={`platform-${source.url || source.name}`} onClick={() => openPlatform(source)} className="group min-h-32 rounded-2xl border border-white/90 bg-white p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="grid size-9 place-items-center rounded-xl bg-[#eef1fb] font-display text-sm font-bold text-[#4a5685]">{source.name?.charAt(0) || "P"}</div>
+                    <ArrowRight className="size-4 -rotate-45 text-muted-foreground transition group-hover:text-primary" />
+                  </div>
+                  <div className="mt-3 font-display text-lg font-bold leading-tight">{source.name}</div>
+                  <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{source.why_recommended}</p>
+                </button>
+              ))}
+            </div>
+          </section>
+
+          <section className="sticky bottom-4 z-20 rounded-2xl border border-primary/20 bg-white/95 p-3 shadow-[0_18px_45px_-18px_rgba(38,56,95,0.45)] backdrop-blur-xl">
+            {platformContext && <p className="mb-2 px-1 text-xs font-medium text-primary">Found something on {platformContext}?</p>}
+            <div className="flex items-center gap-2">
+              <div className="min-w-0 flex-1">
+                {!platformContext && <div className="px-1 text-xs font-semibold text-foreground">Found a scholarship here or somewhere else?</div>}
+                <label htmlFor="bring-opportunity" className="sr-only">Scholarship link, name, or details</label>
+                <input id="bring-opportunity" value={bringValue} onChange={(event) => setBringValue(event.target.value)} placeholder="Paste a link, scholarship name, or listing details" className="mt-1 w-full rounded-xl border border-input bg-white px-4 py-3 text-sm outline-none focus:ring-4 focus:ring-primary/15" />
+              </div>
+              <button onClick={continueWithOwnOpportunity} className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-xl bg-primary px-5 py-3 text-sm font-semibold text-primary-foreground hover:opacity-90">
+                Continue to Step 3 <ArrowRight className="size-4" />
+              </button>
+            </div>
+          </section>
+        </>
+      )}
     </div>
   );
 }
 
-function WikiSourceCard({
+function DiscoverySourceCard({
   source,
-  onCopy,
-  onUseSource,
-  mode,
+  saved,
+  onExplore,
+  onSave,
 }: {
-  source: {
-    name?: string;
-    url?: string;
-    category?: string;
-    cost?: string;
-    best_for?: string[];
-    why_recommended?: string;
-    search_tips?: string[];
-    suggested_queries?: string[];
-    status_note?: string;
-    award_amount?: string;
-    deadline_window?: string;
-    competitiveness?: string;
-  };
-  onCopy: (value: string) => void;
-  onUseSource?: (source: {
-    name?: string;
-    url?: string;
-    category?: string;
-    status_note?: string;
-    why_recommended?: string;
-    award_amount?: string;
-    deadline_window?: string;
-    competitiveness?: string;
-    search_tips?: string[];
-    suggested_queries?: string[];
-  }) => void;
-  mode: "direct" | "platform";
+  source: DiscoverySource;
+  mode: "scholarship";
+  saved: boolean;
+  onExplore: () => void;
+  onSave: () => void;
 }) {
-  const metaItems = [
-    source.award_amount && { label: "Amount", value: source.award_amount },
-    source.deadline_window && { label: "Deadline", value: source.deadline_window },
-    source.competitiveness && { label: "Signal", value: source.competitiveness },
-  ].filter(Boolean) as { label: string; value: string }[];
-  const headerLabel = mode === "direct" ? "Direct source" : source.cost ? `${source.cost} platform` : "Platform";
-  const isDirect = mode === "direct";
-  const headerClass = "bg-gradient-to-br from-[#26385F] via-[#33406F] to-[#5550A4] text-primary-foreground";
-  const accentClass = "bg-[#6d5df6]/65";
-  const headerTextClass = "text-primary-foreground/70";
-  const headerSubtextClass = "text-primary-foreground/90";
-  const headerLabelSize = "text-[11px]";
-  const headerSubtextSize = "text-[15px]";
-  const headerSubtextWeight = "font-semibold";
-  const titleSize = isDirect ? "text-[1.35rem]" : "text-xl";
-
   return (
-    <div className="group flex h-full min-h-[300px] flex-col overflow-hidden rounded-xl border border-border/70 bg-white shadow-sm shadow-black/5 transition-shadow hover:shadow-lg hover:shadow-black/10">
-      <div className={headerClass}>
-        <div className={`h-3 ${accentClass}`} />
-        <div className="min-h-[88px] p-4">
-          <div className="flex items-start justify-between gap-3">
+    <article className="group rounded-2xl border border-white/90 bg-white/90 p-5 shadow-sm transition hover:border-primary/20 hover:shadow-md">
+      <div className="flex items-center gap-4">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 grid size-10 shrink-0 place-items-center rounded-xl bg-primary/[0.07] font-display text-sm font-bold text-primary">
+              {source.name?.charAt(0) || "S"}
+            </div>
             <div className="min-w-0">
-              <div className={`${headerLabelSize} font-semibold uppercase tracking-widest ${headerTextClass}`}>{headerLabel}</div>
-              <div className={`mt-4 ${headerSubtextSize} ${headerSubtextWeight} ${headerSubtextClass}`}>
-                {source.category || (mode === "direct" ? "Scholarship source" : "Search platform")}
-              </div>
+              <h4 className="font-display text-xl font-bold leading-tight">{source.name}</h4>
+              {source.category && <p className="mt-1 text-xs text-muted-foreground">{source.category}</p>}
+              {source.why_recommended && <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">{source.why_recommended}</p>}
             </div>
           </div>
         </div>
-      </div>
 
-      <div className="flex flex-1 flex-col p-4">
-        <div>
-          <div className={`font-display ${titleSize} font-bold leading-tight text-foreground`}>{source.name}</div>
-          {source.cost && <div className="mt-2 text-xs text-muted-foreground">{source.cost}</div>}
-        </div>
-
-        {source.why_recommended && (
-          <p className="mt-3 text-sm leading-6 text-muted-foreground">{source.why_recommended}</p>
-        )}
-
-        {!!metaItems.length && (
-          <>
-            <div className="my-4 border-t border-dashed border-border" />
-            <div className="grid gap-2 sm:grid-cols-3">
-              {metaItems.map((item) => (
-                <div key={item.label} className="rounded-lg border border-border/70 bg-secondary/20 p-2">
-                  <div className="text-[10px] uppercase tracking-widest text-muted-foreground">{item.label}</div>
-                  <div className="mt-1 text-sm font-semibold">{item.value}</div>
-                </div>
-              ))}
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-3">
+          {(source.deadline_window || source.award_amount) && (
+            <div className="mr-1 hidden max-w-52 text-right lg:block">
+              {source.deadline_window && <div className="text-xs font-medium text-foreground">{source.deadline_window}</div>}
+              {source.award_amount && <div className="mt-1 truncate text-xs text-muted-foreground">{source.award_amount}</div>}
             </div>
-          </>
-        )}
-
-        {source.status_note && <p className="mt-3 text-xs font-medium text-warning">{source.status_note}</p>}
-
-        {!!source.best_for?.length && (
-          <div className="mt-3 flex flex-wrap gap-1.5">
-            {source.best_for.slice(0, 3).map((item) => <Pill key={item}>{item}</Pill>)}
-          </div>
-        )}
-
-        {!!source.search_tips?.length && (
-          <div className="mt-3 border-t border-border/70 pt-3">
-            <ul className="space-y-1 text-xs leading-5 text-muted-foreground">
-              {source.search_tips.map((tip) => <li key={tip}>{tip}</li>)}
-            </ul>
-          </div>
-        )}
-
-      <div className="mt-auto flex flex-wrap gap-2 pt-4">
-        {source.url && (
-          <button onClick={() => window.open(source.url, "_blank")} className="rounded-lg bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:opacity-90">
-            Visit scholarship page
+          )}
+          <button onClick={onSave} aria-label={saved ? "Remove from saved" : "Save for later"} className={`rounded-full border p-2.5 ${saved ? "border-primary/30 bg-primary/10 text-primary" : "border-border bg-white text-muted-foreground hover:bg-accent"}`}>
+            {saved ? <Check className="size-4" /> : <Save className="size-4" />}
           </button>
-        )}
-        {!!source.suggested_queries?.[0] && mode === "platform" && (
-          <button onClick={() => onCopy(source.suggested_queries?.[0] ?? "")} className="rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-accent">
-            Copy query
+          {source.url && (
+            <button onClick={() => window.open(source.url, "_blank", "noopener,noreferrer")} className="rounded-xl border border-border bg-white px-3 py-2.5 text-xs font-medium hover:bg-accent">
+              Official site
+            </button>
+          )}
+          <button onClick={onExplore} className="inline-flex items-center gap-1.5 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground hover:opacity-90">
+            Explore <ArrowRight className="size-3.5" />
           </button>
-        )}
-        {mode === "direct" && (
-          <button onClick={() => onUseSource?.(source)} className="rounded-lg bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:opacity-90">
-            Copy scholarship to extractor
-          </button>
-        )}
+        </div>
       </div>
-      </div>
-    </div>
+    </article>
   );
 }
 
@@ -2637,8 +2775,8 @@ function ScholarshipDetailsCard({
   return (
     <WorkflowStep
       number={1}
-      title="Scholarship details for extraction"
-      description="After using the Wiki to find a real opportunity, paste its name, link, or copied description here. Scholar-E will extract requirements into editable fields."
+      title="Confirm the opportunity you want to explore"
+      description="We carried over what you selected or entered during discovery. Add or correct anything you know, then Scholar-E will collect the available requirements into editable fields."
       complete={complete}
       active={active}
     >
@@ -2978,6 +3116,11 @@ function EditableScholarshipFields({
             </div>
             <p className="mt-1 text-xs text-muted-foreground">{extractedCount} of {extractedValues.length} fields extracted successfully.</p>
             <p className="mt-0.5 text-xs text-muted-foreground">{needsReviewCount} fields require review or manual entry.</p>
+            {typeof scholarship.completenessScore === "number" && (
+              <p className="mt-0.5 text-xs font-medium text-foreground">
+                Important-field completeness: {scholarship.completenessScore}%
+              </p>
+            )}
           </div>
           {sourceUrl && (
             <a
@@ -2990,6 +3133,19 @@ function EditableScholarshipFields({
             </a>
           )}
         </div>
+        {!!scholarship.criticalFieldsMissing?.length && (
+          <div className="mt-3 rounded-xl border border-warning/20 bg-warning/[0.035] px-3 py-2 text-xs text-muted-foreground">
+            <span className="font-semibold text-foreground">Important fields still missing:</span>{" "}
+            {scholarship.criticalFieldsMissing.join(", ")}.
+          </div>
+        )}
+        {!![...(scholarship.extractionWarnings ?? []), ...(scholarship.validationWarnings ?? [])].length && (
+          <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+            {[...(scholarship.extractionWarnings ?? []), ...(scholarship.validationWarnings ?? [])]
+              .slice(0, 4)
+              .map((warning) => <p key={warning}>• {warning}</p>)}
+          </div>
+        )}
       </div>
 
       <div className="mt-5 space-y-5">
@@ -3079,7 +3235,7 @@ function EditableScholarshipFields({
   );
 }
 
-/* ---------------- Step 4: Requirements + Fit combined ---------------- */
+/* ---------------- Step 3: Requirements + Fit combined ---------------- */
 
 function StepRequirementsAndFit() {
   const { user, updateProfile } = useUser();
@@ -3090,10 +3246,28 @@ function StepRequirementsAndFit() {
   const [extractionStatus, setExtractionStatus] = useState<string | null>(null);
   const [extractionError, setExtractionError] = useState<string | null>(null);
   const [rubricOpen, setRubricOpen] = useState(false);
+  const sourceRevisionRef = useRef(0);
   function updateScholarship(patch: ActiveScholarship) {
     updateProfile({ activeScholarship: { ...scholarship, ...patch } });
   }
+  function replaceScholarshipSource(patch: ActiveScholarship) {
+    sourceRevisionRef.current += 1;
+    const nextSource: ActiveScholarship = {
+      name: patch.name ?? scholarship.name ?? "",
+      url: patch.url ?? scholarship.url ?? "",
+      additionalNotes: patch.additionalNotes ?? scholarship.additionalNotes ?? "",
+    };
+    updateProfile({
+      activeScholarship: nextSource,
+      fitAnalysis: undefined,
+      personalizedOutline: undefined,
+    });
+    setFitStatus(null);
+    setExtractionStatus(null);
+    setExtractionError(null);
+  }
   async function runScholarshipExtraction() {
+    const extractionRevision = sourceRevisionRef.current;
     setExtracting(true);
     setExtractionStatus("Looking up scholarship details and extracting requirements...");
     setExtractionError(null);
@@ -3103,12 +3277,20 @@ function StepRequirementsAndFit() {
         scholarship_url: scholarship.url ?? "",
         additional_notes: scholarship.additionalNotes ?? "",
       });
-      updateScholarship({
-        ...extracted,
-        additionalNotes: scholarship.additionalNotes,
-        url: extracted.url || scholarship.url,
-        name: extracted.name || scholarship.name,
-        extractionCompletedAt: new Date().toISOString(),
+      if (sourceRevisionRef.current !== extractionRevision) {
+        setExtractionStatus("The scholarship source changed while extraction was running. Run extraction again for the current source.");
+        return;
+      }
+      updateProfile({
+        activeScholarship: {
+          ...extracted,
+          additionalNotes: scholarship.additionalNotes,
+          url: extracted.url || scholarship.url,
+          name: extracted.name || scholarship.name,
+          extractionCompletedAt: new Date().toISOString(),
+        },
+        fitAnalysis: undefined,
+        personalizedOutline: undefined,
       });
       setExtractionStatus("Requirements extracted. Review and edit the fields below.");
       window.setTimeout(() => {
@@ -3148,7 +3330,7 @@ function StepRequirementsAndFit() {
     <div className="space-y-8">
       <ScholarshipDetailsCard
         scholarship={scholarship}
-        updateScholarship={updateScholarship}
+        updateScholarship={replaceScholarshipSource}
         onExtract={runScholarshipExtraction}
         extracting={extracting}
         extractionStatus={extractionStatus}

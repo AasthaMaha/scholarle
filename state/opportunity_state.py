@@ -7,6 +7,10 @@ class OpportunityExtractionState(TypedDict, total=False):
     additional_notes: str
     source_text: str
     source_urls: List[str]
+    source_metadata: List[Dict[str, Any]]
+    extraction_warnings: List[str]
+    resolution_status: str
+    primary_url: str
     userProvidedNotes: str
     extraction: Dict[str, Any]
 
@@ -45,3 +49,12 @@ class OpportunityExtractionState(TypedDict, total=False):
     requirementsPreview: str
     fullText: str
     sourceUrls: List[str]
+    sourceMetadata: List[Dict[str, Any]]
+    fieldEvidence: List[Dict[str, Any]]
+    extractionWarnings: List[str]
+    validationWarnings: List[str]
+    criticalFieldsFound: List[str]
+    criticalFieldsMissing: List[str]
+    completenessScore: int
+    resolutionStatus: str
+    extractedAt: str
