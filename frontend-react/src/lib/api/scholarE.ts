@@ -1,4 +1,4 @@
-import type { ActiveScholarship, AnalysisResult, FitAnalysisResult, PersonalizedOutlineResult, UserProfile, WikiDiscoveryResult } from "@/lib/userStore";
+import type { ActiveScholarship, AnalysisResult, DiscoveryIntent, FitAnalysisResult, PersonalizedOutlineResult, UserProfile, WikiDiscoveryResult } from "@/lib/userStore";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 
@@ -45,6 +45,21 @@ export type FitAnalyzePayload = {
 
 export type WikiDiscoverPayload = {
   student_profile: Record<string, unknown>;
+  discovery_focus?: string;
+  selected_intents?: DiscoveryIntent[];
+  free_text_intent?: string;
+  excluded_urls?: string[];
+  feedback?: Array<{ url?: string; reason?: string; name?: string }>;
+};
+
+export type WikiDiscoveryBootstrapResult = {
+  intent_options: DiscoveryIntent[];
+  platform_defaults: NonNullable<WikiDiscoveryResult["top_free_platforms"]>;
+  profile_summary: {
+    education_level?: string;
+    field_of_study?: string;
+    student_type?: string;
+  };
 };
 
 export type OutlineGeneratePayload = {
@@ -233,6 +248,12 @@ export function buildWikiPayload(user: UserProfile | null): WikiDiscoverPayload 
     wikiDiscovery,
     savedWikiSources,
     activeScholarship,
+    discoveryFocus,
+    discoveryIntents,
+    discoveryIntentOptions,
+    discoveryPlatformDefaults,
+    dismissedDiscoveryUrls,
+    discoveryFeedback,
     ...studentProfile
   } = user ?? { name: "", email: "" };
   void lastAnalysis;
@@ -240,12 +261,22 @@ export function buildWikiPayload(user: UserProfile | null): WikiDiscoverPayload 
   void wikiDiscovery;
   void savedWikiSources;
   void activeScholarship;
+  void discoveryFocus;
+  void discoveryIntents;
+  void discoveryIntentOptions;
+  void discoveryPlatformDefaults;
+  void dismissedDiscoveryUrls;
+  void discoveryFeedback;
 
   return {
     student_profile: {
       ...studentProfile,
       profile_text: profileToText(user),
     },
+    selected_intents: user?.discoveryIntents ?? [],
+    free_text_intent: user?.discoveryFocus ?? "",
+    excluded_urls: user?.dismissedDiscoveryUrls ?? [],
+    feedback: user?.discoveryFeedback ?? [],
   };
 }
 
@@ -263,6 +294,22 @@ export async function discoverScholarshipWiki(payload: WikiDiscoverPayload): Pro
   }
 
   return data as WikiDiscoveryResult;
+}
+
+export async function getScholarshipDiscoveryBootstrap(
+  studentProfile: Record<string, unknown>,
+): Promise<WikiDiscoveryBootstrapResult> {
+  const response = await fetch(`${API_BASE}/api/wiki/bootstrap`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ student_profile: studentProfile }),
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    const detail = data?.detail;
+    throw new Error(typeof detail === "string" ? detail : "Discovery suggestions could not be prepared.");
+  }
+  return data as WikiDiscoveryBootstrapResult;
 }
 
 function findWordLimit(text: string) {

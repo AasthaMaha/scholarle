@@ -11,6 +11,15 @@ import {
 
 export type EducationLevel = "high_school" | "undergrad" | "grad" | "phd";
 
+export type DiscoveryIntent = {
+  id: string;
+  label: string;
+  dimension: "opportunity_type" | "field" | "funding_outcome" | "student_context" | "career_direction";
+  value: string;
+  canonical_values?: string[];
+  derived_from: string[];
+};
+
 export type HighSchoolProfile = {
   currentGrade?: string;
   gradMonth?: string;
@@ -158,6 +167,32 @@ export type ActiveScholarship = {
   additionalNotes?: string;
   fullText?: string;
   sourceUrls?: string[];
+  sourceMetadata?: Array<{
+    url?: string;
+    title?: string;
+    content_type?: string;
+    authority?: string;
+    fetched?: boolean;
+    error?: string;
+    textChars?: number;
+  }>;
+  fieldEvidence?: Array<{
+    field?: string;
+    value?: string;
+    sourceUrl?: string;
+    evidence?: string;
+    confidence?: number;
+    authority?: string;
+  }>;
+  extractionWarnings?: string[];
+  validationWarnings?: string[];
+  criticalFieldsFound?: string[];
+  criticalFieldsMissing?: string[];
+  completenessScore?: number;
+  resolutionStatus?: string;
+  extractedAt?: string;
+  discoverySource?: string;
+  discoverySourceKind?: "scholarship" | "platform" | "user_entry" | string;
   extractionCompletedAt?: string;
 };
 
@@ -333,6 +368,9 @@ export type WikiDiscoveryResult = {
     category?: string;
     best_for?: string[];
     search_tips?: string[];
+    why_recommended?: string;
+    access_note?: string;
+    source_authority?: string;
   }>;
   specific_opportunities?: Array<{
     name?: string;
@@ -347,6 +385,7 @@ export type WikiDiscoveryResult = {
     competitiveness?: string;
     search_tips?: string[];
     suggested_queries?: string[];
+    source_authority?: string;
   }>;
   funding_categories?: Array<{
     category_name?: string;
@@ -358,6 +397,11 @@ export type WikiDiscoveryResult = {
   personalized_search_queries?: string[];
   next_steps?: string[];
   missing_profile_fields?: string[];
+  discovery_focus?: string;
+  selected_intents?: DiscoveryIntent[];
+  free_text_intent?: string;
+  generated_at?: string;
+  result_note?: string;
 };
 
 export type PersonalizedOutlineResult = {
@@ -441,6 +485,12 @@ export type UserProfile = {
   fitAnalysis?: FitAnalysisResult;
   // latest discovery wiki recommendations
   wikiDiscovery?: WikiDiscoveryResult;
+  discoveryFocus?: string;
+  discoveryIntents?: DiscoveryIntent[];
+  discoveryIntentOptions?: DiscoveryIntent[];
+  discoveryPlatformDefaults?: NonNullable<WikiDiscoveryResult["top_free_platforms"]>;
+  dismissedDiscoveryUrls?: string[];
+  discoveryFeedback?: Array<{ url?: string; reason?: string; name?: string }>;
   personalizedOutline?: PersonalizedOutlineResult;
   savedWikiSources?: SavedWikiSource[];
   // versioned drafts
