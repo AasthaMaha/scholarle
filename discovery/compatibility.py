@@ -4,6 +4,7 @@ from typing import Any
 
 from .schemas import CompatibilityAssessment, DiscoveryContext, EducationLevel, StudentType, model_dict
 from .taxonomy import normalize_level, normalize_student_type, normalized_text
+from .eligibility import candidate_eligibility_constraints
 
 
 LEVEL_COMPATIBILITY: dict[EducationLevel, set[EducationLevel]] = {
@@ -76,6 +77,87 @@ def assess_candidate(candidate: dict[str, Any], context: DiscoveryContext) -> Co
         student_type_match = "unknown"
         unknowns.append("student_type")
 
+    eligibility = candidate_eligibility_constraints(candidate)
+    eligible_genders = set(eligibility["eligible_genders"])
+    if eligible_genders:
+        if profile.gender in eligible_genders:
+            gender_match = "compatible"
+        elif profile.gender in {"male", "female"}:
+            contradictions.append("gender")
+            gender_match = "incompatible"
+        else:
+            gender_match = "unknown"
+            unknowns.append("gender")
+    else:
+        gender_match = "not_restricted"
+
+    required_races = set(eligibility["race_ethnicity_requirements"])
+    if required_races:
+        if profile.race_ethnicity in required_races:
+            race_ethnicity_match = "compatible"
+        elif profile.race_ethnicity not in {"unknown", "multiracial"}:
+            contradictions.append("race_ethnicity")
+            race_ethnicity_match = "incompatible"
+        else:
+            race_ethnicity_match = "unknown"
+            unknowns.append("race_ethnicity")
+    else:
+        race_ethnicity_match = "not_restricted"
+
+    required_identities = set(eligibility["identity_requirements"])
+    known_identities = set(profile.identity_context)
+    missing_identities = required_identities - known_identities
+    if required_identities and not missing_identities:
+        identity_match = "compatible"
+    elif required_identities:
+        identity_match = "unknown"
+        unknowns.extend(f"identity:{value}" for value in sorted(missing_identities))
+    else:
+        identity_match = "not_restricted"
+
+    need_required = bool(eligibility["financial_need_required"])
+    if need_required and profile.financial_need:
+        financial_need_match = "compatible"
+    elif need_required:
+        financial_need_match = "unknown"
+        unknowns.append("financial_need")
+    else:
+        financial_need_match = "not_restricted"
+
+    if eligibility["first_generation_required"] and profile.first_generation:
+        identity_match = "compatible" if identity_match == "not_restricted" else identity_match
+    elif eligibility["first_generation_required"]:
+        if identity_match == "not_restricted":
+            identity_match = "unknown"
+        unknowns.append("first_generation")
+
+    supported_enrollment = set(eligibility["enrollment_statuses"])
+    known_enrollment = set(profile.enrollment_statuses)
+    if supported_enrollment and known_enrollment:
+        if supported_enrollment & known_enrollment:
+            enrollment_status_match = "compatible"
+        else:
+            contradictions.append("enrollment_status")
+            enrollment_status_match = "incompatible"
+    elif supported_enrollment:
+        enrollment_status_match = "unknown"
+        unknowns.append("enrollment_status")
+    else:
+        enrollment_status_match = "not_restricted"
+
+    minimum_gpa = eligibility["minimum_gpa"]
+    if minimum_gpa is not None and profile.current_gpa is not None:
+        if profile.current_gpa + 1e-9 < float(minimum_gpa):
+            contradictions.append("minimum_gpa")
+            gpa_match = "incompatible"
+        else:
+            gpa_match = "compatible"
+    elif minimum_gpa is not None:
+        gpa_match = "unknown"
+        unknowns.append("gpa")
+    else:
+        gpa_match = "not_restricted"
+
     # Field relevance is advisory: the LLM ranker judges it semantically, so a
     # mismatch here lowers the score but never hard-rejects a candidate. Hard
     # gates remain the true eligibility constraints: level, student type, and
@@ -139,6 +221,12 @@ def assess_candidate(candidate: dict[str, Any], context: DiscoveryContext) -> Co
         field_score=field_score,
         level_match=level_match,
         student_type_match=student_type_match,
+        gender_match=gender_match,
+        race_ethnicity_match=race_ethnicity_match,
+        identity_match=identity_match,
+        financial_need_match=financial_need_match,
+        enrollment_status_match=enrollment_status_match,
+        gpa_match=gpa_match,
     )
 
 

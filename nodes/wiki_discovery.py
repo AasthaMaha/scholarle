@@ -134,7 +134,17 @@ def _snippet_from_html(html: str) -> str:
     text = re.sub(r"<style[\s\S]*?</style>", " ", text, flags=re.I)
     text = re.sub(r"<[^>]+>", " ", text)
     text = re.sub(r"\s+", " ", unescape(text)).strip()
-    body = text[:420]
+    body = text[:220]
+    eligibility_match = re.search(
+        r"\b(?:eligibility|eligible|applicants? must|open to|available to|women|female|male|"
+        r"minimum gpa|financial need|first[- ]generation|citizenship|resident|veteran|disabilit)",
+        text,
+        flags=re.I,
+    )
+    if eligibility_match and eligibility_match.start() > len(body):
+        start = max(0, eligibility_match.start() - 70)
+        eligibility_excerpt = text[start:start + 280]
+        body = f"{body} … Eligibility context: {eligibility_excerpt}"
     if title and body:
         return f"{title} — {body}"
     return title or body
@@ -561,7 +571,10 @@ def interpret_profile(state):
                     "You are the Scholarship Discovery Profile Interpreter. Build a discovery brief "
                     "from the student profile, selected discovery intents, and optional written request. "
                     "Do not recommend scholarships. Do not invent profile facts. If citizenship, field, "
-                    "or degree level is missing, list it under missing_fields.\n\n"
+                    "or degree level is missing, list it under missing_fields. Preserve user-confirmed "
+                    "gender, race/ethnicity, financial-need, first-generation, enrollment, disability, "
+                    "military, foster-care, dependent, DACA, and explicit GPA context as eligibility constraints. Treat "
+                    "undisclosed or unchecked sensitive fields as unknown, never as a negative fact.\n\n"
                     "FIELD INTELLIGENCE: whatever field the student typed — common or obscure — produce "
                     "field_intelligence for it: synonyms, parent disciplines, broader umbrella terms, and "
                     "the vocabulary funders actually use for that area. Never say the field is unsupported.\n\n"
@@ -723,6 +736,8 @@ def build_candidate_pool(state):
     for item in _dedupe_candidates(library + web_platforms + web)[:36]:
         enriched = {**item, "source_evidence": candidate_evidence(item)}
         assessment = assessment_dict(enriched, context)
+        if not assessment.get("compatible", True):
+            continue
         score, components = score_candidate(enriched, context)
         pool.append({
             **enriched,
@@ -950,6 +965,13 @@ def rank_and_verify_sources(state):
             "best_for": item.get("best_for"),
             "degree_levels": item.get("degree_levels"),
             "student_types": item.get("student_types"),
+            "eligible_genders": item.get("eligible_genders"),
+            "race_ethnicity_requirements": item.get("race_ethnicity_requirements"),
+            "identity_requirements": item.get("identity_requirements"),
+            "enrollment_statuses": item.get("enrollment_statuses"),
+            "financial_need_required": item.get("financial_need_required"),
+            "first_generation_required": item.get("first_generation_required"),
+            "minimum_gpa": item.get("minimum_gpa") or item.get("minimumGpa"),
             "fields": item.get("fields"),
             "opportunity_types": item.get("opportunity_types"),
             "regions": item.get("regions"),
@@ -982,8 +1004,10 @@ def rank_and_verify_sources(state):
                     "to all fields (e.g. an international or identity-based fellowship) whose level and "
                     "student type fit. Leave this empty ONLY if nothing qualifies — but if any candidate "
                     "plausibly qualifies, include it. Do not skip this task.\n"
-                    "3. Reject candidates with clear degree-level or citizenship/student-type "
-                    "mismatches, with a short reason each.\n"
+                    "3. Reject candidates with any deterministic incompatibility, including clear "
+                    "degree-level, citizenship/student-type, gender, race/ethnicity, enrollment, or GPA "
+                    "mismatches, with a short reason each. Do not reject an unknown or undisclosed "
+                    "sensitive attribute; surface it as something to confirm.\n"
                     "4. Write result_note (one honest sentence about what this search found for this "
                     "student) and next_steps (2-3 short steps), using the brief's presentation_hints.\n\n"
                     "Rules: choose only from the provided candidate pool and copy each candidate_id "
@@ -1027,6 +1051,7 @@ def rank_and_verify_sources(state):
             continue
         # Prefer pool kind/url so LLM mislabels and duplicate rows cannot break grounding.
         merged = {
+            **source,
             **item,
             "candidate_id": cid,
             "name": _text(item.get("name") or source.get("name")),

@@ -332,3 +332,15 @@ def test_discovery_api_contract_accepts_focus_feedback_and_status_metadata():
     assert request.free_text_intent == "public-service funding"
     assert response.discovery_focus == "political science"
     assert response.page_title == "Scholarship Discovery"
+
+
+def test_html_preview_preserves_eligibility_text_beyond_page_intro():
+    html = (
+        "<html><head><title>Example Scholarship</title></head><body>"
+        + "Program overview and background. " * 30
+        + "Eligibility: This award is open to international women graduate students."
+        + "</body></html>"
+    )
+    snippet = wiki_discovery._snippet_from_html(html)
+    assert "Eligibility context" in snippet
+    assert "international women graduate students" in snippet

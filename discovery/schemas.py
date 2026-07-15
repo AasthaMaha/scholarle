@@ -51,6 +51,12 @@ class CanonicalProfile(BaseModel):
     student_type: StudentType = StudentType.UNKNOWN
     current_country: str = ""
     citizenship_status: str = ""
+    gender: str = "unknown"
+    race_ethnicity: str = "unknown"
+    identity_context: list[str] = Field(default_factory=list)
+    enrollment_statuses: list[str] = Field(default_factory=list)
+    first_generation: bool = False
+    current_gpa: float | None = None
     career_goal: str = ""
     research_topics: list[str] = Field(default_factory=list)
     opportunity_preferences: list[str] = Field(default_factory=list)
@@ -86,6 +92,12 @@ class CompatibilityAssessment(BaseModel):
     field_score: float = 0.0
     level_match: str = "unknown"
     student_type_match: str = "unknown"
+    gender_match: str = "unknown"
+    race_ethnicity_match: str = "unknown"
+    identity_match: str = "unknown"
+    financial_need_match: str = "unknown"
+    enrollment_status_match: str = "unknown"
+    gpa_match: str = "unknown"
 
 
 class CandidateEvidence(BaseModel):
@@ -97,6 +109,7 @@ class CandidateEvidence(BaseModel):
     asserted_levels: list[str] = Field(default_factory=list)
     asserted_student_types: list[str] = Field(default_factory=list)
     asserted_opportunity_types: list[str] = Field(default_factory=list)
+    asserted_eligibility_constraints: dict[str, Any] = Field(default_factory=dict)
     evidence_quality: float = 0.0
     attribute_provenance: dict[str, str] = Field(default_factory=dict)
 

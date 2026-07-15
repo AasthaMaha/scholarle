@@ -5,10 +5,28 @@ from typing import Any
 
 from .schemas import CanonicalEducation, CanonicalProfile, DiscoveryContext, DiscoveryIntent, EducationLevel, model_dict
 from .taxonomy import normalize_field, normalize_level, normalize_student_type
+from .eligibility import normalize_gender, normalize_race_ethnicity, profile_enrollment_statuses, profile_identity_context
 
 
 def _text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _standard_gpa(profile: dict[str, Any]) -> float | None:
+    history = [item for item in (profile.get("educationHistory") or []) if isinstance(item, dict)]
+    candidates = [
+        (history[-1] if history else {}).get("gpa"),
+        (profile.get("undergrad") or {}).get("gpa"),
+        (profile.get("highSchool") or {}).get("gpa"),
+    ]
+    for raw in candidates:
+        match = re.search(r"\b([0-4](?:\.\d{1,2})?)\b", _text(raw))
+        if not match:
+            continue
+        value = float(match.group(1))
+        if 0 <= value <= 4.0:
+            return value
+    return None
 
 
 def _primary_education(profile: dict[str, Any]) -> tuple[str, str, str, list[str]]:
@@ -64,6 +82,12 @@ def normalize_profile(profile: dict[str, Any]) -> CanonicalProfile:
         student_type=student_type,
         current_country=_text(profile.get("location")),
         citizenship_status=_text(profile.get("citizenshipStatus")),
+        gender=normalize_gender(profile.get("gender")),
+        race_ethnicity=normalize_race_ethnicity(profile.get("raceEthnicity")),
+        identity_context=profile_identity_context(profile),
+        enrollment_statuses=profile_enrollment_statuses(profile),
+        first_generation=bool(profile.get("firstGen")),
+        current_gpa=_standard_gpa(profile),
         career_goal=_text(profile.get("careerGoal")),
         research_topics=list(dict.fromkeys(research_topics)),
         opportunity_preferences=[_text(value) for value in profile.get("opportunityPreferences") or [] if _text(value)],
@@ -77,6 +101,11 @@ def normalize_profile(profile: dict[str, Any]) -> CanonicalProfile:
                 else "educationHistory.majorField"
             ] if field else [],
             "student_type": ["citizenshipStatus", "nationality"],
+            "gender": ["gender"] if _text(profile.get("gender")) else [],
+            "race_ethnicity": ["raceEthnicity"] if _text(profile.get("raceEthnicity")) else [],
+            "identity_context": ["identity", "extendedContext", "firstGen", "pellEligible"],
+            "enrollment_status": ["extendedContext"],
+            "current_gpa": ["educationHistory.gpa", "undergrad.gpa", "highSchool.gpa"],
             "career": ["careerGoal", "graduate.researchArea", "researchExperience.researchAreas"],
         },
     )
