@@ -13,7 +13,7 @@ from urllib.request import Request
 from pydantic import BaseModel, Field
 
 from discovery.compatibility import assess_candidate, assessment_dict
-from discovery.deadlines import assess_deadline, is_currently_open
+from discovery.deadlines import assess_deadline
 from discovery.evidence import candidate_evidence
 from discovery.normalization import apply_field_intelligence, build_discovery_context, context_dict
 from discovery.ranking import score_candidate
@@ -221,8 +221,12 @@ def _search_candidates(queries: list[str], limit_per_query: int = 2, max_total: 
             "search_tips": [f"Found via search query: {query}"],
             "status_note": (
                 f"Official page checked; application deadline {deadline['application_deadline']}."
-                if deadline.get("deadline_status") == "open" and deadline.get("application_deadline")
-                else "Official page did not confirm a currently open application window."
+                if direct_fetch_ok and deadline.get("deadline_status") == "open" and deadline.get("application_deadline")
+                else f"Official page checked; applications open {deadline['application_opens']}."
+                if direct_fetch_ok and deadline.get("deadline_status") == "upcoming" and deadline.get("application_opens")
+                else "Search result found; open the official page to confirm the current application window."
+                if not direct_fetch_ok
+                else "Official page checked; confirm the current application window before applying."
             ),
             "award_amount": "",
             "deadline_window": deadline.get("application_deadline", ""),
@@ -292,6 +296,99 @@ def _current_award_queries(queries: list[str], brief: dict[str, Any]) -> list[st
     degree = _text(brief.get("degree_level") or "student")
     field = _text(brief.get("field_of_study") or "general")
     return [f"{year} {degree} {field} scholarship applications open deadline official"]
+
+
+# A specific opportunity is one named award a student applies to. Ranked listicles
+# ("Top 80 ... Scholarships") and funding hub pages ("Funding for Graduate Students")
+# are about awards rather than being one, so they are dropped from Step 2 specifics.
+_AGGREGATOR_TITLE = re.compile(
+    r"\b(?:top|best|greatest)\s+\d+\b"
+    r"|\b\d+\s+(?:best|top|easiest|easy)\b"
+    r"|\b\d+\+?\s+(?:\w+\s+){0,3}(?:scholarships|fellowships|grants|awards)\b"
+    r"|\blist of\b"
+    r"|\bround[-\s]?up\b"
+    r"|\b(?:ultimate|complete|full|comprehensive)\s+(?:guide|list)\b"
+    # "how to apply" is deliberately absent: it titles real award pages
+    # ("How to Apply for a Cambridge Scholarship | Gates Cambridge").
+    r"|\bhow to (?:find|get|win|choose)\b",
+    re.I,
+)
+_AGGREGATOR_PATH = re.compile(
+    r"(?:^|/)(?:blog|blogs|article|articles|news|post|posts|pulse|magazine|guide|guides|"
+    r"advice|tips|stories)(?:/|$)",
+    re.I,
+)
+# Social and publishing hosts carry write-ups about awards, never the award's
+# own application page.
+_NON_OFFICIAL_HOSTS = (
+    "facebook.com",
+    "instagram.com",
+    "twitter.com",
+    "x.com",
+    "linkedin.com",
+    "medium.com",
+    "reddit.com",
+    "quora.com",
+    "youtube.com",
+    "tiktok.com",
+    "pinterest.com",
+    "tumblr.com",
+    "substack.com",
+    "blogspot.com",
+    "wordpress.com",
+    "t.me",
+)
+_FUNDING_HUB_TITLE = re.compile(
+    # Leads with generic funding language ("Funding for Graduate Students").
+    r"^\W*(?:funding|financial aid|financial support|student finance|tuition|fees|"
+    r"paying for|cost of attendance|money matters)\b"
+    # ...or describes a collection of awards rather than being one
+    # ("Scholarship and Fellowship Opportunities - CS @ FSU").
+    r"|\b(?:scholarship|fellowship|grant|award|funding)s?(?:\s+(?:and|&|,)\s+\w+)*\s+"
+    r"(?:opportunities|options|overview|resources|information|listings?|directory|programs)\b",
+    re.I,
+)
+# Plural award nouns are excluded by the trailing word boundary: a page titled
+# "... Scholarships" lists awards, while "... Scholarship" names one.
+_NAMED_AWARD = re.compile(
+    r"\b(?:scholarship|fellowship|scholars?|fellows?|grant|award|prize|bursary|studentship)\b",
+    re.I,
+)
+
+
+def _award_evidence_text(candidate: dict[str, Any]) -> str:
+    """Title plus URL path — an award's own pages often title only a section."""
+    path = urlparse(_text(candidate.get("url")).lower()).path
+    return f"{_text(candidate.get('name'))} {path.replace('-', ' ').replace('/', ' ')}"
+
+
+def _is_non_official_host(netloc: str) -> bool:
+    host = netloc.split(":")[0].lower()
+    return any(host == known or host.endswith(f".{known}") for known in _NON_OFFICIAL_HOSTS)
+
+
+def _looks_like_specific_award(candidate: dict[str, Any]) -> bool:
+    """Require evidence that a web hit is one named award, not a listicle or funding hub."""
+    if not candidate.get("preview_ok"):
+        return False
+    name = _text(candidate.get("name"))
+    parsed = urlparse(_text(candidate.get("url")).lower())
+    if _is_non_official_host(parsed.netloc):
+        return False
+    if _AGGREGATOR_TITLE.search(name) or _AGGREGATOR_PATH.search(parsed.path):
+        return False
+    if _FUNDING_HUB_TITLE.search(name):
+        return False
+    return bool(_NAMED_AWARD.search(_award_evidence_text(candidate)))
+
+
+def _search_award_candidates(queries: list[str]) -> list[dict[str, Any]]:
+    """Discover live award pages, keeping only hits that name a single opportunity."""
+    return [
+        candidate
+        for candidate in _search_candidates(queries)
+        if _looks_like_specific_award(candidate)
+    ]
 
 
 def _looks_like_reusable_platform(candidate: dict[str, Any]) -> bool:
@@ -768,7 +865,7 @@ def build_candidate_pool(state):
             f"official scholarship database {field}",
         ]
     with ThreadPoolExecutor(max_workers=2) as executor:
-        award_future = executor.submit(_search_candidates, _current_award_queries(queries, brief))
+        award_future = executor.submit(_search_award_candidates, _current_award_queries(queries, brief))
         platform_future = executor.submit(_search_platform_candidates, brief, focus)
         try:
             web = award_future.result()
@@ -780,7 +877,9 @@ def build_candidate_pool(state):
             web_platforms = []
     web = [
         item for item in web
-        if _text(item.get("url")).lower() not in excluded and is_currently_open(item)
+        if _text(item.get("url")).lower() not in excluded
+        and (item.get("direct_fetch_ok") or item.get("preview_ok"))
+        and _text(item.get("deadline_status") or "unknown").lower() != "closed"
     ]
     web_platforms = [item for item in web_platforms if _text(item.get("url")).lower() not in excluded]
     pool = []
@@ -997,6 +1096,39 @@ def _select_semantic_platforms(
     return selected
 
 
+def _select_discoverable_specifics(pool: list[dict[str, Any]], *, limit: int = 3) -> list[dict[str, Any]]:
+    """Select grounded Step 2 fallbacks, preferring directly fetched pages."""
+    status_priority = {"open": 0, "upcoming": 1, "unknown": 2}
+    candidates = [
+        source
+        for source in pool
+        if not _is_platform(source)
+        and _text(source.get("origin")) == "web_search"
+        and bool(source.get("direct_fetch_ok") or source.get("preview_ok"))
+        and _text(source.get("deadline_status") or "unknown").lower() in status_priority
+    ]
+    candidates.sort(
+        key=lambda source: (
+            status_priority[_text(source.get("deadline_status") or "unknown").lower()],
+            0 if source.get("direct_fetch_ok") else 1,
+            -float(source.get("semantic_score") or 0),
+        )
+    )
+    selected = []
+    for source in _dedupe_by_url(candidates)[:limit]:
+        status = _text(source.get("deadline_status") or "unknown").lower()
+        selected.append({
+            **source,
+            "kind": "specific_source",
+            "priority": "High" if status == "open" else "Medium",
+            "why_recommended": _text(source.get("why_recommended"))
+            or "This official opportunity page is relevant to the profile; confirm its current cycle and eligibility details.",
+            "status_estimate": "active" if status == "open" else "seasonal" if status == "upcoming" else "unknown",
+            "evidence": _text(source.get("deadline_evidence") or source.get("snippet"))[:500],
+        })
+    return selected
+
+
 def rank_and_verify_sources(state):
     """Agent 2: Semantic relevance judge + freshness verifier over grounded candidates only."""
     brief = state.get("discovery_brief") or {}
@@ -1004,7 +1136,10 @@ def rank_and_verify_sources(state):
     pool = state.get("candidate_pool") or []
     if state.get("discovery_llm_failed"):
         return {
-            "ranked_sources": _select_semantic_platforms(pool, brief, focus, limit=3),
+            "ranked_sources": (
+                _select_semantic_platforms(pool, brief, focus, limit=3)
+                + _select_discoverable_specifics(pool, limit=3)
+            ),
             "rejected_sources": [],
             "presentation": {},
         }
@@ -1060,12 +1195,16 @@ def rank_and_verify_sources(state):
                     "these tasks in order:\n"
                     "1. Accept 2-4 useful discovery platforms (kind=platform).\n"
                     "2. Accept 1-3 specific opportunities (kind=specific_source). A candidate qualifies "
-                    "when it offers funding this student could pursue and its official page has a "
-                    "deterministically verified currently open application window: a named award; a field-specific "
-                    "fellowship or award page whose snippet shows real awards; or a curated award open "
-                    "to all fields (e.g. an international or identity-based fellowship) whose level and "
-                    "student type fit. Leave this empty ONLY if nothing qualifies — but if any candidate "
-                    "plausibly qualifies, include it. Do not skip this task.\n"
+                    "ONLY when it is the official page of ONE named award the student applies to "
+                    "directly — e.g. a named scholarship, fellowship, or grant, whether field-specific "
+                    "or open to all fields. Reject any page that is merely about awards rather than "
+                    "being one: ranked or numbered listicles ('Top 80 ... Scholarships'), blog "
+                    "round-ups, and institutional funding hubs or financial-aid overviews ('Funding "
+                    "for Graduate Students') never qualify, however relevant they look. Prefer "
+                    "verified-open opportunities. If none are open, include the best grounded upcoming "
+                    "or deadline-unconfirmed named awards and explicitly tell the student to verify "
+                    "the current cycle. Leave this empty when no candidate names a single award — an "
+                    "empty list is correct and better than a listing page.\n"
                     "3. Reject candidates with any deterministic incompatibility, including clear "
                     "degree-level, citizenship/student-type, gender, race/ethnicity, enrollment, or GPA "
                     "mismatches, with a short reason each. Do not reject an unknown or undisclosed "
@@ -1079,8 +1218,8 @@ def rank_and_verify_sources(state):
                     "steers direction but does not disqualify otherwise relevant awards. Ground every "
                     "why_recommended in the candidate's snippet or metadata, and never claim the student "
                     "is eligible — eligibility is checked in the next step. Estimate status as active, "
-                    "seasonal, unknown, expired, or removed; never recommend expired, removed, closed, "
-                    "upcoming, or deadline-unknown specific opportunities. "
+                    "seasonal, unknown, expired, or removed; never recommend expired, removed, or closed "
+                    "specific opportunities. Upcoming and deadline-unknown items are discovery fallbacks only. "
                     "Never pad any list with unrelated or ineligible matches.",
                 ),
                 (
@@ -1094,9 +1233,12 @@ def rank_and_verify_sources(state):
         )
         data = _model_dump(result)
     except Exception:
-        # Short fallback: judging failed — return only profile-matched platforms.
+        # Keep grounded direct opportunities available if semantic judging fails.
         return {
-            "ranked_sources": _select_semantic_platforms(pool, brief, focus, limit=3),
+            "ranked_sources": (
+                _select_semantic_platforms(pool, brief, focus, limit=3)
+                + _select_discoverable_specifics(pool, limit=3)
+            ),
             "rejected_sources": [],
             "presentation": {},
         }
@@ -1157,7 +1299,10 @@ def rank_and_verify_sources(state):
                 "origin": source.get("origin"),
             }
         )
-    accepted = semantic_platforms + [item for item in accepted if not _is_platform(item)][:3]
+    accepted_specifics = [item for item in accepted if not _is_platform(item)][:3]
+    if not accepted_specifics:
+        accepted_specifics = _select_discoverable_specifics(pool, limit=3)
+    accepted = semantic_platforms + accepted_specifics
 
     # Persist freshness estimates for library-origin items.
     store = _load_status_store()
@@ -1220,10 +1365,10 @@ def verify_ranked_sources(state):
             reason = ",".join(assessment.hard_contradictions) or "hard_constraint"
         elif not _is_platform(item) and origin != "web_search":
             reason = "non_live_specific_source"
-        elif not _is_platform(item) and not is_currently_open(item):
-            reason = f"deadline_{_text(item.get('deadline_status') or 'unknown')}"
-        elif origin.startswith("web") and not evidence.get("fetched"):
-            reason = "unfetched_live_source"
+        elif not _is_platform(item) and _text(item.get("deadline_status")).lower() == "closed":
+            reason = "deadline_closed"
+        elif origin.startswith("web") and not evidence.get("fetched") and not item.get("preview_ok"):
+            reason = "missing_live_source_evidence"
         if reason:
             rejected.append({"name": item.get("name", ""), "url": url, "reason": reason})
             continue

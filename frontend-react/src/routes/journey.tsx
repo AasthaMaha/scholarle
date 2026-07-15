@@ -3100,6 +3100,16 @@ function DiscoverySourceCard({
   onExplore: () => void;
   onSave: () => void;
 }) {
+  const deadlineLabel = source.deadline_status === "open"
+    ? "Applications open"
+    : source.deadline_status === "upcoming"
+      ? "Upcoming application cycle"
+      : "Confirm current deadline";
+  const deadlineTone = source.deadline_status === "open"
+    ? "bg-success/10 text-success"
+    : source.deadline_status === "upcoming"
+      ? "bg-primary/10 text-primary"
+      : "bg-amber-100 text-amber-800";
   return (
     <article className="group rounded-2xl border border-white/90 bg-white/90 p-5 shadow-sm transition hover:border-primary/20 hover:shadow-md">
       <div className="flex items-center gap-4">
@@ -3112,6 +3122,10 @@ function DiscoverySourceCard({
               <h4 className="font-display text-xl font-bold leading-tight">{source.name}</h4>
               {source.category && <p className="mt-1 text-xs text-muted-foreground">{source.category}</p>}
               {source.why_recommended && <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">{source.why_recommended}</p>}
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${deadlineTone}`}>{deadlineLabel}</span>
+                {source.status_note && <span className="text-xs text-muted-foreground">{source.status_note}</span>}
+              </div>
             </div>
           </div>
         </div>

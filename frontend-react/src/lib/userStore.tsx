@@ -386,6 +386,10 @@ export type WikiDiscoveryResult = {
     status_note?: string;
     award_amount?: string;
     deadline_window?: string;
+    deadline_status?: "open" | "upcoming" | "unknown" | "closed" | string;
+    deadline_verified?: boolean;
+    deadline_checked_at?: string;
+    deadline_source_url?: string;
     competitiveness?: string;
     search_tips?: string[];
     suggested_queries?: string[];

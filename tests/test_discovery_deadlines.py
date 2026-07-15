@@ -103,7 +103,135 @@ def test_search_candidate_uses_direct_official_page_for_deadline(monkeypatch):
     assert candidates[0]["application_deadline"] == f"{deadline_year}-11-30"
 
 
-def test_candidate_pool_excludes_library_specifics_and_non_open_live_results(monkeypatch):
+def _award_hit(name: str, url: str = "https://official.example/apply") -> dict:
+    return {"name": name, "url": url, "preview_ok": True}
+
+
+def test_listicle_and_funding_hub_pages_are_not_specific_opportunities():
+    # The two page shapes Step 2 was surfacing instead of real awards.
+    assert not wiki_discovery._looks_like_specific_award(
+        _award_hit("Top 80 Computer Science Scholarships (July 2026)", "https://example.org/top-80-cs")
+    )
+    assert not wiki_discovery._looks_like_specific_award(
+        _award_hit("Funding for Graduate Students", "https://example.edu/grad/funding")
+    )
+    assert not wiki_discovery._looks_like_specific_award(
+        _award_hit("10 Best Scholarships for Engineers", "https://example.org/10-best")
+    )
+    assert not wiki_discovery._looks_like_specific_award(
+        _award_hit("List of Scholarships", "https://example.org/list")
+    )
+    assert not wiki_discovery._looks_like_specific_award(
+        _award_hit("How to Find Scholarships", "https://example.org/how-to-find")
+    )
+    assert not wiki_discovery._looks_like_specific_award(
+        _award_hit("Financial Aid and Scholarship Options", "https://example.edu/finaid")
+    )
+    # A department hub that does not lead with a funding word.
+    assert not wiki_discovery._looks_like_specific_award(
+        _award_hit(
+            "Scholarship and Fellowship Opportunities - CS @ FSU",
+            "https://www.cs.fsu.edu/financial-aid/scholarship-fellowship-opportunities",
+        )
+    )
+    assert not wiki_discovery._looks_like_specific_award(
+        _award_hit("Graduate Fellowship Programs", "https://example.edu/grad/fellowships")
+    )
+
+
+def test_news_and_blog_urls_are_not_specific_opportunities():
+    # An announcement about an award is not the page a student applies on.
+    assert not wiki_discovery._looks_like_specific_award(
+        _award_hit(
+            "NSF announces 2026 Graduate Research Fellowship Program award offers",
+            "https://www.nsf.gov/news/nsf-announces-2026-graduate-research-fellowship-program",
+        )
+    )
+    assert not wiki_discovery._looks_like_specific_award(
+        _award_hit("Marshall Scholarship", "https://example.org/blog/marshall-scholarship")
+    )
+    assert not wiki_discovery._looks_like_specific_award(
+        _award_hit("Marshall Scholarship", "https://example.org/articles/marshall-scholarship")
+    )
+
+
+def test_social_writeups_about_an_award_are_not_specific_opportunities():
+    assert not wiki_discovery._looks_like_specific_award(
+        _award_hit(
+            "Gates Cambridge Scholarship 2026-27 (Full Funding)",
+            "https://www.linkedin.com/pulse/gates-cambridge-scholarship-202627-zo0ce",
+        )
+    )
+    assert not wiki_discovery._looks_like_specific_award(
+        _award_hit(
+            "Gates Cambridge Scholarship 2026-27 - Scholarship GOAT",
+            "https://www.facebook.com/scholarshipgoat/posts/gates-cambridge-scholarship",
+        )
+    )
+    assert not wiki_discovery._looks_like_specific_award(
+        _award_hit("Rhodes Scholarship explained", "https://medium.com/@someone/rhodes-scholarship")
+    )
+
+
+def test_named_single_awards_remain_specific_opportunities():
+    assert wiki_discovery._looks_like_specific_award(_award_hit("Gates Cambridge Scholarship"))
+    assert wiki_discovery._looks_like_specific_award(_award_hit("NSF Graduate Research Fellowship Program"))
+    assert wiki_discovery._looks_like_specific_award(_award_hit("Amelia Earhart Fellowship — Zonta International"))
+    assert wiki_discovery._looks_like_specific_award(
+        _award_hit(
+            "Study with a scholarship at HPI",
+            "https://hpi.de/en/studies/your-studies-at-hpi/study-with-a-scholarship",
+        )
+    )
+    assert wiki_discovery._looks_like_specific_award(
+        _award_hit(
+            "Call for Applications: 2026 Tech Policy Press Fellowship Program",
+            "https://techpolicy.press/call-for-applications-2026-fellowship",
+        )
+    )
+
+
+def test_real_award_pages_titling_only_a_section_are_kept():
+    # Live titles that a name-only check wrongly rejected: an award's own site
+    # often titles the section, leaving the award name to the host path.
+    assert wiki_discovery._looks_like_specific_award(
+        _award_hit(
+            "How to Apply for a Cambridge Scholarship | Gates Cambridge",
+            "https://www.gatescambridge.org/apply/how-to-apply",
+        )
+    )
+    assert wiki_discovery._looks_like_specific_award(
+        _award_hit(
+            "Admission | Knight-Hennessy Scholars at Stanford University",
+            "https://knight-hennessy.stanford.edu/admission",
+        )
+    )
+    assert wiki_discovery._looks_like_specific_award(
+        _award_hit("Eligibility", "https://example.org/rhodes-scholarship/eligibility")
+    )
+
+
+def test_unpreviewed_hit_is_not_a_specific_opportunity():
+    assert not wiki_discovery._looks_like_specific_award(
+        {"name": "Some Scholarship", "url": "https://official.example/x", "preview_ok": False}
+    )
+
+
+def test_award_search_drops_listicles_and_hubs_but_keeps_named_awards(monkeypatch):
+    monkeypatch.setattr(
+        wiki_discovery,
+        "_search_candidates",
+        lambda _queries: [
+            _award_hit("Top 80 Computer Science Scholarships (July 2026)", "https://example.org/top-80"),
+            _award_hit("Funding for Graduate Students", "https://example.edu/grad/funding"),
+            _award_hit("Gates Cambridge Scholarship", "https://example.org/gates"),
+        ],
+    )
+    kept = wiki_discovery._search_award_candidates(["2026 scholarship applications open"])
+    assert [item["name"] for item in kept] == ["Gates Cambridge Scholarship"]
+
+
+def test_candidate_pool_keeps_fetched_discovery_fallbacks_but_excludes_closed_results(monkeypatch):
     platform = {
         "name": "Trusted Finder",
         "url": "https://example.org/finder",
@@ -161,10 +289,10 @@ def test_candidate_pool_excludes_library_specifics_and_non_open_live_results(mon
     assert open_award["url"] in urls
     assert stale_library_award["url"] not in urls
     assert closed_award["url"] not in urls
-    assert unknown_award["url"] not in urls
+    assert unknown_award["url"] in urls
 
 
-def test_deterministic_verifier_rejects_unverified_specific_opportunity():
+def test_deterministic_verifier_keeps_fetched_unverified_specific_opportunity():
     candidate = {
         "name": "Unknown Award",
         "url": "https://official.example/unknown",
@@ -178,8 +306,46 @@ def test_deterministic_verifier_rejects_unverified_specific_opportunity():
         "fields": ["General"],
     }
     result = wiki_discovery.verify_ranked_sources({"ranked_sources": [candidate], "student_profile": {}})
-    assert result["ranked_sources"] == []
-    assert result["verification_report"]["rejected"][0]["reason"] == "deadline_unknown"
+    assert [item["url"] for item in result["ranked_sources"]] == [candidate["url"]]
+    assert result["verification_report"]["rejected"] == []
+
+
+def test_deterministic_specific_fallback_prefers_open_then_upcoming_then_unknown():
+    base = {
+        "kind": "specific_source",
+        "origin": "web_search",
+        "direct_fetch_ok": True,
+        "semantic_score": 0.8,
+    }
+    candidates = [
+        {**base, "name": "Unknown Award", "url": "https://example.org/unknown", "deadline_status": "unknown"},
+        {**base, "name": "Upcoming Award", "url": "https://example.org/upcoming", "deadline_status": "upcoming"},
+        {**base, "name": "Open Award", "url": "https://example.org/open", "deadline_status": "open"},
+        {**base, "name": "Closed Award", "url": "https://example.org/closed", "deadline_status": "closed"},
+        {**base, "name": "Unfetched Award", "url": "https://example.org/unfetched", "deadline_status": "open", "direct_fetch_ok": False},
+    ]
+
+    selected = wiki_discovery._select_discoverable_specifics(candidates)
+
+    assert [item["name"] for item in selected] == ["Open Award", "Upcoming Award", "Unknown Award"]
+
+
+def test_search_snippet_is_used_when_official_page_fetch_is_blocked():
+    candidate = {
+        "name": "Provider-grounded Award",
+        "url": "https://example.org/provider-grounded",
+        "kind": "specific_source",
+        "origin": "web_search",
+        "direct_fetch_ok": False,
+        "preview_ok": True,
+        "snippet": "Graduate scholarship for computing students.",
+        "deadline_status": "unknown",
+    }
+
+    selected = wiki_discovery._select_discoverable_specifics([candidate])
+    verified = wiki_discovery.verify_ranked_sources({"ranked_sources": selected, "student_profile": {}})
+
+    assert [item["url"] for item in verified["ranked_sources"]] == [candidate["url"]]
 
 
 def test_generated_wording_cannot_override_verified_deadline():
