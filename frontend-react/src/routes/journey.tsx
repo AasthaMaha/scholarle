@@ -2723,19 +2723,35 @@ function StepDiscovery({
   }
 
   function useSourceForExtraction(source: DiscoverySource) {
+    const sourceUrl = source.url ?? "";
+    const deadlineStatus = source.deadline_status === "open"
+      ? "Applications open"
+      : source.deadline_status === "upcoming"
+        ? "Upcoming application cycle"
+        : "Current deadline needs confirmation";
+    const transferNotes = [
+      source.category && `Source category: ${source.category}`,
+      source.source_authority && `Source authority: ${source.source_authority}`,
+      source.award_amount && `Award amount: ${source.award_amount}`,
+      source.deadline_window && `Deadline: ${source.deadline_window}`,
+      `Discovery deadline status: ${deadlineStatus}`,
+      source.why_recommended && `Why this appeared in discovery: ${source.why_recommended}`,
+      source.status_note,
+    ].filter(Boolean).join("\n");
     updateProfile({
       activeScholarship: {
         name: source.name ?? "",
-        url: source.url ?? "",
+        url: sourceUrl,
+        officialWebsite: sourceUrl,
+        awardAmount: source.award_amount ?? "",
+        applicationDeadline: source.deadline_window ?? "",
+        currentStatus: deadlineStatus,
+        description: source.why_recommended ?? "",
+        importantNotes: source.status_note ? [source.status_note] : [],
+        sourceUrls: sourceUrl ? [sourceUrl] : [],
         discoverySource: "Scholar-E discovery",
         discoverySourceKind: "scholarship",
-        additionalNotes: [
-          source.category && `Source category: ${source.category}`,
-          source.award_amount && `Award amount: ${source.award_amount}`,
-          source.deadline_window && `Deadline window: ${source.deadline_window}`,
-          source.why_recommended && `Why this appeared in discovery: ${source.why_recommended}`,
-          source.status_note,
-        ].filter(Boolean).join("\n"),
+        additionalNotes: transferNotes,
       },
       fitAnalysis: undefined,
       personalizedOutline: undefined,
@@ -3091,7 +3107,7 @@ function DiscoverySourceCard({
       : "bg-amber-100 text-amber-800";
   return (
     <article className="group rounded-2xl border border-white/90 bg-white/90 p-5 shadow-sm transition hover:border-primary/20 hover:shadow-md">
-      <div className="flex items-center gap-4">
+      <div className="flex items-start gap-4">
         <div className="min-w-0 flex-1">
           <div className="flex items-start gap-3">
             <div className="mt-0.5 grid size-10 shrink-0 place-items-center rounded-xl bg-primary/[0.07] font-display text-sm font-bold text-primary">
@@ -3124,10 +3140,27 @@ function DiscoverySourceCard({
               Official site
             </button>
           )}
-          <button onClick={onExplore} className="inline-flex items-center gap-1.5 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground hover:opacity-90">
-            Explore <ArrowRight className="size-3.5" />
-          </button>
         </div>
+      </div>
+      <div className="mt-5 flex flex-col gap-4 rounded-2xl border border-primary/15 bg-gradient-to-r from-primary/[0.07] via-primary/[0.035] to-transparent p-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex min-w-0 items-start gap-3">
+          <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground shadow-sm">
+            <Sparkles className="size-4.5" />
+          </span>
+          <div>
+            <h5 className="font-display text-base font-bold">Worth a closer look?</h5>
+            <p className="mt-1 text-sm leading-5 text-muted-foreground">
+              Select this opportunity to collect its official requirements and evaluate how well it aligns with your profile.
+            </p>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onExplore}
+          className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-xl bg-primary px-5 py-3 text-sm font-semibold text-primary-foreground shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
+        >
+          Select &amp; continue to Step 3 <ArrowRight className="size-4" />
+        </button>
       </div>
     </article>
   );
@@ -3858,10 +3891,13 @@ function StepRequirementsAndFit() {
       }
       updateProfile({
         activeScholarship: {
+          ...scholarship,
           ...extracted,
           additionalNotes: scholarship.additionalNotes,
           url: extracted.url || scholarship.url,
           name: extracted.name || scholarship.name,
+          discoverySource: scholarship.discoverySource,
+          discoverySourceKind: scholarship.discoverySourceKind,
           extractionCompletedAt: new Date().toISOString(),
         },
         fitAnalysis: undefined,
