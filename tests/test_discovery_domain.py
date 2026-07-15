@@ -148,6 +148,7 @@ def test_online_retrieval_evidence_does_not_claim_profile_attributes():
     assert evidence["retrieval_query"] == "materials science graduate fellowship"
     assert evidence["asserted_fields"] == []
     assert evidence["attribute_provenance"]["fields"] == "unknown_from_page"
+    assert evidence["fetched"] is False
 
 
 def test_hard_contradiction_forces_zero_rank_score():

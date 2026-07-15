@@ -110,6 +110,11 @@ class CandidateEvidence(BaseModel):
     asserted_student_types: list[str] = Field(default_factory=list)
     asserted_opportunity_types: list[str] = Field(default_factory=list)
     asserted_eligibility_constraints: dict[str, Any] = Field(default_factory=dict)
+    deadline_status: str = "unknown"
+    deadline_verified: bool = False
+    application_deadline: str = ""
+    deadline_source_url: str = ""
+    deadline_checked_at: str = ""
     evidence_quality: float = 0.0
     attribute_provenance: dict[str, str] = Field(default_factory=dict)
 

@@ -54,8 +54,8 @@ def test_general_platform_passes_but_hard_degree_mismatch_does_not():
 
 
 def test_candidate_pool_honors_dismissed_urls(monkeypatch):
-    dismissed = _source(url="https://example.org/dismissed")
-    useful = _source(url="https://example.org/useful")
+    dismissed = _source(url="https://example.org/dismissed", kind="platform", category="Scholarship platform")
+    useful = _source(url="https://example.org/useful", kind="platform", category="Scholarship platform")
     monkeypatch.setattr(wiki_discovery, "_library_candidates", lambda _: [dismissed, useful])
     monkeypatch.setattr(wiki_discovery, "_search_candidates", lambda _: [])
     monkeypatch.setattr(wiki_discovery, "_search_platform_candidates", lambda _brief, _focus: [])

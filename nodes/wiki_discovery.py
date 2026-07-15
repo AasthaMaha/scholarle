@@ -13,6 +13,7 @@ from urllib.request import Request
 from pydantic import BaseModel, Field
 
 from discovery.compatibility import assess_candidate, assessment_dict
+from discovery.deadlines import assess_deadline, is_currently_open
 from discovery.evidence import candidate_evidence
 from discovery.normalization import apply_field_intelligence, build_discovery_context, context_dict
 from discovery.ranking import score_candidate
@@ -125,15 +126,19 @@ def _save_field_cache(cache: dict[str, Any]) -> None:
         pass
 
 
+def _page_text_from_html(html: str) -> str:
+    text = re.sub(r"<script[\s\S]*?</script>", " ", html, flags=re.I)
+    text = re.sub(r"<style[\s\S]*?</style>", " ", text, flags=re.I)
+    text = re.sub(r"<[^>]+>", " ", text)
+    return re.sub(r"\s+", " ", unescape(text)).strip()
+
+
 def _snippet_from_html(html: str) -> str:
     title = ""
     match = re.search(r"<title[^>]*>(.*?)</title>", html, flags=re.I | re.S)
     if match:
         title = re.sub(r"\s+", " ", unescape(match.group(1))).strip()
-    text = re.sub(r"<script[\s\S]*?</script>", " ", html, flags=re.I)
-    text = re.sub(r"<style[\s\S]*?</style>", " ", text, flags=re.I)
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = re.sub(r"\s+", " ", unescape(text)).strip()
+    text = _page_text_from_html(html)
     body = text[:220]
     eligibility_match = re.search(
         r"\b(?:eligibility|eligible|applicants? must|open to|available to|women|female|male|"
@@ -178,17 +183,22 @@ def _search_candidates(queries: list[str], limit_per_query: int = 2, max_total: 
     def preview(candidate: tuple[str, dict[str, str]]) -> dict[str, Any]:
         query, hit = candidate
         url = hit["url"]
-        # Search-API title/snippet come from the provider's own page fetch, so
-        # they count as page evidence when our direct fetch fails.
+        # Search snippets help identify a candidate, but only a successful
+        # direct official-page fetch can verify that its application is open.
         snippet = hit.get("snippet") or ""
         name = hit.get("title") or urlparse(url).netloc or url
         preview_ok = bool(snippet)
+        direct_fetch_ok = False
+        deadline = assess_deadline("")
         try:
             html = _fetch_raw(url, timeout=6)
+            page_text = _page_text_from_html(html)
             fetched_snippet = _snippet_from_html(html)
             if fetched_snippet:
                 snippet = fetched_snippet
                 preview_ok = True
+                direct_fetch_ok = True
+                deadline = assess_deadline(page_text)
                 if " — " in fetched_snippet and not hit.get("title"):
                     name = fetched_snippet.split(" — ", 1)[0][:160] or name
         except Exception:
@@ -209,9 +219,13 @@ def _search_candidates(queries: list[str], limit_per_query: int = 2, max_total: 
             "fields": [],
             "opportunity_types": [],
             "search_tips": [f"Found via search query: {query}"],
-            "status_note": "Verify current details on the official provider page.",
+            "status_note": (
+                f"Official page checked; application deadline {deadline['application_deadline']}."
+                if deadline.get("deadline_status") == "open" and deadline.get("application_deadline")
+                else "Official page did not confirm a currently open application window."
+            ),
             "award_amount": "",
-            "deadline_window": "",
+            "deadline_window": deadline.get("application_deadline", ""),
             "competitiveness": "",
             "status": "unknown",
             "last_verified_at": "",
@@ -219,6 +233,9 @@ def _search_candidates(queries: list[str], limit_per_query: int = 2, max_total: 
             "snippet": snippet[:500],
             "search_query": query,
             "preview_ok": preview_ok,
+            "direct_fetch_ok": direct_fetch_ok,
+            "deadline_source_url": url if direct_fetch_ok else "",
+            **deadline,
         }
 
     if not candidates:
@@ -249,6 +266,32 @@ def _platform_search_queries(brief: dict[str, Any], focus: str) -> list[str]:
             if query.strip()
         )
     )[:3]
+
+
+def _current_award_queries(queries: list[str], brief: dict[str, Any]) -> list[str]:
+    """Keep award retrieval focused on the current, open application cycle."""
+    year = datetime.now(timezone.utc).year
+    platform_tokens = (" database", " platform", " finder", " directory", " search engine")
+    award_queries = []
+    for raw in queries or []:
+        query = _text(raw)
+        if not query or any(token in query.lower() for token in platform_tokens):
+            continue
+        if str(year) not in query:
+            query = f"{year} {query}"
+        if not re.search(r"\b(?:deadline|applications? open|apply now)\b", query, flags=re.I):
+            query = f"{query} applications open deadline"
+        if "official" not in query.lower():
+            query = f"{query} official"
+        if query.lower() not in {item.lower() for item in award_queries}:
+            award_queries.append(query)
+        if len(award_queries) >= 4:
+            break
+    if award_queries:
+        return award_queries
+    degree = _text(brief.get("degree_level") or "student")
+    field = _text(brief.get("field_of_study") or "general")
+    return [f"{year} {degree} {field} scholarship applications open deadline official"]
 
 
 def _looks_like_reusable_platform(candidate: dict[str, Any]) -> bool:
@@ -578,6 +621,7 @@ def interpret_profile(state):
                     "FIELD INTELLIGENCE: whatever field the student typed — common or obscure — produce "
                     "field_intelligence for it: synonyms, parent disciplines, broader umbrella terms, and "
                     "the vocabulary funders actually use for that area. Never say the field is unsupported.\n\n"
+                    f"CURRENT DATE: {_now_iso()[:10]}. Search for the current application cycle only.\n\n"
                     "SEARCH QUERIES: write 8-12 concrete web search queries yourself. Rules: "
                     "(1) blend the written request WITH the field of study — never drop the field just "
                     "because a written request exists; "
@@ -589,7 +633,8 @@ def interpret_profile(state):
                     "context instead; "
                     "(6) every query targets funding a student can personally apply for — favor named "
                     "scholarship/fellowship/grant programs (add words like 'apply' or 'eligibility') over "
-                    "department funding overviews, industry grants, or program admission pages.\n\n"
+                    "department funding overviews, industry grants, or program admission pages; "
+                    "specific-award queries should include the current year and deadline/open wording.\n\n"
                     "PRESENTATION HINTS: 2-4 short hints on framing results for this student, grounded in "
                     "the request (e.g. 'emphasize funding without a service requirement').\n\n"
                     "Hierarchy: explicit written request is the strongest preference, selected intents next, "
@@ -694,7 +739,9 @@ def build_candidate_pool(state):
     library = [
         item
         for item in _library_candidates(state.get("source_library") or [])
-        if _text(item.get("url")).lower() not in excluded and assess_candidate(item, context).compatible
+        if _is_platform(item)
+        and _text(item.get("url")).lower() not in excluded
+        and assess_candidate(item, context).compatible
     ]
     if state.get("discovery_llm_failed"):
         # Short fallback: no live search without the interpreter — offer only
@@ -714,13 +761,14 @@ def build_candidate_pool(state):
     if not queries:
         degree = _text(brief.get("degree_level") or "student")
         field = _text(brief.get("field_of_study") or "scholarship")
+        year = datetime.now(timezone.utc).year
         queries = [
-            f"{degree} scholarships {field}",
-            f"{degree} fellowships {field}",
+            f"{year} {degree} scholarships {field} applications open deadline",
+            f"{year} {degree} fellowships {field} applications open deadline",
             f"official scholarship database {field}",
         ]
     with ThreadPoolExecutor(max_workers=2) as executor:
-        award_future = executor.submit(_search_candidates, queries)
+        award_future = executor.submit(_search_candidates, _current_award_queries(queries, brief))
         platform_future = executor.submit(_search_platform_candidates, brief, focus)
         try:
             web = award_future.result()
@@ -730,7 +778,10 @@ def build_candidate_pool(state):
             web_platforms = platform_future.result()
         except Exception:
             web_platforms = []
-    web = [item for item in web if _text(item.get("url")).lower() not in excluded]
+    web = [
+        item for item in web
+        if _text(item.get("url")).lower() not in excluded and is_currently_open(item)
+    ]
     web_platforms = [item for item in web_platforms if _text(item.get("url")).lower() not in excluded]
     pool = []
     for item in _dedupe_candidates(library + web_platforms + web)[:36]:
@@ -780,6 +831,10 @@ def _as_specific_item(source: dict[str, Any]) -> dict[str, Any]:
         or "Verify current status on the official source page.",
         "award_amount": _text(source.get("award_amount")),
         "deadline_window": _text(source.get("deadline_window")),
+        "deadline_status": _text(source.get("deadline_status")),
+        "deadline_verified": bool(source.get("deadline_verified")),
+        "deadline_checked_at": _text(source.get("deadline_checked_at")),
+        "deadline_source_url": _text(source.get("deadline_source_url")),
         "competitiveness": _text(source.get("competitiveness")),
         "search_tips": (source.get("search_tips") or [])[:3],
         "suggested_queries": (source.get("suggested_queries") or [])[:3],
@@ -979,6 +1034,12 @@ def rank_and_verify_sources(state):
             "status_note": item.get("status_note"),
             "award_amount": item.get("award_amount"),
             "deadline_window": item.get("deadline_window"),
+            "deadline_status": item.get("deadline_status"),
+            "deadline_verified": item.get("deadline_verified"),
+            "application_deadline": item.get("application_deadline"),
+            "application_opens": item.get("application_opens"),
+            "deadline_evidence": item.get("deadline_evidence"),
+            "deadline_source_url": item.get("deadline_source_url"),
             "competitiveness": item.get("competitiveness"),
             "search_tips": item.get("search_tips"),
             "snippet": item.get("snippet", ""),
@@ -999,7 +1060,8 @@ def rank_and_verify_sources(state):
                     "these tasks in order:\n"
                     "1. Accept 2-4 useful discovery platforms (kind=platform).\n"
                     "2. Accept 1-3 specific opportunities (kind=specific_source). A candidate qualifies "
-                    "when it offers funding this student could pursue: a named award; a field-specific "
+                    "when it offers funding this student could pursue and its official page has a "
+                    "deterministically verified currently open application window: a named award; a field-specific "
                     "fellowship or award page whose snippet shows real awards; or a curated award open "
                     "to all fields (e.g. an international or identity-based fellowship) whose level and "
                     "student type fit. Leave this empty ONLY if nothing qualifies — but if any candidate "
@@ -1017,7 +1079,8 @@ def rank_and_verify_sources(state):
                     "steers direction but does not disqualify otherwise relevant awards. Ground every "
                     "why_recommended in the candidate's snippet or metadata, and never claim the student "
                     "is eligible — eligibility is checked in the next step. Estimate status as active, "
-                    "seasonal, unknown, expired, or removed; never recommend expired or removed items. "
+                    "seasonal, unknown, expired, or removed; never recommend expired, removed, closed, "
+                    "upcoming, or deadline-unknown specific opportunities. "
                     "Never pad any list with unrelated or ineligible matches.",
                 ),
                 (
@@ -1062,9 +1125,9 @@ def rank_and_verify_sources(state):
             "best_for": item.get("best_for") or source.get("best_for") or [],
             "search_tips": item.get("search_tips") or source.get("search_tips") or [],
             "award_amount": _text(item.get("award_amount") or source.get("award_amount")),
-            "deadline_window": _text(item.get("deadline_window") or source.get("deadline_window")),
+            "deadline_window": _text(source.get("deadline_window") or item.get("deadline_window")),
             "competitiveness": _text(item.get("competitiveness") or source.get("competitiveness")),
-            "status_note": _text(item.get("status_note") or source.get("status_note")),
+            "status_note": _text(source.get("status_note") or item.get("status_note")),
             "status_estimate": status,
             "origin": source.get("origin"),
             "compatibility": source.get("compatibility") or {},
@@ -1155,6 +1218,10 @@ def verify_ranked_sources(state):
             reason = "missing_url"
         elif not assessment.compatible:
             reason = ",".join(assessment.hard_contradictions) or "hard_constraint"
+        elif not _is_platform(item) and origin != "web_search":
+            reason = "non_live_specific_source"
+        elif not _is_platform(item) and not is_currently_open(item):
+            reason = f"deadline_{_text(item.get('deadline_status') or 'unknown')}"
         elif origin.startswith("web") and not evidence.get("fetched"):
             reason = "unfetched_live_source"
         if reason:
@@ -1336,6 +1403,16 @@ def _overlay_wording(base_items: list[dict[str, Any]], wording_items: list[dict[
         wording = by_url.get(url) or {}
         merged = dict(item)
         for key, value in wording.items():
+            if key in {
+                "url",
+                "deadline_window",
+                "deadline_status",
+                "deadline_verified",
+                "deadline_checked_at",
+                "deadline_source_url",
+                "status_note",
+            }:
+                continue
             if value in (None, "", [], {}):
                 continue
             merged[key] = value

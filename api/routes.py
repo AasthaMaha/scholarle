@@ -916,11 +916,12 @@ def analyze_scholarship_fit(request: FitAnalyzeRequest) -> dict:
 
 
 def _load_wiki_source_library() -> list[dict]:
-    library_path = Path(__file__).resolve().parent.parent / "data" / "scholarship_source_library.json"
+    library_path = Path(__file__).resolve().parent.parent / "data" / "discovery_platform_library.json"
     try:
-        return json.loads(library_path.read_text(encoding="utf-8"))
+        items = json.loads(library_path.read_text(encoding="utf-8"))
+        return [item for item in items if str(item.get("kind") or "").lower() == "platform"]
     except Exception as exc:
-        raise HTTPException(status_code=500, detail="Scholarship source library could not be loaded.") from exc
+        raise HTTPException(status_code=500, detail="Discovery platform library could not be loaded.") from exc
 
 
 def get_scholarship_discovery_bootstrap(request: WikiBootstrapRequest) -> dict:
