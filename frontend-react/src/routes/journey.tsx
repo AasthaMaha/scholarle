@@ -49,7 +49,6 @@ import {
 import { essayDraft as exampleEssayDraft, journeySteps } from "@/lib/persona";
 import { CoachRunButton } from "@/components/CoachRunButton";
 import { Spinner } from "@/components/Spinner";
-import { AcademicOnboarding } from "@/components/AcademicOnboarding";
 import {
   analyzeScholarshipFit,
   autofillProfileFromResume,
@@ -1047,17 +1046,8 @@ function StepProfile({ error, onComplete }: { error: string; onComplete: () => v
   const [profileStartMode, setProfileStartMode] = useState<"resume" | "manual" | null>(
     user?.optional?.resumeFileName ? "resume" : user?.educationLevel ? "manual" : null,
   );
-  const hasExistingAcademicProfile = !!(
-    user?.educationLevel ||
-    user?.educationHistory?.some((entry) => entry.educationLevel?.trim()) ||
-    user?.optional?.resumeFileName
-  );
-  const [showAcademicOnboarding, setShowAcademicOnboarding] = useState(
-    !user?.academicOnboardingCompleted && !hasExistingAcademicProfile,
-  );
   const [showStartDialog, setShowStartDialog] = useState(
-    !user?.academicOnboardingCompleted && !hasExistingAcademicProfile ? false :
-      !user?.educationLevel && !user?.optional?.resumeFileName,
+    !user?.educationLevel && !user?.optional?.resumeFileName,
   );
   const [profileSetupStep, setProfileSetupStep] = useState(0);
   const [highestProfileSetupStep, setHighestProfileSetupStep] = useState(0);
@@ -1362,7 +1352,7 @@ function StepProfile({ error, onComplete }: { error: string; onComplete: () => v
   const showRequiredErrors = !!error;
   const aboutYouComplete = isRequiredAboutComplete(user);
   const hasEducationLevel = educationHistory.some((entry) => entry.educationLevel?.trim()) || !!user?.educationLevel;
-  const shouldShowProfileSetup = !showAcademicOnboarding && !showStartDialog && !user?.profileSetupCompleted;
+  const shouldShowProfileSetup = !showStartDialog && !user?.profileSetupCompleted;
   const showSetupErrors = showRequiredErrors || showProfileSetupValidation;
   const importedFromResumeBadge = resumeImportedProfileSteps.includes(profileSetupStep) ? (
     <span className="inline-flex rounded-full bg-info/10 px-2 py-0.5 text-[11px] font-medium text-info">
@@ -1617,17 +1607,6 @@ function StepProfile({ error, onComplete }: { error: string; onComplete: () => v
 
   return (
     <div className="mx-auto max-w-7xl">
-      {user && (
-        <AcademicOnboarding
-          open={showAcademicOnboarding}
-          user={user}
-          updateProfile={updateProfile}
-          onComplete={() => {
-            setShowAcademicOnboarding(false);
-            setShowStartDialog(true);
-          }}
-        />
-      )}
       <Dialog open={showStartDialog} onOpenChange={setShowStartDialog}>
         <DialogContent
           className="max-w-md"
