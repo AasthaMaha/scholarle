@@ -13,6 +13,8 @@ class WikiDiscoveryState(TypedDict, total=False):
     canonical_profile: Dict[str, Any]
     discovery_context: Dict[str, Any]
     search_queries: List[str]
+    discovery_llm_failed: bool
+    presentation: Dict[str, Any]
     candidate_pool: List[Dict[str, Any]]
     ranked_sources: List[Dict[str, Any]]
     rejected_sources: List[Dict[str, Any]]

@@ -33,6 +33,8 @@ class CanonicalField(BaseModel):
     canonical_label: str = ""
     aliases: list[str] = Field(default_factory=list)
     parent_families: list[str] = Field(default_factory=list)
+    expanded_terms: list[str] = Field(default_factory=list)
+    funder_terms: list[str] = Field(default_factory=list)
     confidence: float = 0.0
 
 

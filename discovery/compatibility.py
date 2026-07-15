@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .schemas import CompatibilityAssessment, DiscoveryContext, EducationLevel, StudentType, model_dict
-from .taxonomy import normalize_field, normalize_level, normalize_student_type, normalized_text
+from .taxonomy import normalize_level, normalize_student_type, normalized_text
 
 
 LEVEL_COMPATIBILITY: dict[EducationLevel, set[EducationLevel]] = {
@@ -19,6 +19,22 @@ LEVEL_COMPATIBILITY: dict[EducationLevel, set[EducationLevel]] = {
     EducationLevel.VOCATIONAL: {EducationLevel.VOCATIONAL, EducationLevel.CERTIFICATE},
     EducationLevel.CONTINUING: {EducationLevel.CONTINUING, EducationLevel.CERTIFICATE},
 }
+
+
+GENERIC_FIELD_TOKENS = {"science", "sciences", "studies", "study", "technology", "research", "general", "and", "the"}
+
+STEM_TERMS = {
+    "engineering", "science", "sciences", "technology", "mathematics", "math",
+    "computing", "computer", "physics", "chemistry", "biology", "materials",
+    "data", "statistics", "health", "medicine", "agriculture", "robotics",
+}
+
+
+def _field_terms(values: list[str]) -> set[str]:
+    terms: set[str] = set()
+    for value in values:
+        terms |= set(normalized_text(value).split())
+    return {term for term in terms if len(term) > 2}
 
 
 def compatible_levels(student: EducationLevel, supported: set[EducationLevel]) -> bool:
@@ -60,32 +76,43 @@ def assess_candidate(candidate: dict[str, Any], context: DiscoveryContext) -> Co
         student_type_match = "unknown"
         unknowns.append("student_type")
 
+    # Field relevance is advisory: the LLM ranker judges it semantically, so a
+    # mismatch here lowers the score but never hard-rejects a candidate. Hard
+    # gates remain the true eligibility constraints: level, student type, and
+    # explicit exclusions.
     raw_fields = [str(value) for value in candidate.get("fields") or [] if str(value).strip()]
-    normalized_fields = [normalize_field(value) for value in raw_fields]
     field_labels = {normalized_text(value) for value in raw_fields}
     general = bool(field_labels & {"general", "all fields", "any field"})
     stem = "stem" in field_labels
-    stem_families = {
-        "engineering", "computing", "physical_sciences", "life_sciences",
-        "health_sciences", "mathematical_sciences", "agriculture",
+    profile_labels = {
+        normalized_text(value)
+        for value in [
+            profile.field.canonical_label,
+            profile.field.raw_label,
+            *profile.field.aliases,
+            *profile.field.expanded_terms,
+        ]
+        if normalized_text(value)
     }
+    profile_terms = _field_terms([
+        *profile_labels,
+        *profile.field.parent_families,
+        *profile.field.funder_terms,
+    ])
+    candidate_terms = _field_terms(raw_fields)
     if not profile.field.canonical_id or not raw_fields:
         field_match, field_score = "unknown", 0.0
         unknowns.append("field")
     elif general:
         field_match, field_score = "broad", 0.65
-    elif stem and set(profile.field.parent_families) & stem_families:
-        field_match, field_score = "broad_family", 0.75
-    elif any(item.canonical_id == profile.field.canonical_id for item in normalized_fields):
+    elif field_labels & profile_labels:
         field_match, field_score = "exact", 1.0
-    elif any(set(item.parent_families) & set(profile.field.parent_families) for item in normalized_fields):
-        field_match, field_score = "related_family", 0.55
+    elif stem and profile_terms & STEM_TERMS:
+        field_match, field_score = "broad_family", 0.75
+    elif (profile_terms & candidate_terms) - GENERIC_FIELD_TOKENS:
+        field_match, field_score = "related_terms", 0.6
     else:
-        # Field mismatch is a hard contradiction only for an explicitly restricted source.
-        field_policy = str(candidate.get("field_policy") or "restricted" if candidate.get("origin") == "library" else "unknown")
         field_match, field_score = "unrelated", 0.0
-        if field_policy == "restricted":
-            contradictions.append("field")
 
     candidate_text = normalized_text(" ".join([
         str(candidate.get("name") or ""),

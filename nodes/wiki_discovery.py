@@ -7,20 +7,22 @@ from datetime import datetime, timezone
 from html import unescape
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, quote_plus, unquote, urlparse
-from urllib.request import Request, urlopen
+from urllib.parse import urlparse
+from urllib.request import Request
 
 from pydantic import BaseModel, Field
 
 from discovery.compatibility import assess_candidate, assessment_dict
 from discovery.evidence import candidate_evidence
-from discovery.normalization import build_discovery_context, context_dict
-from discovery.query_planner import plan_queries
+from discovery.normalization import apply_field_intelligence, build_discovery_context, context_dict
 from discovery.ranking import score_candidate
 from discovery.schemas import DiscoveryContext, model_dict
+from discovery.taxonomy import normalized_text
+from discovery.web_search import open_url, search_web
 from llm.client import llm
 
 STATUS_PATH = Path(__file__).resolve().parent.parent / "data" / "scholarship_source_status.json"
+FIELD_CACHE_PATH = Path(__file__).resolve().parent.parent / "data" / "field_expansion_cache.json"
 ALLOWED_STATUSES = {"active", "seasonal", "unknown", "expired", "removed"}
 STALE_DAYS = 120
 
@@ -102,52 +104,25 @@ def _library_candidates(source_library: list[dict[str, Any]]) -> list[dict[str, 
 
 def _fetch_raw(url: str, timeout: int = 10) -> str:
     request = Request(url, headers={"User-Agent": "Mozilla/5.0 Scholar-E-Wiki/0.1"})
-    with urlopen(request, timeout=timeout) as response:
+    with open_url(request, timeout=timeout) as response:
         return response.read(800_000).decode("utf-8", errors="ignore")
 
 
-def _search_urls(query: str, limit: int = 4) -> list[str]:
-    if not query.strip():
-        return []
+def _load_field_cache() -> dict[str, Any]:
+    try:
+        if FIELD_CACHE_PATH.exists():
+            return json.loads(FIELD_CACHE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
 
-    endpoints = [
-        f"https://lite.duckduckgo.com/lite/?q={quote_plus(query)}",
-        f"https://duckduckgo.com/html/?q={quote_plus(query)}",
-    ]
-    urls: list[str] = []
-    for search_url in endpoints:
-        try:
-            html = _fetch_raw(search_url)
-        except Exception:
-            continue
 
-        patterns = [
-            r'href="([^"]+)"[^>]*class="result__a"',
-            r'class="result-link"[^>]*href="([^"]+)"',
-            r'href="([^"]*uddg=[^"]+)"',
-            r'href="(https?://[^"]+)"',
-        ]
-        for pattern in patterns:
-            for match in re.finditer(pattern, html, flags=re.I):
-                href = unescape(match.group(1))
-                parsed = urlparse(href)
-                if "uddg" in parsed.query:
-                    target = parse_qs(parsed.query).get("uddg", [""])[0]
-                    href = unquote(target) if target else href
-                    parsed = urlparse(href)
-                host = (parsed.netloc or "").lower()
-                if not href.startswith("http"):
-                    continue
-                if any(bad in host for bad in ("duckduckgo.com", "duck.com")):
-                    continue
-                if href in urls:
-                    continue
-                urls.append(href)
-                if len(urls) >= limit:
-                    return urls
-        if urls:
-            break
-    return urls
+def _save_field_cache(cache: dict[str, Any]) -> None:
+    try:
+        FIELD_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        FIELD_CACHE_PATH.write_text(json.dumps(cache, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
 
 
 def _snippet_from_html(html: str) -> str:
@@ -168,9 +143,9 @@ def _snippet_from_html(html: str) -> str:
 def _search_candidates(queries: list[str], limit_per_query: int = 2, max_total: int = 12) -> list[dict[str, Any]]:
     """Search and preview candidates concurrently while keeping deterministic query order."""
     selected_queries = list(dict.fromkeys(query.strip() for query in (queries or []) if query.strip()))[:4]
-    hits_by_query: dict[str, list[str]] = {}
+    hits_by_query: dict[str, list[dict[str, str]]] = {}
     with ThreadPoolExecutor(max_workers=max(1, len(selected_queries))) as executor:
-        futures = {executor.submit(_search_urls, query, limit_per_query): query for query in selected_queries}
+        futures = {executor.submit(search_web, query, limit_per_query): query for query in selected_queries}
         for future in as_completed(futures):
             query = futures[future]
             try:
@@ -178,31 +153,37 @@ def _search_candidates(queries: list[str], limit_per_query: int = 2, max_total: 
             except Exception:
                 hits_by_query[query] = []
 
-    candidates: list[tuple[str, str]] = []
+    candidates: list[tuple[str, dict[str, str]]] = []
     seen = set()
     for query in selected_queries:
-        for url in hits_by_query.get(query, []):
-            key = url.lower()
+        for hit in hits_by_query.get(query, []):
+            key = hit["url"].lower()
             if key in seen:
                 continue
             seen.add(key)
-            candidates.append((query, url))
+            candidates.append((query, hit))
             if len(candidates) >= max_total:
                 break
 
-    def preview(candidate: tuple[str, str]) -> dict[str, Any]:
-        query, url = candidate
-        snippet = ""
-        name = urlparse(url).netloc or url
-        preview_ok = False
+    def preview(candidate: tuple[str, dict[str, str]]) -> dict[str, Any]:
+        query, hit = candidate
+        url = hit["url"]
+        # Search-API title/snippet come from the provider's own page fetch, so
+        # they count as page evidence when our direct fetch fails.
+        snippet = hit.get("snippet") or ""
+        name = hit.get("title") or urlparse(url).netloc or url
+        preview_ok = bool(snippet)
         try:
             html = _fetch_raw(url, timeout=6)
-            snippet = _snippet_from_html(html)
-            preview_ok = bool(snippet)
-            if " — " in snippet:
-                name = snippet.split(" — ", 1)[0][:160] or name
+            fetched_snippet = _snippet_from_html(html)
+            if fetched_snippet:
+                snippet = fetched_snippet
+                preview_ok = True
+                if " — " in fetched_snippet and not hit.get("title"):
+                    name = fetched_snippet.split(" — ", 1)[0][:160] or name
         except Exception:
-            snippet = f"Search hit for query: {query}"
+            if not snippet:
+                snippet = f"Search hit for query: {query}"
         return {
             "candidate_id": url.lower(),
             "origin": "web_search",
@@ -242,6 +223,8 @@ def _platform_search_queries(brief: dict[str, Any], focus: str) -> list[str]:
     degree = _text(brief.get("degree_level") or "student")
     field = _text(brief.get("field_of_study") or "general")
     student_type = _text(brief.get("student_type"))
+    intelligence = brief.get("field_intelligence") or {}
+    umbrella = _text((intelligence.get("umbrella_terms") or [""])[0])
     opportunity_types = " ".join(brief.get("opportunity_types") or ["scholarship", "fellowship"])
     intent = focus or f"{field} {opportunity_types}"
     return list(
@@ -250,6 +233,7 @@ def _platform_search_queries(brief: dict[str, Any], focus: str) -> list[str]:
             for query in [
                 f"{degree} {field} {opportunity_types} scholarship database finder",
                 f"{intent} funding database scholarship search platform",
+                f"{umbrella} {degree} scholarship fellowship database" if umbrella else "",
                 f"{student_type} {degree} scholarship fellowship database" if student_type else "",
             ]
             if query.strip()
@@ -346,6 +330,16 @@ class DiscoveryBriefIntent(BaseModel):
     derived_from: list[str] = Field(default_factory=list)
 
 
+class FieldIntelligence(BaseModel):
+    """LLM-derived open taxonomy for whatever field the student typed."""
+
+    canonical_label: str = Field(default="", description="Cleaned display name for the student's field.")
+    synonyms: list[str] = Field(default_factory=list, description="3-5 synonyms or spelling variants of the field.")
+    parent_disciplines: list[str] = Field(default_factory=list, description="1-3 parent disciplines, e.g. Ethnomusicology -> Music, Cultural Studies.")
+    umbrella_terms: list[str] = Field(default_factory=list, description="2-3 broader umbrella terms funders use, e.g. Humanities, Arts.")
+    funder_vocabulary: list[str] = Field(default_factory=list, description="2-4 phrases funders use for this area, e.g. 'arts and humanities fellowships'.")
+
+
 class DiscoveryBrief(BaseModel):
     degree_level: str = Field(default="", description="High school, Undergraduate, Graduate, PhD, Postdoctoral, or empty.")
     field_of_study: str = Field(default="", description="Primary field/major/research area, or empty.")
@@ -355,7 +349,9 @@ class DiscoveryBrief(BaseModel):
     opportunity_types: list[str] = Field(default_factory=list, description="Scholarship, Fellowship, Grant, Travel grant, etc.")
     constraints: list[str] = Field(default_factory=list, description="Only constraints supported by the profile.")
     missing_fields: list[str] = Field(default_factory=list, description="Profile fields that would improve discovery.")
-    search_queries: list[str] = Field(default_factory=list, description="5-10 concrete web search queries for funding sources.")
+    field_intelligence: FieldIntelligence = Field(default_factory=FieldIntelligence, description="Open taxonomy for the student's exact field of study.")
+    search_queries: list[str] = Field(default_factory=list, description="8-12 concrete web search queries covering the discipline hierarchy.")
+    presentation_hints: list[str] = Field(default_factory=list, description="2-4 short hints on how to frame results for this student.")
     profile_summary: ProfileSummary = Field(default_factory=ProfileSummary, description="Compact summary fields for the Wiki UI.")
     selected_intents: list[DiscoveryBriefIntent] = Field(default_factory=list)
     free_text_intent: str = Field(default="")
@@ -390,6 +386,8 @@ class RejectedSource(BaseModel):
 class RankerResult(BaseModel):
     accepted: list[RankedSource] = Field(default_factory=list, description="Grounded recommendations only from the candidate pool.")
     rejected: list[RejectedSource] = Field(default_factory=list)
+    result_note: str = Field(default="", description="One honest, student-friendly sentence about what this search found, referencing the student's field or request.")
+    next_steps: list[str] = Field(default_factory=list, description="2-3 short, concrete next steps written for this student.")
 
 
 class SourceGroupItem(BaseModel):
@@ -503,8 +501,40 @@ def _combined_intent_text(state: dict[str, Any]) -> str:
     return _context_from_state(state).preference_text
 
 
+def _intelligence_has_content(intelligence: dict[str, Any]) -> bool:
+    return any(
+        intelligence.get(key)
+        for key in ("synonyms", "parent_disciplines", "umbrella_terms", "funder_vocabulary")
+    )
+
+
+def _fallback_brief(context: DiscoveryContext, selected_intents: list[dict[str, Any]]) -> dict[str, Any]:
+    profile = context.profile
+    summary = {
+        key: value
+        for key, value in {
+            "degree_level": profile.education.raw_level or profile.education.current_level.value,
+            "field_of_study": profile.field.canonical_label,
+            "student_type": profile.student_type.value if profile.student_type.value != "unknown" else "",
+            "university": profile.education.institution,
+        }.items()
+        if _text(value) and _text(value) != "unknown"
+    }
+    return {
+        "degree_level": summary.get("degree_level", ""),
+        "field_of_study": profile.field.canonical_label,
+        "student_type": summary.get("student_type", ""),
+        "opportunity_types": context.opportunity_types,
+        "selected_intents": selected_intents,
+        "free_text_intent": context.free_text,
+        "canonical_context": context_dict(context),
+        "exclusions": context.exclusions,
+        "profile_summary": summary,
+    }
+
+
 def interpret_profile(state):
-    """Agent 1: Profile Interpreter."""
+    """Agent 1: Profile Interpreter, open field taxonomy, and query writer."""
     profile = state.get("student_profile") or {}
     context = build_discovery_context(
         profile,
@@ -513,34 +543,76 @@ def interpret_profile(state):
     )
     selected_intents = [model_dict(intent) for intent in context.selected_intents]
     free_text_intent = context.free_text
-    focus = context.preference_text
     feedback = state.get("discovery_feedback") or []
-    model = llm._get_client().with_structured_output(DiscoveryBrief)
-    result = model.invoke(
-        [
-            (
-                "system",
-                "You are the Scholarship Discovery Profile Interpreter. Build a discovery brief "
-                "from the student profile, selected discovery intents, and optional written request. "
-                "Do not recommend scholarships. Do not invent "
-                "profile facts. If citizenship, field, or degree level is missing, list it under "
-                "missing_fields. Produce 5-10 practical web search queries for finding funding "
-                "platforms and official award pages. Apply this hierarchy: explicit written request "
-                "is the strongest preference, selected intents are next, and the general profile "
-                "provides context. Degree, citizenship/student type, and geography remain hard "
-                "constraints when explicitly known. Feedback is preference evidence, not profile fact.",
-            ),
-            (
-                "human",
-                f"Student profile JSON:\n{json.dumps(profile, default=str)[:10000]}\n\n"
-                f"Canonical profile and constraints:\n{json.dumps(model_dict(context.profile), default=str)[:5000]}\n\n"
-                f"Selected discovery intents with profile provenance:\n{json.dumps(selected_intents, default=str)[:3000]}\n\n"
-                f"Student-written request:\n{free_text_intent or 'No additional written request supplied.'}\n\n"
-                f"Prior not-relevant feedback:\n{json.dumps(feedback, default=str)[:2000]}",
-            ),
-        ]
+    field_key = normalized_text(context.profile.field.raw_label)
+    cache = _load_field_cache() if field_key else {}
+    cached_intelligence = cache.get(field_key) or {}
+    cached_note = (
+        f"Known field intelligence from a previous search (reuse and refine):\n{json.dumps(cached_intelligence)}"
+        if _intelligence_has_content(cached_intelligence)
+        else "No prior field intelligence for this field."
     )
-    brief = _model_dump(result)
+    try:
+        model = llm._get_client().with_structured_output(DiscoveryBrief)
+        result = model.invoke(
+            [
+                (
+                    "system",
+                    "You are the Scholarship Discovery Profile Interpreter. Build a discovery brief "
+                    "from the student profile, selected discovery intents, and optional written request. "
+                    "Do not recommend scholarships. Do not invent profile facts. If citizenship, field, "
+                    "or degree level is missing, list it under missing_fields.\n\n"
+                    "FIELD INTELLIGENCE: whatever field the student typed — common or obscure — produce "
+                    "field_intelligence for it: synonyms, parent disciplines, broader umbrella terms, and "
+                    "the vocabulary funders actually use for that area. Never say the field is unsupported.\n\n"
+                    "SEARCH QUERIES: write 8-12 concrete web search queries yourself. Rules: "
+                    "(1) blend the written request WITH the field of study — never drop the field just "
+                    "because a written request exists; "
+                    "(2) also include exactly one field-free query for the written request alone, when one exists; "
+                    "(3) cover the discipline hierarchy — exact field, a synonym, a parent discipline, and "
+                    "funder vocabulary each appear in at least one query; "
+                    "(4) include 1-2 queries aimed at scholarship search platforms/databases; "
+                    "(5) never put negations or exclusions inside a query — report them in the brief's "
+                    "context instead; "
+                    "(6) every query targets funding a student can personally apply for — favor named "
+                    "scholarship/fellowship/grant programs (add words like 'apply' or 'eligibility') over "
+                    "department funding overviews, industry grants, or program admission pages.\n\n"
+                    "PRESENTATION HINTS: 2-4 short hints on framing results for this student, grounded in "
+                    "the request (e.g. 'emphasize funding without a service requirement').\n\n"
+                    "Hierarchy: explicit written request is the strongest preference, selected intents next, "
+                    "general profile provides context. Degree, citizenship/student type, and geography remain "
+                    "hard constraints when explicitly known. Feedback is preference evidence, not profile fact.",
+                ),
+                (
+                    "human",
+                    f"Student profile JSON:\n{json.dumps(profile, default=str)[:10000]}\n\n"
+                    f"Canonical profile and constraints:\n{json.dumps(model_dict(context.profile), default=str)[:5000]}\n\n"
+                    f"Selected discovery intents with profile provenance:\n{json.dumps(selected_intents, default=str)[:3000]}\n\n"
+                    f"Student-written request:\n{free_text_intent or 'No additional written request supplied.'}\n\n"
+                    f"{cached_note}\n\n"
+                    f"Prior not-relevant feedback:\n{json.dumps(feedback, default=str)[:2000]}",
+                ),
+            ]
+        )
+        brief = _model_dump(result)
+    except Exception:
+        # Short fallback: no static query planner. Downstream nodes skip live
+        # search and return only profile-matched curated platforms.
+        apply_field_intelligence(context, cached_intelligence)
+        return {
+            "discovery_brief": _fallback_brief(context, selected_intents),
+            "search_queries": [],
+            "discovery_llm_failed": True,
+            "canonical_profile": model_dict(context.profile),
+            "discovery_context": context_dict(context),
+        }
+    intelligence = brief.get("field_intelligence") or {}
+    if not _intelligence_has_content(intelligence) and _intelligence_has_content(cached_intelligence):
+        intelligence = cached_intelligence
+    apply_field_intelligence(context, intelligence)
+    if field_key and _intelligence_has_content(intelligence):
+        cache[field_key] = intelligence
+        _save_field_cache(cache)
     summary = _summary_dict(brief.get("profile_summary"))
     if not summary:
         summary = {
@@ -560,24 +632,17 @@ def interpret_profile(state):
     brief["opportunity_types"] = list(
         dict.fromkeys([*(brief.get("opportunity_types") or []), *selected_opportunity_types])
     )
-    canonical_queries = plan_queries(context)
-    queries = canonical_queries + [
-        query for query in (brief.get("search_queries") or [])
-        if query.lower() not in {item.lower() for item in canonical_queries}
-    ]
-    if focus:
-        degree = _text(brief.get("degree_level"))
-        # A written request can intentionally move beyond the profile's primary
-        # field. Include the profile field only when the student did not supply
-        # a stronger free-text direction; a selected field intent remains in focus.
-        field = "" if free_text_intent else _text(brief.get("field_of_study"))
-        focused_query = " ".join(
-            part for part in [degree, field, focus, "scholarships fellowships official"] if part
-        )
-        queries = [focused_query] + [query for query in queries if query.lower() != focused_query.lower()]
+    # Search engines handle negation poorly; exclusions live in the brief and
+    # are enforced at verification, so strip any negated tail the LLM slipped in.
+    queries = []
+    for query in brief.get("search_queries") or []:
+        clean = re.sub(r"\s+(?:without|excluding|except|no)\b.*$", "", _text(query), flags=re.I).strip()
+        if clean and clean.lower() not in {item.lower() for item in queries}:
+            queries.append(clean)
     return {
         "discovery_brief": {**brief, "profile_summary": summary},
-        "search_queries": queries[:8],
+        "search_queries": queries[:12],
+        "discovery_llm_failed": False,
         "canonical_profile": model_dict(context.profile),
         "discovery_context": context_dict(context),
     }
@@ -588,7 +653,10 @@ def _normalized_terms(value: Any) -> set[str]:
     return {
         token
         for token in re.findall(r"[a-z0-9]+", text.lower())
-        if len(token) > 2 and token not in {"student", "students", "scholarship", "scholarships", "funding"}
+        if len(token) > 2 and token not in {
+            "student", "students", "scholarship", "scholarships", "funding",
+            "and", "the", "for", "with", "without",
+        }
     }
 
 
@@ -615,6 +683,20 @@ def build_candidate_pool(state):
         for item in _library_candidates(state.get("source_library") or [])
         if _text(item.get("url")).lower() not in excluded and assess_candidate(item, context).compatible
     ]
+    if state.get("discovery_llm_failed"):
+        # Short fallback: no live search without the interpreter — offer only
+        # profile-matched curated platforms.
+        pool = []
+        for item in [entry for entry in library if _is_platform(entry)]:
+            enriched = {**item, "source_evidence": candidate_evidence(item)}
+            score, components = score_candidate(enriched, context)
+            pool.append({
+                **enriched,
+                "compatibility": assessment_dict(enriched, context),
+                "semantic_score": round(score, 4),
+                "score_components": components,
+            })
+        return {"candidate_pool": pool}
     queries = state.get("search_queries") or []
     if not queries:
         degree = _text(brief.get("degree_level") or "student")
@@ -714,9 +796,14 @@ def _dedupe_by_url(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _platform_semantic_score(source: dict[str, Any], brief: dict[str, Any], focus: str) -> int:
     """Rank grounded discovery platforms by profile and request meaning."""
+    intelligence = brief.get("field_intelligence") or {}
     profile_text = " ".join(
         [
             _text(brief.get("field_of_study")),
+            " ".join(intelligence.get("synonyms") or []),
+            " ".join(intelligence.get("parent_disciplines") or []),
+            " ".join(intelligence.get("umbrella_terms") or []),
+            " ".join(intelligence.get("funder_vocabulary") or []),
             " ".join(brief.get("opportunity_types") or []),
             _text(brief.get("degree_level")),
             _text(brief.get("student_type")),
@@ -841,10 +928,16 @@ def _select_semantic_platforms(
 
 
 def rank_and_verify_sources(state):
-    """Agent 2: Ranker + Freshness Verifier over grounded candidates only."""
+    """Agent 2: Semantic relevance judge + freshness verifier over grounded candidates only."""
     brief = state.get("discovery_brief") or {}
     focus = _combined_intent_text(state)
     pool = state.get("candidate_pool") or []
+    if state.get("discovery_llm_failed"):
+        return {
+            "ranked_sources": _select_semantic_platforms(pool, brief, focus, limit=3),
+            "rejected_sources": [],
+            "presentation": {},
+        }
     compact_pool = [
         {
             "candidate_id": item.get("candidate_id"),
@@ -874,32 +967,52 @@ def rank_and_verify_sources(state):
         }
         for item in pool
     ]
-    model = llm._get_client().with_structured_output(RankerResult)
-    result = model.invoke(
-        [
-            (
-                "system",
-                "You are the Scholarship Source Ranker and Freshness Verifier. Choose only from "
-                "the provided candidate pool. Never invent scholarships or URLs. Separate "
-                "platforms from specific award pages. Reject clear degree, field, citizenship, "
-                "student-type, and unsupported identity-restricted mismatches. Estimate status as active, seasonal, "
-                "unknown, expired, or removed. Do not recommend expired or removed items. "
-                "Quality and relevance are more important than list size. Return 2-4 useful "
-                "platforms when available and only specific opportunities with affirmative "
-                "profile or discovery-intent evidence. Treat explicit free_text_intent as the "
-                "strongest preference, selected_intents as the next relevance signal, and field/career "
-                "profile data as context after hard eligibility constraints. Never fill a quota with a weak match.",
-            ),
-            (
-                "human",
-                "Discovery brief:\n"
-                f"{json.dumps(brief, default=str)[:6000]}\n\n"
-                "Candidate pool:\n"
-                f"{json.dumps(compact_pool, default=str)[:18000]}",
-            ),
-        ]
-    )
-    data = _model_dump(result)
+    try:
+        model = llm._get_client().with_structured_output(RankerResult)
+        result = model.invoke(
+            [
+                (
+                    "system",
+                    "You are the Scholarship Source Relevance Judge and Freshness Verifier. Complete "
+                    "these tasks in order:\n"
+                    "1. Accept 2-4 useful discovery platforms (kind=platform).\n"
+                    "2. Accept 1-3 specific opportunities (kind=specific_source). A candidate qualifies "
+                    "when it offers funding this student could pursue: a named award; a field-specific "
+                    "fellowship or award page whose snippet shows real awards; or a curated award open "
+                    "to all fields (e.g. an international or identity-based fellowship) whose level and "
+                    "student type fit. Leave this empty ONLY if nothing qualifies — but if any candidate "
+                    "plausibly qualifies, include it. Do not skip this task.\n"
+                    "3. Reject candidates with clear degree-level or citizenship/student-type "
+                    "mismatches, with a short reason each.\n"
+                    "4. Write result_note (one honest sentence about what this search found for this "
+                    "student) and next_steps (2-3 short steps), using the brief's presentation_hints.\n\n"
+                    "Rules: choose only from the provided candidate pool and copy each candidate_id "
+                    "exactly. Never invent scholarships or URLs. Judge field relevance by meaning using "
+                    "the brief's field_intelligence — a candidate is field-mismatched only when its own "
+                    "evidence shows it serves a different, non-overlapping area. The written request "
+                    "steers direction but does not disqualify otherwise relevant awards. Ground every "
+                    "why_recommended in the candidate's snippet or metadata, and never claim the student "
+                    "is eligible — eligibility is checked in the next step. Estimate status as active, "
+                    "seasonal, unknown, expired, or removed; never recommend expired or removed items. "
+                    "Never pad any list with unrelated or ineligible matches.",
+                ),
+                (
+                    "human",
+                    "Discovery brief:\n"
+                    f"{json.dumps(brief, default=str)[:6000]}\n\n"
+                    "Candidate pool:\n"
+                    f"{json.dumps(compact_pool, default=str)[:18000]}",
+                ),
+            ]
+        )
+        data = _model_dump(result)
+    except Exception:
+        # Short fallback: judging failed — return only profile-matched platforms.
+        return {
+            "ranked_sources": _select_semantic_platforms(pool, brief, focus, limit=3),
+            "rejected_sources": [],
+            "presentation": {},
+        }
     pool_by_id = {item.get("candidate_id"): item for item in pool}
     accepted = []
     for item in data.get("accepted") or []:
@@ -994,6 +1107,11 @@ def rank_and_verify_sources(state):
     return {
         "ranked_sources": accepted,
         "rejected_sources": data.get("rejected") or [],
+        "presentation": {
+            "result_note": _text(data.get("result_note")),
+            "next_steps": [_text(step) for step in (data.get("next_steps") or []) if _text(step)][:3],
+            "presentation_hints": brief.get("presentation_hints") or [],
+        },
     }
 
 
@@ -1337,12 +1455,27 @@ def finalize_wiki_output(state):
 
     specifics = cleaned.get("specific_opportunities") or []
     platforms = cleaned.get("top_free_platforms") or []
-    if specifics:
-        result_note = "A few opportunities appear relevant to your profile or search focus. Confirm details on the provider page."
-    elif platforms:
-        result_note = "We did not find a close scholarship yet, so these trusted places can help you continue searching."
-    else:
-        result_note = "We could not confirm a useful result yet. You can still bring an opportunity you found elsewhere."
+    presentation = state.get("presentation") or {}
+    # The LLM judge writes the note and next steps for this student; static
+    # text remains only as the safety net when the LLM produced nothing.
+    result_note = _text(presentation.get("result_note"))
+    if not specifics and not platforms:
+        # Deterministic gates emptied the lists after the note was written.
+        result_note = ""
+    if state.get("discovery_llm_failed"):
+        result_note = (
+            "We could not run a full search right now, so here are trusted platforms matched to "
+            "your profile. You can also bring an opportunity you found elsewhere."
+        )
+    elif not result_note:
+        if specifics:
+            result_note = "A few opportunities appear relevant to your profile or search focus. Confirm details on the provider page."
+        elif platforms:
+            result_note = "We did not find a close scholarship yet, so these trusted places can help you continue searching."
+        else:
+            result_note = "We could not confirm a useful result yet. You can still bring an opportunity you found elsewhere."
+    if presentation.get("next_steps") and not draft.get("next_steps"):
+        cleaned["next_steps"] = presentation["next_steps"]
 
     return {
         "page_title": cleaned.get("page_title") or "Scholarship Discovery",

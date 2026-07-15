@@ -2126,6 +2126,8 @@ function StepDiscovery({
   const { user, updateProfile } = useUser();
   const wiki = user?.wikiDiscovery;
   const [loading, setLoading] = useState(false);
+  // Always land on the search setup; earlier results stay one click away.
+  const [showResults, setShowResults] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [focus, setFocus] = useState(user?.discoveryFocus ?? "");
   const [intentOptions, setIntentOptions] = useState(user?.discoveryIntentOptions ?? []);
@@ -2179,14 +2181,15 @@ function StepDiscovery({
       const selectedIntents = intentOptions.filter((intent) => selectedIntentIds.includes(intent.id));
       const result = await discoverScholarshipWiki({
         ...buildWikiPayload(user),
-        discovery_focus: discoveryFocus,
         selected_intents: selectedIntents,
         free_text_intent: discoveryFocus,
       });
       updateProfile({ wikiDiscovery: result, discoveryFocus, discoveryIntents: selectedIntents });
       setStatus(result.result_note || "Your discovery results are ready.");
+      setShowResults(true);
     } catch (err) {
       setStatus(err instanceof Error ? err.message : "We couldn't complete this search. Please try again.");
+      setShowResults(false);
     } finally {
       window.clearTimeout(progressTimer);
       setLoading(false);
@@ -2296,9 +2299,11 @@ function StepDiscovery({
       : [...current, intentId]);
   }
 
+  const resultsVisible = showResults && hasWiki;
+
   return (
-    <div className={hasWiki ? "space-y-7 pb-3" : "flex min-h-[calc(100vh-190px)] items-center justify-center py-6"}>
-      {!hasWiki && !loading && (
+    <div className={resultsVisible && !loading ? "space-y-7 pb-3" : "flex min-h-[calc(100vh-190px)] items-center justify-center py-6"}>
+      {!resultsVisible && !loading && (
         <section className="w-full max-w-6xl overflow-hidden rounded-[2rem] border border-white/80 bg-white/90 p-10 shadow-[0_28px_90px_-45px_rgba(38,56,95,0.5)] backdrop-blur-xl">
           <header className="flex items-start justify-between border-b border-border/70 pb-7">
             <div className="max-w-3xl">
@@ -2309,8 +2314,16 @@ function StepDiscovery({
               <h2 className="mt-5 font-display text-[42px] font-extrabold leading-[1.05] tracking-tight">Build a search around what matters to you</h2>
               <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">Follow the three steps below. We’ll combine your verified profile, the priorities you choose, and any detail you add into one grounded search.</p>
             </div>
-            <button onClick={onUpdateProfile} className="rounded-full border border-border bg-white px-4 py-2 text-xs font-semibold text-muted-foreground hover:border-primary/30 hover:text-primary">Edit profile</button>
+            <div className="flex items-center gap-3">
+              {hasWiki && (
+                <button onClick={() => setShowResults(true)} className="rounded-full border border-border bg-white px-4 py-2 text-xs font-semibold text-muted-foreground hover:border-primary/30 hover:text-primary">View last results</button>
+              )}
+              <button onClick={onUpdateProfile} className="rounded-full border border-border bg-white px-4 py-2 text-xs font-semibold text-muted-foreground hover:border-primary/30 hover:text-primary">Edit profile</button>
+            </div>
           </header>
+          {status && !loading && (
+            <p role="status" aria-live="polite" className="mt-4 text-sm text-muted-foreground">{status}</p>
+          )}
 
           <div className="mt-8 grid grid-cols-[240px_minmax(0,1fr)] gap-10">
             <aside className="rounded-2xl border border-[#dfe3f3] bg-[#f3f5fb] p-5">
@@ -2377,12 +2390,29 @@ function StepDiscovery({
                 <div className="mt-5 rounded-2xl border border-border/80 bg-white p-2 shadow-sm ring-primary/15 focus-within:ring-4">
                   <label htmlFor="discovery-focus" className="sr-only">Additional scholarship search details</label>
                   <textarea id="discovery-focus" rows={3} value={focus} onChange={(event) => setFocus(event.target.value)} placeholder="For example: Battery-materials research funding without a service commitment" className="w-full resize-none border-0 bg-transparent px-3 py-2 text-base leading-6 outline-none placeholder:text-muted-foreground" />
-                  <div className="flex items-center justify-between gap-4 border-t border-border/70 px-2 pt-3">
+                  <div className="border-t border-border/70 px-3 pt-3">
                     <p className="text-xs text-muted-foreground">We’ll search curated sources and the live web together.</p>
-                    <button onClick={refreshWiki} disabled={loading || bootstrapLoading} className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-xl bg-primary px-6 py-2.5 text-sm font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-60">Find scholarships <ArrowRight className="size-4" /></button>
                   </div>
                 </div>
               </section>
+
+              <div className="mt-6 flex items-center justify-between gap-6 rounded-2xl border border-primary/15 bg-primary/[0.035] px-5 py-4">
+                <div>
+                  <p className="text-sm font-semibold text-foreground">Ready to discover scholarships?</p>
+                  <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                    We’ll combine your profile, selected priorities, and the details you added above.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={refreshWiki}
+                  disabled={loading || bootstrapLoading}
+                  className="inline-flex shrink-0 items-center gap-2 rounded-xl bg-primary px-5 py-3 text-sm font-semibold text-primary-foreground shadow-sm transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Find scholarships
+                  <ArrowRight className="h-4 w-4" />
+                </button>
+              </div>
 
               <div className="mt-5 border-t border-border/60 pt-5 text-center">
                 {!showBring ? (
@@ -2417,7 +2447,7 @@ function StepDiscovery({
         </section>
       )}
 
-      {hasWiki && !loading && (
+      {resultsVisible && !loading && (
         <>
           <section className="rounded-3xl border border-white/80 bg-white/80 px-7 py-5 shadow-sm backdrop-blur-xl">
             <div className="flex items-center justify-between gap-4">
@@ -2434,9 +2464,14 @@ function StepDiscovery({
                   <p className="mt-1 line-clamp-1 text-xs text-muted-foreground">Also requested: {wiki?.free_text_intent || user?.discoveryFocus}</p>
                 )}
               </div>
-              <button onClick={onUpdateProfile} className="self-start rounded-full border border-border bg-white px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent">
-                Profile used for this search
-              </button>
+              <div className="flex shrink-0 items-center gap-2 self-start">
+                <button onClick={onUpdateProfile} className="rounded-full border border-border bg-white px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent">
+                  Profile used for this search
+                </button>
+                <button onClick={() => setShowResults(false)} className="inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/5 px-3 py-1.5 text-xs font-semibold text-primary hover:bg-primary/10">
+                  New search
+                </button>
+              </div>
             </div>
           </section>
 

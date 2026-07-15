@@ -13,6 +13,7 @@ class Settings:
     # API Keys
     openai_api_key: str = os.getenv("OPENAI_API_KEY")
     google_api_key: str = os.getenv("GOOGLE_API_KEY", "")
+    tavily_api_key: str = os.getenv("TAVILY_API_KEY", "")
     llm_provider: str = os.getenv("LLM_PROVIDER", "openai")
     secret_key: str = os.getenv("SECRET_KEY", "")
     environment: str = os.getenv("ENVIRONMENT", "development")

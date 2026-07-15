@@ -273,7 +273,6 @@ export function buildWikiPayload(user: UserProfile | null): WikiDiscoverPayload 
       ...studentProfile,
       profile_text: profileToText(user),
     },
-    discovery_focus: user?.discoveryFocus ?? "",
     selected_intents: user?.discoveryIntents ?? [],
     free_text_intent: user?.discoveryFocus ?? "",
     excluded_urls: user?.dismissedDiscoveryUrls ?? [],

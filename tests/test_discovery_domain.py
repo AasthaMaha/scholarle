@@ -4,8 +4,7 @@ from api.routes import WikiBootstrapRequest, get_scholarship_discovery_bootstrap
 from discovery.compatibility import assess_candidate, compatible_levels
 from discovery.evidence import candidate_evidence
 from discovery.intent_service import generate_intent_options
-from discovery.normalization import build_discovery_context, normalize_profile
-from discovery.query_planner import plan_queries
+from discovery.normalization import apply_field_intelligence, build_discovery_context, normalize_profile
 from discovery.ranking import score_candidate
 from discovery.schemas import EducationLevel
 
@@ -47,18 +46,19 @@ def test_degree_compatibility_is_exact_not_substring_based():
     assert not compatible_levels(EducationLevel.DOCTORAL, {EducationLevel.POSTDOCTORAL})
 
 
-def test_specific_computer_science_is_not_materials_science():
+def test_field_mismatch_is_advisory_not_a_hard_rejection():
     context = build_discovery_context(profile())
-    computing = source(fields=["Computer Science", "Data Science"], field_policy="restricted")
+    computing = source(fields=["Computer Science", "Data Science"])
     result = assess_candidate(computing, context)
-    assert not result.compatible
+    assert result.compatible
     assert result.field_match == "unrelated"
-    assert "field" in result.hard_contradictions
+    assert result.field_score == 0.0
+    assert "field" not in result.hard_contradictions
 
 
 def test_broad_stem_source_can_support_materials_science():
     context = build_discovery_context(profile())
-    stem = source(fields=["STEM"], field_policy="restricted")
+    stem = source(fields=["STEM"])
     result = assess_candidate(stem, context)
     assert result.compatible
     assert result.field_match == "broad_family"
@@ -76,12 +76,31 @@ def test_broad_stem_source_can_support_materials_science():
         "Agricultural Economics",
     ],
 )
-def test_arbitrary_fields_are_preserved_and_generate_queries(field):
+def test_arbitrary_fields_are_preserved_exactly(field):
     context = build_discovery_context(profile(field=field))
-    queries = plan_queries(context)
     assert context.profile.field.raw_label == field
     assert context.profile.field.canonical_id
-    assert any(field.lower() in query.lower() for query in queries)
+    assert context.profile.field.canonical_label == field
+
+
+def test_field_intelligence_expands_matching_for_any_field():
+    context = build_discovery_context(profile(field="Ethnomusicology"))
+    apply_field_intelligence(context, {
+        "canonical_label": "Ethnomusicology",
+        "synonyms": ["music anthropology"],
+        "parent_disciplines": ["Music", "Cultural Studies"],
+        "umbrella_terms": ["Humanities", "Arts"],
+        "funder_vocabulary": ["arts and humanities fellowships"],
+    })
+    field = context.profile.field
+    assert "music anthropology" in field.expanded_terms
+    assert "Humanities" in field.expanded_terms
+    assert field.confidence >= 0.85
+    humanities_source = source(fields=["Humanities", "Arts"])
+    result = assess_candidate(humanities_source, context)
+    assert result.compatible
+    assert result.field_match in {"exact", "related_terms"}
+    assert result.field_score >= 0.6
 
 
 def test_more_specific_education_history_wins_over_generic_grad_flag():
@@ -132,7 +151,7 @@ def test_online_retrieval_evidence_does_not_claim_profile_attributes():
 
 def test_hard_contradiction_forces_zero_rank_score():
     context = build_discovery_context(profile())
-    candidate = source(degree_levels=["Undergraduate"], fields=["Computer Science"], field_policy="restricted")
+    candidate = source(degree_levels=["Undergraduate"], fields=["Computer Science"])
     score, components = score_candidate(candidate, context)
     assert score == 0
     assert components == {"compatibility": 0.0}

@@ -18,7 +18,9 @@ def _source(**overrides):
     return source
 
 
-def test_political_science_focus_rejects_stem_backfill_candidates():
+def test_field_mismatch_stays_in_pool_for_llm_judging():
+    # Field relevance is judged semantically by the LLM ranker; the code gate
+    # keeps only true eligibility constraints (degree level, student type).
     brief = {
         "degree_level": "Undergraduate",
         "field_of_study": "Political Science",
@@ -30,7 +32,9 @@ def test_political_science_focus_rejects_stem_backfill_candidates():
         fields=["STEM", "Computer Science", "Engineering"],
         best_for=["STEM undergraduates"],
     )
-    assert not wiki_discovery._candidate_matches_brief(smart, brief, "public service scholarships")
+    assert wiki_discovery._candidate_matches_brief(smart, brief, "public service scholarships")
+    graduate_only = _source(degree_levels=["Graduate", "PhD"])
+    assert not wiki_discovery._candidate_matches_brief(graduate_only, brief, "public service scholarships")
 
 
 def test_general_platform_passes_but_hard_degree_mismatch_does_not():

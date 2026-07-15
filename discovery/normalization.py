@@ -149,5 +149,27 @@ def build_discovery_context(
     )
 
 
+def apply_field_intelligence(context: DiscoveryContext, intelligence: dict[str, Any] | None) -> DiscoveryContext:
+    """Merge LLM-derived field intelligence into the canonical field so every
+    downstream consumer sees the expanded, generalized view of the student's
+    field — works for any field a student types, not a fixed taxonomy."""
+    field = context.profile.field
+    if not isinstance(intelligence, dict) or not field.raw_label:
+        return context
+    synonyms = [_text(value) for value in intelligence.get("synonyms") or [] if _text(value)]
+    parents = [_text(value) for value in intelligence.get("parent_disciplines") or [] if _text(value)]
+    umbrella = [_text(value) for value in intelligence.get("umbrella_terms") or [] if _text(value)]
+    funder = [_text(value) for value in intelligence.get("funder_vocabulary") or [] if _text(value)]
+    if not (synonyms or parents or umbrella or funder):
+        return context
+    field.canonical_label = _text(intelligence.get("canonical_label")) or field.canonical_label
+    field.aliases = list(dict.fromkeys([*field.aliases, field.canonical_label, *synonyms]))
+    field.expanded_terms = list(dict.fromkeys([*synonyms, *umbrella]))
+    field.parent_families = list(dict.fromkeys([*field.parent_families, *parents]))
+    field.funder_terms = list(dict.fromkeys(funder))
+    field.confidence = max(field.confidence, 0.85)
+    return context
+
+
 def context_dict(context: DiscoveryContext) -> dict[str, Any]:
     return model_dict(context)
