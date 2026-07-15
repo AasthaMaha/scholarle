@@ -49,6 +49,7 @@ import {
 import { essayDraft as exampleEssayDraft, journeySteps } from "@/lib/persona";
 import { CoachRunButton } from "@/components/CoachRunButton";
 import { Spinner } from "@/components/Spinner";
+import { AcademicOnboarding } from "@/components/AcademicOnboarding";
 import {
   analyzeScholarshipFit,
   autofillProfileFromResume,
@@ -257,11 +258,17 @@ function Journey() {
 
 function isProfileComplete(user: UserProfile | null) {
   return !!(
+    isRequiredAboutComplete(user) &&
+    (user.educationHistory?.some((entry) => entry.educationLevel?.trim()) || user.educationLevel)
+  );
+}
+
+function isRequiredAboutComplete(user: UserProfile | null) {
+  return !!(
     user?.gender?.trim() &&
     user.location?.trim() &&
     user.citizenshipStatus?.trim() &&
-    user.raceEthnicity &&
-    (user.educationHistory?.some((entry) => entry.educationLevel?.trim()) || user.educationLevel)
+    user.raceEthnicity
   );
 }
 
@@ -632,7 +639,7 @@ function StepBody({
   profileError: string;
 }) {
   switch (slug) {
-    case "profile": return <StepProfile error={profileError} />;
+    case "profile": return <StepProfile error={profileError} onComplete={goNext} />;
     case "discovery": return <StepDiscovery onUpdateProfile={goToProfile} onUseSource={goToRequirements} />;
     case "opportunities": return <StepOpportunities onAnalyze={goNext} />;
     case "requirements": return <StepRequirementsAndFit />;
@@ -1029,9 +1036,9 @@ const SCHOLARSHIP_TYPE_OPTIONS = [
 const PROFILE_SECTION_CLASS = "!rounded-none !border-0 !bg-transparent !p-0 !shadow-none";
 const PROFILE_ENTRY_CLASS = "rounded-lg border border-border/60 bg-white/60 p-4";
 
-/* ---------------- Step 2: Profile (with materials before story prompts) ---------------- */
+/* ---------------- Step 2: Profile ---------------- */
 
-function StepProfile({ error }: { error: string }) {
+function StepProfile({ error, onComplete }: { error: string; onComplete: () => void }) {
   const { user, updateProfile } = useUser();
   const level = user?.educationLevel;
   const [showExtended, setShowExtended] = useState(false);
@@ -1040,9 +1047,24 @@ function StepProfile({ error }: { error: string }) {
   const [profileStartMode, setProfileStartMode] = useState<"resume" | "manual" | null>(
     user?.optional?.resumeFileName ? "resume" : user?.educationLevel ? "manual" : null,
   );
-  const [showStartDialog, setShowStartDialog] = useState(
-    !user?.educationLevel && !user?.optional?.resumeFileName,
+  const hasExistingAcademicProfile = !!(
+    user?.educationLevel ||
+    user?.educationHistory?.some((entry) => entry.educationLevel?.trim()) ||
+    user?.optional?.resumeFileName
   );
+  const [showAcademicOnboarding, setShowAcademicOnboarding] = useState(
+    !user?.academicOnboardingCompleted && !hasExistingAcademicProfile,
+  );
+  const [showStartDialog, setShowStartDialog] = useState(
+    !user?.academicOnboardingCompleted && !hasExistingAcademicProfile ? false :
+      !user?.educationLevel && !user?.optional?.resumeFileName,
+  );
+  const [profileSetupStep, setProfileSetupStep] = useState(0);
+  const [highestProfileSetupStep, setHighestProfileSetupStep] = useState(0);
+  const [showProfileSetupValidation, setShowProfileSetupValidation] = useState(false);
+  const [resumeImportedProfileSteps, setResumeImportedProfileSteps] = useState<number[]>([]);
+  const volunteerMigrationDone = useRef(false);
+  const profileSetupHeadingRef = useRef<HTMLHeadingElement | null>(null);
   const startResumeInputRef = useRef<HTMLInputElement | null>(null);
 
   function set<K extends keyof UserProfile>(key: K, value: UserProfile[K]) {
@@ -1059,9 +1081,6 @@ function StepProfile({ error }: { error: string }) {
   function setOptional(patch: Record<string, unknown>) {
     updateProfile({ optional: { ...(user?.optional ?? {}), ...patch } });
   }
-  function setPrompts(patch: Record<string, unknown>) {
-    updateProfile({ prompts: { ...(user?.prompts ?? {}), ...patch } });
-  }
   function setExt(key: string, v: boolean) {
     updateProfile({ extendedContext: { ...(user?.extendedContext ?? {}), [key]: v } });
   }
@@ -1072,6 +1091,25 @@ function StepProfile({ error }: { error: string }) {
     ? user.researchExperience
     : buildResearchExperienceFromProfile(user);
   const workExperience = user?.workExperience ?? [];
+  useEffect(() => {
+    if (!user || volunteerMigrationDone.current) return;
+    volunteerMigrationDone.current = true;
+    const volunteerEntries = (user.workExperience ?? []).filter(isVolunteerExperience);
+    const legacyVolunteering = mergeVolunteerText([
+      user.highSchool?.volunteer,
+      formatVolunteerExperiences(volunteerEntries),
+    ]);
+    if (!legacyVolunteering) return;
+    const { volunteer: _legacyVolunteer, ...highSchool } = user.highSchool ?? {};
+    updateProfile({
+      highSchool,
+      workExperience: (user.workExperience ?? []).filter((entry) => !isVolunteerExperience(entry)),
+      optional: {
+        ...(user.optional ?? {}),
+        volunteering: mergeVolunteerText([user.optional?.volunteering, legacyVolunteering]),
+      },
+    });
+  }, [user, updateProfile]);
   const hasGraduateEducation = educationHistory.some((entry) =>
     /grad|master|phd|doctor|mba|jd|md/i.test(
       [entry.educationLevel, entry.degreeProgram].filter(Boolean).join(" "),
@@ -1098,6 +1136,8 @@ function StepProfile({ error }: { error: string }) {
         ...educationHistory,
         {
           id: newId("edu"),
+          source: "manual",
+          isCurrent: false,
           educationLevel: "",
           institution: "",
           degreeProgram: "",
@@ -1184,49 +1224,93 @@ function StepProfile({ error }: { error: string }) {
     setProfileStartMode("resume");
     try {
       const profile = await autofillProfileFromResume(file);
-      const nextLevel = profile.educationLevel || user?.educationLevel;
+      const nextLevel = user?.educationLevel || profile.educationLevel;
       const parsedHighSchool = compactObject(profile.highSchool);
+      const { volunteer: parsedHighSchoolVolunteering, ...parsedHighSchoolWithoutVolunteering } =
+        parsedHighSchool;
       const parsedUndergrad = compactObject(profile.undergrad);
       const parsedGraduate = compactObject(profile.graduate);
       const parsedProfile: UserProfile = {
         name: profile.name || user?.name || "",
         email: profile.email || user?.email || "",
         educationLevel: (nextLevel || undefined) as EducationLevel | undefined,
-        highSchool: parsedHighSchool,
+        highSchool: parsedHighSchoolWithoutVolunteering,
         undergrad: parsedUndergrad,
         graduate: parsedGraduate,
       };
-      const nextEducationHistory = (profile.educationHistory?.length
+      const parsedEducationHistory = (profile.educationHistory?.length
         ? profile.educationHistory
         : buildEducationHistoryFromProfile(parsedProfile)
       ).map((entry, index) => ({
         ...entry,
         id: entry.id || `edu-${index + 1}`,
+        source: "resume" as const,
+        isCurrent: false,
         majorField: entry.majorField || inferMajorField(entry.degreeProgram),
         educationLevel:
           normalizeEducationLevelLabel(entry.educationLevel) ||
           inferEducationLevelLabel(entry) ||
           educationLevelLabelFromCode(nextLevel),
       }));
+      const nextEducationHistory = mergeEducationHistory(
+        user?.educationHistory ?? [],
+        parsedEducationHistory,
+      );
       const nextResearchExperience = (profile.researchExperience?.length
         ? profile.researchExperience
         : buildResearchExperienceFromProfile(parsedProfile)
       )
         .filter(hasConcreteResearchEvidence)
         .map((entry, index) => ({ ...entry, id: entry.id || `research-${index + 1}` }));
-      const nextWorkExperience = (profile.workExperience ?? []).map((entry, index) => ({
-        ...entry,
-        id: entry.id || `work-${index + 1}`,
-      }));
+      const parsedVolunteerExperience = (profile.workExperience ?? []).filter(
+        isVolunteerExperience,
+      );
+      const nextWorkExperience = (profile.workExperience ?? [])
+        .filter((entry) => !isVolunteerExperience(entry))
+        .map((entry, index) => ({
+          ...entry,
+          id: entry.id || `work-${index + 1}`,
+        }));
+      const mergedResearchExperience = mergeStructuredEntries(
+        user?.researchExperience ?? [],
+        nextResearchExperience,
+        (entry) =>
+          normalizeEducationIdentity(
+            [entry.researchAreas, entry.advisorLabDepartment].filter(Boolean).join(" "),
+          ),
+        "research-resume",
+      );
+      const mergedWorkExperience = mergeStructuredEntries(
+        user?.workExperience ?? [],
+        nextWorkExperience,
+        (entry) =>
+          normalizeEducationIdentity(
+            [entry.roleTitle, entry.organization, entry.startDate, entry.endDate]
+              .filter(Boolean)
+              .join(" "),
+          ),
+        "work-resume",
+      );
+      const parsedOptional = compactObject(profile.optional);
+      const importedVolunteering = mergeVolunteerText([
+        String(parsedOptional.volunteering ?? ""),
+        String(parsedHighSchoolVolunteering ?? ""),
+        formatVolunteerExperiences(parsedVolunteerExperience),
+      ]);
+      const mergedOptional = preferExistingValues(parsedOptional, user?.optional ?? {});
+      mergedOptional.volunteering = mergeVolunteerText([
+        user?.optional?.volunteering,
+        importedVolunteering,
+      ]);
       updateProfile({
-        name: profile.name || user?.name || "",
-        email: profile.email || user?.email || "",
-        location: profile.location || user?.location,
-        careerGoal: profile.careerGoal || user?.careerGoal,
+        name: user?.name || profile.name || "",
+        email: user?.email || profile.email || "",
+        location: user?.location || profile.location,
+        careerGoal: user?.careerGoal || profile.careerGoal,
         educationLevel: (nextLevel || undefined) as EducationLevel | undefined,
         highSchool: {
           ...(user?.highSchool ?? {}),
-          ...parsedHighSchool,
+          ...parsedHighSchoolWithoutVolunteering,
         },
         undergrad: {
           ...(user?.undergrad ?? {}),
@@ -1237,15 +1321,22 @@ function StepProfile({ error }: { error: string }) {
           ...parsedGraduate,
         },
         educationHistory: nextEducationHistory.length ? nextEducationHistory : user?.educationHistory,
-        researchExperience: nextResearchExperience,
-        workExperience: nextWorkExperience.length ? nextWorkExperience : user?.workExperience,
+        researchExperience: mergedResearchExperience,
+        workExperience: mergedWorkExperience,
         optional: {
-          ...(user?.optional ?? {}),
-          ...compactObject(profile.optional),
+          ...mergedOptional,
           resumeFileName: file.name,
         },
         documents: [...docs, { name: file.name, kind: "Resume" }],
       });
+      setResumeImportedProfileSteps([
+        ...(parsedEducationHistory.length ? [1] : []),
+        ...(nextResearchExperience.length || nextWorkExperience.length ? [2] : []),
+        ...(Object.keys(parsedOptional).length || importedVolunteering ? [3] : []),
+      ]);
+      setProfileSetupStep(0);
+      setHighestProfileSetupStep(0);
+      setShowProfileSetupValidation(false);
       setResumeStatus("");
       setShowStartDialog(false);
     } catch (err) {
@@ -1269,7 +1360,20 @@ function StepProfile({ error }: { error: string }) {
     "B-International Student or Other Visa Status (F-1, J-1, H-4, TN, DACA, TPS, etc.)",
   ];
   const showRequiredErrors = !!error;
+  const aboutYouComplete = isRequiredAboutComplete(user);
   const hasEducationLevel = educationHistory.some((entry) => entry.educationLevel?.trim()) || !!user?.educationLevel;
+  const shouldShowProfileSetup = !showAcademicOnboarding && !showStartDialog && !user?.profileSetupCompleted;
+  const showSetupErrors = showRequiredErrors || showProfileSetupValidation;
+  const importedFromResumeBadge = resumeImportedProfileSteps.includes(profileSetupStep) ? (
+    <span className="inline-flex rounded-full bg-info/10 px-2 py-0.5 text-[11px] font-medium text-info">
+      Imported from resume
+    </span>
+  ) : null;
+  useEffect(() => {
+    if (!shouldShowProfileSetup) return;
+    profileSetupHeadingRef.current?.focus();
+  }, [shouldShowProfileSetup, profileSetupStep]);
+
   const uploadedDocsList = docs.length > 0 && (
     <div className="mt-4 divide-y divide-border">
       {docs.map((d) => (
@@ -1315,15 +1419,225 @@ function StepProfile({ error }: { error: string }) {
       </div>
     </Card>
   );
+  const profileSummaryCard = (
+    <Card className={PROFILE_SECTION_CLASS}>
+      <div className="flex items-center gap-3">
+        <div className="size-10 rounded-xl bg-primary text-primary-foreground grid place-items-center font-display text-base">
+          {toInitials(user?.name)}
+        </div>
+        <div>
+          <div className="font-display text-xl font-semibold">{user?.name}</div>
+          <div className="text-sm text-muted-foreground">{user?.email}</div>
+        </div>
+      </div>
+      <div className="mt-4 grid sm:grid-cols-2 gap-3">
+        <Input label="Full name" value={user?.name ?? ""} onChange={(v) => set("name", v)} placeholder="Maya Rodriguez" />
+        <Input label="Email" value={user?.email ?? ""} onChange={(v) => set("email", v)} placeholder="you@school.edu" type="email" />
+      </div>
+    </Card>
+  );
+  const aboutYouCard = (
+    <Card className={PROFILE_SECTION_CLASS}>
+      <SectionLabel>About you *</SectionLabel>
+      <div className="grid sm:grid-cols-2 gap-3 mt-3">
+        <Select
+          label="Gender"
+          value={user?.gender ?? ""}
+          onChange={(v) => set("gender", v)}
+          options={genderOptions}
+          invalid={showSetupErrors && !user?.gender?.trim()}
+        />
+        <Input
+          label="Location"
+          value={user?.location ?? ""}
+          onChange={(v) => set("location", v)}
+          placeholder="City, State"
+          invalid={showSetupErrors && !user?.location?.trim()}
+        />
+        <Select
+          label="Citizenship / Residency Status"
+          value={user?.citizenshipStatus ?? ""}
+          onChange={(v) => set("citizenshipStatus", v)}
+          options={citizenshipOptions}
+          invalid={showSetupErrors && !user?.citizenshipStatus?.trim()}
+        />
+        <Select
+          label="Please select your Race / Ethnicity"
+          value={user?.raceEthnicity ?? ""}
+          onChange={(v) => set("raceEthnicity", v)}
+          options={raceOptions}
+          className="sm:col-span-2"
+          invalid={showSetupErrors && !user?.raceEthnicity}
+        />
+      </div>
+
+      <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2">
+        <GlossaryCheck label="First-generation college student" checked={!!user?.firstGen} onChange={(v) => set("firstGen", v)} />
+        <GlossaryCheck label="Pell Grant eligible" checked={!!user?.pellEligible} onChange={(v) => set("pellEligible", v)} />
+      </div>
+
+      <button
+        type="button"
+        onClick={() => setShowExtended((s) => !s)}
+        className="mt-4 text-xs underline text-muted-foreground hover:text-foreground"
+      >
+        {showExtended ? "− Hide" : "+ Add more personalized context"}
+      </button>
+
+      {showExtended && (
+        <div className="mt-4 space-y-4">
+          {EXTENDED_CONTEXT_GROUPS.map((grp) => (
+            <div key={grp.group}>
+              <div className="text-[11px] uppercase tracking-widest text-gold">{grp.group}</div>
+              <div className="mt-2 grid sm:grid-cols-2 gap-2">
+                {grp.options.map((opt) => (
+                  <GlossaryCheck
+                    key={opt}
+                    label={opt}
+                    checked={!!user?.extendedContext?.[opt]}
+                    onChange={(v) => setExt(opt, v)}
+                  />
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+  const educationCard = (
+    <EducationHistorySection
+      entries={educationHistory}
+      onAdd={addEducationEntry}
+      onRemove={removeEducationEntry}
+      onChange={updateEducationEntry}
+      showMissingEducationLevel={showSetupErrors && !hasEducationLevel}
+    />
+  );
+  const experienceSection = (
+    <>
+      <ResearchExperienceSection
+        entries={researchExperience}
+        isOpen={researchOpen}
+        onToggle={() => setResearchOpen((open) => !open)}
+        onAdd={addResearchEntry}
+        onRemove={removeResearchEntry}
+        onChange={updateResearchEntry}
+      />
+      <WorkExperienceSection
+        entries={workExperience}
+        onAdd={addWorkEntry}
+        onRemove={removeWorkEntry}
+        onChange={updateWorkEntry}
+      />
+    </>
+  );
+  const optionalContextCard = (
+    <Card className={`${PROFILE_SECTION_CLASS}`}>
+      <SectionLabel>Optional context</SectionLabel>
+      <p className="text-xs text-muted-foreground mt-1">
+        All optional — add whatever helps scholarships see who you are.
+      </p>
+      <div className="mt-3 grid gap-3 md:grid-cols-2">
+        <Textarea label="Volunteering" value={user?.optional?.volunteering ?? ""} onChange={(v) => setOptional({ volunteering: v })} placeholder="Describe any volunteer work, community service, or nonprofit involvement you’d like Scholar-E to consider." />
+        <Textarea label="Society / club involvement" value={user?.optional?.societyInvolvement ?? ""} onChange={(v) => setOptional({ societyInvolvement: v })} placeholder="Clubs, organizations, roles…" />
+        <Textarea label="Leadership experience" value={user?.optional?.leadership ?? ""} onChange={(v) => setOptional({ leadership: v })} placeholder="Captain, president, lead organizer, founder…" />
+        <Textarea label="Sports" value={user?.optional?.sports ?? ""} onChange={(v) => setOptional({ sports: v })} placeholder="Teams, varsity/club, captaincy…" />
+        <Textarea label="Articles published" value={user?.optional?.articlesPublished ?? ""} onChange={(v) => setOptional({ articlesPublished: v })} placeholder="Titles, outlets, links…" />
+        <Textarea label="Projects" value={user?.optional?.projects ?? ""} onChange={(v) => setOptional({ projects: v })} placeholder="Personal, school, or research projects…" />
+      </div>
+    </Card>
+  );
+  const profileSetupSteps = [
+    {
+      title: "About You",
+      helper: "Complete these required details so Scholar-E can personalize your profile and improve opportunity matching.",
+      required: true,
+      complete: aboutYouComplete,
+      content: (
+        <div className="space-y-6">
+          {profileSummaryCard}
+          {aboutYouCard}
+        </div>
+      ),
+    },
+    {
+      title: "Education",
+      helper: "Review your education information to ensure it is complete and accurate.",
+      required: true,
+      complete: hasEducationLevel,
+      content: educationCard,
+    },
+    {
+      title: "Experience",
+      helper: "Review your experiences and add or update anything that best represents your background.",
+      required: false,
+      complete: true,
+      content: <div className="space-y-6">{experienceSection}</div>,
+    },
+    {
+      title: "Skills & Activities",
+      helper: "Review your skills, activities, leadership, and achievements to help strengthen your profile.",
+      required: false,
+      complete: true,
+      content: optionalContextCard,
+    },
+    {
+      title: "Upload Materials",
+      helper: "Upload supporting documents to strengthen your profile and reuse them across future applications.",
+      required: false,
+      complete: true,
+      content: uploadMaterialsCard,
+    },
+  ];
+  const currentProfileSetupStep = profileSetupSteps[profileSetupStep] ?? profileSetupSteps[0];
+  const isCurrentSetupStepOptional = !currentProfileSetupStep.required;
+  const currentSetupStepComplete = currentProfileSetupStep.complete;
+  function goToProfileSetupStep(index: number) {
+    if (index > highestProfileSetupStep) return;
+    setProfileSetupStep(index);
+    setShowProfileSetupValidation(false);
+  }
+  function continueProfileSetup() {
+    if (!currentSetupStepComplete) {
+      setShowProfileSetupValidation(true);
+      profileSetupHeadingRef.current?.focus();
+      return;
+    }
+    if (profileSetupStep === profileSetupSteps.length - 1) {
+      updateProfile({ profileSetupCompleted: true });
+      onComplete();
+      return;
+    }
+    const nextStep = profileSetupStep + 1;
+    setProfileSetupStep(nextStep);
+    setHighestProfileSetupStep((step) => Math.max(step, nextStep));
+    setShowProfileSetupValidation(false);
+  }
 
   return (
     <div className="mx-auto max-w-7xl">
+      {user && (
+        <AcademicOnboarding
+          open={showAcademicOnboarding}
+          user={user}
+          updateProfile={updateProfile}
+          onComplete={() => {
+            setShowAcademicOnboarding(false);
+            setShowStartDialog(true);
+          }}
+        />
+      )}
       <Dialog open={showStartDialog} onOpenChange={setShowStartDialog}>
-        <DialogContent className="max-w-md">
+        <DialogContent
+          className="max-w-md"
+          onPointerDownOutside={(event) => event.preventDefault()}
+        >
           <DialogHeader>
             <DialogTitle className="font-display text-2xl">Start your profile</DialogTitle>
             <DialogDescription>
-              Use your resume to fill in many of the fields for creating students profile
+              Upload your resume to automatically fill in many of your profile details. You can
+              review and edit everything before continuing.
             </DialogDescription>
           </DialogHeader>
 
@@ -1347,6 +1661,10 @@ function StepProfile({ error }: { error: string }) {
               onClick={() => {
                 setProfileStartMode("manual");
                 setResumeError("");
+                setResumeImportedProfileSteps([]);
+                setProfileSetupStep(0);
+                setHighestProfileSetupStep(0);
+                setShowProfileSetupValidation(false);
                 setShowStartDialog(false);
               }}
               disabled={!!resumeStatus}
@@ -1383,158 +1701,217 @@ function StepProfile({ error }: { error: string }) {
         </DialogContent>
       </Dialog>
 
-      <div className="grid items-start gap-8 xl:grid-cols-2">
-        <div className="space-y-8">
-      <Card className={PROFILE_SECTION_CLASS}>
-        <div className="flex items-center gap-3">
-          <div className="size-10 rounded-xl bg-primary text-primary-foreground grid place-items-center font-display text-base">
-            {toInitials(user?.name)}
-          </div>
-          <div>
-            <div className="font-display text-xl font-semibold">{user?.name}</div>
-            <div className="text-sm text-muted-foreground">{user?.email}</div>
-          </div>
-        </div>
-        <p className="mt-3 text-xs text-muted-foreground">
-          {profileStartMode === "resume"
-            ? "Review and edit the fields filled from your resume."
-            : "Fill out the fields below to build your student profile."}
-        </p>
-        <div className="mt-4 grid sm:grid-cols-2 gap-3">
-          <Input label="Full name" value={user?.name ?? ""} onChange={(v) => set("name", v)} placeholder="Maya Rodriguez" />
-          <Input label="Email" value={user?.email ?? ""} onChange={(v) => set("email", v)} placeholder="you@school.edu" type="email" />
-        </div>
-      </Card>
-
-      {error && (
-        <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm font-medium text-destructive">
-          {error}
-        </div>
-      )}
-
-      <Card className={PROFILE_SECTION_CLASS}>
-        <SectionLabel>About you *</SectionLabel>
-        <div className="grid sm:grid-cols-2 gap-3 mt-3">
-          <Select
-            label="Gender"
-            value={user?.gender ?? ""}
-            onChange={(v) => set("gender", v)}
-            options={genderOptions}
-            invalid={showRequiredErrors && !user?.gender?.trim()}
-          />
-          <Input
-            label="Location"
-            value={user?.location ?? ""}
-            onChange={(v) => set("location", v)}
-            placeholder="City, State"
-            invalid={showRequiredErrors && !user?.location?.trim()}
-          />
-          <Select
-            label="Citizenship / Residency Status"
-            value={user?.citizenshipStatus ?? ""}
-            onChange={(v) => set("citizenshipStatus", v)}
-            options={citizenshipOptions}
-            invalid={showRequiredErrors && !user?.citizenshipStatus?.trim()}
-          />
-          <Select
-            label="Please select your Race / Ethnicity"
-            value={user?.raceEthnicity ?? ""}
-            onChange={(v) => set("raceEthnicity", v)}
-            options={raceOptions}
-            className="sm:col-span-2"
-            invalid={showRequiredErrors && !user?.raceEthnicity}
-          />
-        </div>
-
-        <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2">
-          <GlossaryCheck label="First-generation college student" checked={!!user?.firstGen} onChange={(v) => set("firstGen", v)} />
-          <GlossaryCheck label="Pell Grant eligible" checked={!!user?.pellEligible} onChange={(v) => set("pellEligible", v)} />
-        </div>
-
-        <button
-          onClick={() => setShowExtended((s) => !s)}
-          className="mt-4 text-xs underline text-muted-foreground hover:text-foreground"
-        >
-          {showExtended ? "− Hide" : "+ Add more personalized context"}
-        </button>
-
-        {showExtended && (
-          <div className="mt-4 space-y-4">
-            {EXTENDED_CONTEXT_GROUPS.map((grp) => (
-              <div key={grp.group}>
-                <div className="text-[11px] uppercase tracking-widest text-gold">{grp.group}</div>
-                <div className="mt-2 grid sm:grid-cols-2 gap-2">
-                  {grp.options.map((opt) => (
-                    <GlossaryCheck
-                      key={opt}
-                      label={opt}
-                      checked={!!user?.extendedContext?.[opt]}
-                      onChange={(v) => setExt(opt, v)}
-                    />
-                  ))}
+      {shouldShowProfileSetup ? (
+        <GuidedProfileSetup
+          steps={profileSetupSteps}
+          currentStep={profileSetupStep}
+          highestStep={highestProfileSetupStep}
+          headingRef={profileSetupHeadingRef}
+          importedBadge={importedFromResumeBadge}
+          currentComplete={currentSetupStepComplete}
+          currentOptional={isCurrentSetupStepOptional}
+          showValidation={showProfileSetupValidation}
+          onStepSelect={goToProfileSetupStep}
+          onBack={() => {
+            setProfileSetupStep((step) => Math.max(0, step - 1));
+            setShowProfileSetupValidation(false);
+          }}
+          onContinue={continueProfileSetup}
+        />
+      ) : (
+        <>
+          <div className="grid items-start gap-8 xl:grid-cols-2">
+            <div className="space-y-8">
+              {profileSummaryCard}
+              {error && (
+                <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm font-medium text-destructive">
+                  {error}
                 </div>
-              </div>
-            ))}
+              )}
+              {aboutYouCard}
+              {educationCard}
+            </div>
+            <div className="space-y-8">
+              {experienceSection}
+              {uploadMaterialsCard}
+            </div>
           </div>
-        )}
-      </Card>
+          <div className="mt-8">{optionalContextCard}</div>
+        </>
+      )}
+    </div>
+  );
+}
 
-      <EducationHistorySection
-        entries={educationHistory}
-        onAdd={addEducationEntry}
-        onRemove={removeEducationEntry}
-        onChange={updateEducationEntry}
-        showMissingEducationLevel={showRequiredErrors && !hasEducationLevel}
-      />
+type GuidedProfileSetupStep = {
+  title: string;
+  helper: string;
+  required: boolean;
+  complete: boolean;
+  content: React.ReactNode;
+};
 
+function GuidedProfileSetup({
+  steps,
+  currentStep,
+  highestStep,
+  headingRef,
+  importedBadge,
+  currentComplete,
+  currentOptional,
+  showValidation,
+  onStepSelect,
+  onBack,
+  onContinue,
+}: {
+  steps: GuidedProfileSetupStep[];
+  currentStep: number;
+  highestStep: number;
+  headingRef: React.RefObject<HTMLHeadingElement | null>;
+  importedBadge: React.ReactNode;
+  currentComplete: boolean;
+  currentOptional: boolean;
+  showValidation: boolean;
+  onStepSelect: (step: number) => void;
+  onBack: () => void;
+  onContinue: () => void;
+}) {
+  const step = steps[currentStep] ?? steps[0];
+  const isFinalStep = currentStep === steps.length - 1;
+  const continueLabel = isFinalStep
+    ? "Finish Profile Setup"
+    : currentOptional
+      ? "Continue"
+      : "Continue";
+
+  return (
+    <section className="mx-auto max-w-6xl" aria-labelledby="profile-setup-title">
+      <div className="mb-6 rounded-2xl border border-border bg-card p-5 md:p-6">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <div className="text-xs uppercase tracking-widest text-muted-foreground">Create Profile</div>
+            <h1 id="profile-setup-title" className="mt-2 font-display text-3xl font-semibold">
+              Complete Your Profile
+            </h1>
+            <p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted-foreground">
+              Review the information below. Some details may already be filled from your resume. You can edit everything now or later.
+            </p>
+          </div>
+          <div className="rounded-full bg-secondary px-3 py-1.5 text-xs font-medium text-secondary-foreground">
+            Step {currentStep + 1} of {steps.length}
+          </div>
         </div>
-        <div className="space-y-8">
-      <ResearchExperienceSection
-        entries={researchExperience}
-        isOpen={researchOpen}
-        onToggle={() => setResearchOpen((open) => !open)}
-        onAdd={addResearchEntry}
-        onRemove={removeResearchEntry}
-        onChange={updateResearchEntry}
-      />
-
-      <WorkExperienceSection
-        entries={workExperience}
-        onAdd={addWorkEntry}
-        onRemove={removeWorkEntry}
-        onChange={updateWorkEntry}
-      />
-
-      {uploadMaterialsCard}
+        <div className="mt-5 flex gap-2 overflow-x-auto pb-1 md:hidden" aria-label="Profile setup progress">
+          {steps.map((item, index) => (
+            <button
+              key={item.title}
+              type="button"
+              onClick={() => onStepSelect(index)}
+              disabled={index > highestStep}
+              className={`min-w-36 rounded-full border px-3 py-1.5 text-left text-xs font-medium ${
+                index === currentStep
+                  ? "border-primary bg-primary text-primary-foreground"
+                  : index <= highestStep
+                    ? "border-border bg-background text-foreground"
+                    : "border-border bg-muted/50 text-muted-foreground opacity-60"
+              }`}
+            >
+              {index + 1}. {item.title}
+            </button>
+          ))}
         </div>
       </div>
 
-      <Card className={`${PROFILE_SECTION_CLASS} mt-8`}>
-        <SectionLabel>Optional context</SectionLabel>
-        <p className="text-xs text-muted-foreground mt-1">
-          All optional — add whatever helps scholarships see who you are.
-        </p>
-        <div className="mt-3 grid gap-3 md:grid-cols-2">
-          <Textarea label="Society / club involvement" value={user?.optional?.societyInvolvement ?? ""} onChange={(v) => setOptional({ societyInvolvement: v })} placeholder="Clubs, organizations, roles…" />
-          <Textarea label="Leadership experience" value={user?.optional?.leadership ?? ""} onChange={(v) => setOptional({ leadership: v })} placeholder="Captain, president, lead organizer, founder…" />
-          <Textarea label="Sports" value={user?.optional?.sports ?? ""} onChange={(v) => setOptional({ sports: v })} placeholder="Teams, varsity/club, captaincy…" />
-          <Textarea label="Articles published" value={user?.optional?.articlesPublished ?? ""} onChange={(v) => setOptional({ articlesPublished: v })} placeholder="Titles, outlets, links…" />
-          <Textarea label="Projects" value={user?.optional?.projects ?? ""} onChange={(v) => setOptional({ projects: v })} placeholder="Personal, school, or research projects…" />
-        </div>
-      </Card>
+      <div className="grid gap-6 md:grid-cols-[240px_minmax(0,1fr)]">
+        <aside className="hidden md:block">
+          <nav className="sticky top-24 rounded-2xl border border-border bg-card p-3" aria-label="Profile setup steps">
+            {steps.map((item, index) => {
+              const isActive = index === currentStep;
+              const isReachable = index <= highestStep;
+              const isComplete = index < currentStep || item.complete;
+              return (
+                <button
+                  key={item.title}
+                  type="button"
+                  onClick={() => onStepSelect(index)}
+                  disabled={!isReachable}
+                  className={`mb-1 flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-sm transition-colors ${
+                    isActive
+                      ? "bg-primary text-primary-foreground"
+                      : isReachable
+                        ? "hover:bg-accent"
+                        : "cursor-not-allowed text-muted-foreground opacity-60"
+                  }`}
+                  aria-current={isActive ? "step" : undefined}
+                >
+                  <span className={`grid size-6 shrink-0 place-items-center rounded-full text-[11px] ${
+                    isComplete ? "bg-success/20 text-success" : "bg-secondary text-secondary-foreground"
+                  }`}>
+                    {isComplete ? "✓" : index + 1}
+                  </span>
+                  <span>
+                    <span className="block font-medium">{item.title}</span>
+                    <span className="block text-[11px] opacity-75">{item.required ? "Required" : "Optional"}</span>
+                  </span>
+                </button>
+              );
+            })}
+          </nav>
+        </aside>
 
-      <Card className={`${PROFILE_SECTION_CLASS} mt-8`}>
-        <SectionLabel>Story prompts (optional)</SectionLabel>
-        <p className="text-xs text-muted-foreground mt-1">
-          Short reflections you can reuse across scholarship essays.
-        </p>
-        <div className="mt-3 grid gap-3 md:grid-cols-2">
-          <Textarea label="Name a time you overcame a challenge." value={user?.prompts?.challenge ?? ""} onChange={(v) => setPrompts({ challenge: v })} />
-          <Textarea label="Leadership — describe a time you had to lead." value={user?.prompts?.leadership ?? ""} onChange={(v) => setPrompts({ leadership: v })} />
-          <Textarea label="Name a time you worked with a team." value={user?.prompts?.teamwork ?? ""} onChange={(v) => setPrompts({ teamwork: v })} />
+        <div className="min-w-0 rounded-2xl border border-border bg-card p-5 md:p-6">
+          <div className="sr-only" aria-live="polite">
+            Step {currentStep + 1} of {steps.length}: {step.title}
+          </div>
+          <div className="mb-5 border-b border-border pb-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2
+                ref={headingRef}
+                tabIndex={-1}
+                className="font-display text-2xl font-semibold outline-none"
+              >
+                {step.title}
+              </h2>
+              <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                step.required ? "bg-warning/20 text-foreground" : "bg-secondary text-secondary-foreground"
+              }`}>
+                {step.required ? "Required" : "Optional"}
+              </span>
+              {importedBadge}
+            </div>
+            <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{step.helper}</p>
+            {showValidation && !currentComplete && (
+              <p className="mt-3 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm font-medium text-destructive">
+                Complete the required fields in this step before continuing.
+              </p>
+            )}
+          </div>
+
+          <div className="animate-in fade-in slide-in-from-bottom-1 duration-200 motion-reduce:animate-none">
+            {step.content}
+          </div>
+
+          <div className="mt-8 flex flex-col-reverse gap-3 border-t border-border pt-5 sm:flex-row sm:items-center sm:justify-between">
+            <button
+              type="button"
+              onClick={onBack}
+              disabled={currentStep === 0}
+              className="rounded-full border border-border px-5 py-2 text-sm font-medium hover:bg-accent disabled:opacity-40"
+            >
+              Back
+            </button>
+            <button
+              type="button"
+              onClick={onContinue}
+              disabled={!currentComplete && !currentOptional}
+              className="rounded-full bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {continueLabel}
+            </button>
+          </div>
         </div>
-      </Card>
-    </div>
+      </div>
+    </section>
   );
 }
 
@@ -1651,7 +2028,7 @@ function buildEducationHistoryFromProfile(user: UserProfile | null): EducationHi
     entries.push({
       id: "edu-high-school",
       educationLevel: "High school",
-      institution: "",
+      institution: user.highSchool.institution ?? "",
       degreeProgram: "High school diploma",
       majorField: user.highSchool.intendedMajor ?? "",
       department: "",
@@ -1741,17 +2118,188 @@ function educationLevelCode(value?: string): EducationLevel | undefined {
   return undefined;
 }
 
+function normalizeEducationIdentity(value?: string) {
+  return (value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\buniversity\b/g, "univ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function educationIdentityLevel(entry: Partial<EducationHistoryEntry>) {
+  return normalizeEducationLevelLabel(entry.educationLevel) || inferEducationLevelLabel(entry);
+}
+
+function educationYears(entry: Partial<EducationHistoryEntry>) {
+  return new Set(
+    [entry.startDate, entry.endDate]
+      .flatMap((value) => String(value ?? "").match(/\b(?:19|20)\d{2}\b/g) ?? []),
+  );
+}
+
+function isLikelySameEducation(
+  existing: EducationHistoryEntry,
+  imported: EducationHistoryEntry,
+) {
+  if (existing.source === "resume" && existing.id === imported.id) return true;
+  const existingInstitution = normalizeEducationIdentity(existing.institution);
+  const importedInstitution = normalizeEducationIdentity(imported.institution);
+  const institutionMatches =
+    !!existingInstitution &&
+    !!importedInstitution &&
+    existingInstitution === importedInstitution;
+  const existingLevel = educationIdentityLevel(existing);
+  const importedLevel = educationIdentityLevel(imported);
+  const levelMatches = !!existingLevel && !!importedLevel && existingLevel === importedLevel;
+  const existingMajor = normalizeEducationIdentity(
+    existing.majorField || inferMajorField(existing.degreeProgram),
+  );
+  const importedMajor = normalizeEducationIdentity(
+    imported.majorField || inferMajorField(imported.degreeProgram),
+  );
+  const majorMatches = !!existingMajor && !!importedMajor && existingMajor === importedMajor;
+  const existingYears = educationYears(existing);
+  const importedYears = educationYears(imported);
+  const datesOverlap = [...importedYears].some((year) => existingYears.has(year));
+
+  if (institutionMatches && levelMatches) {
+    if (
+      existingMajor &&
+      importedMajor &&
+      !majorMatches &&
+      existingYears.size &&
+      importedYears.size &&
+      !datesOverlap
+    ) {
+      return false;
+    }
+    return true;
+  }
+  if (institutionMatches && (majorMatches || datesOverlap)) return true;
+  return !existingInstitution && !importedInstitution && levelMatches && majorMatches && datesOverlap;
+}
+
+function fillEducationBlanks(
+  existing: EducationHistoryEntry,
+  imported: EducationHistoryEntry,
+) {
+  const merged = { ...imported } as EducationHistoryEntry;
+  for (const [key, value] of Object.entries(existing)) {
+    if (value !== undefined && value !== null && String(value).trim() !== "") {
+      (merged as Record<string, unknown>)[key] = value;
+    }
+  }
+  merged.id = existing.id;
+  merged.source = existing.source ?? "manual";
+  merged.isCurrent = existing.isCurrent ?? false;
+  return merged;
+}
+
+function mergeEducationHistory(
+  existingEntries: EducationHistoryEntry[],
+  importedEntries: EducationHistoryEntry[],
+) {
+  const merged = existingEntries.map((entry) => ({ ...entry }));
+  const usedIds = new Set(merged.map((entry) => entry.id));
+
+  importedEntries.forEach((imported, importedIndex) => {
+    const matchIndex = merged.findIndex((existing) => isLikelySameEducation(existing, imported));
+    if (matchIndex >= 0) {
+      merged[matchIndex] = fillEducationBlanks(merged[matchIndex], imported);
+      return;
+    }
+    let id = imported.id || `edu-resume-${importedIndex + 1}`;
+    if (usedIds.has(id)) id = `edu-resume-${importedIndex + 1}`;
+    while (usedIds.has(id)) id = `${id}-imported`;
+    usedIds.add(id);
+    merged.push({ ...imported, id, source: "resume", isCurrent: imported.isCurrent ?? false });
+  });
+
+  return merged;
+}
+
+function preferExistingValues<T extends Record<string, unknown>>(
+  imported: T,
+  existing: Partial<T>,
+) {
+  const merged = { ...imported };
+  for (const [key, value] of Object.entries(existing)) {
+    if (value !== undefined && value !== null && String(value).trim() !== "") {
+      (merged as Record<string, unknown>)[key] = value;
+    }
+  }
+  return merged;
+}
+
+function mergeStructuredEntries<T extends { id: string }>(
+  existingEntries: T[],
+  importedEntries: T[],
+  identity: (entry: T) => string,
+  idPrefix: string,
+) {
+  const merged = existingEntries.map((entry) => ({ ...entry }));
+  const usedIds = new Set(merged.map((entry) => entry.id));
+  importedEntries.forEach((imported, index) => {
+    const importedIdentity = identity(imported);
+    const matchIndex = importedIdentity
+      ? merged.findIndex((existing) => identity(existing) === importedIdentity)
+      : -1;
+    if (matchIndex >= 0) {
+      merged[matchIndex] = preferExistingValues(imported, merged[matchIndex]);
+      return;
+    }
+    let id = imported.id || `${idPrefix}-${index + 1}`;
+    if (usedIds.has(id)) id = `${idPrefix}-${index + 1}`;
+    while (usedIds.has(id)) id = `${id}-imported`;
+    usedIds.add(id);
+    merged.push({ ...imported, id });
+  });
+  return merged;
+}
+
+function isVolunteerExperience(entry: Partial<WorkExperienceEntry>) {
+  return /\b(volunteer|community service|nonprofit)\b/i.test(entry.experienceType ?? "");
+}
+
+function formatVolunteerExperiences(entries: Partial<WorkExperienceEntry>[]) {
+  return entries
+    .map((entry) => {
+      const heading = [entry.roleTitle, entry.organization].filter(Boolean).join(" — ");
+      const dates = [entry.startDate, entry.endDate].filter(Boolean).join(" – ");
+      return [heading, dates, entry.description, entry.skillsTechnologies]
+        .filter((value) => String(value ?? "").trim())
+        .join("\n");
+    })
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function mergeVolunteerText(values: Array<string | undefined>) {
+  const unique = new Set<string>();
+  const sections: string[] = [];
+  values.forEach((value) => {
+    const text = value?.trim();
+    if (!text) return;
+    const normalized = text.toLowerCase().replace(/\s+/g, " ");
+    if (unique.has(normalized)) return;
+    unique.add(normalized);
+    sections.push(text);
+  });
+  return sections.join("\n\n");
+}
+
 function normalizeEducationLevelLabel(value?: string) {
   const text = value?.trim() ?? "";
   if (!text) return "";
   if (/^high school$/i.test(text)) return "High School";
-  if (/^associate'?s?( degree)?$/i.test(text)) return "Associate Degree";
+  if (/^(associate'?s?|associate of (arts|science)|a\.?a\.?|a\.?s\.?)\s*(degree)?$/i.test(text)) return "Associate Degree";
   if (/^undergrad(uate)?$/i.test(text)) return "Bachelor's Degree";
-  if (/^bachelor'?s?( degree)?$/i.test(text)) return "Bachelor's Degree";
-  if (/^master'?s?( degree)?$/i.test(text)) return "Master's Degree";
+  if (/^(bachelor'?s?|bachelor of (arts|science)|b\.?a\.?|b\.?s\.?|bba)\s*(degree)?$/i.test(text)) return "Bachelor's Degree";
+  if (/^(master'?s?|master of (arts|science)|m\.?a\.?|m\.?s\.?|mba|mfa|mph)\s*(degree)?$/i.test(text)) return "Master's Degree";
   if (/^masters?\b/i.test(text)) return "Master's Degree";
   if (/^(phd|ph\.d\.?|doctoral|doctorate)( degree)?$/i.test(text)) return "Doctoral Degree";
-  if (/^professional degree/i.test(text)) return "Professional Degree (JD, MD, DDS, etc.)";
+  if (/^(professional degree|j\.?d\.?|m\.?d\.?|d\.?d\.?s\.?|dvm|pharm\.?d\.?)$/i.test(text)) return "Professional Degree (JD, MD, DDS, etc.)";
   return text;
 }
 
@@ -1972,7 +2520,7 @@ function WorkExperienceSection({
         <div>
           <SectionLabel>Work & Internship Experience</SectionLabel>
           <p className="text-xs text-muted-foreground mt-1">
-            Work, internships, research assistantships, teaching assistantships, volunteer roles, and leadership experience.
+            Work, internships, research assistantships, teaching assistantships, and leadership experience.
           </p>
         </div>
         <button type="button" onClick={onAdd} className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent">
@@ -2001,7 +2549,7 @@ function WorkExperienceSection({
                 label="Experience type"
                 value={entry.experienceType ?? ""}
                 onChange={(value) => onChange(entry.id, { experienceType: value })}
-                options={["Work", "Internship", "Research Assistant", "Teaching Assistant", "Volunteer", "Leadership", "Other"]}
+                options={["Work", "Internship", "Research Assistant", "Teaching Assistant", "Leadership", "Other"]}
               />
               <Input label="Start date" value={entry.startDate ?? ""} onChange={(value) => onChange(entry.id, { startDate: value })} />
               <Input label="End date" value={entry.endDate ?? ""} onChange={(value) => onChange(entry.id, { endDate: value })} />
@@ -2036,7 +2584,6 @@ function HighSchoolForm({ value, setBranch }: { value: Record<string, unknown>; 
         <Select label="Parent / guardian education level" value={(v.parentEducation as string) ?? ""} onChange={(x) => setBranch("highSchool", { parentEducation: x })} options={["Did not finish high school", "High school", "Some college", "Associate's", "Bachelor's", "Graduate degree"]} />
         <Textarea label="Extracurriculars" value={(v.extracurricular as string) ?? ""} onChange={(x) => setBranch("highSchool", { extracurricular: x })} />
         <Textarea label="Activities, work, family duties, athletics" value={(v.activities as string) ?? ""} onChange={(x) => setBranch("highSchool", { activities: x })} />
-        <Textarea label="Volunteer service" value={(v.volunteer as string) ?? ""} onChange={(x) => setBranch("highSchool", { volunteer: x })} />
         <CheckGroup
           label="I need help with"
           options={needsOptions}

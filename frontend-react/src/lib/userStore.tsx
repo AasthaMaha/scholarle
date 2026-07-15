@@ -21,6 +21,7 @@ export type DiscoveryIntent = {
 };
 
 export type HighSchoolProfile = {
+  institution?: string;
   currentGrade?: string;
   gradMonth?: string;
   gradYear?: string;
@@ -68,6 +69,8 @@ export type GradProfile = {
 
 export type EducationHistoryEntry = {
   id: string;
+  source?: "onboarding" | "resume" | "manual";
+  isCurrent?: boolean;
   educationLevel?: string;
   institution?: string;
   degreeProgram?: string;
@@ -102,6 +105,7 @@ export type WorkExperienceEntry = {
 
 export type OptionalSections = {
   resumeFileName?: string;
+  volunteering?: string;
   societyInvolvement?: string;
   leadership?: string;
   sports?: string;
@@ -465,6 +469,8 @@ export type UserProfile = {
   undergrad?: UndergradProfile;
   graduate?: GradProfile;
   educationHistory?: EducationHistoryEntry[];
+  academicOnboardingCompleted?: boolean;
+  profileSetupCompleted?: boolean;
   researchExperience?: ResearchExperienceEntry[];
   workExperience?: WorkExperienceEntry[];
   // optional

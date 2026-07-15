@@ -9,7 +9,6 @@ function formatExperiences(): string {
     ["Research", experiences.research],
     ["Leadership", experiences.leadership],
     ["Work", experiences.work],
-    ["Volunteer", experiences.volunteer],
   ] as const;
 
   for (const [label, items] of sections) {
@@ -60,6 +59,9 @@ export function loadExampleProfile(
     },
     optional: {
       resumeFileName: "Resume_Maya_Rodriguez_Fall2026.pdf",
+      volunteering: experiences.volunteer
+        .map((item) => `${item.title} (${item.when})\n${item.bullets.join("\n")}`)
+        .join("\n\n"),
       societyInvolvement: "Society of Hispanic Professional Engineers — Rice Chapter",
       leadership: "VP Outreach organizing Code-with-Me nights for McAllen ISD high schoolers",
       projects:

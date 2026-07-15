@@ -53,5 +53,26 @@
       "government studies funding",
       "social sciences grants"
     ]
+  },
+  "computer science": {
+    "canonical_label": "Computer Science",
+    "synonyms": [
+      "CS",
+      "Computing",
+      "Software Engineering"
+    ],
+    "parent_disciplines": [
+      "Engineering",
+      "Information Technology"
+    ],
+    "umbrella_terms": [
+      "STEM",
+      "Technology"
+    ],
+    "funder_vocabulary": [
+      "computer science scholarships",
+      "STEM funding opportunities",
+      "technology grants"
+    ]
   }
 }
