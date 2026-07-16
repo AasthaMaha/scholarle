@@ -20,7 +20,6 @@ import {
   ListChecks,
   Lock,
   Menu,
-  MessageSquare,
   PanelLeftClose,
   PanelLeftOpen,
   PencilLine,
@@ -6983,10 +6982,9 @@ function WorkspaceHighlightsTab({
   const { user } = useUser();
   const analysis = user?.lastAnalysis;
   const priorities = analysis?.revision_priorities ?? [];
-  const reviewers = analysis?.reviewer_comments ?? [];
   const strengths = analysis?.essay_alignment_matrix?.strengths ?? [];
   const counts = countByCategory(suggestions);
-  const hasBackend = priorities.length || reviewers.length || strengths.length;
+  const hasBackend = priorities.length || strengths.length;
 
   if (isEvaluating) return <HighlightsSkeleton />;
 
@@ -7118,21 +7116,6 @@ function WorkspaceHighlightsTab({
             <div className="rounded-xl border border-success/20 bg-success/5 p-3">
               <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-success">Working well</div>
               <MiniList items={strengths} />
-            </div>
-          )}
-
-          {!!reviewers.length && (
-            <div className="space-y-2">
-              <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Reviewer reactions</div>
-              {reviewers.map((reviewer, i) => (
-                <div key={`${reviewer.persona}-${i}`} className="rounded-lg border border-border bg-background p-3">
-                  <div className="flex items-center gap-1.5 text-[12px] font-semibold">
-                    <MessageSquare className="size-3.5 text-info" />
-                    {reviewer.persona ?? "Reviewer"}
-                  </div>
-                  <p className="mt-1.5 text-[13px] leading-relaxed text-foreground/85">{reviewer.comment}</p>
-                </div>
-              ))}
             </div>
           )}
         </div>
