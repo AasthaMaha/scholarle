@@ -102,6 +102,7 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -4860,6 +4861,9 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   const [nowTick, setNowTick] = useState(() => Date.now());
   const [outlineLoading, setOutlineLoading] = useState(false);
   const [outlineStatus, setOutlineStatus] = useState<string | null>(null);
+  const [promptConfirmed, setPromptConfirmed] = useState(false);
+  const [promptPickerOpen, setPromptPickerOpen] = useState(false);
+  const [pendingPromptIndex, setPendingPromptIndex] = useState(0);
 
   const rawPromptBlob =
     user?.activeScholarship?.essayPrompts
@@ -4879,14 +4883,6 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     }
   }, [availablePrompts.length, selectedPromptIndex]);
 
-  const workspaceStage: WorkspaceStage = useMemo(() => {
-    if (!essayPrompt.trim()) return "prompt";
-    if (!hasOutline) return "outline";
-    if (wordCount < 30) return "draft";
-    if (coachResult || user?.lastAnalysis) return "revise";
-    return "coach";
-  }, [essayPrompt, hasOutline, wordCount, coachResult, user?.lastAnalysis]);
-
   const wordTarget = useMemo(
     () => parseWordTarget(buildOutlinePayload(user, essayPrompt).word_limit),
     [user, essayPrompt],
@@ -4905,16 +4901,22 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
       personalizedOutline: undefined,
     });
     setSelectedPromptIndex(0);
+    setPendingPromptIndex(0);
+    setPromptConfirmed(false);
+    setPromptPickerOpen(true);
     setOutlineStatus(null);
   }
 
   function selectEssayPrompt(index: number) {
-    if (index === selectedPromptIndex) return;
+    if (index === selectedPromptIndex && promptConfirmed) return;
     setSelectedPromptIndex(index);
+    setPendingPromptIndex(index);
+    setPromptConfirmed(false);
     updateProfile({ personalizedOutline: undefined });
-    setOutlineStatus("Prompt changed — generate a new outline for this essay.");
+    setOutlineStatus("Prompt changed — confirm the new prompt to build its outline.");
     setActiveTab("outline");
     setPanelOpen(true);
+    setPromptPickerOpen(true);
   }
 
   const outlineKey = useMemo(() => {
@@ -4938,15 +4940,56 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     });
   }, [essayPrompt, user]);
 
-  async function runOutlineGeneration() {
-    if (!user || outlineLoading || !essayPrompt.trim()) return;
+  const workspaceStage: WorkspaceStage = useMemo(() => {
+    if (!promptConfirmed || !essayPrompt.trim()) return "prompt";
+    if (!hasOutline) return "outline";
+    if (wordCount < 30) return "draft";
+    if (coachResult || user?.lastAnalysis) return "revise";
+    return "coach";
+  }, [promptConfirmed, essayPrompt, hasOutline, wordCount, coachResult, user?.lastAnalysis]);
+
+  // Landing: open the prompt popup once per prompt-blob change unless an outline
+  // already exists for the currently selected prompt.
+  useEffect(() => {
+    if (user?.personalizedOutline?.generatedForKey === outlineKey && essayPrompt.trim()) {
+      setPromptConfirmed(true);
+      setPromptPickerOpen(false);
+      return;
+    }
+    setPendingPromptIndex(Math.min(selectedPromptIndex, Math.max(0, availablePrompts.length - 1)));
+    setPromptPickerOpen(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rawPromptBlob]);
+
+  async function runOutlineGeneration(promptOverride?: string) {
+    if (!user || outlineLoading) return;
+    const promptForOutline = (promptOverride ?? essayPrompt).trim();
+    if (!promptForOutline) return;
     setOutlineLoading(true);
     setOutlineStatus("Building your personalized outline from the selected prompt and your profile...");
     setPanelOpen(true);
     setActiveTab("outline");
+    const scholarship = user.activeScholarship ?? {};
+    const keyForOutline = JSON.stringify({
+      scholarshipName: scholarship.name ?? "",
+      scholarshipUrl: scholarship.url ?? scholarship.officialWebsite ?? "",
+      prompt: promptForOutline,
+      requirementsPreview: scholarship.requirementsPreview ?? "",
+      updatedAt: scholarship.extractionCompletedAt ?? "",
+      profileName: user.name ?? "",
+      educationLevel: user.educationLevel ?? "",
+      careerGoal: user.careerGoal ?? "",
+      highSchool: user.highSchool ?? {},
+      undergrad: user.undergrad ?? {},
+      graduate: user.graduate ?? {},
+      researchExperience: user.researchExperience ?? [],
+      workExperience: user.workExperience ?? [],
+      optional: user.optional ?? {},
+      prompts: user.prompts ?? {},
+    });
     try {
-      const result = await generatePersonalizedOutline(buildOutlinePayload(user, essayPrompt));
-      updateProfile({ personalizedOutline: { ...result, generatedForKey: outlineKey } });
+      const result = await generatePersonalizedOutline(buildOutlinePayload(user, promptForOutline));
+      updateProfile({ personalizedOutline: { ...result, generatedForKey: keyForOutline } });
       setOutlineStatus(result.status === "error" ? "A fallback outline is ready." : "Personalized outline ready. Start drafting against it.");
       setActiveTab("outline");
     } catch (error) {
@@ -4954,6 +4997,23 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     } finally {
       setOutlineLoading(false);
     }
+  }
+
+  async function confirmEssayPrompt(index?: number) {
+    const nextIndex = typeof index === "number" ? index : pendingPromptIndex;
+    const nextPrompt = (availablePrompts[nextIndex] || rawPromptBlob).trim();
+    if (!nextPrompt) {
+      setOutlineStatus("Add an essay prompt before continuing.");
+      return;
+    }
+    setSelectedPromptIndex(nextIndex);
+    setPendingPromptIndex(nextIndex);
+    setPromptConfirmed(true);
+    setPromptPickerOpen(false);
+    setPanelOpen(true);
+    setActiveTab("outline");
+    setOutlineStatus("Prompt confirmed — generating your outline…");
+    await runOutlineGeneration(nextPrompt);
   }
 
   // Lightweight autosave indicator — the working draft is continuously synced to
@@ -5161,8 +5221,9 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
 
   async function runCoachingSession() {
     if (coachLoading || isEvaluating || !user) return;
-    if (!essayPrompt.trim()) {
-      setCoachSummary("Choose or enter the essay prompt before coaching.");
+    if (!promptConfirmed || !essayPrompt.trim()) {
+      setCoachSummary("Confirm the essay prompt first, then run coaching.");
+      setPromptPickerOpen(true);
       setActiveTab("outline");
       setPanelOpen(true);
       return;
@@ -5496,7 +5557,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
             <button
               type="button"
               onClick={() => void runCoachingSession()}
-              disabled={wordCount < 30 || !essayPrompt.trim() || coachLoading || isEvaluating}
+              disabled={wordCount < 30 || !promptConfirmed || !essayPrompt.trim() || coachLoading || isEvaluating}
               aria-busy={coachLoading || isEvaluating}
               className={`ml-0.5 inline-flex items-center gap-1.5 rounded-lg bg-info px-3 py-2 text-[13px] font-medium text-white transition-opacity duration-150 hover:opacity-90 disabled:opacity-60 ${coachLoading || isEvaluating ? "agent-loading" : ""}`}
             >
@@ -5534,36 +5595,107 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
         )}
       </header>
 
+      <Dialog open={promptPickerOpen} onOpenChange={(open) => {
+        // Keep the landing chooser intentional — only close via Confirm.
+        if (!open && !promptConfirmed) return;
+        setPromptPickerOpen(open);
+      }}>
+        <DialogContent className="max-w-xl gap-0 p-0 sm:max-w-xl" onPointerDownOutside={(event) => {
+          if (!promptConfirmed) event.preventDefault();
+        }} onEscapeKeyDown={(event) => {
+          if (!promptConfirmed) event.preventDefault();
+        }}>
+          <DialogHeader className="space-y-2 border-b border-border px-5 py-4 text-left">
+            <DialogTitle className="text-[18px]">Which essay are you writing?</DialogTitle>
+            <DialogDescription className="text-[13px] leading-relaxed">
+              Confirm the prompt first. Your outline and coaching session are built only for the prompt you choose.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[55vh] space-y-3 overflow-y-auto px-5 py-4">
+            {availablePrompts.length > 0 ? (
+              availablePrompts.map((prompt, index) => {
+                const active = index === pendingPromptIndex;
+                return (
+                  <button
+                    key={`landing-prompt-${index}`}
+                    type="button"
+                    onClick={() => setPendingPromptIndex(index)}
+                    aria-pressed={active}
+                    className={`w-full rounded-xl border px-4 py-3 text-left transition-colors ${
+                      active
+                        ? "border-info bg-info/5 shadow-sm"
+                        : "border-border bg-background hover:border-info/40"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                        {availablePrompts.length > 1 ? `Prompt ${index + 1}` : "Essay prompt"}
+                      </span>
+                      {active && <span className="text-[11px] font-semibold text-info">Selected</span>}
+                    </div>
+                    <p className="mt-1.5 text-[13px] leading-relaxed text-foreground/90">{prompt}</p>
+                  </button>
+                );
+              })
+            ) : (
+              <div className="space-y-2">
+                <label htmlFor="landing-essay-prompt" className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                  Paste your essay prompt
+                </label>
+                <textarea
+                  id="landing-essay-prompt"
+                  value={rawPromptBlob}
+                  onChange={(event) => updateEssayPrompt(event.target.value)}
+                  rows={5}
+                  placeholder="Paste the scholarship essay prompt here…"
+                  className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-info focus:ring-2 focus:ring-info/10"
+                />
+              </div>
+            )}
+          </div>
+          <DialogFooter className="border-t border-border px-5 py-4 sm:justify-between">
+            <p className="text-[12px] text-muted-foreground">
+              Next: generate an outline for this prompt, then draft, then coach.
+            </p>
+            <button
+              type="button"
+              onClick={() => void confirmEssayPrompt()}
+              disabled={!(availablePrompts[pendingPromptIndex] || rawPromptBlob).trim()}
+              className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
+            >
+              <Sparkles className="size-4" />
+              Use this prompt & build outline
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <section className="border-b border-border bg-card">
         <div className="mx-auto max-w-[1440px] space-y-3 px-4 py-3 md:px-6">
-          <WorkspaceStageGuide stage={workspaceStage} />
+          <WorkspaceStageGuide
+            stage={workspaceStage}
+            onChoosePrompt={() => {
+              setPendingPromptIndex(selectedPromptIndex);
+              setPromptPickerOpen(true);
+            }}
+          />
 
-          {hasMultiplePrompts && (
+          {hasMultiplePrompts && promptConfirmed && (
             <div className="rounded-xl border border-info/20 bg-info/5 p-3">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-info">Choose the essay you are writing</div>
-              <p className="mt-1 text-[12px] text-muted-foreground">Outline and coaching always use the selected prompt.</p>
-              <div className="mt-2 flex flex-wrap gap-2">
-                {availablePrompts.map((prompt, index) => {
-                  const active = index === selectedPromptIndex;
-                  const label = prompt.replace(/\s+/g, " ").slice(0, 72);
-                  return (
-                    <button
-                      key={`prompt-${index}`}
-                      type="button"
-                      onClick={() => selectEssayPrompt(index)}
-                      aria-pressed={active}
-                      className={`max-w-full rounded-lg border px-3 py-2 text-left text-[12px] leading-snug transition-colors ${
-                        active
-                          ? "border-info bg-background text-foreground shadow-sm"
-                          : "border-border bg-background/70 text-muted-foreground hover:border-info/40 hover:text-foreground"
-                      }`}
-                    >
-                      <span className="mb-0.5 block text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">Prompt {index + 1}</span>
-                      {label}{prompt.length > 72 ? "…" : ""}
-                    </button>
-                  );
-                })}
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-info">Working on prompt {selectedPromptIndex + 1}</div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPendingPromptIndex(selectedPromptIndex);
+                    setPromptPickerOpen(true);
+                  }}
+                  className="text-[12px] font-semibold text-info hover:underline"
+                >
+                  Change prompt
+                </button>
               </div>
+              <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground line-clamp-2">{essayPrompt}</p>
             </div>
           )}
 
@@ -5583,7 +5715,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
             <button
               type="button"
               onClick={() => void runOutlineGeneration()}
-              disabled={outlineLoading || !essayPrompt.trim()}
+              disabled={outlineLoading || !promptConfirmed || !essayPrompt.trim()}
               aria-busy={outlineLoading}
               className={`inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-lg bg-primary px-5 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${outlineLoading ? "agent-loading" : ""}`}
             >
@@ -5591,6 +5723,9 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
               {outlineLoading ? "Generating Outline…" : hasOutline ? "Regenerate Outline" : "Generate Outline"}
             </button>
           </div>
+          {!promptConfirmed && (
+            <p className="text-xs font-medium text-info">Confirm your essay prompt in the popup to unlock outline and coaching.</p>
+          )}
           {outlineStatus && <p className="text-xs text-muted-foreground">{outlineStatus}</p>}
         </div>
       </section>
@@ -5654,6 +5789,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
               isEvaluating={isEvaluating}
               onCollapse={() => setPanelOpen(false)}
               essayPrompt={essayPrompt}
+              promptConfirmed={promptConfirmed}
               sessionPhase={sessionPhase}
               sessionProgress={sessionProgress}
               coachReady={coachReady}
@@ -5693,13 +5829,19 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   );
 }
 
-function WorkspaceStageGuide({ stage }: { stage: WorkspaceStage }) {
+function WorkspaceStageGuide({
+  stage,
+  onChoosePrompt,
+}: {
+  stage: WorkspaceStage;
+  onChoosePrompt?: () => void;
+}) {
   const stages: Array<{ id: WorkspaceStage; label: string; hint: string }> = [
-    { id: "prompt", label: "1. Prompt", hint: "Choose the essay prompt" },
-    { id: "outline", label: "2. Outline", hint: "Generate a personalized outline" },
-    { id: "draft", label: "3. Draft", hint: "Write against the outline" },
-    { id: "coach", label: "4. Coach", hint: "Run one coaching session" },
-    { id: "revise", label: "5. Revise", hint: "Apply fixes and re-run" },
+    { id: "prompt", label: "1. Prompt", hint: "Confirm which essay prompt you are answering" },
+    { id: "outline", label: "2. Outline", hint: "Build an outline for that exact prompt" },
+    { id: "draft", label: "3. Draft", hint: "Write against the outline section by section" },
+    { id: "coach", label: "4. Coach", hint: "Run one coaching session for fixes + scores" },
+    { id: "revise", label: "5. Revise", hint: "Apply Coach suggestions, then re-run" },
   ];
   const activeIndex = stages.findIndex((item) => item.id === stage);
   const active = stages[Math.max(0, activeIndex)];
@@ -5725,7 +5867,18 @@ function WorkspaceStageGuide({ stage }: { stage: WorkspaceStage }) {
           );
         })}
       </div>
-      <p className="text-[12px] text-muted-foreground">{active?.hint}</p>
+      <div className="flex items-center gap-2">
+        <p className="text-[12px] text-muted-foreground">{active?.hint}</p>
+        {stage === "prompt" && onChoosePrompt && (
+          <button
+            type="button"
+            onClick={onChoosePrompt}
+            className="text-[12px] font-semibold text-info hover:underline"
+          >
+            Open prompt picker
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -5736,6 +5889,7 @@ function EssayWorkspacePanel({
   isEvaluating,
   onCollapse,
   essayPrompt,
+  promptConfirmed,
   sessionPhase,
   sessionProgress,
   coachReady,
@@ -5763,6 +5917,7 @@ function EssayWorkspacePanel({
   isEvaluating: boolean;
   onCollapse: () => void;
   essayPrompt: string;
+  promptConfirmed: boolean;
   sessionPhase: string;
   sessionProgress: number;
   coachReady: boolean;
@@ -5825,14 +5980,8 @@ function EssayWorkspacePanel({
     }
   }
 
-  // Auto-generate the outline as soon as the student reaches the workspace (the
-  // panel mounts on entry), not only when the Outline tab is opened.
-  useEffect(() => {
-    if (!user || !essayPrompt.trim()) return;
-    if (user.personalizedOutline?.generatedForKey === outlineKey) return;
-    void runOutlineGeneration(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [outlineKey, user?.personalizedOutline?.generatedForKey, essayPrompt]);
+  // Outline is generated from the confirmed prompt via the landing popup confirm
+  // action or the explicit Generate Outline button — not auto-raced on mount.
 
   const tabs: Array<{ id: WorkspaceTab; label: string; icon: typeof ListChecks; count?: number }> = [
     { id: "outline", label: "Outline", icon: ListChecks },
