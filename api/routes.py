@@ -229,7 +229,7 @@ class CoachingSessionRequest(BaseModel):
     user_notes: str = Field(default="", max_length=5000)
     word_limit: str = Field(default="", max_length=120)
     outline_points: list[dict] = Field(default_factory=list)
-    writing_support_level: str = Field(default="grammar_only", max_length=40)
+    writing_support_level: str = Field(default="sentence_polish", max_length=40)
 
 
 class RewriteRequest(BaseModel):
@@ -721,8 +721,8 @@ def run_workspace_coaching_session(request: CoachingSessionRequest) -> dict:
             user_notes=request.user_notes,
             word_limit=request.word_limit,
             outline_points=request.outline_points,
-            mode="workspace_refresh",
-            writing_support_level=request.writing_support_level or "grammar_only",
+            mode="full",
+            writing_support_level=request.writing_support_level or "sentence_polish",
         )
 
     with ThreadPoolExecutor(max_workers=2) as pool:

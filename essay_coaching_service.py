@@ -584,7 +584,7 @@ def run_essay_workspace_coach(
       - Flow & Structure Coach  (full, structure)
       - Specificity Coach       (full, structure)
       - Tone & Authenticity     (full, workspace_refresh)
-      - Reviewer Simulation     (full, workspace_refresh, reviewer)
+      - Reviewer Simulation     (reviewer only)
       - Revision Combiner       (full, workspace_refresh)
       - Guardrail Critic        (any mode that emits sentence suggestions)
     Each specialist fails independently into a warning rather than failing the run.
@@ -641,7 +641,7 @@ def run_essay_workspace_coach(
 
     # workspace_refresh = coaching-session companion pack. Maximize template use
     # (alignment, grounding, structure, specificity, tone, coverage) in parallel.
-    # Reader/reviewer simulation is intentionally OFF for workspace sessions.
+    # Reviewer simulation is opt-in via mode=="reviewer" only (not full).
     # Deep 7-criterion scores still come from /api/analyze.
     enabled = {
         "sentence": mode in ("full", "workspace_refresh", "grammar_tone", "auto_check"),
@@ -650,7 +650,7 @@ def run_essay_workspace_coach(
         "structure": mode in ("full", "structure", "workspace_refresh"),
         "specificity": mode in ("full", "structure", "workspace_refresh"),
         "tone": mode in ("full", "workspace_refresh"),
-        "reviewer": mode in ("full", "reviewer"),
+        "reviewer": mode == "reviewer",
         "coverage": mode in ("full", "auto_check", "workspace_refresh") and bool(outline_points),
     }
     runners = {

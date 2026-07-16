@@ -56,7 +56,7 @@ type Props = {
 
 // Shared box metrics — the textarea and its backdrop MUST match exactly so the
 // underline marks line up under the visible glyphs.
-const EDITOR_BOX = "px-5 py-4 md:px-8 font-['Calibri','Carlito','Arial',sans-serif] text-[18px] leading-8 tracking-normal [overflow-wrap:break-word]";
+const EDITOR_BOX = "px-5 py-4 md:px-8 font-display text-[18px] leading-8 tracking-normal [overflow-wrap:break-word]";
 
 type Segment = { text: string; sugg?: Suggestion };
 

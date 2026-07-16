@@ -7,6 +7,8 @@ import {
   ArrowRight,
   CalendarDays,
   Check,
+  ChevronLeft,
+  ChevronRight,
   ChevronDown,
   ClipboardList,
   Compass,
@@ -16,11 +18,11 @@ import {
   Lightbulb,
   LineChart,
   ListChecks,
+  Lock,
   Menu,
+  MessageSquare,
   PanelLeftClose,
   PanelLeftOpen,
-  PanelRightClose,
-  PanelRightOpen,
   PencilLine,
   Power,
   ReceiptText,
@@ -40,7 +42,8 @@ import {
   applySafeMechanics,
   applySuggestion,
   CATEGORY_META,
-  isSafeQuickFix,
+  CATEGORY_ORDER,
+  countByCategory,
   mergeSuggestions,
   type CoachSentenceSuggestion,
   type Suggestion,
@@ -81,6 +84,7 @@ import {
   type WorkExperienceEntry,
   type UserProfile,
   type AnalysisResult,
+  type AnalysisScore,
   type EssayDraft,
   type ActiveScholarship,
   type WikiDiscoveryResult,
@@ -122,13 +126,57 @@ const SIDEBAR_MAX_WIDTH = 420;
 const SIDEBAR_DEFAULT_WIDTH = 288;
 const SIDEBAR_WIDTH_KEY = "scholar-e:sidebarWidth";
 
+function needsAcademicOnboarding(user: UserProfile | null) {
+  return !!(
+    user &&
+    !user.academicOnboardingCompleted &&
+    !user.educationLevel &&
+    !user.educationHistory?.some((entry) => entry.educationLevel?.trim()) &&
+    !user.optional?.resumeFileName
+  );
+}
+
 function Journey() {
-  const { user, updateProfile, resetProfile } = useUser();
+  const { user, isHydrated, updateProfile, resetProfile } = useUser();
   const [stepIdx, setStepIdx] = useState(0);
   const [profileError, setProfileError] = useState("");
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [panelWidth, setPanelWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
   const [sidebarDragging, setSidebarDragging] = useState(false);
+  const [academicOnboardingActive, setAcademicOnboardingActive] = useState<boolean | null>(null);
+  const [showResumePrompt, setShowResumePrompt] = useState(false);
+  const guidedSidebarExpanded = useRef(false);
+  const [journeyTutorialActive, setJourneyTutorialActive] = useState(false);
+  const journeyMainRef = useRef<HTMLElement | null>(null);
+  const accountIdentity = user?.email || (user ? "guest-profile" : "anonymous");
+
+  useEffect(() => {
+    if (!isHydrated) return;
+    setAcademicOnboardingActive(needsAcademicOnboarding(user));
+    setShowResumePrompt(false);
+    // Re-evaluate only when the active account changes, not while its onboarding answers save.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountIdentity, isHydrated]);
+
+  // Keep the Journey navigation expanded by default on layouts with room for it.
+  // After this initial setup, only the user's collapse/expand controls change it.
+  useEffect(() => {
+    if (window.matchMedia("(min-width: 768px)").matches) setIsSidebarOpen(true);
+  }, []);
+
+  useEffect(() => {
+    if (!isHydrated || !user?.journeyTutorialPending) return;
+    if (user.journeyTutorialCompleted || user.journeyTutorialSkipped) return;
+    setStepIdx(0);
+    setIsSidebarOpen(true);
+    setJourneyTutorialActive(true);
+  }, [isHydrated, user?.journeyTutorialPending, user?.journeyTutorialCompleted, user?.journeyTutorialSkipped]);
+
+  useEffect(() => {
+    if (academicOnboardingActive !== false || !showResumePrompt) return;
+    const frame = window.requestAnimationFrame(() => setShowResumePrompt(false));
+    return () => window.cancelAnimationFrame(frame);
+  }, [academicOnboardingActive, showResumePrompt]);
 
   // Restore the user's chosen sidebar width (client-only; SSR-safe).
   useEffect(() => {
@@ -164,7 +212,24 @@ function Journey() {
     setProfileError("");
   }
 
-  const step = journeySteps[stepIdx];
+  const guidedProfileSetupActive = !!(
+    user?.profileStartChoiceCompleted &&
+    !user?.profileSetupCompleted
+  );
+  const visibleStepIdx = guidedProfileSetupActive ? 0 : stepIdx;
+  const step = journeySteps[visibleStepIdx];
+
+  useEffect(() => {
+    if (!guidedProfileSetupActive) {
+      guidedSidebarExpanded.current = false;
+      return;
+    }
+    if (guidedSidebarExpanded.current) return;
+    guidedSidebarExpanded.current = true;
+    setStepIdx(0);
+    if (window.matchMedia("(min-width: 768px)").matches) setIsSidebarOpen(true);
+  }, [guidedProfileSetupActive]);
+
   const goNext = () => {
     if (step.slug === "profile" && !isProfileComplete(user)) {
       setProfileError("Fill out the required fields");
@@ -178,26 +243,67 @@ function Journey() {
     setStepIdx((i) => Math.max(i - 1, 0));
   };
   const selectStep = (idx: number) => {
+    if (journeyTutorialActive || (guidedProfileSetupActive && idx > 0)) return;
     setStepIdx(idx);
   };
+
+  function startJourneyTutorial() {
+    setStepIdx(0);
+    setIsSidebarOpen(true);
+    setJourneyTutorialActive(true);
+  }
+
+  function closeJourneyTutorial(skipped: boolean) {
+    updateProfile({
+      journeyTutorialPending: false,
+      journeyTutorialCompleted: !skipped,
+      journeyTutorialSkipped: skipped,
+    });
+    setJourneyTutorialActive(false);
+    setStepIdx(1);
+    window.requestAnimationFrame(() => journeyMainRef.current?.focus());
+  }
+
+  if (!isHydrated || academicOnboardingActive === null) {
+    return <div className="min-h-screen bg-[linear-gradient(180deg,#f9faff_0%,#f3f5fb_100%)]" />;
+  }
+
+  if (academicOnboardingActive && user) {
+    return (
+      <AcademicOnboarding
+        open
+        user={user}
+        updateProfile={updateProfile}
+        onComplete={() => {
+          setStepIdx(0);
+          setAcademicOnboardingActive(false);
+          setShowResumePrompt(true);
+        }}
+      />
+    );
+  }
+
   return (
     <TooltipProvider delayDuration={150}>
       <div
-        className="min-h-screen flex overflow-x-hidden"
+        className="flex h-screen overflow-hidden"
         style={{ ["--sw" as string]: `${panelWidth}px` } as React.CSSProperties}
       >
         <SidebarRail
-          activeIdx={stepIdx}
+          activeIdx={visibleStepIdx}
+          laterStepsLocked={guidedProfileSetupActive}
           onSelect={selectStep}
           onExpand={() => setIsSidebarOpen(true)}
         />
         <Sidebar
-          activeIdx={stepIdx}
+          activeIdx={visibleStepIdx}
+          laterStepsLocked={guidedProfileSetupActive}
+          tutorialActive={journeyTutorialActive}
           isOpen={isSidebarOpen}
           onClose={() => setIsSidebarOpen(false)}
           onSelect={(idx) => {
             selectStep(idx);
-            setIsSidebarOpen(false);
+            if (!window.matchMedia("(min-width: 768px)").matches) setIsSidebarOpen(false);
           }}
           onClearAll={handleClearAll}
           onResize={(w) => setPanelWidth(Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, w)))}
@@ -206,14 +312,14 @@ function Journey() {
         <div
           className={`flex w-full min-w-0 flex-col ${
             sidebarDragging ? "" : "transition-[padding] duration-300 ease-out"
-          } ${isSidebarOpen ? "md:pl-[var(--sw)]" : "md:pl-14"}`}
+          } ${isSidebarOpen ? "md:pl-[var(--sw)]" : "md:pl-[65px]"}`}
         >
-          <TopBar step={step} stepIdx={stepIdx} />
+          <TopBar step={step} stepIdx={visibleStepIdx} guidedProfileSetupActive={guidedProfileSetupActive} />
           <FloatingSidebarToggle
             isOpen={isSidebarOpen}
             onOpen={() => setIsSidebarOpen(true)}
           />
-          <main className={`flex-1 overflow-y-auto transition-colors duration-500 ${
+          <main ref={journeyMainRef} tabIndex={-1} className={`min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto outline-none transition-colors duration-500 ${
             step.slug === "discovery"
               ? user?.wikiDiscovery
                 ? "bg-[radial-gradient(circle_at_85%_8%,rgba(109,93,246,0.10),transparent_28%),linear-gradient(180deg,#f4f6fb_0%,#ffffff_48%,#f4f2fb_100%)]"
@@ -241,8 +347,14 @@ function Journey() {
                 goToProfile={() => setStepIdx(Math.max(0, journeySteps.findIndex((s) => s.slug === "profile")))}
                 goToRequirements={() => setStepIdx(Math.max(0, journeySteps.findIndex((s) => s.slug === "requirements")))}
                 profileError={profileError}
+                startProfilePrompt={showResumePrompt}
+                onProfileSetupComplete={startJourneyTutorial}
               />
               </div>
+            </div>
+          </main>
+          {!guidedProfileSetupActive && <footer className="shrink-0 border-t border-border bg-background/95 px-6 backdrop-blur md:px-10">
+            <div className="mx-auto max-w-7xl">
               <Nav
                 stepIdx={stepIdx}
                 onNext={goNext}
@@ -250,8 +362,14 @@ function Journey() {
                 hideNext={step.slug === "discovery"}
               />
             </div>
-          </main>
+          </footer>}
         </div>
+        {journeyTutorialActive && (
+          <JourneyNavigationTutorial
+            onFinish={() => closeJourneyTutorial(false)}
+            onSkip={() => closeJourneyTutorial(true)}
+          />
+        )}
       </div>
     </TooltipProvider>
   );
@@ -273,22 +391,10 @@ function isRequiredAboutComplete(user: UserProfile | null) {
   );
 }
 
-/** Related icon per journey step (shown in the rail + expanded sidebar instead of a number). */
-const STEP_ICONS: Record<string, typeof Target> = {
-  profile: UserRound,
-  discovery: Compass,
-  requirements: Target,
-  "essay-workspace": PencilLine,
-  revise: Sparkles,
-  "final-check": ShieldCheck,
-  tracker: LineChart,
-};
-function stepIcon(slug: string) {
-  return STEP_ICONS[slug] ?? Target;
-}
-
 function Sidebar({
   activeIdx,
+  laterStepsLocked,
+  tutorialActive,
   isOpen,
   onClose,
   onSelect,
@@ -297,6 +403,8 @@ function Sidebar({
   onResizeActive,
 }: {
   activeIdx: number;
+  laterStepsLocked: boolean;
+  tutorialActive: boolean;
   isOpen: boolean;
   onClose: () => void;
   onSelect: (i: number) => void;
@@ -338,6 +446,7 @@ function Sidebar({
         }`}
       />
       <aside
+        data-journey-sidebar
         className={`fixed inset-y-0 left-0 z-40 flex w-80 max-w-[85vw] shrink-0 flex-col border-r border-border bg-card/95 backdrop-blur transition-transform duration-300 ease-out md:w-[var(--sw)] md:max-w-none ${
           isOpen ? "translate-x-0" : "-translate-x-full"
         }`}
@@ -353,8 +462,10 @@ function Sidebar({
               <button
                 type="button"
                 aria-label="Collapse sidebar"
-                onClick={onClose}
-                className="grid size-8 shrink-0 place-items-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground"
+                aria-disabled={tutorialActive || undefined}
+                data-sidebar-collapse
+                onClick={() => { if (!tutorialActive) onClose(); }}
+                className="grid size-8 shrink-0 place-items-center rounded-lg text-muted-foreground transition-[background-color,color,box-shadow,transform] hover:bg-accent hover:text-foreground data-[tutorial-highlight=true]:ring-2 data-[tutorial-highlight=true]:ring-info/60"
               >
                 <PanelLeftClose className="size-5" strokeWidth={2} />
               </button>
@@ -365,42 +476,52 @@ function Sidebar({
 
         <div className="flex-1 overflow-y-auto px-3 py-4 space-y-5">
           {groups.map(([group, steps]) => (
-            <div key={group}>
+            <div key={group} data-journey-group={group}>
               <div className="px-3 text-[10px] uppercase tracking-widest text-muted-foreground mb-2">{group}</div>
               <div className="space-y-0.5">
                 {steps.map((s) => {
                   const idx = journeySteps.findIndex((x) => x.id === s.id);
                   const isActive = idx === activeIdx;
                   const isDone = idx < activeIdx;
-                  const Icon = stepIcon(s.slug);
+                  const isLocked = laterStepsLocked && idx > 0;
                   return (
-                    <button
-                      key={s.id}
-                      onClick={() => onSelect(idx)}
-                      className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-left text-[13px] transition-colors ${
-                        isActive
-                          ? "bg-primary text-primary-foreground"
-                          : "hover:bg-accent text-foreground/80"
-                      }`}
-                    >
-                      <span
-                        className={`relative size-6 shrink-0 rounded-md grid place-items-center ${
-                          isActive
-                            ? "bg-gold text-gold-foreground"
-                            : isDone
-                            ? "bg-success/20 text-success"
-                            : "bg-secondary text-muted-foreground"
-                        }`}
-                      >
-                        <Icon className="size-3.5" strokeWidth={2} />
-                        {isDone && (
-                          <span className="absolute -bottom-0.5 -right-0.5 grid size-3 place-items-center rounded-full bg-success text-white ring-2 ring-card">
-                            <Check className="size-2" strokeWidth={4} />
+                    <Tooltip key={s.id}>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          onClick={() => { if (!isLocked) onSelect(idx); }}
+                          aria-disabled={isLocked || undefined}
+                          aria-label={isLocked ? `${s.title}. Complete your profile to unlock this step.` : s.title}
+                          className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-left text-[13px] transition-colors ${
+                            isActive
+                              ? "bg-info/10 text-info"
+                              : isLocked
+                                ? "cursor-not-allowed text-muted-foreground opacity-55"
+                                : "hover:bg-accent text-foreground/80"
+                          }`}
+                        >
+                          <span
+                            className={`relative size-6 shrink-0 rounded-md grid place-items-center ${
+                              isActive
+                                ? "bg-info text-white"
+                                : isDone
+                                ? "bg-success/20 text-success"
+                                : "bg-secondary text-muted-foreground"
+                            }`}
+                          >
+                            <span className="text-xs font-bold tabular-nums">{idx + 1}</span>
+                            {isDone && (
+                              <span className="absolute -bottom-0.5 -right-0.5 grid size-3 place-items-center rounded-full bg-success text-white ring-2 ring-card">
+                                <Check className="size-2" strokeWidth={4} />
+                              </span>
+                            )}
                           </span>
-                        )}
-                      </span>
-                      <span className="truncate">{s.title}</span>
-                    </button>
+                          <span className="min-w-0 flex-1 truncate">{s.title}</span>
+                          {isLocked && <Lock className="size-3.5 shrink-0" aria-hidden="true" />}
+                        </button>
+                      </TooltipTrigger>
+                      {isLocked && <TooltipContent side="right">Complete your profile to unlock this step.</TooltipContent>}
+                    </Tooltip>
                   );
                 })}
               </div>
@@ -439,12 +560,233 @@ function Sidebar({
   );
 }
 
+const JOURNEY_TUTORIAL_STEPS = [
+  {
+    group: "Sidebar",
+    title: "Your Journey in Scholar-E",
+    description: "Use the Journey sidebar to move through each stage of your application process, from discovering opportunities to tracking submissions.",
+    tip: "Tip: You can collapse the sidebar anytime to create more workspace.",
+  },
+  {
+    group: "Analyze",
+    title: "Understand your fit",
+    description: "Review eligibility requirements and see how well each opportunity aligns with your profile.",
+    tip: "",
+  },
+  {
+    group: "Apply",
+    title: "Build a stronger application",
+    description: "Draft, review, and improve your essays while keeping your own voice and experiences at the center.",
+    tip: "",
+  },
+  {
+    group: "Track",
+    title: "Stay ready and organized",
+    description: "Confirm your application materials are complete and keep track of your submissions and progress.",
+    tip: "",
+  },
+] as const;
+
+function JourneyNavigationTutorial({
+  onFinish,
+  onSkip,
+}: {
+  onFinish: () => void;
+  onSkip: () => void;
+}) {
+  const [stepIndex, setStepIndex] = useState(0);
+  const [spotlight, setSpotlight] = useState({ left: 8, top: 8, width: 240, height: 100 });
+  const [compact, setCompact] = useState(false);
+  const [leaving, setLeaving] = useState(false);
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  const exitTimer = useRef<number | null>(null);
+  const collapseAnimationPlayed = useRef(false);
+  const step = JOURNEY_TUTORIAL_STEPS[stepIndex];
+
+  useEffect(() => {
+    cardRef.current?.focus();
+  }, [stepIndex]);
+
+  useEffect(() => {
+    if (stepIndex !== 0) return;
+    const collapseButton = document.querySelector<HTMLElement>("[data-sidebar-collapse]");
+    if (!collapseButton) return;
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduceMotion) collapseButton.dataset.tutorialHighlight = "true";
+    if (!reduceMotion && !collapseAnimationPlayed.current) {
+      collapseAnimationPlayed.current = true;
+      collapseButton.animate(
+        [
+          { transform: "scale(1)", boxShadow: "0 0 0 0 rgba(109, 93, 246, 0)", offset: 0 },
+          { transform: "scale(1.05)", boxShadow: "0 0 0 6px rgba(109, 93, 246, 0.22)", offset: 0.3 },
+          { transform: "scale(1.05)", boxShadow: "0 0 0 6px rgba(109, 93, 246, 0.22)", offset: 0.65 },
+          { transform: "scale(1)", boxShadow: "0 0 0 0 rgba(109, 93, 246, 0)", offset: 1 },
+        ],
+        { duration: 1200, iterations: 1, easing: "ease-in-out" },
+      );
+    }
+    return () => {
+      delete collapseButton.dataset.tutorialHighlight;
+    };
+  }, [stepIndex]);
+
+  useEffect(() => {
+    const keepFocusInTutorial = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        return;
+      }
+      if (event.key !== "Tab" || !cardRef.current) return;
+      const focusable = Array.from(
+        cardRef.current.querySelectorAll<HTMLElement>("button:not([disabled]), [href], [tabindex]:not([tabindex='-1'])"),
+      );
+      if (!focusable.length) {
+        event.preventDefault();
+        cardRef.current.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && (document.activeElement === first || document.activeElement === cardRef.current)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", keepFocusInTutorial);
+    return () => document.removeEventListener("keydown", keepFocusInTutorial);
+  }, []);
+
+  useEffect(() => {
+    let frame = 0;
+    const startedAt = window.performance.now();
+    const measure = () => {
+      const target = document.querySelector<HTMLElement>(
+        stepIndex === 0 ? "[data-journey-sidebar]" : `[data-journey-group="${step.group}"]`,
+      );
+      if (target) {
+        target.scrollIntoView({ block: "nearest" });
+        const rect = target.getBoundingClientRect();
+        const padding = 12;
+        setSpotlight({
+          left: Math.max(8, rect.left - padding),
+          top: Math.max(8, rect.top - padding),
+          width: Math.min(window.innerWidth - 16, rect.width + padding * 2),
+          height: Math.min(window.innerHeight - 16, rect.height + padding * 2),
+        });
+      }
+      setCompact(window.innerWidth < 768);
+      if (window.performance.now() - startedAt < 400) frame = window.requestAnimationFrame(measure);
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    window.addEventListener("scroll", measure, true);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure, true);
+    };
+  }, [step.group, stepIndex]);
+
+  useEffect(() => () => {
+    if (exitTimer.current !== null) window.clearTimeout(exitTimer.current);
+  }, []);
+
+  function close(callback: () => void) {
+    setLeaving(true);
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    exitTimer.current = window.setTimeout(callback, reduceMotion ? 0 : 200);
+  }
+
+  const cardWidth = compact ? window.innerWidth - 32 : Math.min(352, window.innerWidth - 32);
+  const cardStyle: React.CSSProperties = compact
+    ? { left: 16, right: 16, bottom: 16 }
+    : {
+        left: Math.min(spotlight.left + spotlight.width + 20, window.innerWidth - cardWidth - 16),
+        top: Math.max(16, Math.min(spotlight.top, window.innerHeight - 300)),
+        width: cardWidth,
+      };
+
+  return (
+    <div className={`fixed inset-0 z-50 transition-opacity duration-200 motion-reduce:transition-none ${leaving ? "opacity-0" : "opacity-100"}`}>
+      <div className="absolute inset-0 pointer-events-auto" aria-hidden="true" />
+      <div
+        className="pointer-events-none fixed rounded-2xl border border-info/60 shadow-[0_0_0_9999px_rgba(20,28,48,0.46),0_10px_30px_rgba(31,42,68,0.22)] transition-[left,top,width,height] duration-300 ease-out motion-reduce:transition-none"
+        style={spotlight}
+        aria-hidden="true"
+      />
+      <div
+        ref={cardRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="journey-tutorial-title"
+        aria-describedby="journey-tutorial-description"
+        tabIndex={-1}
+        className="fixed z-10 rounded-2xl border border-border bg-card p-5 shadow-xl outline-none motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-200"
+        style={cardStyle}
+      >
+        <div className="text-xs font-semibold uppercase tracking-[0.16em] text-info">
+          Step {stepIndex + 1} of {JOURNEY_TUTORIAL_STEPS.length}
+        </div>
+        <h2 id="journey-tutorial-title" className="mt-2 font-display text-xl font-bold">
+          {step.title}
+        </h2>
+        <p id="journey-tutorial-description" className="mt-2 text-sm leading-6 text-muted-foreground">
+          {step.description}
+        </p>
+        {step.tip && (
+          <p className="mt-3 rounded-lg bg-secondary/70 px-3 py-2 text-xs leading-5 text-muted-foreground">
+            {step.tip}
+          </p>
+        )}
+        <div className="sr-only" aria-live="polite">
+          Tutorial step {stepIndex + 1} of {JOURNEY_TUTORIAL_STEPS.length}: {step.group}
+        </div>
+        <div className="mt-5 flex items-center justify-between gap-3">
+          <button
+            type="button"
+            onClick={() => close(onSkip)}
+            className="text-sm font-medium text-muted-foreground hover:text-foreground"
+          >
+            Skip Tutorial
+          </button>
+          <div className="flex items-center gap-2">
+            {stepIndex > 0 && (
+              <button
+                type="button"
+                onClick={() => setStepIndex((current) => current - 1)}
+                className="rounded-full border border-border px-4 py-2 text-sm font-medium hover:bg-accent"
+              >
+                Back
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                if (stepIndex === JOURNEY_TUTORIAL_STEPS.length - 1) close(onFinish);
+                else setStepIndex((current) => current + 1);
+              }}
+              className="rounded-full bg-info px-4 py-2 text-sm font-medium text-white hover:opacity-90"
+            >
+              {stepIndex === JOURNEY_TUTORIAL_STEPS.length - 1 ? "Finish" : "Next"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TopBar({
   step,
   stepIdx,
+  guidedProfileSetupActive,
 }: {
   step: (typeof journeySteps)[number];
   stepIdx: number;
+  guidedProfileSetupActive: boolean;
 }) {
   const pct = ((stepIdx + 1) / journeySteps.length) * 100;
   return (
@@ -454,17 +796,23 @@ function TopBar({
           <TooltipTrigger asChild>
             <div className="flex min-w-0 flex-1 items-baseline gap-2">
               <span className="truncate text-sm font-medium text-foreground">{step.title}</span>
-              <span className="hidden shrink-0 text-xs text-muted-foreground sm:inline">
-                {step.group} · Step {step.id}/{journeySteps.length}
-              </span>
+              {guidedProfileSetupActive ? (
+                <span className="hidden shrink-0 text-xs text-muted-foreground sm:inline">Complete Your Profile</span>
+              ) : (
+                <span className="hidden shrink-0 text-xs text-muted-foreground sm:inline">
+                  {step.group} · Step {step.id}/{journeySteps.length}
+                </span>
+              )}
             </div>
           </TooltipTrigger>
           <TooltipContent>Goal: {step.goal}</TooltipContent>
         </Tooltip>
       </div>
-      <div className="h-1 bg-secondary">
-        <div className="h-full bg-success transition-all duration-500" style={{ width: `${pct}%` }} />
-      </div>
+      {!guidedProfileSetupActive && (
+        <div className="h-1 bg-secondary">
+          <div className="h-full bg-info transition-all duration-500" style={{ width: `${pct}%` }} />
+        </div>
+      )}
     </div>
   );
 }
@@ -493,21 +841,23 @@ function FloatingSidebarToggle({
 /**
  * Persistent slim navigation rail (md+). Replaces the old floating toggle pill:
  * docked to the left edge with the logo (home), a dedicated panel-toggle button,
- * the journey steps as icon markers (teal = done, gold = current, gray = upcoming),
+ * the journey steps as numbered markers (teal = done, purple = current, gray = upcoming),
  * and the user avatar. The toggle and avatar expand the full sidebar panel.
  */
 function SidebarRail({
   activeIdx,
+  laterStepsLocked,
   onSelect,
   onExpand,
 }: {
   activeIdx: number;
+  laterStepsLocked: boolean;
   onSelect: (i: number) => void;
   onExpand: () => void;
 }) {
   const { user } = useUser();
   return (
-    <aside className="fixed inset-y-0 left-0 z-30 hidden w-14 flex-col items-center border-r border-border bg-card/95 backdrop-blur md:flex">
+    <aside className="fixed inset-y-0 left-0 z-30 hidden w-[65px] flex-col items-center border-r border-border bg-card/95 backdrop-blur md:flex">
       <Link
         to="/"
         aria-label="Scholar-E home"
@@ -530,28 +880,34 @@ function SidebarRail({
         <TooltipContent side="right">Expand sidebar</TooltipContent>
       </Tooltip>
 
-      <div className="mt-3 flex flex-1 flex-col items-center gap-1.5 overflow-y-auto py-1">
+      <div className="mt-3 flex flex-1 flex-col items-center gap-1.5 overflow-hidden py-1">
+        <span className="mb-1 text-[9px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+          Steps
+        </span>
         {journeySteps.map((s, idx) => {
           const isActive = idx === activeIdx;
           const isDone = idx < activeIdx;
-          const Icon = stepIcon(s.slug);
+          const isLocked = laterStepsLocked && idx > 0;
           return (
             <Tooltip key={s.id}>
               <TooltipTrigger asChild>
                 <button
                   type="button"
-                  onClick={() => onSelect(idx)}
-                  aria-label={s.title}
+                  onClick={() => { if (!isLocked) onSelect(idx); }}
+                  aria-label={isLocked ? `Step ${idx + 1}: ${s.title}. Complete your profile to unlock this step.` : `Step ${idx + 1}: ${s.title}`}
+                  aria-disabled={isLocked || undefined}
                   aria-current={isActive ? "step" : undefined}
-                  className={`relative grid size-9 shrink-0 place-items-center rounded-lg transition-colors ${
+                  className={`relative grid size-9 shrink-0 place-items-center rounded-full transition-colors ${
                     isActive
-                      ? "bg-gold text-gold-foreground"
+                      ? "bg-info text-white"
+                      : isLocked
+                        ? "cursor-not-allowed text-muted-foreground opacity-45"
                       : isDone
                         ? "bg-success/20 text-success hover:bg-success/30"
                         : "text-muted-foreground hover:bg-accent hover:text-foreground"
                   }`}
                 >
-                  <Icon className="size-5" strokeWidth={2} />
+                  <span className="text-sm font-bold tabular-nums">{idx + 1}</span>
                   {isDone && (
                     <span className="absolute -bottom-0.5 -right-0.5 grid size-3.5 place-items-center rounded-full bg-success text-white ring-2 ring-card">
                       <Check className="size-2.5" strokeWidth={3.5} />
@@ -560,7 +916,7 @@ function SidebarRail({
                 </button>
               </TooltipTrigger>
               <TooltipContent side="right">
-                {s.group} · {s.title}
+                {isLocked ? "Complete your profile to unlock this step." : `${idx + 1} — ${s.title}`}
               </TooltipContent>
             </Tooltip>
           );
@@ -598,7 +954,7 @@ function Nav({
   hideNext?: boolean;
 }) {
   return (
-    <div className="mt-12 flex items-center justify-between border-t border-border pt-6">
+    <div className="flex min-h-16 items-center justify-between">
       <button
         onClick={onPrev}
         disabled={stepIdx === 0}
@@ -631,6 +987,8 @@ function StepBody({
   goToProfile,
   goToRequirements,
   profileError,
+  startProfilePrompt,
+  onProfileSetupComplete,
 }: {
   slug: string;
   goNext: () => void;
@@ -638,9 +996,11 @@ function StepBody({
   goToProfile: () => void;
   goToRequirements: () => void;
   profileError: string;
+  startProfilePrompt: boolean;
+  onProfileSetupComplete: () => void;
 }) {
   switch (slug) {
-    case "profile": return <StepProfile error={profileError} onComplete={goNext} />;
+    case "profile": return <StepProfile error={profileError} onComplete={onProfileSetupComplete} startWithResumePrompt={startProfilePrompt} />;
     case "discovery": return <StepDiscovery onUpdateProfile={goToProfile} onUseSource={goToRequirements} />;
     case "opportunities": return <StepOpportunities onAnalyze={goNext} />;
     case "requirements": return <StepRequirementsAndFit />;
@@ -1039,7 +1399,15 @@ const PROFILE_ENTRY_CLASS = "rounded-lg border border-border/60 bg-white/60 p-4"
 
 /* ---------------- Step 2: Profile ---------------- */
 
-function StepProfile({ error, onComplete }: { error: string; onComplete: () => void }) {
+function StepProfile({
+  error,
+  onComplete,
+  startWithResumePrompt,
+}: {
+  error: string;
+  onComplete: () => void;
+  startWithResumePrompt: boolean;
+}) {
   const { user, updateProfile } = useUser();
   const level = user?.educationLevel;
   const [showExtended, setShowExtended] = useState(false);
@@ -1048,17 +1416,13 @@ function StepProfile({ error, onComplete }: { error: string; onComplete: () => v
   const [profileStartMode, setProfileStartMode] = useState<"resume" | "manual" | null>(
     user?.optional?.resumeFileName ? "resume" : user?.educationLevel ? "manual" : null,
   );
-  const hasExistingAcademicProfile = !!(
-    user?.educationLevel ||
-    user?.educationHistory?.some((entry) => entry.educationLevel?.trim()) ||
-    user?.optional?.resumeFileName
-  );
-  const [showAcademicOnboarding, setShowAcademicOnboarding] = useState(
-    !user?.academicOnboardingCompleted && !hasExistingAcademicProfile,
-  );
   const [showStartDialog, setShowStartDialog] = useState(
-    !user?.academicOnboardingCompleted && !hasExistingAcademicProfile ? false :
-      !user?.educationLevel && !user?.optional?.resumeFileName,
+    startWithResumePrompt || !!(
+      !user?.profileStartChoiceCompleted &&
+      !user?.profileSetupCompleted &&
+      !user?.optional?.resumeFileName &&
+      (user?.academicOnboardingCompleted || !user?.educationLevel)
+    ),
   );
   const [profileSetupStep, setProfileSetupStep] = useState(0);
   const [highestProfileSetupStep, setHighestProfileSetupStep] = useState(0);
@@ -1322,6 +1686,7 @@ function StepProfile({ error, onComplete }: { error: string; onComplete: () => v
           ...parsedGraduate,
         },
         educationHistory: nextEducationHistory.length ? nextEducationHistory : user?.educationHistory,
+        profileStartChoiceCompleted: true,
         researchExperience: mergedResearchExperience,
         workExperience: mergedWorkExperience,
         optional: {
@@ -1363,7 +1728,7 @@ function StepProfile({ error, onComplete }: { error: string; onComplete: () => v
   const showRequiredErrors = !!error;
   const aboutYouComplete = isRequiredAboutComplete(user);
   const hasEducationLevel = educationHistory.some((entry) => entry.educationLevel?.trim()) || !!user?.educationLevel;
-  const shouldShowProfileSetup = !showAcademicOnboarding && !showStartDialog && !user?.profileSetupCompleted;
+  const shouldShowProfileSetup = !showStartDialog && !user?.profileSetupCompleted;
   const showSetupErrors = showRequiredErrors || showProfileSetupValidation;
   const importedFromResumeBadge = resumeImportedProfileSteps.includes(profileSetupStep) ? (
     <span className="inline-flex rounded-full bg-info/10 px-2 py-0.5 text-[11px] font-medium text-info">
@@ -1606,7 +1971,10 @@ function StepProfile({ error, onComplete }: { error: string; onComplete: () => v
       return;
     }
     if (profileSetupStep === profileSetupSteps.length - 1) {
-      updateProfile({ profileSetupCompleted: true });
+      updateProfile({
+        profileSetupCompleted: true,
+        journeyTutorialPending: true,
+      });
       onComplete();
       return;
     }
@@ -1618,37 +1986,46 @@ function StepProfile({ error, onComplete }: { error: string; onComplete: () => v
 
   return (
     <div className="mx-auto max-w-7xl">
-      {user && (
-        <AcademicOnboarding
-          open={showAcademicOnboarding}
-          user={user}
-          updateProfile={updateProfile}
-          onComplete={() => {
-            setShowAcademicOnboarding(false);
-            setShowStartDialog(true);
-          }}
-        />
-      )}
-      <Dialog open={showStartDialog} onOpenChange={setShowStartDialog}>
+      <Dialog open={showStartDialog}>
         <DialogContent
-          className="max-w-md"
+          className="top-[45%] w-[calc(100%-1.5rem)] max-w-xl gap-0 border-0 bg-transparent p-0 shadow-none motion-reduce:animate-none [&>button]:hidden"
+          overlayClassName="bg-[radial-gradient(circle_at_50%_24%,rgba(109,93,246,0.08),transparent_34%),linear-gradient(180deg,#f9faff_0%,#f3f5fb_100%)] data-[state=open]:animate-none data-[state=closed]:animate-none"
+          onEscapeKeyDown={(event) => event.preventDefault()}
           onPointerDownOutside={(event) => event.preventDefault()}
         >
-          <DialogHeader>
-            <DialogTitle className="font-display text-2xl">Start your profile</DialogTitle>
-            <DialogDescription>
-              Upload your resume to automatically fill in many of your profile details. You can
-              review and edit everything before continuing.
-            </DialogDescription>
+          <DialogHeader className="pb-7 text-center sm:text-center">
+            <div className="mb-3 flex items-center justify-center gap-2">
+              <img src={scholarELogoUrl} alt="" className="size-8 rounded-full object-cover" />
+              <span className="font-display text-sm font-semibold tracking-tight text-foreground">Scholar-E</span>
+            </div>
+            {user?.academicOnboardingCompleted && (
+              <div className="mb-3 flex items-center justify-center gap-1.5 text-sm font-medium text-success motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-200">
+                <Check className="size-4" aria-hidden="true" />
+                <span>Education details saved</span>
+              </div>
+            )}
+            <div
+              className="motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-300"
+              style={{ animationDelay: "75ms", animationFillMode: "both" }}
+            >
+              <DialogTitle className="font-display text-2xl font-bold tracking-tight sm:text-3xl">Start your profile</DialogTitle>
+              <DialogDescription className="mt-1.5 text-base font-medium leading-6 text-foreground/75 sm:text-lg">
+                Upload your resume to automatically fill in many of your profile details. You can
+                review and edit everything before continuing.
+              </DialogDescription>
+            </div>
           </DialogHeader>
 
-          <div className="grid gap-3 pt-2">
+          <div
+            className="grid gap-2 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-300"
+            style={{ animationDelay: "75ms", animationFillMode: "both" }}
+          >
             <button
               type="button"
               onClick={() => startResumeInputRef.current?.click()}
               disabled={!!resumeStatus}
               aria-busy={!!resumeStatus && !resumeError}
-              className={`flex w-full items-center gap-3 rounded-lg border border-border bg-primary px-4 py-3 text-left text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-90 ${resumeStatus && !resumeError ? "agent-loading" : ""}`}
+              className={`flex min-h-12 w-full items-center gap-3 rounded-xl border border-border bg-card px-4 py-3 text-left text-sm font-medium text-foreground shadow-sm transition-colors hover:bg-accent disabled:opacity-90 ${resumeStatus && !resumeError ? "agent-loading" : ""}`}
             >
               {resumeStatus && !resumeError ? (
                 <Spinner className="size-5" />
@@ -1661,6 +2038,7 @@ function StepProfile({ error, onComplete }: { error: string; onComplete: () => v
               type="button"
               onClick={() => {
                 setProfileStartMode("manual");
+                updateProfile({ profileStartChoiceCompleted: true });
                 setResumeError("");
                 setResumeImportedProfileSteps([]);
                 setProfileSetupStep(0);
@@ -1669,7 +2047,7 @@ function StepProfile({ error, onComplete }: { error: string; onComplete: () => v
                 setShowStartDialog(false);
               }}
               disabled={!!resumeStatus}
-              className="flex w-full items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-left text-sm font-medium hover:bg-accent"
+              className="flex min-h-12 w-full items-center gap-3 rounded-xl border border-border bg-card px-4 py-3 text-left text-sm font-medium shadow-sm transition-colors hover:bg-accent"
             >
               <PencilLine className="size-5 shrink-0" />
               <span>Apply Manually</span>
@@ -1678,7 +2056,7 @@ function StepProfile({ error, onComplete }: { error: string; onComplete: () => v
 
           {(resumeStatus || resumeError) && (
             <div
-              className={`rounded-lg border px-3 py-2 text-xs ${
+              className={`mt-3 rounded-lg border px-3 py-2 text-xs ${
                 resumeError
                   ? "border-destructive/30 bg-destructive/10 text-destructive"
                   : "border-success/30 bg-success/10 text-success"
@@ -1809,6 +2187,8 @@ function GuidedProfileSetup({
               type="button"
               onClick={() => onStepSelect(index)}
               disabled={index > highestStep}
+              aria-current={index === currentStep ? "step" : undefined}
+              aria-label={`${item.title}, ${index === currentStep ? "current" : index < highestStep ? "completed" : "upcoming"}`}
               className={`min-w-36 rounded-full border px-3 py-1.5 text-left text-xs font-medium ${
                 index === currentStep
                   ? "border-primary bg-primary text-primary-foreground"
@@ -1817,7 +2197,7 @@ function GuidedProfileSetup({
                     : "border-border bg-muted/50 text-muted-foreground opacity-60"
               }`}
             >
-              {index + 1}. {item.title}
+              {index < highestStep && index !== currentStep ? "✓" : index + 1}. {item.title}
             </button>
           ))}
         </div>
@@ -1829,13 +2209,14 @@ function GuidedProfileSetup({
             {steps.map((item, index) => {
               const isActive = index === currentStep;
               const isReachable = index <= highestStep;
-              const isComplete = index < currentStep || item.complete;
+              const isComplete = index < highestStep && !isActive;
               return (
                 <button
                   key={item.title}
                   type="button"
                   onClick={() => onStepSelect(index)}
                   disabled={!isReachable}
+                  aria-label={`${item.title}, ${isActive ? "current" : isComplete ? "completed" : "upcoming"}, ${item.required ? "required" : "optional"}`}
                   className={`mb-1 flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-sm transition-colors ${
                     isActive
                       ? "bg-primary text-primary-foreground"
@@ -1846,7 +2227,11 @@ function GuidedProfileSetup({
                   aria-current={isActive ? "step" : undefined}
                 >
                   <span className={`grid size-6 shrink-0 place-items-center rounded-full text-[11px] ${
-                    isComplete ? "bg-success/20 text-success" : "bg-secondary text-secondary-foreground"
+                    isActive
+                      ? "bg-primary-foreground text-primary"
+                      : isComplete
+                        ? "bg-success/20 text-success"
+                        : "bg-secondary text-secondary-foreground"
                   }`}>
                     {isComplete ? "✓" : index + 1}
                   </span>
@@ -4290,7 +4675,7 @@ function criteriaAlignmentTone(alignment?: string): "default" | "gold" | "succes
 
 /* ---------------- Step 5: Essay Workspace ---------------- */
 
-type WorkspaceTab = "outline" | "evaluation" | "highlights";
+type WorkspaceTab = "outline" | "coach" | "evaluation" | "highlights";
 type WorkspaceStage = "prompt" | "outline" | "draft" | "coach" | "revise";
 
 function normalizePdfDraftText(pages: string[]) {
@@ -4301,6 +4686,24 @@ function normalizePdfDraftText(pages: string[]) {
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
+
+const WRITING_SUPPORT_OPTIONS: Array<{ id: WritingSupportLevel; label: string; description: string }> = [
+  {
+    id: "grammar_only",
+    label: "Grammar only",
+    description: "Fix spelling, punctuation, and grammar without changing meaning.",
+  },
+  {
+    id: "sentence_polish",
+    label: "Sentence polish",
+    description: "Improve clarity and flow while preserving the student's meaning and voice.",
+  },
+  {
+    id: "rewrite_help",
+    label: "Rewrite help",
+    description: "Suggest rewritten versions, but require user approval.",
+  },
+];
 
 /** Pull the largest 2–5 digit number out of a word-limit string (e.g. "400-500 words" → 500). */
 function parseWordTarget(limit?: string): number | null {
@@ -4318,6 +4721,13 @@ function overallEssayScore(analysis?: AnalysisResult): number | null {
   return Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
 }
 
+/** Mean of a flat score map (e.g. the coach's 8-dim overall_scores) → 0–100. */
+function meanScore(scores?: Record<string, number> | null): number | null {
+  const vals = Object.values(scores ?? {}).filter((v): v is number => typeof v === "number");
+  if (!vals.length) return null;
+  return Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
+}
+
 function scoreColor(score: number): string {
   if (score >= 80) return "var(--success)";
   if (score >= 60) return "var(--warning)";
@@ -4326,6 +4736,26 @@ function scoreColor(score: number): string {
 
 function labelize(key: string): string {
   return key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function levelWord(score: number): string {
+  if (score >= 80) return "Strong — competitive draft";
+  if (score >= 60) return "Developing — keep refining";
+  return "Needs work — focus on the priorities";
+}
+
+function relativeTimeLabel(timestamp: number | null, now: number): string {
+  if (!timestamp) return "Not run yet";
+  const mins = Math.floor((now - timestamp) / 60000);
+  if (mins < 1) return "just now";
+  if (mins === 1) return "1 minute ago";
+  if (mins < 60) return `${mins} minutes ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours === 1) return "1 hour ago";
+  if (hours < 24) return `${hours} hours ago`;
+  const days = Math.floor(hours / 24);
+  if (days === 1) return "1 day ago";
+  return `${days} days ago`;
 }
 
 /** Grammarly-style circular score badge with a colored ring. */
@@ -4391,10 +4821,12 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   const [coachRaw, setCoachRaw] = useState<CoachSentenceSuggestion[]>([]);
   const [coachLoading, setCoachLoading] = useState(false);
   const [coachSummary, setCoachSummary] = useState<string | null>(() => user?.essayCoachSummary ?? null);
+  const [coachWarnings, setCoachWarnings] = useState<string[]>([]);
   const [coachResult, setCoachResult] = useState<EssayCoachResult | null>(
     () => (user?.essayCoachResult as EssayCoachResult | undefined) ?? null,
   );
   const [coachUpdatedAt, setCoachUpdatedAt] = useState<number | null>(() => user?.essayCoachUpdatedAt ?? null);
+  const [coachDraftAtRun, setCoachDraftAtRun] = useState<string>("");
   // Outline coverage is layered: `autoCovered` comes from the AI coverage agent;
   // `manualChecked`/`manualUnchecked` are the student's overrides, which persist
   // across auto-runs. Displayed = (auto ∪ manualChecked) − manualUnchecked.
@@ -4406,38 +4838,39 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   const wordCount = draft.trim() ? draft.trim().split(/\s+/).filter(Boolean).length : 0;
   const characterCount = draft.length;
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("outline");
+  const [panelOpen, setPanelOpen] = useState(true);
   const [panelWidth, setPanelWidth] = useState(() => {
     if (typeof window === "undefined") return 420;
     const saved = Number(window.localStorage.getItem("scholar-e:essay-panel-width"));
     const minimum = Math.max(300, Math.round(window.innerWidth * 0.4));
-    return Number.isFinite(saved) && saved >= 300 ? saved : Math.min(Math.max(420, minimum), Math.round(window.innerWidth * 0.55));
-  });
-  const [panelOpen, setPanelOpen] = useState(() => {
-    if (typeof window === "undefined") return true;
-    const saved = window.localStorage.getItem("scholar-e:essay-panel-open");
-    return saved == null ? true : saved !== "0";
+    return Number.isFinite(saved) && saved >= 300
+      ? saved
+      : Math.min(Math.max(420, minimum), Math.round(window.innerWidth * 0.55));
   });
   const [panelResizing, setPanelResizing] = useState(false);
   const [isEvaluating, setIsEvaluating] = useState(false);
-  const [evaluationProgress, setEvaluationProgress] = useState(0);
-  const [evaluationPhase, setEvaluationPhase] = useState<string>("");
+  const [sessionPhase, setSessionPhase] = useState("");
+  const [sessionProgress, setSessionProgress] = useState(0);
+  const [coachReady, setCoachReady] = useState(false);
   const [scoresReady, setScoresReady] = useState(false);
-  const [fixesReady, setFixesReady] = useState(false);
   const [mechanicsNote, setMechanicsNote] = useState<string | null>(null);
-  const [, setPdfStatus] = useState<string | null>(null);
-  const [, setBgStatus] = useState<string | null>(null);
+  const [pdfStatus, setPdfStatus] = useState<string | null>(null);
+  const [analysisStatus, setAnalysisStatus] = useState<string | null>(null);
+  const [bgStatus, setBgStatus] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [nowTick, setNowTick] = useState(() => Date.now());
   const [outlineLoading, setOutlineLoading] = useState(false);
   const [outlineStatus, setOutlineStatus] = useState<string | null>(null);
 
-  const rawPromptBlob = user?.activeScholarship?.essayPrompts
+  const rawPromptBlob =
+    user?.activeScholarship?.essayPrompts
     || user?.activeScholarship?.otherRequiredMaterials
     || user?.activeScholarship?.requirementsPreview
     || "";
   const availablePrompts = useMemo(() => splitEssayPrompts(rawPromptBlob), [rawPromptBlob]);
   const [selectedPromptIndex, setSelectedPromptIndex] = useState(0);
-  const essayPrompt = availablePrompts[Math.min(selectedPromptIndex, Math.max(0, availablePrompts.length - 1))] || rawPromptBlob;
+  const essayPrompt =
+    availablePrompts[Math.min(selectedPromptIndex, Math.max(0, availablePrompts.length - 1))] || rawPromptBlob;
   const hasMultiplePrompts = availablePrompts.length > 1;
   const hasOutline = !!user?.personalizedOutline?.outline?.sections?.length;
 
@@ -4447,27 +4880,6 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     }
   }, [availablePrompts.length, selectedPromptIndex]);
 
-  const outlineKey = useMemo(() => {
-    const scholarship = user?.activeScholarship ?? {};
-    return JSON.stringify({
-      scholarshipName: scholarship.name ?? "",
-      scholarshipUrl: scholarship.url ?? scholarship.officialWebsite ?? "",
-      prompt: essayPrompt,
-      requirementsPreview: scholarship.requirementsPreview ?? "",
-      updatedAt: scholarship.extractionCompletedAt ?? "",
-      profileName: user?.name ?? "",
-      educationLevel: user?.educationLevel ?? "",
-      careerGoal: user?.careerGoal ?? "",
-      highSchool: user?.highSchool ?? {},
-      undergrad: user?.undergrad ?? {},
-      graduate: user?.graduate ?? {},
-      researchExperience: user?.researchExperience ?? [],
-      workExperience: user?.workExperience ?? [],
-      optional: user?.optional ?? {},
-      prompts: user?.prompts ?? {},
-    });
-  }, [essayPrompt, user]);
-
   const workspaceStage: WorkspaceStage = useMemo(() => {
     if (!essayPrompt.trim()) return "prompt";
     if (!hasOutline) return "outline";
@@ -4476,13 +4888,11 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     return "coach";
   }, [essayPrompt, hasOutline, wordCount, coachResult, user?.lastAnalysis]);
 
-  const wordTarget = useMemo(() => parseWordTarget(buildOutlinePayload(user, essayPrompt).word_limit), [user, essayPrompt]);
-  const score = useMemo(() => {
-    const latestScoredDraft = [...(user?.drafts ?? [])]
-      .reverse()
-      .find((version) => typeof version.readinessOverall === "number" || typeof version.coachOverall === "number");
-    return latestScoredDraft?.readinessOverall ?? latestScoredDraft?.coachOverall ?? overallEssayScore(user?.lastAnalysis);
-  }, [user?.drafts, user?.lastAnalysis]);
+  const wordTarget = useMemo(
+    () => parseWordTarget(buildOutlinePayload(user, essayPrompt).word_limit),
+    [user, essayPrompt],
+  );
+  const score = useMemo(() => overallEssayScore(user?.lastAnalysis), [user?.lastAnalysis]);
   const suggestions = useMemo(() => {
     const auto = analyzeText(draft);
     const coach = anchorCoachSuggestions(coachRaw, draft);
@@ -4507,6 +4917,27 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     setActiveTab("outline");
     setPanelOpen(true);
   }
+
+  const outlineKey = useMemo(() => {
+    const scholarship = user?.activeScholarship ?? {};
+    return JSON.stringify({
+      scholarshipName: scholarship.name ?? "",
+      scholarshipUrl: scholarship.url ?? scholarship.officialWebsite ?? "",
+      prompt: essayPrompt,
+      requirementsPreview: scholarship.requirementsPreview ?? "",
+      updatedAt: scholarship.extractionCompletedAt ?? "",
+      profileName: user?.name ?? "",
+      educationLevel: user?.educationLevel ?? "",
+      careerGoal: user?.careerGoal ?? "",
+      highSchool: user?.highSchool ?? {},
+      undergrad: user?.undergrad ?? {},
+      graduate: user?.graduate ?? {},
+      researchExperience: user?.researchExperience ?? [],
+      workExperience: user?.workExperience ?? [],
+      optional: user?.optional ?? {},
+      prompts: user?.prompts ?? {},
+    });
+  }, [essayPrompt, user]);
 
   async function runOutlineGeneration() {
     if (!user || outlineLoading || !essayPrompt.trim()) return;
@@ -4539,8 +4970,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     return () => window.clearInterval(id);
   }, []);
 
-  // The user store hydrates after this route first mounts. Restore persisted
-  // coach output when hydration completes or the account changes.
+  // Restore persisted coach pack after hydration / account switch.
   useEffect(() => {
     if (!user?.essayCoachResult) return;
     const restoredResult = user.essayCoachResult as EssayCoachResult;
@@ -4578,10 +5008,6 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   }, [panelWidth, panelResizing]);
 
   useEffect(() => {
-    window.localStorage.setItem("scholar-e:essay-panel-open", panelOpen ? "1" : "0");
-  }, [panelOpen]);
-
-  useEffect(() => {
     const clamp = () => {
       const minimum = Math.max(300, Math.round(window.innerWidth * 0.4));
       const maximum = Math.round(window.innerWidth * 0.7);
@@ -4605,8 +5031,10 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     editorApiRef.current?.accept(s);
   }
 
-  // Accept-all is C0 mechanics only — never word_choice / tone / polish.
-  const quickFixSuggestions = suggestions.filter(isSafeQuickFix);
+  // "Quick fixes" = the low-risk mechanical corrections (grammar, spelling,
+  // spacing, capitalization). Stylistic/specificity rewrites are left for
+  // individual review to preserve the student's voice.
+  const quickFixSuggestions = suggestions.filter((s) => s.category === "correctness");
 
   function acceptAllQuickFixes() {
     if (!quickFixSuggestions.length) return;
@@ -4656,18 +5084,35 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   }
 
   function openHighlights() {
+    setPanelOpen(true);
     setActiveTab("highlights");
     if (suggestions[0]) requestAnimationFrame(() => editorApiRef.current?.reveal(suggestions[0]));
   }
 
-  async function runAssessment(mode: EssayCoachMode = "full", writingSupportLevel?: WritingSupportLevel) {
+  function persistCoachResult(result: EssayCoachResult, draftForRun: string) {
+    const updatedAt = Date.now();
+    setCoachResult(result);
+    setCoachSummary(result.coach_summary ?? null);
+    setCoachWarnings(result.warnings ?? []);
+    setCoachUpdatedAt(updatedAt);
+    setCoachDraftAtRun(draftForRun);
+    updateProfile({
+      essayCoachResult: result as unknown as Record<string, unknown>,
+      essayCoachSummary: result.coach_summary ?? undefined,
+      essayCoachUpdatedAt: updatedAt,
+    });
+  }
+
+  async function runCoach(mode: EssayCoachMode = "full", writingSupportLevel?: WritingSupportLevel) {
     if (coachLoading) return;
     const silent = mode === "auto_check";
+    const draftForRun = draft;
     if (silent && draft === lastAutoCheckRef.current) return; // dedupe unchanged drafts
     if (wordCount < 20) {
       if (!silent) {
-        setActiveTab("evaluation");
-        setCoachSummary('Write at least a short paragraph, then run a coaching session.');
+        setPanelOpen(true);
+        setActiveTab("coach");
+        setCoachSummary("Write at least a short paragraph, then run the writing coach.");
       }
       return;
     }
@@ -4676,8 +5121,10 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
       lastAutoCheckRef.current = draft;
       setBgStatus("Checking grammar and outline coverage…");
     } else {
-      setCoachSummary("Scholar-E is reading your draft…");
-      setActiveTab(mode === "grammar_tone" ? "highlights" : "evaluation");
+      setCoachSummary(mode === "final_check" ? "Running your final readiness check…" : "Scholar-E is reading your draft…");
+      setCoachWarnings([]);
+      setPanelOpen(true);
+      setActiveTab(mode === "grammar_tone" ? "highlights" : "coach");
     }
     try {
       const result = await runEssayCoach(buildEssayCoachPayload(user, mode, writingSupportLevel, essayPrompt));
@@ -4689,21 +5136,23 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
       }
       setCoachRaw(result.sentence_suggestions ?? []);
       if (!silent) {
-        const updatedAt = Date.now();
-        setCoachResult(result);
-        setCoachSummary(result.coach_summary ?? null);
-        setCoachUpdatedAt(updatedAt);
-        updateProfile({
-          essayCoachResult: result as unknown as Record<string, unknown>,
-          essayCoachSummary: result.coach_summary ?? undefined,
-          essayCoachUpdatedAt: updatedAt,
+        persistCoachResult(result, draftForRun);
+      }
+      // A full coach run is a checkpoint: snapshot the draft + its 8-dim scores
+      // so Progress can chart improvement across drafts (deduped on draft text).
+      if (mode === "full" && result.overall_scores && Object.keys(result.overall_scores).length) {
+        upsertVersion({
+          coachScores: result.overall_scores,
+          coachOverall: meanScore(result.overall_scores) ?? undefined,
+          coachSummary: result.coach_summary ?? undefined,
         });
       }
     } catch (error) {
       if (!silent) {
         setCoachResult(null);
         setCoachRaw([]);
-        setCoachSummary(error instanceof Error ? error.message : "The assessment could not analyze your draft.");
+        setCoachSummary(error instanceof Error ? error.message : "The writing coach could not analyze your draft.");
+        setCoachWarnings([]);
       }
     } finally {
       setCoachLoading(false);
@@ -4725,111 +5174,113 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     }
 
     setIsEvaluating(true);
+    setCoachLoading(true);
+    setCoachReady(false);
     setScoresReady(false);
-    setFixesReady(false);
-    setEvaluationProgress(6);
-    setEvaluationPhase("Cleaning spelling & mechanics…");
+    setSessionProgress(6);
+    setSessionPhase("Cleaning spelling…");
     setMechanicsNote(null);
+    setCoachWarnings([]);
     setPanelOpen(true);
-    setActiveTab("evaluation");
     setCoachSummary("Scholar-E is preparing your coaching session…");
 
     // Phase A — deterministic C0 mechanics applied before any LLM work.
     const mechanics = applySafeMechanics(draft);
     let workingUser = user;
+    const workingDraft = mechanics.appliedCount > 0 && mechanics.text !== draft ? mechanics.text : draft;
     if (mechanics.appliedCount > 0 && mechanics.text !== draft) {
       updateProfile({ essayDraft: mechanics.text });
       workingUser = { ...user, essayDraft: mechanics.text };
-      setMechanicsNote(`${mechanics.appliedCount} spelling/mechanics fix${mechanics.appliedCount === 1 ? "" : "es"} applied before coaching.`);
-      setEvaluationProgress(18);
+      setMechanicsNote(
+        `${mechanics.appliedCount} spelling/mechanics fix${mechanics.appliedCount === 1 ? "" : "es"} applied before coaching.`,
+      );
+      setSessionProgress(18);
     } else {
       setMechanicsNote(null);
-      setEvaluationProgress(14);
+      setSessionProgress(14);
     }
 
-    const payload = buildAnalyzePayload(workingUser, essayPrompt);
-    payload.cv_text = payload.cv_text || "No student profile evidence was provided.";
-    payload.scholarship_name = payload.scholarship_name || "Scholarship opportunity";
-    payload.scholarship_type = payload.scholarship_type || "Scholarship";
-    if (!payload.prompt) {
-      setIsEvaluating(false);
-      setEvaluationPhase("");
-      setCoachSummary("Add the scholarship essay prompt before coaching.");
-      return;
-    }
+    setSessionPhase("Running coach suggestions and scores…");
+    setSessionProgress((progress) => Math.max(progress, 28));
 
-    setEvaluationPhase("Scoring your essay and preparing fixes…");
-
-    // Phase B — parallel evaluate + coach pack. Progressive paint as each settles.
+    let gotCoach = false;
     let gotScores = false;
-    let gotFixes = false;
 
-    const scorePromise = analyzeApplication(payload)
+    const coachPromise = runEssayCoach(
+      buildEssayCoachPayload(workingUser, "full", "sentence_polish", essayPrompt),
+    )
       .then((result) => {
-        gotScores = true;
-        setScoresReady(true);
-        updateProfile({ lastAnalysis: result });
-        const brief = result.coaching_brief?.coach_message;
-        if (brief) setCoachSummary(brief);
-        setActiveTab("evaluation");
-        setEvaluationProgress((progress) => Math.max(progress, gotFixes ? 96 : 62));
-        setEvaluationPhase(gotFixes ? "Finishing up…" : "Scores ready — preparing Fixes…");
-        return result;
-      })
-      .catch((error) => {
-        console.error("Scholar-E scoring failed.", error);
-        setCoachSummary(error instanceof Error ? error.message : "Scoring failed. Please try again.");
-        throw error;
-      });
-
-    const fixesPromise = runEssayCoach(buildEssayCoachPayload(workingUser, "workspace_refresh", "grammar_only", essayPrompt))
-      .then((result) => {
-        gotFixes = true;
-        setFixesReady(true);
+        gotCoach = true;
+        setCoachReady(true);
         const coveredIds = result.outline_coverage?.covered_point_ids;
         if (coveredIds) {
           const known = new Set(buildOutlinePoints(workingUser?.personalizedOutline).map((p) => p.id));
           setAutoCovered(new Set(coveredIds.filter((id) => known.has(id))));
         }
         setCoachRaw(result.sentence_suggestions ?? []);
-        const updatedAt = Date.now();
-        setCoachResult(result);
+        persistCoachResult(result, workingDraft);
         if (!gotScores) {
-          setCoachSummary(result.coach_summary ?? "Fixes ready — still scoring…");
-          setActiveTab("highlights");
+          setActiveTab("coach");
+          setSessionPhase("Coach suggestions ready…");
+        } else {
+          setSessionPhase("Coach suggestions ready…");
         }
-        setCoachUpdatedAt(updatedAt);
-        updateProfile({
-          essayCoachResult: result as unknown as Record<string, unknown>,
-          essayCoachSummary: result.coach_summary ?? undefined,
-          essayCoachUpdatedAt: updatedAt,
-        });
-        setEvaluationProgress((progress) => Math.max(progress, gotScores ? 96 : 48));
-        setEvaluationPhase(gotScores ? "Fixes ready — finishing score QA…" : "Fixes ready — still scoring…");
+        setSessionProgress((progress) => Math.max(progress, gotScores ? 96 : 58));
+        if (result.overall_scores && Object.keys(result.overall_scores).length) {
+          upsertVersion({
+            coachScores: result.overall_scores,
+            coachOverall: meanScore(result.overall_scores) ?? undefined,
+            coachSummary: result.coach_summary ?? undefined,
+          });
+        }
         return result;
       })
       .catch((error) => {
-        console.error("Scholar-E workspace refresh failed.", error);
-        setFixesReady(true);
-        return null;
+        console.error("Scholar-E coach session failed.", error);
+        setCoachSummary(error instanceof Error ? error.message : "The writing coach could not analyze your draft.");
+        setCoachWarnings([]);
+        throw error;
+      });
+
+    const scoresPromise = analyzeApplication(buildAnalyzePayload(workingUser, essayPrompt))
+      .then((result) => {
+        gotScores = true;
+        setScoresReady(true);
+        updateProfile({ lastAnalysis: result });
+        if (!gotCoach) {
+          setActiveTab("evaluation");
+          setSessionPhase("Scores ready…");
+        } else {
+          setSessionPhase("Scores ready…");
+        }
+        setSessionProgress((progress) => Math.max(progress, gotCoach ? 96 : 62));
+        return result;
+      })
+      .catch((error) => {
+        console.error("Scholar-E scoring failed.", error);
+        setAnalysisStatus(error instanceof Error ? error.message : "Scoring failed. Please try again.");
+        throw error;
       });
 
     try {
-      await Promise.allSettled([scorePromise, fixesPromise]);
-      setEvaluationProgress(100);
-      setEvaluationPhase("");
+      await Promise.allSettled([coachPromise, scoresPromise]);
+      setSessionProgress(100);
+      if (gotCoach && !gotScores) setActiveTab("coach");
+      else if (gotScores && !gotCoach) setActiveTab("evaluation");
+      else if (gotCoach) setActiveTab("coach");
       await new Promise((resolve) => window.setTimeout(resolve, 200));
     } finally {
       setIsEvaluating(false);
-      setEvaluationProgress(0);
-      setEvaluationPhase("");
+      setCoachLoading(false);
+      setSessionProgress(0);
+      setSessionPhase("");
     }
   }
 
   useEffect(() => {
     if (!isEvaluating) return;
     const interval = window.setInterval(() => {
-      setEvaluationProgress((progress) => {
+      setSessionProgress((progress) => {
         if (progress >= 90) return progress;
         const increment = progress < 35 ? 3 : progress < 70 ? 2 : 1;
         return Math.min(90, progress + increment);
@@ -4840,16 +5291,16 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
 
   // Paste/upload auto-check: a paste bumps `pasteNonce`, and a debounced effect runs
   // the cheap `auto_check` (grammar + outline coverage) once the draft has settled.
-  // Keep the latest assessment closure so the timeout sees the post-paste draft.
-  const runAssessmentRef = useRef(runAssessment);
+  // `runCoachRef` keeps the latest closure so the timeout sees the post-paste draft.
+  const runCoachRef = useRef(runCoach);
   useEffect(() => {
-    runAssessmentRef.current = runAssessment;
+    runCoachRef.current = runCoach;
   });
   const lastAutoCheckRef = useRef("");
   const [pasteNonce, setPasteNonce] = useState(0);
   useEffect(() => {
     if (pasteNonce === 0) return;
-    const id = window.setTimeout(() => void runAssessmentRef.current("auto_check"), 800);
+    const id = window.setTimeout(() => void runCoachRef.current("auto_check"), 800);
     return () => window.clearTimeout(id);
   }, [pasteNonce]);
   function triggerAutoCheck() {
@@ -4979,9 +5430,14 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
           </button>
 
           <div className="flex min-w-0 flex-1 flex-col justify-center">
-            <div className="w-full truncate text-[15px] font-semibold leading-tight text-foreground">
-              {user?.activeScholarship?.name || essayTitle || "Scholarship essay"}
-            </div>
+            <input
+              type="text"
+              value={essayTitle}
+              onChange={(e) => updateProfile({ essayTitle: e.target.value })}
+              placeholder="Untitled scholarship essay"
+              aria-label="Essay title"
+              className="w-full truncate border-none bg-transparent p-0 text-[15px] font-semibold leading-tight text-foreground outline-none placeholder:text-muted-foreground"
+            />
             <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
               <span className={`inline-block size-1.5 rounded-full ${savedAt ? "bg-success" : "bg-muted-foreground/40"}`} />
               {savedLabel}
@@ -5038,27 +5494,12 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
               <TooltipContent>Save draft</TooltipContent>
             </Tooltip>
 
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  onClick={() => setPanelOpen((open) => !open)}
-                  aria-label={panelOpen ? "Hide coaching panel" : "Show coaching panel"}
-                  aria-pressed={panelOpen}
-                  className="grid size-9 place-items-center rounded-lg text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground"
-                >
-                  {panelOpen ? <PanelRightClose className="size-4" /> : <PanelRightOpen className="size-4" />}
-                </button>
-              </TooltipTrigger>
-              <TooltipContent>{panelOpen ? "Hide coaching panel" : "Show coaching panel"}</TooltipContent>
-            </Tooltip>
-
             <button
               type="button"
               onClick={() => void runCoachingSession()}
               disabled={wordCount < 30 || !essayPrompt.trim() || coachLoading || isEvaluating}
               aria-busy={coachLoading || isEvaluating}
-              className={`ml-0.5 inline-flex items-center gap-1.5 rounded-lg bg-info px-4 py-2 text-[13px] font-medium text-white transition-opacity duration-150 hover:opacity-90 disabled:opacity-40 ${coachLoading || isEvaluating ? "agent-loading" : ""}`}
+              className={`ml-0.5 inline-flex items-center gap-1.5 rounded-lg bg-info px-3 py-2 text-[13px] font-medium text-white transition-opacity duration-150 hover:opacity-90 disabled:opacity-60 ${coachLoading || isEvaluating ? "agent-loading" : ""}`}
             >
               {coachLoading || isEvaluating ? <Spinner className="size-4" /> : <Wand2 className="size-4" />}
               {coachLoading || isEvaluating ? "Coaching…" : "Run coaching session"}
@@ -5073,9 +5514,25 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
               <TooltipContent>{score == null ? "Run a coaching session to get your essay score" : `Essay score: ${score}/100`}</TooltipContent>
             </Tooltip>
 
+            <button
+              type="button"
+              onClick={() => setPanelOpen((open) => !open)}
+              aria-label={panelOpen ? "Hide panel" : "Show panel"}
+              className="ml-0.5 hidden size-9 place-items-center rounded-lg text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground lg:grid"
+            >
+              {panelOpen ? <ChevronRight className="size-4" /> : <ChevronLeft className="size-4" />}
+            </button>
           </div>
         </div>
 
+        {(pdfStatus || analysisStatus || bgStatus || mechanicsNote) && (
+          <div className="flex items-center gap-1.5 border-t border-border bg-accent/40 px-4 py-1.5 text-[11px] text-muted-foreground">
+            {bgStatus && <span className="size-2.5 shrink-0 animate-spin rounded-full border-2 border-info/30 border-t-info" />}
+            <span className={mechanicsNote && !bgStatus && !pdfStatus && !analysisStatus ? "text-success" : undefined}>
+              {bgStatus ?? pdfStatus ?? analysisStatus ?? mechanicsNote}
+            </span>
+          </div>
+        )}
       </header>
 
       <section className="border-b border-border bg-card">
@@ -5136,7 +5593,6 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
             </button>
           </div>
           {outlineStatus && <p className="text-xs text-muted-foreground">{outlineStatus}</p>}
-          {mechanicsNote && <p className="text-xs text-success">{mechanicsNote}</p>}
         </div>
       </section>
 
@@ -5191,34 +5647,36 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
                 panelResizing ? "bg-info/10" : "hover:bg-info/10 focus:bg-info/10"
               }`}
             >
-              <span className={`h-12 w-1 rounded-full transition-colors ${panelResizing ? "bg-info" : "bg-border group-hover:bg-info"}`} />
+              <span className={`h-12 w-1 rounded-full transition-colors ${panelResizing ? "bg-info" : "bg-border"}`} />
             </div>
-            <div>
-              <EssayWorkspacePanel
-                activeTab={activeTab}
-                onTabChange={setActiveTab}
-                isEvaluating={isEvaluating}
-                evaluationProgress={evaluationProgress}
-                evaluationPhase={evaluationPhase}
-                scoresReady={scoresReady}
-                fixesReady={fixesReady}
-                suggestions={suggestions}
-                onAccept={acceptSuggestion}
-                onDismiss={dismissSuggestion}
-                onReveal={revealSuggestion}
-                onAcceptAllQuickFixes={acceptAllQuickFixes}
-                quickFixCount={quickFixSuggestions.length}
-                coachLoading={coachLoading}
-                coachSummary={coachSummary}
-                coachResult={coachResult}
-                coachUpdatedAt={coachUpdatedAt}
-                outlineLoading={outlineLoading}
-                outlineStatus={outlineStatus}
-                covered={coveredPoints}
-                onToggleCovered={toggleCovered}
-                onCollapse={() => setPanelOpen(false)}
-              />
-            </div>
+            <EssayWorkspacePanel
+              activeTab={activeTab}
+              onTabChange={setActiveTab}
+              isEvaluating={isEvaluating}
+              onCollapse={() => setPanelOpen(false)}
+              essayPrompt={essayPrompt}
+              sessionPhase={sessionPhase}
+              sessionProgress={sessionProgress}
+              coachReady={coachReady}
+              scoresReady={scoresReady}
+              sessionRunning={isEvaluating}
+              suggestions={suggestions}
+              onAccept={acceptSuggestion}
+              onDismiss={dismissSuggestion}
+              onReveal={revealSuggestion}
+              onAcceptAllQuickFixes={acceptAllQuickFixes}
+              quickFixCount={quickFixSuggestions.length}
+              onRunCoach={runCoach}
+              coachLoading={coachLoading}
+              coachSummary={coachSummary}
+              coachWarnings={coachWarnings}
+              coachResult={coachResult}
+              coachUpdatedAt={coachUpdatedAt}
+              coachDraftChanged={!!coachUpdatedAt && draft !== coachDraftAtRun}
+              now={nowTick}
+              covered={coveredPoints}
+              onToggleCovered={toggleCovered}
+            />
           </div>
         ) : (
           <button
@@ -5227,8 +5685,8 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
             className="hidden border-l border-border bg-card px-2 py-6 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground lg:flex lg:flex-col lg:items-center lg:gap-3"
             aria-label="Open coaching panel"
           >
-            <PanelRightOpen className="size-4" />
-            <span className="[writing-mode:vertical-rl] rotate-180">Coaching</span>
+            <ChevronLeft className="size-4" />
+            <span className="[writing-mode:vertical-rl] rotate-180">Coach</span>
           </button>
         )}
       </div>
@@ -5277,144 +5735,206 @@ function EssayWorkspacePanel({
   activeTab,
   onTabChange,
   isEvaluating,
-  evaluationProgress,
-  evaluationPhase,
+  onCollapse,
+  essayPrompt,
+  sessionPhase,
+  sessionProgress,
+  coachReady,
   scoresReady,
-  fixesReady,
+  sessionRunning,
   suggestions,
   onAccept,
   onDismiss,
   onReveal,
   onAcceptAllQuickFixes,
   quickFixCount,
+  onRunCoach,
   coachLoading,
   coachSummary,
+  coachWarnings,
   coachResult,
   coachUpdatedAt,
-  outlineLoading,
-  outlineStatus,
+  coachDraftChanged,
+  now,
   covered,
   onToggleCovered,
-  onCollapse,
 }: {
   activeTab: WorkspaceTab;
   onTabChange: (tab: WorkspaceTab) => void;
   isEvaluating: boolean;
-  evaluationProgress: number;
-  evaluationPhase: string;
+  onCollapse: () => void;
+  essayPrompt: string;
+  sessionPhase: string;
+  sessionProgress: number;
+  coachReady: boolean;
   scoresReady: boolean;
-  fixesReady: boolean;
+  sessionRunning: boolean;
   suggestions: Suggestion[];
   onAccept: (s: Suggestion) => void;
   onDismiss: (s: Suggestion) => void;
   onReveal: (s: Suggestion) => void;
   onAcceptAllQuickFixes: () => void;
   quickFixCount: number;
+  onRunCoach: (mode?: EssayCoachMode, writingSupportLevel?: WritingSupportLevel) => void;
   coachLoading: boolean;
   coachSummary: string | null;
+  coachWarnings: string[];
   coachResult: EssayCoachResult | null;
   coachUpdatedAt: number | null;
-  outlineLoading: boolean;
-  outlineStatus: string | null;
+  coachDraftChanged: boolean;
+  now: number;
   covered: Set<string>;
   onToggleCovered: (id: string) => void;
-  onCollapse?: () => void;
 }) {
-  const { user } = useUser();
+  const { user, updateProfile } = useUser();
+  const [outlineLoading, setOutlineLoading] = useState(false);
+  const [outlineStatus, setOutlineStatus] = useState<string | null>(null);
+  const outlineKey = useMemo(() => {
+    const scholarship = user?.activeScholarship ?? {};
+    return JSON.stringify({
+      scholarshipName: scholarship.name ?? "",
+      scholarshipUrl: scholarship.url ?? scholarship.officialWebsite ?? "",
+      prompt: essayPrompt,
+      requirementsPreview: scholarship.requirementsPreview ?? "",
+      updatedAt: scholarship.extractionCompletedAt ?? "",
+      profileName: user?.name ?? "",
+      educationLevel: user?.educationLevel ?? "",
+      careerGoal: user?.careerGoal ?? "",
+      highSchool: user?.highSchool ?? {},
+      undergrad: user?.undergrad ?? {},
+      graduate: user?.graduate ?? {},
+      researchExperience: user?.researchExperience ?? [],
+      workExperience: user?.workExperience ?? [],
+      optional: user?.optional ?? {},
+      prompts: user?.prompts ?? {},
+    });
+  }, [essayPrompt, user]);
+
+  async function runOutlineGeneration(force = false) {
+    if (!user || outlineLoading || !essayPrompt.trim()) return;
+    if (!force && user.personalizedOutline?.generatedForKey === outlineKey) return;
+    setOutlineLoading(true);
+    setOutlineStatus("Building your personalized outline from the selected prompt and your profile...");
+    try {
+      const result = await generatePersonalizedOutline(buildOutlinePayload(user, essayPrompt));
+      updateProfile({ personalizedOutline: { ...result, generatedForKey: outlineKey } });
+      setOutlineStatus(result.status === "error" ? "A fallback outline is ready." : "Personalized outline ready.");
+    } catch (error) {
+      setOutlineStatus(error instanceof Error ? error.message : "Could not generate the outline.");
+    } finally {
+      setOutlineLoading(false);
+    }
+  }
+
+  // Auto-generate the outline as soon as the student reaches the workspace (the
+  // panel mounts on entry), not only when the Outline tab is opened.
+  useEffect(() => {
+    if (!user || !essayPrompt.trim()) return;
+    if (user.personalizedOutline?.generatedForKey === outlineKey) return;
+    void runOutlineGeneration(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [outlineKey, user?.personalizedOutline?.generatedForKey, essayPrompt]);
 
   const tabs: Array<{ id: WorkspaceTab; label: string; icon: typeof ListChecks; count?: number }> = [
     { id: "outline", label: "Outline", icon: ListChecks },
-    { id: "highlights", label: "Fixes", icon: Sparkles, count: suggestions.length },
+    { id: "coach", label: "Coach", icon: Wand2 },
     { id: "evaluation", label: "Evaluation", icon: Gauge },
+    { id: "highlights", label: "Fixes", icon: Sparkles, count: suggestions.length },
   ];
 
   return (
     <aside
-      aria-busy={isEvaluating}
+      aria-busy={sessionRunning}
       className="relative flex w-full shrink-0 flex-col border-t border-border bg-card lg:sticky lg:top-[56px] lg:h-[calc(100vh-120px)] lg:overflow-hidden lg:border-l lg:border-t-0"
     >
-      <div className="flex min-h-0 flex-1 flex-col">
-        <div className="sticky top-0 z-10 flex items-center gap-1 border-b border-border bg-card/95 p-2 backdrop-blur">
-          <div className="flex flex-1 items-center gap-1 rounded-lg bg-muted/60 p-1">
-            {tabs.map((tab) => {
-              const Icon = tab.icon;
-              const active = activeTab === tab.id;
-              return (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => onTabChange(tab.id)}
-                  className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-[12px] font-medium transition-colors duration-150 ${
-                    active ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  <Icon className="size-3.5" />
-                  <span className="hidden sm:inline">{tab.label}</span>
-                  {tab.count ? (
-                    <span className={`grid h-4 min-w-4 place-items-center rounded-full px-1 text-[10px] font-bold ${active ? "bg-info text-white" : "bg-info/15 text-info"}`}>
-                      {tab.count}
-                    </span>
-                  ) : null}
-                </button>
-              );
-            })}
-          </div>
-          {onCollapse && (
-            <button
-              type="button"
-              onClick={onCollapse}
-              aria-label="Collapse coaching panel"
-              className="ml-1 hidden size-8 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground lg:grid"
-            >
-              <PanelRightClose className="size-4" />
-            </button>
-          )}
+      <div className="sticky top-0 z-10 flex items-center gap-1 border-b border-border bg-card/95 p-2 backdrop-blur">
+        <div className="flex flex-1 items-center gap-1 rounded-lg bg-muted/60 p-1">
+          {tabs.map((tab) => {
+            const Icon = tab.icon;
+            const active = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => onTabChange(tab.id)}
+                className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-[12px] font-medium transition-colors duration-150 ${
+                  active ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <Icon className="size-3.5" />
+                <span className="hidden sm:inline">{tab.label}</span>
+                {tab.count ? (
+                  <span className={`grid h-4 min-w-4 place-items-center rounded-full px-1 text-[10px] font-bold ${active ? "bg-info text-white" : "bg-info/15 text-info"}`}>
+                    {tab.count}
+                  </span>
+                ) : null}
+              </button>
+            );
+          })}
         </div>
-        <div key={activeTab} className="min-h-0 flex-1 animate-in fade-in slide-in-from-bottom-1 overflow-y-auto p-4 duration-200">
-          {activeTab === "outline" && (
-            <PersonalizedOutlinePanel
-              outline={user?.personalizedOutline}
-              loading={outlineLoading}
-              status={outlineStatus}
-              covered={covered}
-              onToggleCovered={onToggleCovered}
-            />
-          )}
-          {activeTab === "evaluation" && (
-            <WorkspaceEvaluationTab
-              isEvaluating={isEvaluating && !scoresReady}
-              coachResult={coachResult}
-              coachLoading={isEvaluating && !scoresReady}
-              coachSummary={coachSummary}
-            />
-          )}
-          {activeTab === "highlights" && (
-            <WorkspaceHighlightsTab
-              isEvaluating={isEvaluating && !fixesReady}
-              suggestions={suggestions}
-              onAccept={onAccept}
-              onDismiss={onDismiss}
-              onReveal={onReveal}
-              onAcceptAllQuickFixes={onAcceptAllQuickFixes}
-              quickFixCount={quickFixCount}
-              coachLoading={(isEvaluating && !fixesReady) || (coachLoading && !fixesReady)}
-              hasAssessment={!!coachUpdatedAt || fixesReady}
-            />
-          )}
-        </div>
+        <button
+          type="button"
+          onClick={onCollapse}
+          aria-label="Collapse panel"
+          className="hidden size-8 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground lg:grid"
+        >
+          <ChevronRight className="size-4" />
+        </button>
       </div>
-      {isEvaluating && (
+      <div key={activeTab} className="min-h-0 flex-1 animate-in fade-in slide-in-from-bottom-1 overflow-y-auto p-4 duration-200">
+        {activeTab === "outline" && (
+          <PersonalizedOutlinePanel
+            outline={user?.personalizedOutline}
+            scholarshipName={user?.activeScholarship?.name}
+            wordLimit={buildOutlinePayload(user, essayPrompt).word_limit}
+            loading={outlineLoading}
+            status={outlineStatus}
+            onRegenerate={() => void runOutlineGeneration(true)}
+            covered={covered}
+            onToggleCovered={onToggleCovered}
+          />
+        )}
+        {activeTab === "coach" && (
+          <WorkspaceCoachTab
+            result={coachResult}
+            loading={coachLoading && !coachReady}
+            onRunCoach={onRunCoach}
+            coachSummary={coachSummary}
+            coachWarnings={coachWarnings}
+            updatedAt={coachUpdatedAt}
+            draftChanged={coachDraftChanged}
+            now={now}
+          />
+        )}
+        {activeTab === "evaluation" && <WorkspaceEvaluationTab isEvaluating={isEvaluating && !scoresReady} />}
+        {activeTab === "highlights" && (
+          <WorkspaceHighlightsTab
+            isEvaluating={isEvaluating}
+            suggestions={suggestions}
+            onAccept={onAccept}
+            onDismiss={onDismiss}
+            onReveal={onReveal}
+            onAcceptAllQuickFixes={onAcceptAllQuickFixes}
+            quickFixCount={quickFixCount}
+            onRunCoach={onRunCoach}
+            coachLoading={coachLoading}
+            coachSummary={coachSummary}
+            coachWarnings={coachWarnings}
+          />
+        )}
+      </div>
+      {sessionRunning && (
         <div className="sticky bottom-0 z-20 border-t border-border bg-card/95 px-4 py-2.5 backdrop-blur">
           <div className="flex items-center justify-between gap-3 text-[12px] font-medium text-muted-foreground">
             <span className="min-w-0 leading-snug">
-              {evaluationPhase
-                || (scoresReady && !fixesReady
-                  ? "Scores ready — preparing Fixes…"
-                  : !scoresReady && fixesReady
-                    ? "Fixes ready — still scoring…"
+              {sessionPhase
+                || (scoresReady && !coachReady
+                  ? "Scores ready…"
+                  : !scoresReady && coachReady
+                    ? "Coach suggestions ready…"
                     : "Running coaching session…")}
             </span>
-            <span className="shrink-0 tabular-nums text-foreground">{evaluationProgress}%</span>
+            <span className="shrink-0 tabular-nums text-foreground">{sessionProgress}%</span>
           </div>
           <div
             className="mt-2 h-1.5 overflow-hidden rounded-full bg-border"
@@ -5422,11 +5942,11 @@ function EssayWorkspacePanel({
             aria-label="Coaching session progress"
             aria-valuemin={0}
             aria-valuemax={100}
-            aria-valuenow={evaluationProgress}
+            aria-valuenow={sessionProgress}
           >
             <div
               className="h-full rounded-full bg-info transition-[width] duration-500 ease-out"
-              style={{ width: `${evaluationProgress}%` }}
+              style={{ width: `${sessionProgress}%` }}
             />
           </div>
         </div>
@@ -5522,21 +6042,77 @@ function OutlineCheckRow({
   );
 }
 
+function OutlineGroup({
+  id,
+  title,
+  icon: Icon,
+  total,
+  coveredCount,
+  open,
+  onToggle,
+  children,
+}: {
+  id: string;
+  title: string;
+  icon: typeof Target;
+  total: number;
+  coveredCount: number;
+  open: boolean;
+  onToggle: (id: string) => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="overflow-hidden rounded-xl border border-border">
+      <button
+        type="button"
+        onClick={() => onToggle(id)}
+        className="flex w-full items-center gap-2 bg-accent/40 px-3 py-2.5 text-left transition-colors duration-150 hover:bg-accent/70"
+      >
+        <Icon className="size-4 text-info" />
+        <span className="flex-1 text-[13px] font-semibold">{title}</span>
+        <span className="text-[11px] tabular-nums text-muted-foreground">{coveredCount}/{total}</span>
+        <ChevronDown className={`size-4 text-muted-foreground transition-transform duration-200 ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && <div className="space-y-2 p-2.5">{children}</div>}
+    </div>
+  );
+}
+
 function PersonalizedOutlinePanel({
   outline,
+  scholarshipName,
+  wordLimit,
   loading,
   status,
+  onRegenerate,
   covered,
   onToggleCovered,
 }: {
   outline?: PersonalizedOutlineResult;
+  scholarshipName?: string;
+  wordLimit?: string;
   loading: boolean;
   status?: string | null;
+  onRegenerate: () => void;
   covered: Set<string>;
   onToggleCovered: (id: string) => void;
 }) {
   const [copyStatus, setCopyStatus] = useState("");
+  const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set(["core"]));
+  const toggleGroup = (id: string) =>
+    setOpenGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   const data = outline?.outline;
+
+  useEffect(() => {
+    if (!loading && data) {
+      setOpenGroups(new Set(["core"]));
+    }
+  }, [loading, Boolean(data), outline?.generatedForKey]);
 
   async function copyOutline() {
     const text = outlineToText(outline);
@@ -5548,9 +6124,38 @@ function PersonalizedOutlinePanel({
 
   return (
     <div className="text-foreground">
-      <div className="flex items-center gap-2 px-1 text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-        <Sparkles className="size-3.5 text-info" />
-        Personalized Outline
+      <div className="border-b border-border pb-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="inline-flex items-center gap-2 rounded-md bg-info/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-info">
+              <Sparkles className="size-3.5" />
+              Personalized Outline
+            </div>
+            <div className="mt-2 truncate font-display text-lg font-semibold leading-tight">
+              {scholarshipName || "Current scholarship"}
+            </div>
+            {wordLimit && (
+              <div className="mt-2 inline-flex items-center rounded-md border border-border bg-background px-2.5 py-1 text-xs text-muted-foreground">
+                {wordLimit}
+              </div>
+            )}
+          </div>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={onRegenerate}
+                disabled={loading}
+                aria-busy={loading}
+                className={`grid size-9 shrink-0 place-items-center rounded-md border border-border text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-90 ${loading ? "agent-loading text-info" : ""}`}
+                aria-label="Regenerate outline"
+              >
+                {loading ? <Spinner className="size-4" /> : <RefreshCw className="size-4" />}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>{loading ? "Generating outline" : "Regenerate outline"}</TooltipContent>
+          </Tooltip>
+        </div>
       </div>
 
       {loading && (
@@ -5578,7 +6183,7 @@ function PersonalizedOutlinePanel({
 
       {!loading && !data && (
         <div className="mt-5 rounded-lg border border-dashed border-border bg-background p-4 text-sm text-muted-foreground">
-          Review the essay prompt at the top of the workspace, then select Generate Outline.
+          Add a scholarship prompt or requirement details to generate a personalized outline.
         </div>
       )}
 
@@ -5586,17 +6191,37 @@ function PersonalizedOutlinePanel({
         (() => {
           type Pt = { id: string; label: string; detail?: string };
           const points = buildOutlinePoints(outline);
+          const corePoints: Pt[] = points.filter((p) => p.group === "core");
           const strategyPoints: Pt[] = points.filter((p) => p.group === "strategy");
           const structurePoints: Pt[] = points.filter((p) => p.group === "structure");
+          const keyPoints: Pt[] = points.filter((p) => p.group === "keypoints");
           const sections = data.sections ?? [];
-          const namedIntroductionIndex = sections.findIndex((section) => /intro|opening/i.test(section.section_name ?? ""));
-          const namedConclusionIndex = sections.findIndex((section) => /conclu|closing/i.test(section.section_name ?? ""));
-          const introductionIndex = namedIntroductionIndex >= 0 ? namedIntroductionIndex : 0;
-          const conclusionIndex = namedConclusionIndex >= 0 ? namedConclusionIndex : Math.max(0, sections.length - 1);
+          const total = points.length;
+          const coveredCount = points.filter((p) => covered.has(p.id)).length;
+          const cc = (pts: Pt[]) => pts.filter((p) => covered.has(p.id)).length;
+          const pct = total ? Math.round((coveredCount / total) * 100) : 0;
+
           return (
             <div className="mt-4 space-y-3">
+              <div className="rounded-xl border border-border bg-background p-3">
+                <div className="flex items-center justify-between text-[12px]">
+                  <span className="font-semibold uppercase tracking-[0.12em] text-muted-foreground">Coverage</span>
+                  <span className="font-semibold tabular-nums text-foreground">{coveredCount}/{total} covered</span>
+                </div>
+                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-border">
+                  <div className="h-full rounded-full bg-info transition-all duration-500" style={{ width: `${pct}%` }} />
+                </div>
+                <div className="mt-1.5 text-[11px] text-muted-foreground">AI-detected from your draft — tap any point to adjust.</div>
+              </div>
+
+              <OutlineGroup id="core" title="Core Message" icon={Target} total={corePoints.length} coveredCount={cc(corePoints)} open={openGroups.has("core")} onToggle={toggleGroup}>
+                {corePoints.map((p) => (
+                  <OutlineCheckRow key={p.id} id={p.id} label={p.label} detail={p.detail} covered={covered} onToggle={onToggleCovered} />
+                ))}
+              </OutlineGroup>
+
               {!!structurePoints.length && (
-                <div className="space-y-2">
+                <OutlineGroup id="structure" title="Structure" icon={ClipboardList} total={structurePoints.length} coveredCount={cc(structurePoints)} open={openGroups.has("structure")} onToggle={toggleGroup}>
                   {sections.map((s, i) => (
                     <OutlineCheckRow key={`p-sec-${i}`} id={`p-sec-${i}`} label={s.section_name || `Section ${i + 1}`} detail={s.purpose} covered={covered} onToggle={onToggleCovered}>
                       {!!s.scholarship_requirement_addressed?.length && (
@@ -5616,35 +6241,33 @@ function PersonalizedOutlinePanel({
                           ))}
                         </ul>
                       )}
-                      {i === introductionIndex && data.recommended_opening && (
-                        <div className="mt-2 rounded-md bg-info/5 px-2.5 py-2 text-[12px] leading-relaxed text-muted-foreground">
-                          <span className="font-semibold text-foreground">Opening tip:</span> {data.recommended_opening}
-                        </div>
-                      )}
-                      {i === conclusionIndex && data.recommended_conclusion && (
-                        <div className="mt-2 rounded-md bg-info/5 px-2.5 py-2 text-[12px] leading-relaxed text-muted-foreground">
-                          <span className="font-semibold text-foreground">Conclusion tip:</span> {data.recommended_conclusion}
-                        </div>
-                      )}
-                      {s.estimated_word_count && (
-                        <div className="mt-1.5 text-[11px] text-muted-foreground">
-                          ~{s.estimated_word_count}{/\bwords?\b/i.test(s.estimated_word_count) ? "" : " words"}
-                        </div>
-                      )}
+                      {s.estimated_word_count && <div className="mt-1.5 text-[11px] text-muted-foreground">~{s.estimated_word_count}</div>}
                     </OutlineCheckRow>
                   ))}
-                </div>
+                </OutlineGroup>
+              )}
+
+              {!!keyPoints.length && (
+                <OutlineGroup id="keypoints" title="Key Points to Hit" icon={ListChecks} total={keyPoints.length} coveredCount={cc(keyPoints)} open={openGroups.has("keypoints")} onToggle={toggleGroup}>
+                  {keyPoints.map((p) => (
+                    <OutlineCheckRow key={p.id} id={p.id} label={p.label} detail={p.detail} covered={covered} onToggle={onToggleCovered} />
+                  ))}
+                </OutlineGroup>
               )}
 
               {!!strategyPoints.length && (
-                <div className="space-y-2 pt-1">
-                  <div className="flex items-center gap-2 px-1 text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-                    <Lightbulb className="size-3.5 text-info" />
-                    Strategy Notes
-                  </div>
-                  {strategyPoints.map((point) => (
-                    <OutlineCheckRow key={point.id} id={point.id} label={point.label} detail={point.detail} covered={covered} onToggle={onToggleCovered} />
+                <OutlineGroup id="strategy" title="Strategy Notes" icon={Lightbulb} total={strategyPoints.length} coveredCount={cc(strategyPoints)} open={openGroups.has("strategy")} onToggle={toggleGroup}>
+                  {strategyPoints.map((p) => (
+                    <OutlineCheckRow key={p.id} id={p.id} label={p.label} covered={covered} onToggle={onToggleCovered} />
                   ))}
+                </OutlineGroup>
+              )}
+
+              {(data.recommended_opening || data.recommended_conclusion) && (
+                <div className="rounded-xl border border-border bg-background p-3">
+                  <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Opening &amp; Closing Tips</div>
+                  {data.recommended_opening && <p className="mt-2 text-[13px] leading-relaxed"><span className="font-medium">Opening:</span> {data.recommended_opening}</p>}
+                  {data.recommended_conclusion && <p className="mt-2 text-[13px] leading-relaxed"><span className="font-medium">Conclusion:</span> {data.recommended_conclusion}</p>}
                 </div>
               )}
 
@@ -5690,6 +6313,51 @@ function PanelEmpty({ label, message }: { label: string; message: string }) {
   );
 }
 
+function ReadinessRow({ label, value }: { label: string; value: AnalysisScore }) {
+  const [open, setOpen] = useState(false);
+  const s = typeof value.score === "number" ? value.score : 0;
+  const hasDetail = !!value.coaching?.trim();
+  return (
+    <div className="rounded-lg border border-border bg-background p-3">
+      <button
+        type="button"
+        onClick={() => hasDetail && setOpen((o) => !o)}
+        className="flex w-full items-center justify-between gap-2 text-left"
+        aria-expanded={open}
+      >
+        <span className="flex items-center gap-1.5 text-[13px] font-medium">
+          {label}
+          {hasDetail && <ChevronDown className={`size-3.5 text-muted-foreground transition-transform duration-200 ${open ? "rotate-180" : ""}`} />}
+        </span>
+        <span className="text-[12px] font-semibold tabular-nums" style={{ color: scoreColor(s) }}>
+          {s}
+        </span>
+      </button>
+      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-border">
+        <div className="h-full rounded-full transition-all duration-500" style={{ width: `${s}%`, background: scoreColor(s) }} />
+      </div>
+      {value.level && <div className="mt-1.5 text-[11px] text-muted-foreground">{value.level}</div>}
+      {open && hasDetail && (
+        <div className="mt-2 border-t border-border pt-2 text-[12px] leading-relaxed text-muted-foreground animate-in fade-in slide-in-from-top-1 duration-150">
+          {value.coaching}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EvaluationSkeleton() {
+  return (
+    <div className="space-y-3">
+      <Skeleton className="h-4 w-40" />
+      <Skeleton className="h-16 w-full rounded-xl" />
+      {[0, 1, 2, 3, 4].map((i) => (
+        <Skeleton key={i} className="h-14 w-full rounded-lg" />
+      ))}
+    </div>
+  );
+}
+
 function HighlightsSkeleton() {
   return (
     <div className="space-y-3">
@@ -5714,10 +6382,12 @@ function CoachSkeleton() {
 
 type CoachTone = "success" | "warning" | "danger" | "info" | "muted";
 
-function CoachList({ label, items, tone, icon: Icon, maxItems }: { label: string; items?: string[]; tone: CoachTone; icon?: typeof Check; maxItems?: number }) {
+function CoachList({ label, items, tone, icon: Icon }: { label: string; items?: string[]; tone: CoachTone; icon?: typeof Check }) {
+  const [showAll, setShowAll] = useState(false);
   const clean = (items ?? []).filter(Boolean);
   if (!clean.length) return null;
-  const visible = typeof maxItems === "number" ? clean.slice(0, maxItems) : clean;
+  const visible = showAll ? clean : clean.slice(0, 2);
+  const hiddenCount = Math.max(0, clean.length - 2);
   const toneText: Record<CoachTone, string> = {
     success: "text-success",
     warning: "text-warning",
@@ -5746,29 +6416,342 @@ function CoachList({ label, items, tone, icon: Icon, maxItems }: { label: string
           </li>
         ))}
       </ul>
+      {hiddenCount > 0 && (
+        <button
+          type="button"
+          onClick={() => setShowAll((open) => !open)}
+          className="mt-1 inline-flex items-center rounded-md px-2 py-1 text-[12px] font-semibold text-info transition-colors hover:bg-info/10 hover:text-info"
+          aria-expanded={showAll}
+        >
+          {showAll ? "Show less ▲" : `Show ${hiddenCount} more ▼`}
+        </button>
+      )}
     </div>
   );
 }
 
-function DetailedFeedbackItem({ item }: { item: RevisionPriority }) {
-  const includePromptContext = (text: string) => text
-    .replace(/scholarship mission/gi, "Essay Prompt / Scholarship Mission")
-    .replace(/the scholarship(?:'s|’s) goals/gi, "the essay prompt and scholarship's goals");
+function CoachAccordion({
+  id,
+  title,
+  score,
+  open,
+  onToggle,
+  icon: Icon,
+  children,
+}: {
+  id: string;
+  title: string;
+  score?: number;
+  open: boolean;
+  onToggle: (id: string) => void;
+  icon?: typeof Check;
+  children: React.ReactNode;
+}) {
+  const hasScore = typeof score === "number";
+  return (
+    <div className="overflow-hidden rounded-xl border border-border bg-background">
+      <button
+        type="button"
+        onClick={() => onToggle(id)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-2 bg-accent/40 px-3 py-2.5 text-left transition-colors duration-150 hover:bg-accent/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/30"
+      >
+        {Icon && <Icon className="size-4 text-info" />}
+        <span className="min-w-0 flex-1 text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">{title}</span>
+        <span
+          className="shrink-0 text-[12px] font-semibold tabular-nums text-muted-foreground"
+          style={hasScore ? { color: scoreColor(score) } : undefined}
+        >
+          {hasScore ? `${score}/100` : "Not scored"}
+        </span>
+        <ChevronDown className={`size-4 shrink-0 text-muted-foreground transition-transform duration-200 ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && <div className="space-y-2.5 p-3">{children}</div>}
+    </div>
+  );
+}
+
+function CoachScoreBar({ label, score }: { label: string; score: number }) {
   return (
     <div>
-      <div className="text-[13px] font-semibold leading-snug text-foreground">
-        {includePromptContext(item.priority ?? "")}
+      <div className="flex items-center justify-between text-[12px]">
+        <span className="font-medium">{label}</span>
+        <span className="font-semibold tabular-nums" style={{ color: scoreColor(score) }}>{score}</span>
       </div>
-      {item.why_it_matters && (
-        <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground">
-          {includePromptContext(item.why_it_matters)}
-        </p>
+      <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-border">
+        <div className="h-full rounded-full transition-all duration-500" style={{ width: `${score}%`, background: scoreColor(score) }} />
+      </div>
+    </div>
+  );
+}
+
+function RevisionPriorityCard({ item, index }: { item: RevisionPriority; index: number }) {
+  const impact = (item.impact ?? "").toLowerCase();
+  const impactClass = impact.includes("high")
+    ? "bg-destructive/10 text-destructive"
+    : impact.includes("low")
+      ? "bg-success/10 text-success"
+      : "bg-warning/10 text-warning";
+  return (
+    <div className="rounded-lg border border-border bg-background p-3">
+      <div className="flex items-start gap-2">
+        <span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-info text-[11px] font-bold text-white">{index + 1}</span>
+        <div className="min-w-0 flex-1">
+          <div className="text-[13px] font-semibold leading-snug">{item.priority}</div>
+          {item.why_it_matters && <div className="mt-0.5 text-[12px] leading-relaxed text-muted-foreground">{item.why_it_matters}</div>}
+          {item.how_to_fix && (
+            <div className="mt-1.5 text-[12px] leading-relaxed text-foreground/85">
+              <span className="font-medium text-foreground">How: </span>
+              {item.how_to_fix}
+            </div>
+          )}
+          {(item.impact || item.estimated_effort) && (
+            <div className="mt-2 flex flex-wrap gap-1">
+              {item.impact && <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${impactClass}`}>{item.impact} impact</span>}
+              {item.estimated_effort && <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{item.estimated_effort}</span>}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function WorkspaceCoachTab({
+  result,
+  loading,
+  onRunCoach,
+  coachSummary,
+  coachWarnings,
+  updatedAt,
+  draftChanged,
+  now,
+}: {
+  result: EssayCoachResult | null;
+  loading: boolean;
+  onRunCoach: (mode?: EssayCoachMode, writingSupportLevel?: WritingSupportLevel) => void;
+  coachSummary: string | null;
+  coachWarnings: string[];
+  updatedAt: number | null;
+  draftChanged: boolean;
+  now: number;
+}) {
+  const [showAllPriorities, setShowAllPriorities] = useState(false);
+  const [showAllParagraphFeedback, setShowAllParagraphFeedback] = useState(false);
+  const [openCoachSections, setOpenCoachSections] = useState<Set<string>>(() => new Set());
+  const hasContent = <T extends object>(obj: T | undefined | null): T | undefined =>
+    obj && Object.values(obj).some((v) => (Array.isArray(v) ? v.length > 0 : typeof v === "number" ? v > 0 : !!v))
+      ? obj
+      : undefined;
+  const align = hasContent(result?.prompt_alignment);
+  const ground = hasContent(result?.profile_grounding);
+  const structure = hasContent(result?.structure_feedback);
+  const specificity = hasContent(result?.specificity_feedback);
+  const tone = hasContent(result?.tone_feedback);
+  const finalCheck = hasContent(result?.final_check);
+  const priorities = result?.revision_priorities ?? [];
+  const visiblePriorities = showAllPriorities ? priorities : priorities.slice(0, 2);
+  const hiddenPriorityCount = Math.max(0, priorities.length - 2);
+  const quickFixes = result?.quick_fixes ?? [];
+  const deeperTasks = result?.deeper_revision_tasks ?? [];
+  const scoreEntries = Object.entries(result?.overall_scores ?? {});
+  const paragraphFeedback = structure?.paragraph_feedback ?? [];
+  const visibleParagraphFeedback = showAllParagraphFeedback ? paragraphFeedback : paragraphFeedback.slice(0, 2);
+  const hiddenParagraphFeedbackCount = Math.max(0, paragraphFeedback.length - 2);
+  const hasData =
+    !loading &&
+    !!(result && (align || ground || structure || specificity || tone || finalCheck || priorities.length || scoreEntries.length));
+
+  function toggleCoachSection(id: string) {
+    setOpenCoachSections((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <PanelLabel>Coach</PanelLabel>
+          <div className="mt-1 text-[12px] text-muted-foreground">
+            Last updated: {relativeTimeLabel(updatedAt, now)}
+          </div>
+          {draftChanged && (
+            <div className="mt-1 text-[12px] font-medium text-warning">
+              Essay changed since last coach run.
+            </div>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={() => onRunCoach()}
+          disabled={loading}
+          aria-busy={loading}
+          className={`inline-flex min-w-[158px] shrink-0 items-center justify-center gap-2 rounded-lg border border-border bg-background px-3 py-1.5 text-[12px] font-semibold text-foreground transition-colors duration-150 hover:border-info/40 hover:bg-info/10 hover:text-info focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/30 disabled:opacity-50 ${loading ? "agent-loading text-info" : ""}`}
+        >
+          {loading ? <Spinner className="size-3.5" /> : <RefreshCw className="size-3.5" />}
+          {loading ? "Running..." : "Re-run Coach"}
+        </button>
+      </div>
+
+      <button
+        type="button"
+        onClick={() => onRunCoach("final_check")}
+        disabled={loading}
+        aria-busy={loading}
+        className={`flex w-full items-center justify-center gap-2 rounded-lg border border-border px-3 py-1.5 text-[12px] font-semibold text-foreground transition-colors duration-150 hover:bg-accent disabled:opacity-50 ${loading ? "agent-loading" : ""}`}
+      >
+        {loading ? <Spinner className="size-3.5" /> : <Check className="size-3.5 text-success" />}
+        Final check
+      </button>
+
+      {finalCheck && (
+        <div className={`space-y-2 rounded-xl border p-3 ${finalCheck.ready_for_final_review ? "border-success/30 bg-success/5" : "border-warning/30 bg-warning/5"}`}>
+          <div className="flex items-center gap-2">
+            <span className={`grid size-5 place-items-center rounded-full text-[11px] font-bold text-white ${finalCheck.ready_for_final_review ? "bg-success" : "bg-warning"}`}>
+              {finalCheck.ready_for_final_review ? <Check className="size-3.5" /> : "!"}
+            </span>
+            <span className="text-[13px] font-semibold">{finalCheck.ready_for_final_review ? "Ready for final review" : "Not ready for final review"}</span>
+          </div>
+          {finalCheck.submission_warning && (
+            <div className="rounded-md bg-destructive/10 px-2.5 py-1.5 text-[12px] font-medium text-destructive">{finalCheck.submission_warning}</div>
+          )}
+          <CoachList label="Remaining blockers" items={finalCheck.remaining_blockers} tone="danger" />
+          <CoachList label="Final polish notes" items={finalCheck.final_polish_notes} tone="info" />
+        </div>
       )}
-      {item.how_to_fix && (
-        <p className="mt-2 text-[12px] leading-relaxed text-foreground/85">
-          <span className="font-medium text-foreground">How: </span>
-          {includePromptContext(item.how_to_fix)}
-        </p>
+
+      {coachSummary && (
+        <div className="rounded-xl border border-info/20 bg-info/5 p-3 text-[13px] leading-relaxed text-foreground/85">
+          {coachSummary}
+        </div>
+      )}
+
+      {loading && <CoachSkeleton />}
+
+      {!loading && !hasData && !coachSummary && (
+        <div className="rounded-xl border border-dashed border-border bg-background p-4 text-[13px] leading-relaxed text-muted-foreground">
+          Run a coaching session to check how well your essay answers the scholarship prompt and whether it's grounded in your real profile.
+        </div>
+      )}
+
+      {!!coachWarnings.length && (
+        <div className="rounded-xl border border-warning/25 bg-warning/5 p-3">
+          <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-warning">Coaching notes</div>
+          <MiniList items={coachWarnings} />
+        </div>
+      )}
+
+      {!!priorities.length && (
+        <div className="space-y-2">
+          <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Top revision priorities</div>
+          {visiblePriorities.map((p, i) => (
+            <RevisionPriorityCard key={i} item={p} index={i} />
+          ))}
+          {hiddenPriorityCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowAllPriorities((open) => !open)}
+              className="inline-flex items-center rounded-md px-2 py-1 text-[12px] font-semibold text-info transition-colors hover:bg-info/10 hover:text-info"
+            >
+              {showAllPriorities ? "Show less ▲" : `Show ${hiddenPriorityCount} more ▼`}
+            </button>
+          )}
+        </div>
+      )}
+
+      {!!quickFixes.length && (
+        <div className="rounded-xl border border-success/20 bg-success/5 p-3">
+          <CoachList label="Quick fixes" items={quickFixes} tone="success" icon={Check} />
+        </div>
+      )}
+
+      {!!deeperTasks.length && (
+        <div className="rounded-xl border border-info/20 bg-info/5 p-3">
+          <CoachList label="Deeper revision tasks" items={deeperTasks} tone="info" />
+        </div>
+      )}
+
+      {!!scoreEntries.length && (
+        <div className="space-y-2.5 rounded-xl border border-border bg-background p-3">
+          <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Scores</div>
+          {scoreEntries.map(([key, val]) => (
+            <CoachScoreBar key={key} label={labelize(key)} score={typeof val === "number" ? val : 0} />
+          ))}
+        </div>
+      )}
+
+      {align && (
+        <CoachAccordion id="alignment" title="Prompt Alignment" score={align.alignment_score} open={openCoachSections.has("alignment")} onToggle={toggleCoachSection}>
+          <CoachList label="Covered" items={align.covered_requirements} tone="success" icon={Check} />
+          <CoachList label="Weakly covered" items={align.weakly_covered_requirements} tone="warning" />
+          <CoachList label="Missing" items={align.missing_requirements} tone="danger" />
+          <CoachList label="Notes" items={align.comments} tone="muted" />
+          <CoachList label="Revision tasks" items={align.revision_tasks} tone="info" />
+        </CoachAccordion>
+      )}
+
+      {ground && (
+        <CoachAccordion id="grounding" title="Profile Grounding" score={ground.grounding_score} open={openCoachSections.has("grounding")} onToggle={toggleCoachSection}>
+          <CoachList label="Supported by your profile" items={ground.supported_claims} tone="success" icon={Check} />
+          <CoachList label="Unsupported — verify or soften" items={ground.unsupported_or_risky_claims} tone="danger" />
+          <CoachList label="Strong evidence you haven't used" items={ground.unused_relevant_profile_evidence} tone="info" />
+          <CoachList label="Recommendations" items={ground.recommendations} tone="muted" />
+        </CoachAccordion>
+      )}
+
+      {structure && (
+        <CoachAccordion id="structure-flow" title="Structure & Flow" score={structure.structure_score} open={openCoachSections.has("structure-flow")} onToggle={toggleCoachSection}>
+          {!!paragraphFeedback.length && (
+            <div className="space-y-1.5">
+              {visibleParagraphFeedback.map((pf, i) => (
+                <div key={i} className="rounded-md border border-border/70 p-2">
+                  <div className="text-[12px] font-semibold">
+                    Paragraph {pf.paragraph_number || i + 1}
+                    {pf.priority ? <span className="ml-1 font-normal text-muted-foreground">· {pf.priority}</span> : null}
+                  </div>
+                  {pf.strength && <div className="mt-0.5 text-[12px] text-success">＋ {pf.strength}</div>}
+                  {pf.main_issue && <div className="mt-0.5 text-[12px] text-warning">！ {pf.main_issue}</div>}
+                  {pf.suggestion && <div className="mt-0.5 text-[12px] leading-relaxed text-muted-foreground">{pf.suggestion}</div>}
+                </div>
+              ))}
+              {hiddenParagraphFeedbackCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowAllParagraphFeedback((open) => !open)}
+                  className="inline-flex items-center rounded-md px-2 py-1 text-[12px] font-semibold text-info transition-colors hover:bg-info/10 hover:text-info"
+                  aria-expanded={showAllParagraphFeedback}
+                >
+                  {showAllParagraphFeedback ? "Show less ▲" : `Show ${hiddenParagraphFeedbackCount} more ▼`}
+                </button>
+              )}
+            </div>
+          )}
+          <CoachList label="Flow issues" items={structure.flow_issues} tone="warning" />
+          <CoachList label="Suggested reordering" items={structure.recommended_reordering} tone="info" />
+          <CoachList label="Structure tasks" items={structure.revision_tasks} tone="muted" />
+        </CoachAccordion>
+      )}
+
+      {specificity && (
+        <CoachAccordion id="specificity" title="Specificity & Impact" score={specificity.specificity_score} open={openCoachSections.has("specificity")} onToggle={toggleCoachSection}>
+          <CoachList label="Vague statements" items={specificity.vague_statements} tone="warning" />
+          <CoachList label="Add concrete detail here" items={specificity.places_to_add_detail} tone="info" />
+          <CoachList label="Impact opportunities" items={specificity.impact_opportunities} tone="success" />
+          <CoachList label="Questions to answer" items={specificity.recommended_questions} tone="muted" />
+        </CoachAccordion>
+      )}
+
+      {tone && (
+        <CoachAccordion id="tone" title="Tone & Authenticity" score={tone.authenticity_score} open={openCoachSections.has("tone")} onToggle={toggleCoachSection}>
+          <CoachList label="Voice worth keeping" items={tone.voice_preservation_notes} tone="success" icon={Check} />
+          <CoachList label="AI-like phrases" items={tone.ai_like_phrases} tone="danger" />
+          <CoachList label="Generic phrases" items={tone.generic_phrases} tone="warning" />
+          <CoachList label="Tone suggestions" items={tone.tone_improvement_suggestions} tone="info" />
+        </CoachAccordion>
       )}
     </div>
   );
@@ -5792,13 +6775,12 @@ function Sparkline({ points }: { points: number[] }) {
 }
 
 function ProgressCard({ versions }: { versions: EssayDraft[] }) {
-  const scored = versions.filter((v) => typeof v.readinessOverall === "number" || typeof v.coachOverall === "number");
+  const scored = versions.filter((v) => typeof v.coachOverall === "number");
   if (!scored.length) return null;
   const latest = scored[scored.length - 1];
   const prev = scored.length > 1 ? scored[scored.length - 2] : null;
-  const versionScore = (version: EssayDraft) => version.readinessOverall ?? version.coachOverall ?? 0;
-  const overall = versionScore(latest);
-  const overallDelta = prev ? overall - versionScore(prev) : null;
+  const overall = latest.coachOverall ?? 0;
+  const overallDelta = prev ? overall - (prev.coachOverall ?? 0) : null;
   const deltas =
     prev?.coachScores && latest.coachScores
       ? Object.entries(latest.coachScores)
@@ -5811,7 +6793,7 @@ function ProgressCard({ versions }: { versions: EssayDraft[] }) {
       <div className="flex items-center gap-3">
         <ScoreRing score={overall} size={52} stroke={4} />
         <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-semibold">Overall score</div>
+          <div className="text-[13px] font-semibold">Overall coach score</div>
           <div className="text-[12px] text-muted-foreground">
             {prev && overallDelta != null ? (
               <>
@@ -5827,7 +6809,7 @@ function ProgressCard({ versions }: { versions: EssayDraft[] }) {
           </div>
         </div>
       </div>
-      {scored.length > 1 && <Sparkline points={scored.map(versionScore)} />}
+      {scored.length > 1 && <Sparkline points={scored.map((v) => v.coachOverall ?? 0)} />}
       {deltas.length > 0 && (
         <div className="flex flex-wrap gap-1">
           {deltas.slice(0, 5).map((x) => (
@@ -5844,7 +6826,7 @@ function ProgressCard({ versions }: { versions: EssayDraft[] }) {
         {[...scored].reverse().slice(0, 6).map((v) => (
           <div key={v.id} className="flex items-center justify-between text-[12px]">
             <span className="text-muted-foreground">Draft {v.version} · {v.wordCount} words</span>
-            <span className="font-semibold tabular-nums" style={{ color: scoreColor(versionScore(v)) }}>{versionScore(v)}</span>
+            <span className="font-semibold tabular-nums" style={{ color: scoreColor(v.coachOverall ?? 0) }}>{v.coachOverall}</span>
           </div>
         ))}
       </div>
@@ -5852,194 +6834,59 @@ function ProgressCard({ versions }: { versions: EssayDraft[] }) {
   );
 }
 
-function WorkspaceEvaluationTab({
-  isEvaluating,
-  coachResult,
-  coachLoading,
-  coachSummary,
-}: {
-  isEvaluating: boolean;
-  coachResult: EssayCoachResult | null;
-  coachLoading: boolean;
-  coachSummary: string | null;
-}) {
+function WorkspaceEvaluationTab({ isEvaluating }: { isEvaluating: boolean }) {
   const { user } = useUser();
-  const [selectedCriterion, setSelectedCriterion] = useState<string | null>(null);
-  const evaluating = isEvaluating;
+  const [localEvaluating, setLocalEvaluating] = useState(false);
+  const [evalStatus, setEvalStatus] = useState<string | null>(null);
+  const evaluating = isEvaluating || localEvaluating;
   const analysis = user?.lastAnalysis;
-  const scoredVersions = (user?.drafts ?? []).filter(
-    (v) => typeof v.readinessOverall === "number" || typeof v.coachOverall === "number",
-  );
-  const criterionGroups = [
-    {
-      label: "Content — What the essay says",
-      criteria: [
-        ["alignment", "Alignment"],
-        ["evidence_strength", "Evidence Strength"],
-        ["insight", "Insight"],
-      ],
-    },
-    {
-      label: "Structure — How the essay is organized",
-      criteria: [
-        ["coherence_continuity", "Coherence & Continuity"],
-        ["flow_narrative_arc", "Flow & Narrative Arc"],
-      ],
-    },
-    {
-      label: "Voice — How the essay sounds",
-      criteria: [
-        ["tone_authenticity", "Tone & Authenticity"],
-        ["clarity_concision", "Clarity & Concision"],
-      ],
-    },
-  ] as const;
-  const criterionEntries = criterionGroups.flatMap((group) =>
-    group.criteria.flatMap(([key, label]) => {
-      const value = analysis?.readiness_index?.[key];
-      return value && typeof value.score === "number" ? [[key, label, value] as const] : [];
-    }),
-  );
-  const activeCriterion =
-    criterionEntries.find(([key]) => key === selectedCriterion) ?? criterionEntries[0];
-  const criterionPriorities = activeCriterion?.[2].revision_actions ?? [];
-
-  useEffect(() => {
-    if (!criterionEntries.length) {
-      setSelectedCriterion(null);
-      return;
-    }
-    if (!criterionEntries.some(([key]) => key === selectedCriterion)) {
-      setSelectedCriterion(criterionEntries[0][0]);
-    }
-  }, [analysis?.readiness_index, selectedCriterion]);
+  const entries = Object.entries(analysis?.readiness_index ?? {});
+  const score = overallEssayScore(analysis);
+  const scoredVersions = (user?.drafts ?? []).filter((v) => typeof v.coachOverall === "number");
 
   return (
     <div className="space-y-3">
-      <PanelLabel>Scores &amp; Evaluation</PanelLabel>
-
-      {!coachLoading && !evaluating && (
-        <p className="text-[12px] text-muted-foreground">
-          {analysis || coachResult ? "Run a coaching session again to refresh scores and fixes." : "Run a coaching session to score this draft and get guided fixes."}
-        </p>
-      )}
-
-      {coachSummary && (
-        <div className="rounded-xl border border-info/20 bg-info/5 p-3 text-[13px] leading-relaxed text-foreground/85">
-          {coachSummary}
-        </div>
-      )}
-
-      {!!(coachResult?.profile_grounding?.unsupported_or_risky_claims?.length
-        || coachResult?.profile_grounding?.unused_relevant_profile_evidence?.length
-        || coachResult?.prompt_alignment?.missing_requirements?.length) && (
-        <div className="space-y-2 rounded-xl border border-border bg-background p-3">
-          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Grounded next moves</div>
-          <CoachList
-            label="Prompt gaps"
-            items={coachResult?.prompt_alignment?.missing_requirements}
-            tone="warning"
-            maxItems={3}
-          />
-          <CoachList
-            label="Claims to verify"
-            items={coachResult?.profile_grounding?.unsupported_or_risky_claims}
-            tone="danger"
-            maxItems={3}
-          />
-          <CoachList
-            label="Unused profile evidence"
-            items={coachResult?.profile_grounding?.unused_relevant_profile_evidence}
-            tone="info"
-            maxItems={3}
-          />
-        </div>
-      )}
+      <PanelLabel>Progress &amp; Evaluation</PanelLabel>
 
       {scoredVersions.length > 0 && <ProgressCard versions={scoredVersions} />}
 
-      {coachLoading && !criterionEntries.length && <CoachSkeleton />}
+      <CoachRunButton
+        label="Run deep evaluation"
+        loadingLabel="Evaluating…"
+        onRunningChange={setLocalEvaluating}
+        onStatus={setEvalStatus}
+        className="flex w-full items-center justify-center gap-2 rounded-lg border border-border px-3 py-2 text-[13px] font-semibold text-foreground transition-colors duration-150 hover:bg-accent disabled:opacity-50"
+      />
+      {evalStatus && <div className="rounded-md bg-accent px-3 py-2 text-[12px] text-muted-foreground">{evalStatus}</div>}
 
-      {!!criterionEntries.length && (
-        <div className="grid gap-2 md:grid-cols-3">
-          {criterionGroups.map((group) => {
-            const available = group.criteria.filter(([key]) => analysis?.readiness_index?.[key]);
-            if (!available.length) return null;
-            const [title, subtitle] = group.label.split(" — ");
-            return (
-              <section key={group.label} className="bg-background px-3 py-3">
-                <div className="text-center">
-                  <div className="text-[20px] font-bold leading-tight text-foreground">{title}</div>
-                  <div className="mt-0.5 text-[10px] text-muted-foreground">{subtitle}</div>
-                </div>
-                <div className={`mt-3 grid gap-1 ${available.length === 3 ? "grid-cols-3" : "grid-cols-2"}`}>
-                  {available.map(([key, label]) => {
-                    const value = analysis?.readiness_index?.[key];
-                    if (!value) return null;
-                    const active = activeCriterion?.[0] === key;
-                    return (
-                      <button
-                        key={key}
-                        type="button"
-                        onClick={() => setSelectedCriterion(key)}
-                        aria-pressed={active}
-                        className={`min-w-0 px-1.5 py-2 text-center transition-colors ${
-                          active ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/60 hover:text-foreground"
-                        }`}
-                      >
-                        <span className="flex h-8 items-center justify-center text-[11px] font-semibold leading-tight">{label}</span>
-                        <span
-                          className="mt-1.5 block text-[17px] font-bold tabular-nums"
-                          style={{ color: scoreColor(value.score ?? 0) }}
-                        >
-                          {value.score ?? 0}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </section>
-            );
-          })}
-        </div>
-      )}
+      {evaluating && <EvaluationSkeleton />}
 
-      {activeCriterion && (
-        <div className="space-y-4 border-t border-border px-1 pt-4">
-          <div className="flex items-start justify-between gap-3">
+      {!evaluating && entries.length > 0 && (
+        <>
+          <div className="flex items-center gap-3 rounded-xl border border-border bg-background p-3">
+            <ScoreRing score={score} size={52} stroke={4} />
             <div className="min-w-0">
-              <div className="text-[16px] font-semibold text-foreground">{activeCriterion[1]}</div>
-              {activeCriterion[2].rubric?.description && (
-                <p className="mt-0.5 text-[12px] italic leading-snug text-muted-foreground">
-                  {activeCriterion[2].rubric.description}
-                </p>
-              )}
-            </div>
-            <div
-              className="shrink-0 text-[18px] font-bold tabular-nums"
-              style={{ color: scoreColor(activeCriterion[2].score ?? 0) }}
-            >
-              {activeCriterion[2].score ?? 0}/100
+              <div className="text-[13px] font-semibold">Readiness index</div>
+              <div className="text-[12px] text-muted-foreground">{score != null ? levelWord(score) : "Not scored yet"}</div>
             </div>
           </div>
-          {!!criterionPriorities.length && (
-            <div>
-              <div className="text-[11px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
-                Detailed feedback
-              </div>
-              <div className="mt-2">
-                <DetailedFeedbackItem item={criterionPriorities[0]} />
-              </div>
+          <div className="space-y-2">
+            {entries.map(([key, value]) => (
+              <ReadinessRow key={key} label={labelize(key)} value={value} />
+            ))}
+          </div>
+          {analysis?.coaching_brief?.coach_message && (
+            <div className="rounded-xl border border-info/20 bg-info/5 p-3 text-[13px] leading-relaxed text-foreground/85">
+              {analysis.coaching_brief.coach_message}
             </div>
           )}
-        </div>
+          <EssayAlignmentMatrixCard matrix={analysis?.essay_alignment_matrix} />
+        </>
       )}
 
-      {!evaluating && !criterionEntries.length && (
+      {!evaluating && !entries.length && scoredVersions.length === 0 && (
         <div className="rounded-xl border border-dashed border-border bg-background p-4 text-[13px] leading-relaxed text-muted-foreground">
-          {scoredVersions.length > 0
-            ? "This overall score is from an earlier session. Run coaching again for updated seven-criterion scores and grounded revision guidance."
-            : "Run a coaching session to generate seven essay-quality scores, grounded feedback, and revision actions."}
+          Run the coach to start tracking your draft scores, or run a deep evaluation for the readiness index, coach message, and alignment matrix.
         </div>
       )}
     </div>
@@ -6115,8 +6962,10 @@ function WorkspaceHighlightsTab({
   onReveal,
   onAcceptAllQuickFixes,
   quickFixCount,
+  onRunCoach,
   coachLoading,
-  hasAssessment,
+  coachSummary,
+  coachWarnings,
 }: {
   isEvaluating: boolean;
   suggestions: Suggestion[];
@@ -6125,75 +6974,77 @@ function WorkspaceHighlightsTab({
   onReveal: (s: Suggestion) => void;
   onAcceptAllQuickFixes: () => void;
   quickFixCount: number;
+  onRunCoach: (mode?: EssayCoachMode, writingSupportLevel?: WritingSupportLevel) => void;
   coachLoading: boolean;
-  hasAssessment: boolean;
+  coachSummary: string | null;
+  coachWarnings: string[];
 }) {
+  const [writingSupportLevel, setWritingSupportLevel] = useState<WritingSupportLevel>("sentence_polish");
   const { user } = useUser();
-  const draft = user?.essayDraft ?? "";
-  // Accept-all stays C0-only; other lanes are one-by-one by risk tier.
-  const mustFix = suggestions.filter(isSafeQuickFix);
-  const shouldImprove = suggestions.filter((s) => {
-    if (isSafeQuickFix(s)) return false;
-    if (s.riskTier === "C1" || s.riskTier === "C3") return true;
-    if (!s.riskTier && (s.category === "clarity" || s.category === "engagement")) return true;
-    return false;
-  });
-  const optionalPolish = suggestions.filter((s) => !mustFix.includes(s) && !shouldImprove.includes(s));
-  const wordCount = draft.trim() ? draft.trim().split(/\s+/).length : 0;
-  const wordLimit = parseWordTarget(buildOutlinePayload(user).word_limit);
-  const paragraphCount = draft.trim() ? draft.trim().split(/\n\s*\n/).filter(Boolean).length : 0;
-  const scholarship = user?.activeScholarship ?? {};
-  const formattingContext = [
-    scholarship.otherRequiredMaterials,
-    scholarship.requirementsPreview,
-    ...(scholarship.requiredApplicationMaterials ?? []),
-  ].filter(Boolean).join(" ");
-  const formattingRules = formattingContext
-    .split(/(?<=[.!?])\s+|\n+/)
-    .filter((rule) => /\b(?:font|spacing|margin|page|pdf|docx?|file format|formatting|double-spaced|single-spaced)\b/i.test(rule))
-    .slice(0, 2);
-  const formattingChecks = [
-    {
-      label: "Word count",
-      ok: !!wordLimit && wordCount <= wordLimit,
-      detail: wordLimit
-        ? `${wordCount} of ${wordLimit} words${wordCount > wordLimit ? ` — shorten by ${wordCount - wordLimit}` : ""}.`
-        : `${wordCount} words — no word limit was found in the scholarship requirements.`,
-    },
-    {
-      label: "Paragraph breaks",
-      ok: paragraphCount > 1 || wordCount < 100,
-      detail: paragraphCount > 1
-        ? `${paragraphCount} paragraphs detected.`
-        : wordCount < 100
-          ? "Add paragraph breaks as the draft grows."
-          : "The draft appears to be one long paragraph; add breaks for readability.",
-    },
-    {
-      label: "Required formatting rules",
-      ok: formattingRules.length === 0,
-      detail: formattingRules.length
-        ? `Confirm before submitting: ${formattingRules.join(" ")}`
-        : "No special font, spacing, margin, page, or file-format rules were found.",
-    },
-  ];
+  const analysis = user?.lastAnalysis;
+  const priorities = analysis?.revision_priorities ?? [];
+  const reviewers = analysis?.reviewer_comments ?? [];
+  const strengths = analysis?.essay_alignment_matrix?.strengths ?? [];
+  const counts = countByCategory(suggestions);
+  const hasBackend = priorities.length || reviewers.length || strengths.length;
 
   if (isEvaluating) return <HighlightsSkeleton />;
 
   return (
     <div className="space-y-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <PanelLabel>Fixes</PanelLabel>
-          <div className="mt-1 text-[12px] font-semibold text-muted-foreground">Guided revision by impact</div>
+      <div className="rounded-xl border border-border bg-background p-3">
+        <div className="text-[12px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Writing Support Level</div>
+        <div className="mt-1 text-[12px] leading-relaxed text-muted-foreground">
+          Choose how much help you want. You stay in control of every change.
+        </div>
+        <div className="mt-3 inline-flex w-full rounded-xl border border-border bg-card p-1 shadow-sm" aria-label="Writing support level">
+          {WRITING_SUPPORT_OPTIONS.map((option) => {
+            const selected = writingSupportLevel === option.id;
+            return (
+              <button
+                key={option.id}
+                type="button"
+                onClick={() => setWritingSupportLevel(option.id)}
+                aria-pressed={selected}
+                title={option.description}
+                className={`flex-1 rounded-lg px-2 py-1.5 text-[11px] font-semibold transition-colors duration-150 ${
+                  selected
+                    ? "bg-gradient-to-br from-[#26385F] to-[#5550A4] text-white shadow-sm"
+                    : "text-muted-foreground hover:bg-info/10 hover:text-info"
+                }`}
+              >
+                {option.label}
+              </button>
+            );
+          })}
         </div>
       </div>
 
-      {!coachLoading && (
-        <p className="text-[12px] text-muted-foreground">
-          {hasAssessment ? "Run a coaching session again to refresh fixes." : "Run a coaching session to generate guided fixes."}
-        </p>
-      )}
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <PanelLabel>Sentence Fixes</PanelLabel>
+          <div className="mt-1 text-[12px] font-semibold text-muted-foreground">{suggestions.length} open</div>
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            onRunCoach("grammar_tone", writingSupportLevel);
+          }}
+          disabled={coachLoading}
+          aria-busy={coachLoading}
+          className={`inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 py-1.5 text-[12px] font-semibold text-foreground transition-colors duration-150 hover:border-info/40 hover:bg-info/10 hover:text-info focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/30 disabled:opacity-50 ${coachLoading ? "agent-loading text-info" : ""}`}
+        >
+          {coachLoading ? <Spinner className="size-3.5" /> : <RefreshCw className="size-3.5" />}
+          {coachLoading ? (
+            "Updating..."
+          ) : (
+            <span className="leading-tight">
+              <span className="block">Update coaching</span>
+              <span className="block">to regenerate fixes</span>
+            </span>
+          )}
+        </button>
+      </div>
 
       {quickFixCount > 0 && (
         <button
@@ -6203,101 +7054,89 @@ function WorkspaceHighlightsTab({
           title="Applies grammar, spelling, spacing, and capitalization fixes — stylistic rewrites stay for individual review"
         >
           <Check className="size-3.5 text-success" />
-          Accept {quickFixCount} safe mechanics fix{quickFixCount === 1 ? "" : "es"}
+          Accept {quickFixCount} quick fix{quickFixCount === 1 ? "" : "es"}
         </button>
+      )}
+
+      {coachSummary && (
+        <div className="rounded-xl border border-info/20 bg-info/5 p-3 text-[13px] leading-relaxed text-foreground/85">
+          {coachSummary}
+        </div>
+      )}
+
+      {!!coachWarnings.length && (
+        <div className="rounded-xl border border-warning/25 bg-warning/5 p-3">
+          <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-warning">Coaching notes</div>
+          <MiniList items={coachWarnings} />
+        </div>
       )}
 
       {coachLoading && <HighlightsSkeleton />}
 
-      <FixLane
-        title="Must fix"
-        description="Safe spelling and grammar mechanics."
-        empty={draft.trim() ? "No open mechanics fixes." : "Write your draft, then run a coaching session."}
-        suggestions={mustFix}
-        loading={coachLoading}
-        onAccept={onAccept}
-        onDismiss={onDismiss}
-        onReveal={onReveal}
-      />
-
-      <FixLane
-        title="Should improve"
-        description="Clarity, flow, and structure edits — review one by one."
-        empty="No clarity or structure edits right now."
-        suggestions={shouldImprove}
-        loading={coachLoading}
-        onAccept={onAccept}
-        onDismiss={onDismiss}
-        onReveal={onReveal}
-      />
-
-      <FixLane
-        title="Optional polish"
-        description="Word choice and tone — never bulk-applied."
-        empty="No optional polish suggestions right now."
-        suggestions={optionalPolish}
-        loading={coachLoading}
-        onAccept={onAccept}
-        onDismiss={onDismiss}
-        onReveal={onReveal}
-      />
-
-      <div className="space-y-2 border-t border-border pt-3">
-        <div>
-          <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Formatting</div>
-          <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-            Word count, paragraph breaks, and required formatting rules.
-          </p>
-        </div>
-        {formattingChecks.map((check) => (
-          <div key={check.label} className="flex gap-2 rounded-lg border border-border bg-background p-3">
-            {check.ok
-              ? <Check className="mt-0.5 size-4 shrink-0 text-success" />
-              : <AlertCircle className="mt-0.5 size-4 shrink-0 text-warning" />}
-            <div>
-              <div className="text-[12px] font-semibold text-foreground">{check.label}</div>
-              <div className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">{check.detail}</div>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function FixLane({
-  title,
-  description,
-  empty,
-  suggestions,
-  loading,
-  onAccept,
-  onDismiss,
-  onReveal,
-}: {
-  title: string;
-  description: string;
-  empty: string;
-  suggestions: Suggestion[];
-  loading: boolean;
-  onAccept: (s: Suggestion) => void;
-  onDismiss: (s: Suggestion) => void;
-  onReveal: (s: Suggestion) => void;
-}) {
-  return (
-    <div className="space-y-2 border-t border-border pt-3 first:border-t-0 first:pt-0">
-      <div>
-        <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">{title}</div>
-        <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{description}</p>
-      </div>
-      {!loading && !suggestions.length && (
-        <div className="rounded-xl border border-dashed border-border bg-background p-3 text-[12px] leading-relaxed text-muted-foreground">
-          {empty}
+      {!coachLoading && !suggestions.length && (
+        <div className="rounded-xl border border-dashed border-border bg-background p-4 text-[13px] leading-relaxed text-muted-foreground">
+          {coachSummary
+            ? "No sentence-level fixes to show right now. Keep writing, then run the coach again."
+            : "Write your draft, then run the writing coach for grammar, clarity, tone, and specificity suggestions. Quick fixes also appear here as you type."}
         </div>
       )}
-      {suggestions.map((suggestion) => (
-        <SuggestionCard key={suggestion.id} s={suggestion} onAccept={onAccept} onDismiss={onDismiss} onReveal={onReveal} />
-      ))}
+
+      {CATEGORY_ORDER.filter((cat) => counts[cat] > 0).map((cat) => {
+        const meta = CATEGORY_META[cat];
+        const items = suggestions.filter((s) => s.category === cat);
+        return (
+          <div key={cat} className="space-y-2">
+            <div className="flex items-center gap-1.5">
+              <span className={`size-2 rounded-full ${meta.dotClass}`} />
+              <span className="text-[12px] font-semibold">{meta.label}</span>
+              <span className="text-[11px] text-muted-foreground">· {items.length}</span>
+            </div>
+            {items.map((s) => (
+              <SuggestionCard key={s.id} s={s} onAccept={onAccept} onDismiss={onDismiss} onReveal={onReveal} />
+            ))}
+          </div>
+        );
+      })}
+
+      {!!hasBackend && (
+        <div className="space-y-3 border-t border-border pt-3">
+          {!!priorities.length && (
+            <div className="rounded-xl border border-warning/25 bg-warning/5 p-3">
+              <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-warning">Top revision priorities</div>
+              <ol className="mt-2 space-y-1.5 text-[13px] leading-relaxed">
+                {priorities.slice(0, 4).map((item, i) => (
+                  <li key={item} className="flex gap-2">
+                    <span className="font-semibold text-warning">{i + 1}.</span>
+                    <span>{item}</span>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
+
+          {!!strengths.length && (
+            <div className="rounded-xl border border-success/20 bg-success/5 p-3">
+              <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-success">Working well</div>
+              <MiniList items={strengths} />
+            </div>
+          )}
+
+          {!!reviewers.length && (
+            <div className="space-y-2">
+              <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Reviewer reactions</div>
+              {reviewers.map((reviewer, i) => (
+                <div key={`${reviewer.persona}-${i}`} className="rounded-lg border border-border bg-background p-3">
+                  <div className="flex items-center gap-1.5 text-[12px] font-semibold">
+                    <MessageSquare className="size-3.5 text-info" />
+                    {reviewer.persona ?? "Reviewer"}
+                  </div>
+                  <p className="mt-1.5 text-[13px] leading-relaxed text-foreground/85">{reviewer.comment}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
