@@ -1,24 +1,28 @@
 # nodes/coaching/readiness.py
 
 READINESS_DIMENSIONS = [
-    "opportunity_fit",
+    "alignment",
     "evidence_strength",
-    "narrative_quality",
-    "authenticity",
-    "competitiveness",
+    "insight",
+    "coherence_continuity",
+    "flow_narrative_arc",
+    "tone_authenticity",
+    "clarity_concision",
 ]
 
 READINESS_LABELS = {
-    "opportunity_fit": "Opportunity Fit",
+    "alignment": "Alignment",
     "evidence_strength": "Evidence Strength",
-    "narrative_quality": "Narrative Quality",
-    "authenticity": "Authenticity",
-    "competitiveness": "Competitiveness",
+    "insight": "Insight",
+    "coherence_continuity": "Coherence & Continuity",
+    "flow_narrative_arc": "Flow & Narrative Arc",
+    "tone_authenticity": "Tone & Authenticity",
+    "clarity_concision": "Clarity & Concision",
     "revision_progress": "Revision Progress",
 }
 
 
-def clamp_score(value, lo=0, hi=100) -> int:
+def clamp_score(value, lo=0, hi=97) -> int:
     try:
         value = int(round(float(value)))
     except (TypeError, ValueError):

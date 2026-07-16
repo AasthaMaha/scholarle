@@ -204,6 +204,21 @@ export type AnalysisScore = {
   score?: number;
   level?: string;
   coaching?: string;
+  justification?: string;
+  feedback?: string;
+  revision_actions?: Array<{
+    priority?: string;
+    why_it_matters?: string;
+    how_to_fix?: string;
+    impact?: string;
+    estimated_effort?: string;
+  }>;
+  rubric?: {
+    description?: string;
+    excellent?: string;
+    developing?: string;
+    weak?: string;
+  };
   delta?: number;
 };
 
@@ -491,6 +506,11 @@ export type UserProfile = {
   activeScholarship?: ActiveScholarship;
   // latest result returned by the Scholar-E AI coach
   lastAnalysis?: AnalysisResult;
+  // latest Essay Workspace coach result, persisted so sleep/reload/remount does
+  // not clear the Coach and Reader tabs.
+  essayCoachResult?: Record<string, unknown>;
+  essayCoachSummary?: string;
+  essayCoachUpdatedAt?: number;
   // latest dedicated scholarship fit analysis
   fitAnalysis?: FitAnalysisResult;
   // latest discovery wiki recommendations

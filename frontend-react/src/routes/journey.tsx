@@ -7,8 +7,6 @@ import {
   ArrowRight,
   CalendarDays,
   Check,
-  ChevronLeft,
-  ChevronRight,
   ChevronDown,
   ClipboardList,
   Compass,
@@ -40,8 +38,6 @@ import {
   anchorCoachSuggestions,
   applySuggestion,
   CATEGORY_META,
-  CATEGORY_ORDER,
-  countByCategory,
   mergeSuggestions,
   type CoachSentenceSuggestion,
   type Suggestion,
@@ -52,7 +48,9 @@ import { Spinner } from "@/components/Spinner";
 import { AcademicOnboarding } from "@/components/AcademicOnboarding";
 import {
   analyzeScholarshipFit,
+  analyzeApplication,
   autofillProfileFromResume,
+  buildAnalyzePayload,
   buildEssayCoachPayload,
   buildFitPayload,
   buildOutlinePayload,
@@ -79,7 +77,6 @@ import {
   type WorkExperienceEntry,
   type UserProfile,
   type AnalysisResult,
-  type AnalysisScore,
   type EssayDraft,
   type ActiveScholarship,
   type WikiDiscoveryResult,
@@ -4289,7 +4286,7 @@ function criteriaAlignmentTone(alignment?: string): "default" | "gold" | "succes
 
 /* ---------------- Step 5: Essay Workspace ---------------- */
 
-type WorkspaceTab = "outline" | "coach" | "evaluation" | "highlights";
+type WorkspaceTab = "outline" | "reader" | "evaluation" | "highlights";
 
 function normalizePdfDraftText(pages: string[]) {
   return pages
@@ -4299,24 +4296,6 @@ function normalizePdfDraftText(pages: string[]) {
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
-
-const WRITING_SUPPORT_OPTIONS: Array<{ id: WritingSupportLevel; label: string; description: string }> = [
-  {
-    id: "grammar_only",
-    label: "Grammar only",
-    description: "Fix spelling, punctuation, and grammar without changing meaning.",
-  },
-  {
-    id: "sentence_polish",
-    label: "Sentence polish",
-    description: "Improve clarity and flow while preserving the student's meaning and voice.",
-  },
-  {
-    id: "rewrite_help",
-    label: "Rewrite help",
-    description: "Suggest rewritten versions, but require user approval.",
-  },
-];
 
 /** Pull the largest 2–5 digit number out of a word-limit string (e.g. "400-500 words" → 500). */
 function parseWordTarget(limit?: string): number | null {
@@ -4334,13 +4313,6 @@ function overallEssayScore(analysis?: AnalysisResult): number | null {
   return Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
 }
 
-/** Mean of a flat score map (e.g. the coach's 8-dim overall_scores) → 0–100. */
-function meanScore(scores?: Record<string, number> | null): number | null {
-  const vals = Object.values(scores ?? {}).filter((v): v is number => typeof v === "number");
-  if (!vals.length) return null;
-  return Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
-}
-
 function scoreColor(score: number): string {
   if (score >= 80) return "var(--success)";
   if (score >= 60) return "var(--warning)";
@@ -4349,26 +4321,6 @@ function scoreColor(score: number): string {
 
 function labelize(key: string): string {
   return key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
-function levelWord(score: number): string {
-  if (score >= 80) return "Strong — competitive draft";
-  if (score >= 60) return "Developing — keep refining";
-  return "Needs work — focus on the priorities";
-}
-
-function relativeTimeLabel(timestamp: number | null, now: number): string {
-  if (!timestamp) return "Not run yet";
-  const mins = Math.floor((now - timestamp) / 60000);
-  if (mins < 1) return "just now";
-  if (mins === 1) return "1 minute ago";
-  if (mins < 60) return `${mins} minutes ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours === 1) return "1 hour ago";
-  if (hours < 24) return `${hours} hours ago`;
-  const days = Math.floor(hours / 24);
-  if (days === 1) return "1 day ago";
-  return `${days} days ago`;
 }
 
 /** Grammarly-style circular score badge with a colored ring. */
@@ -4433,11 +4385,11 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
   const [coachRaw, setCoachRaw] = useState<CoachSentenceSuggestion[]>([]);
   const [coachLoading, setCoachLoading] = useState(false);
-  const [coachSummary, setCoachSummary] = useState<string | null>(null);
-  const [coachWarnings, setCoachWarnings] = useState<string[]>([]);
-  const [coachResult, setCoachResult] = useState<EssayCoachResult | null>(null);
-  const [coachUpdatedAt, setCoachUpdatedAt] = useState<number | null>(null);
-  const [coachDraftAtRun, setCoachDraftAtRun] = useState<string>("");
+  const [coachSummary, setCoachSummary] = useState<string | null>(() => user?.essayCoachSummary ?? null);
+  const [coachResult, setCoachResult] = useState<EssayCoachResult | null>(
+    () => (user?.essayCoachResult as EssayCoachResult | undefined) ?? null,
+  );
+  const [coachUpdatedAt, setCoachUpdatedAt] = useState<number | null>(() => user?.essayCoachUpdatedAt ?? null);
   // Outline coverage is layered: `autoCovered` comes from the AI coverage agent;
   // `manualChecked`/`manualUnchecked` are the student's overrides, which persist
   // across auto-runs. Displayed = (auto ∪ manualChecked) − manualUnchecked.
@@ -4449,21 +4401,83 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   const wordCount = draft.trim() ? draft.trim().split(/\s+/).filter(Boolean).length : 0;
   const characterCount = draft.length;
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("outline");
-  const [panelOpen, setPanelOpen] = useState(true);
+  const [panelWidth, setPanelWidth] = useState(() => {
+    if (typeof window === "undefined") return 380;
+    const saved = Number(window.localStorage.getItem("scholar-e:essay-panel-width"));
+    return Number.isFinite(saved) && saved >= 300 ? saved : 380;
+  });
+  const [panelResizing, setPanelResizing] = useState(false);
   const [isEvaluating, setIsEvaluating] = useState(false);
-  const [pdfStatus, setPdfStatus] = useState<string | null>(null);
-  const [analysisStatus, setAnalysisStatus] = useState<string | null>(null);
-  const [bgStatus, setBgStatus] = useState<string | null>(null);
+  const [evaluationProgress, setEvaluationProgress] = useState(0);
+  const [, setPdfStatus] = useState<string | null>(null);
+  const [, setBgStatus] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [nowTick, setNowTick] = useState(() => Date.now());
+  const [outlineLoading, setOutlineLoading] = useState(false);
+  const [outlineStatus, setOutlineStatus] = useState<string | null>(null);
+
+  const essayPrompt = user?.activeScholarship?.essayPrompts
+    || user?.activeScholarship?.otherRequiredMaterials
+    || user?.activeScholarship?.requirementsPreview
+    || "";
+  const outlineKey = useMemo(() => {
+    const scholarship = user?.activeScholarship ?? {};
+    return JSON.stringify({
+      scholarshipName: scholarship.name ?? "",
+      scholarshipUrl: scholarship.url ?? scholarship.officialWebsite ?? "",
+      prompt: essayPrompt,
+      requirementsPreview: scholarship.requirementsPreview ?? "",
+      updatedAt: scholarship.extractionCompletedAt ?? "",
+      profileName: user?.name ?? "",
+      educationLevel: user?.educationLevel ?? "",
+      careerGoal: user?.careerGoal ?? "",
+      highSchool: user?.highSchool ?? {},
+      undergrad: user?.undergrad ?? {},
+      graduate: user?.graduate ?? {},
+      researchExperience: user?.researchExperience ?? [],
+      workExperience: user?.workExperience ?? [],
+      optional: user?.optional ?? {},
+      prompts: user?.prompts ?? {},
+    });
+  }, [essayPrompt, user]);
 
   const wordTarget = useMemo(() => parseWordTarget(buildOutlinePayload(user).word_limit), [user]);
-  const score = useMemo(() => overallEssayScore(user?.lastAnalysis), [user?.lastAnalysis]);
+  const score = useMemo(() => {
+    const latestScoredDraft = [...(user?.drafts ?? [])]
+      .reverse()
+      .find((version) => typeof version.readinessOverall === "number" || typeof version.coachOverall === "number");
+    return latestScoredDraft?.readinessOverall ?? latestScoredDraft?.coachOverall ?? overallEssayScore(user?.lastAnalysis);
+  }, [user?.drafts, user?.lastAnalysis]);
   const suggestions = useMemo(() => {
     const auto = analyzeText(draft);
     const coach = anchorCoachSuggestions(coachRaw, draft);
     return mergeSuggestions(coach, auto).filter((s) => !dismissed.has(s.id));
   }, [draft, coachRaw, dismissed]);
+
+  function updateEssayPrompt(value: string) {
+    if (!user) return;
+    updateProfile({
+      activeScholarship: { ...(user.activeScholarship ?? {}), essayPrompts: value },
+      personalizedOutline: undefined,
+    });
+    setOutlineStatus(null);
+  }
+
+  async function runOutlineGeneration() {
+    if (!user || outlineLoading || !essayPrompt.trim()) return;
+    setOutlineLoading(true);
+    setOutlineStatus("Building your personalized outline from the prompt and your profile...");
+    try {
+      const result = await generatePersonalizedOutline(buildOutlinePayload(user));
+      updateProfile({ personalizedOutline: { ...result, generatedForKey: outlineKey } });
+      setOutlineStatus(result.status === "error" ? "A fallback outline is ready." : "Personalized outline ready.");
+      setActiveTab("outline");
+    } catch (error) {
+      setOutlineStatus(error instanceof Error ? error.message : "Could not generate the outline.");
+    } finally {
+      setOutlineLoading(false);
+    }
+  }
 
   // Lightweight autosave indicator — the working draft is continuously synced to
   // the store, so treat each settled edit as an autosave checkpoint.
@@ -4478,6 +4492,43 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     return () => window.clearInterval(id);
   }, []);
 
+  // The user store hydrates after this route first mounts. Restore persisted
+  // coach output when hydration completes or the account changes.
+  useEffect(() => {
+    if (!user?.essayCoachResult) return;
+    const restoredResult = user.essayCoachResult as EssayCoachResult;
+    setCoachResult(restoredResult);
+    setCoachRaw(restoredResult.sentence_suggestions ?? []);
+    setCoachSummary(user.essayCoachSummary ?? null);
+    setCoachUpdatedAt(user.essayCoachUpdatedAt ?? null);
+  }, [user?.email, user?.essayCoachResult, user?.essayCoachSummary, user?.essayCoachUpdatedAt]);
+
+  useEffect(() => {
+    if (!panelResizing) return;
+    const resize = (event: PointerEvent) => {
+      const maximum = Math.min(720, window.innerWidth * 0.6);
+      setPanelWidth(Math.max(300, Math.min(maximum, window.innerWidth - event.clientX)));
+    };
+    const stop = () => setPanelResizing(false);
+    const previousCursor = document.body.style.cursor;
+    const previousSelection = document.body.style.userSelect;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("pointermove", resize);
+    window.addEventListener("pointerup", stop, { once: true });
+    return () => {
+      window.removeEventListener("pointermove", resize);
+      window.removeEventListener("pointerup", stop);
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousSelection;
+    };
+  }, [panelResizing]);
+
+  useEffect(() => {
+    if (panelResizing) return;
+    window.localStorage.setItem("scholar-e:essay-panel-width", String(Math.round(panelWidth)));
+  }, [panelWidth, panelResizing]);
+
   const savedLabel = (() => {
     if (!savedAt) return "Not saved yet";
     const mins = Math.floor((nowTick - savedAt) / 60000);
@@ -4486,14 +4537,6 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     if (mins < 60) return `Saved · ${mins}m ago`;
     return `Saved · ${Math.floor(mins / 60)}h ago`;
   })();
-
-  function handleRunningChange(running: boolean) {
-    setIsEvaluating(running);
-    if (running) {
-      setPanelOpen(true);
-      setActiveTab("evaluation");
-    }
-  }
 
   function acceptSuggestion(s: Suggestion) {
     editorApiRef.current?.accept(s);
@@ -4552,21 +4595,18 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   }
 
   function openHighlights() {
-    setPanelOpen(true);
     setActiveTab("highlights");
     if (suggestions[0]) requestAnimationFrame(() => editorApiRef.current?.reveal(suggestions[0]));
   }
 
-  async function runCoach(mode: EssayCoachMode = "full", writingSupportLevel?: WritingSupportLevel) {
+  async function runAssessment(mode: EssayCoachMode = "full", writingSupportLevel?: WritingSupportLevel) {
     if (coachLoading) return;
     const silent = mode === "auto_check";
-    const draftForRun = draft;
     if (silent && draft === lastAutoCheckRef.current) return; // dedupe unchanged drafts
     if (wordCount < 20) {
       if (!silent) {
-        setPanelOpen(true);
-        setActiveTab("coach");
-        setCoachSummary("Write at least a short paragraph, then run the writing coach.");
+        setActiveTab("evaluation");
+        setCoachSummary('Write at least a short paragraph, then click "Evaluate."');
       }
       return;
     }
@@ -4575,10 +4615,8 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
       lastAutoCheckRef.current = draft;
       setBgStatus("Checking grammar and outline coverage…");
     } else {
-      setCoachSummary(mode === "final_check" ? "Running your final readiness check…" : "Scholar-E is reading your draft…");
-      setCoachWarnings([]);
-      setPanelOpen(true);
-      setActiveTab(mode === "grammar_tone" ? "highlights" : "coach");
+      setCoachSummary("Scholar-E is reading your draft…");
+      setActiveTab(mode === "grammar_tone" ? "highlights" : "evaluation");
     }
     try {
       const result = await runEssayCoach(buildEssayCoachPayload(user, mode, writingSupportLevel));
@@ -4590,27 +4628,21 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
       }
       setCoachRaw(result.sentence_suggestions ?? []);
       if (!silent) {
+        const updatedAt = Date.now();
         setCoachResult(result);
         setCoachSummary(result.coach_summary ?? null);
-        setCoachWarnings(result.warnings ?? []);
-        setCoachUpdatedAt(Date.now());
-        setCoachDraftAtRun(draftForRun);
-      }
-      // A full coach run is a checkpoint: snapshot the draft + its 8-dim scores
-      // so Progress can chart improvement across drafts (deduped on draft text).
-      if (mode === "full" && result.overall_scores && Object.keys(result.overall_scores).length) {
-        upsertVersion({
-          coachScores: result.overall_scores,
-          coachOverall: meanScore(result.overall_scores) ?? undefined,
-          coachSummary: result.coach_summary ?? undefined,
+        setCoachUpdatedAt(updatedAt);
+        updateProfile({
+          essayCoachResult: result as unknown as Record<string, unknown>,
+          essayCoachSummary: result.coach_summary ?? undefined,
+          essayCoachUpdatedAt: updatedAt,
         });
       }
     } catch (error) {
       if (!silent) {
         setCoachResult(null);
         setCoachRaw([]);
-        setCoachSummary(error instanceof Error ? error.message : "The writing coach could not analyze your draft.");
-        setCoachWarnings([]);
+        setCoachSummary(error instanceof Error ? error.message : "The assessment could not analyze your draft.");
       }
     } finally {
       setCoachLoading(false);
@@ -4618,18 +4650,58 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     }
   }
 
+  async function runEvaluation() {
+    if (coachLoading || isEvaluating) return;
+    if (wordCount < 30) return;
+    setIsEvaluating(true);
+    setEvaluationProgress(5);
+    setActiveTab("evaluation");
+    try {
+      // Refresh only the data still used by the workspace's Reader and Fixes
+      // tabs. The seven-criterion Evaluation below is the sole scoring pipeline.
+      await runAssessment("workspace_refresh");
+      setEvaluationProgress((progress) => Math.max(progress, 40));
+      const payload = buildAnalyzePayload(user);
+      payload.cv_text = payload.cv_text || "No student profile evidence was provided.";
+      payload.scholarship_name = payload.scholarship_name || "Scholarship opportunity";
+      payload.scholarship_type = payload.scholarship_type || "Scholarship";
+      if (!payload.prompt) throw new Error("Add the scholarship essay prompt before evaluating.");
+      const result = await analyzeApplication(payload);
+      updateProfile({ lastAnalysis: result });
+      setEvaluationProgress(100);
+      await new Promise((resolve) => window.setTimeout(resolve, 250));
+    } catch (error) {
+      console.error("Scholar-E evaluation failed.", error);
+    } finally {
+      setIsEvaluating(false);
+      setEvaluationProgress(0);
+    }
+  }
+
+  useEffect(() => {
+    if (!isEvaluating) return;
+    const interval = window.setInterval(() => {
+      setEvaluationProgress((progress) => {
+        if (progress >= 92) return progress;
+        const increment = progress < 35 ? 4 : progress < 70 ? 2 : 1;
+        return Math.min(92, progress + increment);
+      });
+    }, 650);
+    return () => window.clearInterval(interval);
+  }, [isEvaluating]);
+
   // Paste/upload auto-check: a paste bumps `pasteNonce`, and a debounced effect runs
   // the cheap `auto_check` (grammar + outline coverage) once the draft has settled.
-  // `runCoachRef` keeps the latest closure so the timeout sees the post-paste draft.
-  const runCoachRef = useRef(runCoach);
+  // Keep the latest assessment closure so the timeout sees the post-paste draft.
+  const runAssessmentRef = useRef(runAssessment);
   useEffect(() => {
-    runCoachRef.current = runCoach;
+    runAssessmentRef.current = runAssessment;
   });
   const lastAutoCheckRef = useRef("");
   const [pasteNonce, setPasteNonce] = useState(0);
   useEffect(() => {
     if (pasteNonce === 0) return;
-    const id = window.setTimeout(() => void runCoachRef.current("auto_check"), 800);
+    const id = window.setTimeout(() => void runAssessmentRef.current("auto_check"), 800);
     return () => window.clearTimeout(id);
   }, [pasteNonce]);
   function triggerAutoCheck() {
@@ -4759,14 +4831,9 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
           </button>
 
           <div className="flex min-w-0 flex-1 flex-col justify-center">
-            <input
-              type="text"
-              value={essayTitle}
-              onChange={(e) => updateProfile({ essayTitle: e.target.value })}
-              placeholder="Untitled scholarship essay"
-              aria-label="Essay title"
-              className="w-full truncate border-none bg-transparent p-0 text-[15px] font-semibold leading-tight text-foreground outline-none placeholder:text-muted-foreground"
-            />
+            <div className="w-full truncate text-[15px] font-semibold leading-tight text-foreground">
+              {user?.activeScholarship?.name || essayTitle || "Scholarship essay"}
+            </div>
             <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
               <span className={`inline-block size-1.5 rounded-full ${savedAt ? "bg-success" : "bg-muted-foreground/40"}`} />
               {savedLabel}
@@ -4825,30 +4892,14 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
 
             <button
               type="button"
-              onClick={() => runCoach()}
-              disabled={coachLoading}
-              aria-busy={coachLoading}
-              className={`ml-0.5 inline-flex items-center gap-1.5 rounded-lg bg-info px-3 py-2 text-[13px] font-medium text-white transition-opacity duration-150 hover:opacity-90 disabled:opacity-60 ${coachLoading ? "agent-loading" : ""}`}
+              onClick={() => void runEvaluation()}
+              disabled={wordCount < 30 || coachLoading || isEvaluating}
+              aria-busy={coachLoading || isEvaluating}
+              className={`ml-0.5 inline-flex items-center gap-1.5 rounded-lg bg-info px-4 py-2 text-[13px] font-medium text-white transition-opacity duration-150 hover:opacity-90 disabled:opacity-40 ${coachLoading || isEvaluating ? "agent-loading" : ""}`}
             >
-              {coachLoading ? <Spinner className="size-4" /> : <Wand2 className="size-4" />}
-              {coachLoading ? "Coaching…" : "Run coach"}
+              {coachLoading || isEvaluating ? <Spinner className="size-4" /> : <Gauge className="size-4" />}
+              {coachLoading || isEvaluating ? "Evaluating…" : "Evaluate"}
             </button>
-
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <div className="hidden md:block">
-                  <CoachRunButton
-                    label={wordCount < 30 ? "Write more" : "Evaluate"}
-                    loadingLabel="Analyzing…"
-                    disabled={wordCount < 30}
-                    onStatus={setAnalysisStatus}
-                    onRunningChange={handleRunningChange}
-                    className="rounded-lg border border-border px-3 py-2 text-[13px] font-medium text-foreground transition-colors duration-150 hover:bg-accent disabled:opacity-40"
-                  />
-                </div>
-              </TooltipTrigger>
-              <TooltipContent>Score the draft (readiness index)</TooltipContent>
-            </Tooltip>
 
             <Tooltip>
               <TooltipTrigger asChild>
@@ -4859,24 +4910,39 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
               <TooltipContent>{score == null ? "Run an evaluation to get your essay score" : `Essay score: ${score}/100`}</TooltipContent>
             </Tooltip>
 
-            <button
-              type="button"
-              onClick={() => setPanelOpen((open) => !open)}
-              aria-label={panelOpen ? "Hide panel" : "Show panel"}
-              className="ml-0.5 hidden size-9 place-items-center rounded-lg text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground lg:grid"
-            >
-              {panelOpen ? <ChevronRight className="size-4" /> : <ChevronLeft className="size-4" />}
-            </button>
           </div>
         </div>
 
-        {(pdfStatus || analysisStatus || bgStatus) && (
-          <div className="flex items-center gap-1.5 border-t border-border bg-accent/40 px-4 py-1.5 text-[11px] text-muted-foreground">
-            {bgStatus && <span className="size-2.5 shrink-0 animate-spin rounded-full border-2 border-info/30 border-t-info" />}
-            {bgStatus ?? pdfStatus ?? analysisStatus}
-          </div>
-        )}
       </header>
+
+      <section className="border-b border-border bg-card">
+        <div className="mx-auto max-w-[1440px] px-4 py-3 md:px-6">
+          <div className="flex items-center gap-3">
+            <label htmlFor="workspace-essay-prompt" className="shrink-0 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+              Essay prompt
+            </label>
+            <input
+              id="workspace-essay-prompt"
+              type="text"
+              value={essayPrompt}
+              onChange={(event) => updateEssayPrompt(event.target.value)}
+              placeholder="Paste or enter the scholarship essay prompt here."
+              className="h-10 min-w-0 flex-1 rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground/60 focus:border-info focus:ring-2 focus:ring-info/10"
+            />
+            <button
+              type="button"
+              onClick={() => void runOutlineGeneration()}
+              disabled={outlineLoading || !essayPrompt.trim()}
+              aria-busy={outlineLoading}
+              className={`inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-lg bg-primary px-5 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${outlineLoading ? "agent-loading" : ""}`}
+            >
+              {outlineLoading ? <Spinner className="size-4" /> : user?.personalizedOutline?.outline ? <RefreshCw className="size-4" /> : <Sparkles className="size-4" />}
+              {outlineLoading ? "Generating Outline…" : user?.personalizedOutline?.outline ? "Regenerate Outline" : "Generate Outline"}
+            </button>
+          </div>
+          {outlineStatus && <p className="mt-2 text-xs text-muted-foreground">{outlineStatus}</p>}
+        </div>
+      </section>
 
       {/* Zone 2 (editor) + Zone 3 (sidebar) */}
       <div className="mx-auto flex max-w-[1440px] flex-col items-stretch lg:flex-row lg:items-start">
@@ -4899,34 +4965,57 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
         </div>
 
         <div
-          className={`w-full overflow-hidden transition-[max-height,opacity,width] duration-300 ease-out lg:shrink-0 ${
-            panelOpen
-              ? "max-h-[1200px] opacity-100 lg:w-[380px]"
-              : "max-h-0 opacity-0 pointer-events-none lg:max-h-none lg:w-0"
+          style={{ "--essay-panel-width": `${panelWidth}px` } as React.CSSProperties}
+          className={`relative max-h-[1200px] w-full overflow-visible lg:w-[var(--essay-panel-width)] lg:shrink-0 ${
+            panelResizing ? "transition-none" : "transition-[width] duration-300 ease-out"
           }`}
         >
-          <EssayWorkspacePanel
-            activeTab={activeTab}
-            onTabChange={setActiveTab}
-            isEvaluating={isEvaluating}
-            onCollapse={() => setPanelOpen(false)}
-            suggestions={suggestions}
-            onAccept={acceptSuggestion}
-            onDismiss={dismissSuggestion}
-            onReveal={revealSuggestion}
-            onAcceptAllQuickFixes={acceptAllQuickFixes}
-            quickFixCount={quickFixSuggestions.length}
-            onRunCoach={runCoach}
-            coachLoading={coachLoading}
-            coachSummary={coachSummary}
-            coachWarnings={coachWarnings}
-            coachResult={coachResult}
-            coachUpdatedAt={coachUpdatedAt}
-            coachDraftChanged={!!coachUpdatedAt && draft !== coachDraftAtRun}
-            now={nowTick}
-            covered={coveredPoints}
-            onToggleCovered={toggleCovered}
-          />
+          <div
+            role="separator"
+            aria-label="Resize coaching sidebar"
+            aria-orientation="vertical"
+            aria-valuemin={300}
+            aria-valuemax={720}
+            aria-valuenow={Math.round(panelWidth)}
+            tabIndex={0}
+            onPointerDown={(event) => {
+              event.preventDefault();
+              setPanelResizing(true);
+            }}
+            onKeyDown={(event) => {
+              if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+              event.preventDefault();
+              const direction = event.key === "ArrowLeft" ? 1 : -1;
+              setPanelWidth((width) => Math.max(300, Math.min(720, width + direction * 24)));
+            }}
+            className={`absolute inset-y-0 left-0 z-30 hidden w-2 -translate-x-1/2 cursor-col-resize touch-none items-center justify-center outline-none lg:flex ${
+              panelResizing ? "bg-info/10" : "hover:bg-info/10 focus:bg-info/10"
+            }`}
+          >
+            <span className={`h-12 w-1 rounded-full transition-colors ${panelResizing ? "bg-info" : "bg-border group-hover:bg-info"}`} />
+          </div>
+          <div>
+            <EssayWorkspacePanel
+              activeTab={activeTab}
+              onTabChange={setActiveTab}
+              isEvaluating={isEvaluating}
+              evaluationProgress={evaluationProgress}
+              suggestions={suggestions}
+              onAccept={acceptSuggestion}
+              onDismiss={dismissSuggestion}
+              onReveal={revealSuggestion}
+              onAcceptAllQuickFixes={acceptAllQuickFixes}
+              quickFixCount={quickFixSuggestions.length}
+              coachLoading={coachLoading}
+              coachSummary={coachSummary}
+              coachResult={coachResult}
+              coachUpdatedAt={coachUpdatedAt}
+              outlineLoading={outlineLoading}
+              outlineStatus={outlineStatus}
+              covered={coveredPoints}
+              onToggleCovered={toggleCovered}
+            />
+          </div>
         </div>
       </div>
     </div>
@@ -4937,179 +5026,143 @@ function EssayWorkspacePanel({
   activeTab,
   onTabChange,
   isEvaluating,
-  onCollapse,
+  evaluationProgress,
   suggestions,
   onAccept,
   onDismiss,
   onReveal,
   onAcceptAllQuickFixes,
   quickFixCount,
-  onRunCoach,
   coachLoading,
   coachSummary,
-  coachWarnings,
   coachResult,
   coachUpdatedAt,
-  coachDraftChanged,
-  now,
+  outlineLoading,
+  outlineStatus,
   covered,
   onToggleCovered,
 }: {
   activeTab: WorkspaceTab;
   onTabChange: (tab: WorkspaceTab) => void;
   isEvaluating: boolean;
-  onCollapse: () => void;
+  evaluationProgress: number;
   suggestions: Suggestion[];
   onAccept: (s: Suggestion) => void;
   onDismiss: (s: Suggestion) => void;
   onReveal: (s: Suggestion) => void;
   onAcceptAllQuickFixes: () => void;
   quickFixCount: number;
-  onRunCoach: (mode?: EssayCoachMode, writingSupportLevel?: WritingSupportLevel) => void;
   coachLoading: boolean;
   coachSummary: string | null;
-  coachWarnings: string[];
   coachResult: EssayCoachResult | null;
   coachUpdatedAt: number | null;
-  coachDraftChanged: boolean;
-  now: number;
+  outlineLoading: boolean;
+  outlineStatus: string | null;
   covered: Set<string>;
   onToggleCovered: (id: string) => void;
 }) {
-  const { user, updateProfile } = useUser();
-  const [outlineLoading, setOutlineLoading] = useState(false);
-  const [outlineStatus, setOutlineStatus] = useState<string | null>(null);
-  const outlineKey = useMemo(() => {
-    const scholarship = user?.activeScholarship ?? {};
-    return JSON.stringify({
-      scholarshipName: scholarship.name ?? "",
-      scholarshipUrl: scholarship.url ?? scholarship.officialWebsite ?? "",
-      prompt: scholarship.essayPrompts || scholarship.otherRequiredMaterials || scholarship.requirementsPreview || "",
-      requirementsPreview: scholarship.requirementsPreview ?? "",
-      updatedAt: scholarship.extractionCompletedAt ?? "",
-      profileName: user?.name ?? "",
-      educationLevel: user?.educationLevel ?? "",
-      careerGoal: user?.careerGoal ?? "",
-      highSchool: user?.highSchool ?? {},
-      undergrad: user?.undergrad ?? {},
-      graduate: user?.graduate ?? {},
-      researchExperience: user?.researchExperience ?? [],
-      workExperience: user?.workExperience ?? [],
-      optional: user?.optional ?? {},
-      prompts: user?.prompts ?? {},
-    });
-  }, [user]);
-
-  async function runOutlineGeneration(force = false) {
-    if (!user || outlineLoading) return;
-    if (!force && user.personalizedOutline?.generatedForKey === outlineKey) return;
-    setOutlineLoading(true);
-    setOutlineStatus("Building your personalized outline from the scholarship requirements and your profile...");
-    try {
-      const result = await generatePersonalizedOutline(buildOutlinePayload(user));
-      updateProfile({ personalizedOutline: { ...result, generatedForKey: outlineKey } });
-      setOutlineStatus(result.status === "error" ? "A fallback outline is ready." : "Personalized outline ready.");
-    } catch (error) {
-      setOutlineStatus(error instanceof Error ? error.message : "Could not generate the outline.");
-    } finally {
-      setOutlineLoading(false);
-    }
-  }
-
-  // Auto-generate the outline as soon as the student reaches the workspace (the
-  // panel mounts on entry), not only when the Outline tab is opened.
-  useEffect(() => {
-    if (!user) return;
-    if (user.personalizedOutline?.generatedForKey === outlineKey) return;
-    void runOutlineGeneration(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [outlineKey, user?.personalizedOutline?.generatedForKey]);
+  const { user } = useUser();
 
   const tabs: Array<{ id: WorkspaceTab; label: string; icon: typeof ListChecks; count?: number }> = [
     { id: "outline", label: "Outline", icon: ListChecks },
-    { id: "coach", label: "Coach", icon: Wand2 },
-    { id: "evaluation", label: "Evaluation", icon: Gauge },
     { id: "highlights", label: "Fixes", icon: Sparkles, count: suggestions.length },
+    { id: "evaluation", label: "Evaluation", icon: Gauge },
+    { id: "reader", label: "Reader", icon: MessageSquare },
   ];
 
   return (
-    <aside className="w-full shrink-0 border-t border-border bg-card lg:sticky lg:top-[56px] lg:h-[calc(100vh-120px)] lg:w-[380px] lg:overflow-y-auto lg:border-l lg:border-t-0">
-      <div className="sticky top-0 z-10 flex items-center gap-1 border-b border-border bg-card/95 p-2 backdrop-blur">
-        <div className="flex flex-1 items-center gap-1 rounded-lg bg-muted/60 p-1">
-          {tabs.map((tab) => {
-            const Icon = tab.icon;
-            const active = activeTab === tab.id;
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => onTabChange(tab.id)}
-                className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-[12px] font-medium transition-colors duration-150 ${
-                  active ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                <Icon className="size-3.5" />
-                <span className="hidden sm:inline">{tab.label}</span>
-                {tab.count ? (
-                  <span className={`grid h-4 min-w-4 place-items-center rounded-full px-1 text-[10px] font-bold ${active ? "bg-info text-white" : "bg-info/15 text-info"}`}>
-                    {tab.count}
-                  </span>
-                ) : null}
-              </button>
-            );
-          })}
+    <aside
+      aria-busy={isEvaluating}
+      className={`relative w-full shrink-0 border-t border-border bg-card lg:sticky lg:top-[56px] lg:h-[calc(100vh-120px)] lg:border-l lg:border-t-0 ${
+        isEvaluating ? "overflow-hidden" : "lg:overflow-y-auto"
+      }`}
+    >
+      <div className={isEvaluating ? "pointer-events-none select-none opacity-30 grayscale" : ""}>
+        <div className="sticky top-0 z-10 flex items-center gap-1 border-b border-border bg-card/95 p-2 backdrop-blur">
+          <div className="flex flex-1 items-center gap-1 rounded-lg bg-muted/60 p-1">
+            {tabs.map((tab) => {
+              const Icon = tab.icon;
+              const active = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => onTabChange(tab.id)}
+                  className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-[12px] font-medium transition-colors duration-150 ${
+                    active ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <Icon className="size-3.5" />
+                  <span className="hidden sm:inline">{tab.label}</span>
+                  {tab.count ? (
+                    <span className={`grid h-4 min-w-4 place-items-center rounded-full px-1 text-[10px] font-bold ${active ? "bg-info text-white" : "bg-info/15 text-info"}`}>
+                      {tab.count}
+                    </span>
+                  ) : null}
+                </button>
+              );
+            })}
+          </div>
         </div>
-        <button
-          type="button"
-          onClick={onCollapse}
-          aria-label="Collapse panel"
-          className="hidden size-8 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground lg:grid"
-        >
-          <ChevronRight className="size-4" />
-        </button>
+        <div key={activeTab} className="animate-in fade-in slide-in-from-bottom-1 p-4 duration-200">
+          {activeTab === "outline" && (
+            <PersonalizedOutlinePanel
+              outline={user?.personalizedOutline}
+              loading={outlineLoading}
+              status={outlineStatus}
+              covered={covered}
+              onToggleCovered={onToggleCovered}
+            />
+          )}
+          {activeTab === "reader" && (
+            <ReaderPerspectiveTab result={coachResult} loading={coachLoading} />
+          )}
+          {activeTab === "evaluation" && (
+            <WorkspaceEvaluationTab
+              isEvaluating={isEvaluating}
+              coachResult={coachResult}
+              coachLoading={coachLoading}
+              coachSummary={coachSummary}
+            />
+          )}
+          {activeTab === "highlights" && (
+            <WorkspaceHighlightsTab
+              isEvaluating={isEvaluating}
+              suggestions={suggestions}
+              onAccept={onAccept}
+              onDismiss={onDismiss}
+              onReveal={onReveal}
+              onAcceptAllQuickFixes={onAcceptAllQuickFixes}
+              quickFixCount={quickFixCount}
+              coachLoading={coachLoading}
+              hasAssessment={!!coachUpdatedAt}
+            />
+          )}
+        </div>
       </div>
-      <div key={activeTab} className="animate-in fade-in slide-in-from-bottom-1 p-4 duration-200">
-        {activeTab === "outline" && (
-          <PersonalizedOutlinePanel
-            outline={user?.personalizedOutline}
-            scholarshipName={user?.activeScholarship?.name}
-            wordLimit={buildOutlinePayload(user).word_limit}
-            loading={outlineLoading}
-            status={outlineStatus}
-            onRegenerate={() => void runOutlineGeneration(true)}
-            covered={covered}
-            onToggleCovered={onToggleCovered}
-          />
-        )}
-        {activeTab === "coach" && (
-          <WorkspaceCoachTab
-            result={coachResult}
-            loading={coachLoading}
-            onRunCoach={onRunCoach}
-            coachSummary={coachSummary}
-            coachWarnings={coachWarnings}
-            updatedAt={coachUpdatedAt}
-            draftChanged={coachDraftChanged}
-            now={now}
-          />
-        )}
-        {activeTab === "evaluation" && <WorkspaceEvaluationTab isEvaluating={isEvaluating} />}
-        {activeTab === "highlights" && (
-          <WorkspaceHighlightsTab
-            isEvaluating={isEvaluating}
-            suggestions={suggestions}
-            onAccept={onAccept}
-            onDismiss={onDismiss}
-            onReveal={onReveal}
-            onAcceptAllQuickFixes={onAcceptAllQuickFixes}
-            quickFixCount={quickFixCount}
-            onRunCoach={onRunCoach}
-            coachLoading={coachLoading}
-            coachSummary={coachSummary}
-            coachWarnings={coachWarnings}
-          />
-        )}
-      </div>
+      {isEvaluating && (
+        <div className="absolute inset-0 z-50 grid place-items-center bg-muted/80 backdrop-blur-[1px]">
+          <div className="w-[min(82%,360px)] rounded-xl border border-border bg-card/95 p-4 shadow-sm">
+            <div className="flex items-center justify-between gap-3 text-sm font-medium text-muted-foreground">
+              <span>Regenerating Fixes, Evaluation, and Reader…</span>
+              <span className="tabular-nums text-foreground">{evaluationProgress}%</span>
+            </div>
+            <div
+              className="mt-3 h-2 overflow-hidden rounded-full bg-border"
+              role="progressbar"
+              aria-label="Evaluation progress"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={evaluationProgress}
+            >
+              <div
+                className="h-full rounded-full bg-info transition-[width] duration-500 ease-out"
+                style={{ width: `${evaluationProgress}%` }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </aside>
   );
 }
@@ -5201,77 +5254,21 @@ function OutlineCheckRow({
   );
 }
 
-function OutlineGroup({
-  id,
-  title,
-  icon: Icon,
-  total,
-  coveredCount,
-  open,
-  onToggle,
-  children,
-}: {
-  id: string;
-  title: string;
-  icon: typeof Target;
-  total: number;
-  coveredCount: number;
-  open: boolean;
-  onToggle: (id: string) => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="overflow-hidden rounded-xl border border-border">
-      <button
-        type="button"
-        onClick={() => onToggle(id)}
-        className="flex w-full items-center gap-2 bg-accent/40 px-3 py-2.5 text-left transition-colors duration-150 hover:bg-accent/70"
-      >
-        <Icon className="size-4 text-info" />
-        <span className="flex-1 text-[13px] font-semibold">{title}</span>
-        <span className="text-[11px] tabular-nums text-muted-foreground">{coveredCount}/{total}</span>
-        <ChevronDown className={`size-4 text-muted-foreground transition-transform duration-200 ${open ? "rotate-180" : ""}`} />
-      </button>
-      {open && <div className="space-y-2 p-2.5">{children}</div>}
-    </div>
-  );
-}
-
 function PersonalizedOutlinePanel({
   outline,
-  scholarshipName,
-  wordLimit,
   loading,
   status,
-  onRegenerate,
   covered,
   onToggleCovered,
 }: {
   outline?: PersonalizedOutlineResult;
-  scholarshipName?: string;
-  wordLimit?: string;
   loading: boolean;
   status?: string | null;
-  onRegenerate: () => void;
   covered: Set<string>;
   onToggleCovered: (id: string) => void;
 }) {
   const [copyStatus, setCopyStatus] = useState("");
-  const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set(["core"]));
-  const toggleGroup = (id: string) =>
-    setOpenGroups((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
   const data = outline?.outline;
-
-  useEffect(() => {
-    if (!loading && data) {
-      setOpenGroups(new Set(["core"]));
-    }
-  }, [loading, Boolean(data), outline?.generatedForKey]);
 
   async function copyOutline() {
     const text = outlineToText(outline);
@@ -5283,38 +5280,9 @@ function PersonalizedOutlinePanel({
 
   return (
     <div className="text-foreground">
-      <div className="border-b border-border pb-4">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="inline-flex items-center gap-2 rounded-md bg-info/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-info">
-              <Sparkles className="size-3.5" />
-              Personalized Outline
-            </div>
-            <div className="mt-2 truncate font-display text-lg font-semibold leading-tight">
-              {scholarshipName || "Current scholarship"}
-            </div>
-            {wordLimit && (
-              <div className="mt-2 inline-flex items-center rounded-md border border-border bg-background px-2.5 py-1 text-xs text-muted-foreground">
-                {wordLimit}
-              </div>
-            )}
-          </div>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                onClick={onRegenerate}
-                disabled={loading}
-                aria-busy={loading}
-                className={`grid size-9 shrink-0 place-items-center rounded-md border border-border text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-90 ${loading ? "agent-loading text-info" : ""}`}
-                aria-label="Regenerate outline"
-              >
-                {loading ? <Spinner className="size-4" /> : <RefreshCw className="size-4" />}
-              </button>
-            </TooltipTrigger>
-            <TooltipContent>{loading ? "Generating outline" : "Regenerate outline"}</TooltipContent>
-          </Tooltip>
-        </div>
+      <div className="flex items-center gap-2 px-1 text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+        <Sparkles className="size-3.5 text-info" />
+        Personalized Outline
       </div>
 
       {loading && (
@@ -5342,7 +5310,7 @@ function PersonalizedOutlinePanel({
 
       {!loading && !data && (
         <div className="mt-5 rounded-lg border border-dashed border-border bg-background p-4 text-sm text-muted-foreground">
-          Add a scholarship prompt or requirement details to generate a personalized outline.
+          Review the essay prompt at the top of the workspace, then select Generate Outline.
         </div>
       )}
 
@@ -5350,37 +5318,17 @@ function PersonalizedOutlinePanel({
         (() => {
           type Pt = { id: string; label: string; detail?: string };
           const points = buildOutlinePoints(outline);
-          const corePoints: Pt[] = points.filter((p) => p.group === "core");
           const strategyPoints: Pt[] = points.filter((p) => p.group === "strategy");
           const structurePoints: Pt[] = points.filter((p) => p.group === "structure");
-          const keyPoints: Pt[] = points.filter((p) => p.group === "keypoints");
           const sections = data.sections ?? [];
-          const total = points.length;
-          const coveredCount = points.filter((p) => covered.has(p.id)).length;
-          const cc = (pts: Pt[]) => pts.filter((p) => covered.has(p.id)).length;
-          const pct = total ? Math.round((coveredCount / total) * 100) : 0;
-
+          const namedIntroductionIndex = sections.findIndex((section) => /intro|opening/i.test(section.section_name ?? ""));
+          const namedConclusionIndex = sections.findIndex((section) => /conclu|closing/i.test(section.section_name ?? ""));
+          const introductionIndex = namedIntroductionIndex >= 0 ? namedIntroductionIndex : 0;
+          const conclusionIndex = namedConclusionIndex >= 0 ? namedConclusionIndex : Math.max(0, sections.length - 1);
           return (
             <div className="mt-4 space-y-3">
-              <div className="rounded-xl border border-border bg-background p-3">
-                <div className="flex items-center justify-between text-[12px]">
-                  <span className="font-semibold uppercase tracking-[0.12em] text-muted-foreground">Coverage</span>
-                  <span className="font-semibold tabular-nums text-foreground">{coveredCount}/{total} covered</span>
-                </div>
-                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-border">
-                  <div className="h-full rounded-full bg-info transition-all duration-500" style={{ width: `${pct}%` }} />
-                </div>
-                <div className="mt-1.5 text-[11px] text-muted-foreground">AI-detected from your draft — tap any point to adjust.</div>
-              </div>
-
-              <OutlineGroup id="core" title="Core Message" icon={Target} total={corePoints.length} coveredCount={cc(corePoints)} open={openGroups.has("core")} onToggle={toggleGroup}>
-                {corePoints.map((p) => (
-                  <OutlineCheckRow key={p.id} id={p.id} label={p.label} detail={p.detail} covered={covered} onToggle={onToggleCovered} />
-                ))}
-              </OutlineGroup>
-
               {!!structurePoints.length && (
-                <OutlineGroup id="structure" title="Structure" icon={ClipboardList} total={structurePoints.length} coveredCount={cc(structurePoints)} open={openGroups.has("structure")} onToggle={toggleGroup}>
+                <div className="space-y-2">
                   {sections.map((s, i) => (
                     <OutlineCheckRow key={`p-sec-${i}`} id={`p-sec-${i}`} label={s.section_name || `Section ${i + 1}`} detail={s.purpose} covered={covered} onToggle={onToggleCovered}>
                       {!!s.scholarship_requirement_addressed?.length && (
@@ -5400,33 +5348,35 @@ function PersonalizedOutlinePanel({
                           ))}
                         </ul>
                       )}
-                      {s.estimated_word_count && <div className="mt-1.5 text-[11px] text-muted-foreground">~{s.estimated_word_count}</div>}
+                      {i === introductionIndex && data.recommended_opening && (
+                        <div className="mt-2 rounded-md bg-info/5 px-2.5 py-2 text-[12px] leading-relaxed text-muted-foreground">
+                          <span className="font-semibold text-foreground">Opening tip:</span> {data.recommended_opening}
+                        </div>
+                      )}
+                      {i === conclusionIndex && data.recommended_conclusion && (
+                        <div className="mt-2 rounded-md bg-info/5 px-2.5 py-2 text-[12px] leading-relaxed text-muted-foreground">
+                          <span className="font-semibold text-foreground">Conclusion tip:</span> {data.recommended_conclusion}
+                        </div>
+                      )}
+                      {s.estimated_word_count && (
+                        <div className="mt-1.5 text-[11px] text-muted-foreground">
+                          ~{s.estimated_word_count}{/\bwords?\b/i.test(s.estimated_word_count) ? "" : " words"}
+                        </div>
+                      )}
                     </OutlineCheckRow>
                   ))}
-                </OutlineGroup>
-              )}
-
-              {!!keyPoints.length && (
-                <OutlineGroup id="keypoints" title="Key Points to Hit" icon={ListChecks} total={keyPoints.length} coveredCount={cc(keyPoints)} open={openGroups.has("keypoints")} onToggle={toggleGroup}>
-                  {keyPoints.map((p) => (
-                    <OutlineCheckRow key={p.id} id={p.id} label={p.label} detail={p.detail} covered={covered} onToggle={onToggleCovered} />
-                  ))}
-                </OutlineGroup>
+                </div>
               )}
 
               {!!strategyPoints.length && (
-                <OutlineGroup id="strategy" title="Strategy Notes" icon={Lightbulb} total={strategyPoints.length} coveredCount={cc(strategyPoints)} open={openGroups.has("strategy")} onToggle={toggleGroup}>
-                  {strategyPoints.map((p) => (
-                    <OutlineCheckRow key={p.id} id={p.id} label={p.label} covered={covered} onToggle={onToggleCovered} />
+                <div className="space-y-2 pt-1">
+                  <div className="flex items-center gap-2 px-1 text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                    <Lightbulb className="size-3.5 text-info" />
+                    Strategy Notes
+                  </div>
+                  {strategyPoints.map((point) => (
+                    <OutlineCheckRow key={point.id} id={point.id} label={point.label} detail={point.detail} covered={covered} onToggle={onToggleCovered} />
                   ))}
-                </OutlineGroup>
-              )}
-
-              {(data.recommended_opening || data.recommended_conclusion) && (
-                <div className="rounded-xl border border-border bg-background p-3">
-                  <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Opening &amp; Closing Tips</div>
-                  {data.recommended_opening && <p className="mt-2 text-[13px] leading-relaxed"><span className="font-medium">Opening:</span> {data.recommended_opening}</p>}
-                  {data.recommended_conclusion && <p className="mt-2 text-[13px] leading-relaxed"><span className="font-medium">Conclusion:</span> {data.recommended_conclusion}</p>}
                 </div>
               )}
 
@@ -5472,51 +5422,6 @@ function PanelEmpty({ label, message }: { label: string; message: string }) {
   );
 }
 
-function ReadinessRow({ label, value }: { label: string; value: AnalysisScore }) {
-  const [open, setOpen] = useState(false);
-  const s = typeof value.score === "number" ? value.score : 0;
-  const hasDetail = !!value.coaching?.trim();
-  return (
-    <div className="rounded-lg border border-border bg-background p-3">
-      <button
-        type="button"
-        onClick={() => hasDetail && setOpen((o) => !o)}
-        className="flex w-full items-center justify-between gap-2 text-left"
-        aria-expanded={open}
-      >
-        <span className="flex items-center gap-1.5 text-[13px] font-medium">
-          {label}
-          {hasDetail && <ChevronDown className={`size-3.5 text-muted-foreground transition-transform duration-200 ${open ? "rotate-180" : ""}`} />}
-        </span>
-        <span className="text-[12px] font-semibold tabular-nums" style={{ color: scoreColor(s) }}>
-          {s}
-        </span>
-      </button>
-      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-border">
-        <div className="h-full rounded-full transition-all duration-500" style={{ width: `${s}%`, background: scoreColor(s) }} />
-      </div>
-      {value.level && <div className="mt-1.5 text-[11px] text-muted-foreground">{value.level}</div>}
-      {open && hasDetail && (
-        <div className="mt-2 border-t border-border pt-2 text-[12px] leading-relaxed text-muted-foreground animate-in fade-in slide-in-from-top-1 duration-150">
-          {value.coaching}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function EvaluationSkeleton() {
-  return (
-    <div className="space-y-3">
-      <Skeleton className="h-4 w-40" />
-      <Skeleton className="h-16 w-full rounded-xl" />
-      {[0, 1, 2, 3, 4].map((i) => (
-        <Skeleton key={i} className="h-14 w-full rounded-lg" />
-      ))}
-    </div>
-  );
-}
-
 function HighlightsSkeleton() {
   return (
     <div className="space-y-3">
@@ -5541,12 +5446,10 @@ function CoachSkeleton() {
 
 type CoachTone = "success" | "warning" | "danger" | "info" | "muted";
 
-function CoachList({ label, items, tone, icon: Icon }: { label: string; items?: string[]; tone: CoachTone; icon?: typeof Check }) {
-  const [showAll, setShowAll] = useState(false);
+function CoachList({ label, items, tone, icon: Icon, maxItems }: { label: string; items?: string[]; tone: CoachTone; icon?: typeof Check; maxItems?: number }) {
   const clean = (items ?? []).filter(Boolean);
   if (!clean.length) return null;
-  const visible = showAll ? clean : clean.slice(0, 2);
-  const hiddenCount = Math.max(0, clean.length - 2);
+  const visible = typeof maxItems === "number" ? clean.slice(0, maxItems) : clean;
   const toneText: Record<CoachTone, string> = {
     success: "text-success",
     warning: "text-warning",
@@ -5575,355 +5478,67 @@ function CoachList({ label, items, tone, icon: Icon }: { label: string; items?: 
           </li>
         ))}
       </ul>
-      {hiddenCount > 0 && (
-        <button
-          type="button"
-          onClick={() => setShowAll((open) => !open)}
-          className="mt-1 inline-flex items-center rounded-md px-2 py-1 text-[12px] font-semibold text-info transition-colors hover:bg-info/10 hover:text-info"
-          aria-expanded={showAll}
-        >
-          {showAll ? "Show less ▲" : `Show ${hiddenCount} more ▼`}
-        </button>
+    </div>
+  );
+}
+
+function DetailedFeedbackItem({ item }: { item: RevisionPriority }) {
+  const includePromptContext = (text: string) => text
+    .replace(/scholarship mission/gi, "Essay Prompt / Scholarship Mission")
+    .replace(/the scholarship(?:'s|’s) goals/gi, "the essay prompt and scholarship's goals");
+  return (
+    <div>
+      <div className="text-[13px] font-semibold leading-snug text-foreground">
+        {includePromptContext(item.priority ?? "")}
+      </div>
+      {item.why_it_matters && (
+        <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground">
+          {includePromptContext(item.why_it_matters)}
+        </p>
+      )}
+      {item.how_to_fix && (
+        <p className="mt-2 text-[12px] leading-relaxed text-foreground/85">
+          <span className="font-medium text-foreground">How: </span>
+          {includePromptContext(item.how_to_fix)}
+        </p>
       )}
     </div>
   );
 }
 
-function CoachAccordion({
-  id,
-  title,
-  score,
-  open,
-  onToggle,
-  icon: Icon,
-  children,
-}: {
-  id: string;
-  title: string;
-  score?: number;
-  open: boolean;
-  onToggle: (id: string) => void;
-  icon?: typeof Check;
-  children: React.ReactNode;
-}) {
-  const hasScore = typeof score === "number";
-  return (
-    <div className="overflow-hidden rounded-xl border border-border bg-background">
-      <button
-        type="button"
-        onClick={() => onToggle(id)}
-        aria-expanded={open}
-        className="flex w-full items-center gap-2 bg-accent/40 px-3 py-2.5 text-left transition-colors duration-150 hover:bg-accent/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/30"
-      >
-        {Icon && <Icon className="size-4 text-info" />}
-        <span className="min-w-0 flex-1 text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">{title}</span>
-        <span
-          className="shrink-0 text-[12px] font-semibold tabular-nums text-muted-foreground"
-          style={hasScore ? { color: scoreColor(score) } : undefined}
-        >
-          {hasScore ? `${score}/100` : "Not scored"}
-        </span>
-        <ChevronDown className={`size-4 shrink-0 text-muted-foreground transition-transform duration-200 ${open ? "rotate-180" : ""}`} />
-      </button>
-      {open && <div className="space-y-2.5 p-3">{children}</div>}
-    </div>
+function ReaderPerspectiveTab({ result, loading }: { result: EssayCoachResult | null; loading: boolean }) {
+  const reviewer = result?.reviewer_simulation;
+  const hasFeedback = !!(
+    reviewer?.reviewer_reaction
+    || reviewer?.likely_strengths_seen_by_reviewer?.length
+    || reviewer?.likely_concerns_seen_by_reviewer?.length
+    || reviewer?.questions_reviewer_may_have?.length
+    || reviewer?.competitiveness_notes?.length
   );
-}
 
-function CoachScoreBar({ label, score }: { label: string; score: number }) {
-  return (
-    <div>
-      <div className="flex items-center justify-between text-[12px]">
-        <span className="font-medium">{label}</span>
-        <span className="font-semibold tabular-nums" style={{ color: scoreColor(score) }}>{score}</span>
-      </div>
-      <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-border">
-        <div className="h-full rounded-full transition-all duration-500" style={{ width: `${score}%`, background: scoreColor(score) }} />
-      </div>
-    </div>
-  );
-}
-
-function RevisionPriorityCard({ item, index }: { item: RevisionPriority; index: number }) {
-  const impact = (item.impact ?? "").toLowerCase();
-  const impactClass = impact.includes("high")
-    ? "bg-destructive/10 text-destructive"
-    : impact.includes("low")
-      ? "bg-success/10 text-success"
-      : "bg-warning/10 text-warning";
-  return (
-    <div className="rounded-lg border border-border bg-background p-3">
-      <div className="flex items-start gap-2">
-        <span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-info text-[11px] font-bold text-white">{index + 1}</span>
-        <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-semibold leading-snug">{item.priority}</div>
-          {item.why_it_matters && <div className="mt-0.5 text-[12px] leading-relaxed text-muted-foreground">{item.why_it_matters}</div>}
-          {item.how_to_fix && (
-            <div className="mt-1.5 text-[12px] leading-relaxed text-foreground/85">
-              <span className="font-medium text-foreground">How: </span>
-              {item.how_to_fix}
-            </div>
-          )}
-          {(item.impact || item.estimated_effort) && (
-            <div className="mt-2 flex flex-wrap gap-1">
-              {item.impact && <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${impactClass}`}>{item.impact} impact</span>}
-              {item.estimated_effort && <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{item.estimated_effort}</span>}
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function WorkspaceCoachTab({
-  result,
-  loading,
-  onRunCoach,
-  coachSummary,
-  coachWarnings,
-  updatedAt,
-  draftChanged,
-  now,
-}: {
-  result: EssayCoachResult | null;
-  loading: boolean;
-  onRunCoach: (mode?: EssayCoachMode, writingSupportLevel?: WritingSupportLevel) => void;
-  coachSummary: string | null;
-  coachWarnings: string[];
-  updatedAt: number | null;
-  draftChanged: boolean;
-  now: number;
-}) {
-  const [showAllPriorities, setShowAllPriorities] = useState(false);
-  const [showAllParagraphFeedback, setShowAllParagraphFeedback] = useState(false);
-  const [openCoachSections, setOpenCoachSections] = useState<Set<string>>(() => new Set());
-  const hasContent = <T extends object>(obj: T | undefined | null): T | undefined =>
-    obj && Object.values(obj).some((v) => (Array.isArray(v) ? v.length > 0 : typeof v === "number" ? v > 0 : !!v))
-      ? obj
-      : undefined;
-  const align = hasContent(result?.prompt_alignment);
-  const ground = hasContent(result?.profile_grounding);
-  const structure = hasContent(result?.structure_feedback);
-  const specificity = hasContent(result?.specificity_feedback);
-  const tone = hasContent(result?.tone_feedback);
-  const reviewer = hasContent(result?.reviewer_simulation);
-  const finalCheck = hasContent(result?.final_check);
-  const priorities = result?.revision_priorities ?? [];
-  const visiblePriorities = showAllPriorities ? priorities : priorities.slice(0, 2);
-  const hiddenPriorityCount = Math.max(0, priorities.length - 2);
-  const quickFixes = result?.quick_fixes ?? [];
-  const deeperTasks = result?.deeper_revision_tasks ?? [];
-  const scoreEntries = Object.entries(result?.overall_scores ?? {});
-  const paragraphFeedback = structure?.paragraph_feedback ?? [];
-  const visibleParagraphFeedback = showAllParagraphFeedback ? paragraphFeedback : paragraphFeedback.slice(0, 2);
-  const hiddenParagraphFeedbackCount = Math.max(0, paragraphFeedback.length - 2);
-  const hasData =
-    !loading &&
-    !!(result && (align || ground || structure || specificity || tone || reviewer || finalCheck || priorities.length || scoreEntries.length));
-
-  function toggleCoachSection(id: string) {
-    setOpenCoachSections((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
+  if (loading) return <CoachSkeleton />;
 
   return (
     <div className="space-y-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <PanelLabel>Coach</PanelLabel>
-          <div className="mt-1 text-[12px] text-muted-foreground">
-            Last updated: {relativeTimeLabel(updatedAt, now)}
-          </div>
-          {draftChanged && (
-            <div className="mt-1 text-[12px] font-medium text-warning">
-              Essay changed since last coach run.
-            </div>
-          )}
-        </div>
-        <button
-          type="button"
-          onClick={() => onRunCoach()}
-          disabled={loading}
-          aria-busy={loading}
-          className={`inline-flex min-w-[158px] shrink-0 items-center justify-center gap-2 rounded-lg border border-border bg-background px-3 py-1.5 text-[12px] font-semibold text-foreground transition-colors duration-150 hover:border-info/40 hover:bg-info/10 hover:text-info focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/30 disabled:opacity-50 ${loading ? "agent-loading text-info" : ""}`}
-        >
-          {loading ? <Spinner className="size-3.5" /> : <RefreshCw className="size-3.5" />}
-          {loading ? "Running..." : "Re-run Coach"}
-        </button>
+      <div className="flex items-center gap-2 text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+        <MessageSquare className="size-3.5 text-info" />
+        Reader Perspective Feedback
       </div>
-
-      <button
-        type="button"
-        onClick={() => onRunCoach("final_check")}
-        disabled={loading}
-        aria-busy={loading}
-        className={`flex w-full items-center justify-center gap-2 rounded-lg border border-border px-3 py-1.5 text-[12px] font-semibold text-foreground transition-colors duration-150 hover:bg-accent disabled:opacity-50 ${loading ? "agent-loading" : ""}`}
-      >
-        {loading ? <Spinner className="size-3.5" /> : <Check className="size-3.5 text-success" />}
-        Final check
-      </button>
-
-      {finalCheck && (
-        <div className={`space-y-2 rounded-xl border p-3 ${finalCheck.ready_for_final_review ? "border-success/30 bg-success/5" : "border-warning/30 bg-warning/5"}`}>
-          <div className="flex items-center gap-2">
-            <span className={`grid size-5 place-items-center rounded-full text-[11px] font-bold text-white ${finalCheck.ready_for_final_review ? "bg-success" : "bg-warning"}`}>
-              {finalCheck.ready_for_final_review ? <Check className="size-3.5" /> : "!"}
-            </span>
-            <span className="text-[13px] font-semibold">{finalCheck.ready_for_final_review ? "Ready for final review" : "Not ready for final review"}</span>
-          </div>
-          {finalCheck.submission_warning && (
-            <div className="rounded-md bg-destructive/10 px-2.5 py-1.5 text-[12px] font-medium text-destructive">{finalCheck.submission_warning}</div>
-          )}
-          <CoachList label="Remaining blockers" items={finalCheck.remaining_blockers} tone="danger" />
-          <CoachList label="Final polish notes" items={finalCheck.final_polish_notes} tone="info" />
-        </div>
-      )}
-
-      {coachSummary && (
-        <div className="rounded-xl border border-info/20 bg-info/5 p-3 text-[13px] leading-relaxed text-foreground/85">
-          {coachSummary}
-        </div>
-      )}
-
-      {loading && <CoachSkeleton />}
-
-      {!loading && !hasData && !coachSummary && (
+      {!hasFeedback && (
         <div className="rounded-xl border border-dashed border-border bg-background p-4 text-[13px] leading-relaxed text-muted-foreground">
-          Run the writing coach to check how well your essay answers the scholarship prompt and whether it's grounded in your real profile.
+          Click "Evaluate" to see how a scholarship reader may respond to your essay.
         </div>
       )}
-
-      {!!coachWarnings.length && (
-        <div className="rounded-xl border border-warning/25 bg-warning/5 p-3">
-          <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-warning">Coaching notes</div>
-          <MiniList items={coachWarnings} />
-        </div>
-      )}
-
-      {!!priorities.length && (
-        <div className="space-y-2">
-          <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Top revision priorities</div>
-          {visiblePriorities.map((p, i) => (
-            <RevisionPriorityCard key={i} item={p} index={i} />
-          ))}
-          {hiddenPriorityCount > 0 && (
-            <button
-              type="button"
-              onClick={() => setShowAllPriorities((open) => !open)}
-              className="inline-flex items-center rounded-md px-2 py-1 text-[12px] font-semibold text-info transition-colors hover:bg-info/10 hover:text-info"
-            >
-              {showAllPriorities ? "Show less ▲" : `Show ${hiddenPriorityCount} more ▼`}
-            </button>
-          )}
-        </div>
-      )}
-
-      {!!quickFixes.length && (
-        <div className="rounded-xl border border-success/20 bg-success/5 p-3">
-          <CoachList label="Quick fixes" items={quickFixes} tone="success" icon={Check} />
-        </div>
-      )}
-
-      {!!deeperTasks.length && (
-        <div className="rounded-xl border border-info/20 bg-info/5 p-3">
-          <CoachList label="Deeper revision tasks" items={deeperTasks} tone="info" />
-        </div>
-      )}
-
-      {!!scoreEntries.length && (
-        <div className="space-y-2.5 rounded-xl border border-border bg-background p-3">
-          <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Scores</div>
-          {scoreEntries.map(([key, val]) => (
-            <CoachScoreBar key={key} label={labelize(key)} score={typeof val === "number" ? val : 0} />
-          ))}
-        </div>
-      )}
-
-      {reviewer && (reviewer.reviewer_reaction || reviewer.likely_strengths_seen_by_reviewer?.length || reviewer.likely_concerns_seen_by_reviewer?.length) && (
-        <CoachAccordion id="reviewer" title="Reviewer Simulation" icon={MessageSquare} score={reviewer.competitiveness_score} open={openCoachSections.has("reviewer")} onToggle={toggleCoachSection}>
+      {hasFeedback && reviewer && (
+        <>
           {reviewer.reviewer_reaction && (
             <p className="border-l-2 border-info/40 pl-2.5 text-[13px] italic leading-relaxed text-foreground/85">{reviewer.reviewer_reaction}</p>
           )}
-          <CoachList label="Strengths a reviewer sees" items={reviewer.likely_strengths_seen_by_reviewer} tone="success" icon={Check} />
-          <CoachList label="Concerns a reviewer may have" items={reviewer.likely_concerns_seen_by_reviewer} tone="warning" />
-          <CoachList label="Questions a reviewer may ask" items={reviewer.questions_reviewer_may_have} tone="muted" />
-          <CoachList label="To raise competitiveness" items={reviewer.competitiveness_notes} tone="info" />
-        </CoachAccordion>
-      )}
-
-      {align && (
-        <CoachAccordion id="alignment" title="Prompt Alignment" score={align.alignment_score} open={openCoachSections.has("alignment")} onToggle={toggleCoachSection}>
-          <CoachList label="Covered" items={align.covered_requirements} tone="success" icon={Check} />
-          <CoachList label="Weakly covered" items={align.weakly_covered_requirements} tone="warning" />
-          <CoachList label="Missing" items={align.missing_requirements} tone="danger" />
-          <CoachList label="Notes" items={align.comments} tone="muted" />
-          <CoachList label="Revision tasks" items={align.revision_tasks} tone="info" />
-        </CoachAccordion>
-      )}
-
-      {ground && (
-        <CoachAccordion id="grounding" title="Profile Grounding" score={ground.grounding_score} open={openCoachSections.has("grounding")} onToggle={toggleCoachSection}>
-          <CoachList label="Supported by your profile" items={ground.supported_claims} tone="success" icon={Check} />
-          <CoachList label="Unsupported — verify or soften" items={ground.unsupported_or_risky_claims} tone="danger" />
-          <CoachList label="Strong evidence you haven't used" items={ground.unused_relevant_profile_evidence} tone="info" />
-          <CoachList label="Recommendations" items={ground.recommendations} tone="muted" />
-        </CoachAccordion>
-      )}
-
-      {structure && (
-        <CoachAccordion id="structure-flow" title="Structure & Flow" score={structure.structure_score} open={openCoachSections.has("structure-flow")} onToggle={toggleCoachSection}>
-          {!!paragraphFeedback.length && (
-            <div className="space-y-1.5">
-              {visibleParagraphFeedback.map((pf, i) => (
-                <div key={i} className="rounded-md border border-border/70 p-2">
-                  <div className="text-[12px] font-semibold">
-                    Paragraph {pf.paragraph_number || i + 1}
-                    {pf.priority ? <span className="ml-1 font-normal text-muted-foreground">· {pf.priority}</span> : null}
-                  </div>
-                  {pf.strength && <div className="mt-0.5 text-[12px] text-success">＋ {pf.strength}</div>}
-                  {pf.main_issue && <div className="mt-0.5 text-[12px] text-warning">！ {pf.main_issue}</div>}
-                  {pf.suggestion && <div className="mt-0.5 text-[12px] leading-relaxed text-muted-foreground">{pf.suggestion}</div>}
-                </div>
-              ))}
-              {hiddenParagraphFeedbackCount > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setShowAllParagraphFeedback((open) => !open)}
-                  className="inline-flex items-center rounded-md px-2 py-1 text-[12px] font-semibold text-info transition-colors hover:bg-info/10 hover:text-info"
-                  aria-expanded={showAllParagraphFeedback}
-                >
-                  {showAllParagraphFeedback ? "Show less ▲" : `Show ${hiddenParagraphFeedbackCount} more ▼`}
-                </button>
-              )}
-            </div>
-          )}
-          <CoachList label="Flow issues" items={structure.flow_issues} tone="warning" />
-          <CoachList label="Suggested reordering" items={structure.recommended_reordering} tone="info" />
-          <CoachList label="Structure tasks" items={structure.revision_tasks} tone="muted" />
-        </CoachAccordion>
-      )}
-
-      {specificity && (
-        <CoachAccordion id="specificity" title="Specificity & Impact" score={specificity.specificity_score} open={openCoachSections.has("specificity")} onToggle={toggleCoachSection}>
-          <CoachList label="Vague statements" items={specificity.vague_statements} tone="warning" />
-          <CoachList label="Add concrete detail here" items={specificity.places_to_add_detail} tone="info" />
-          <CoachList label="Impact opportunities" items={specificity.impact_opportunities} tone="success" />
-          <CoachList label="Questions to answer" items={specificity.recommended_questions} tone="muted" />
-        </CoachAccordion>
-      )}
-
-      {tone && (
-        <CoachAccordion id="tone" title="Tone & Authenticity" score={tone.authenticity_score} open={openCoachSections.has("tone")} onToggle={toggleCoachSection}>
-          <CoachList label="Voice worth keeping" items={tone.voice_preservation_notes} tone="success" icon={Check} />
-          <CoachList label="AI-like phrases" items={tone.ai_like_phrases} tone="danger" />
-          <CoachList label="Generic phrases" items={tone.generic_phrases} tone="warning" />
-          <CoachList label="Tone suggestions" items={tone.tone_improvement_suggestions} tone="info" />
-        </CoachAccordion>
+          <CoachList label="Strengths a reader sees" items={reviewer.likely_strengths_seen_by_reviewer} tone="success" icon={Check} />
+          <CoachList label="Concerns a reader may have" items={reviewer.likely_concerns_seen_by_reviewer} tone="warning" maxItems={2} />
+          <CoachList label="Questions a reader may ask" items={reviewer.questions_reviewer_may_have} tone="muted" maxItems={2} />
+          <CoachList label="To strengthen the essay" items={reviewer.competitiveness_notes} tone="info" maxItems={2} />
+        </>
       )}
     </div>
   );
@@ -5947,12 +5562,13 @@ function Sparkline({ points }: { points: number[] }) {
 }
 
 function ProgressCard({ versions }: { versions: EssayDraft[] }) {
-  const scored = versions.filter((v) => typeof v.coachOverall === "number");
+  const scored = versions.filter((v) => typeof v.readinessOverall === "number" || typeof v.coachOverall === "number");
   if (!scored.length) return null;
   const latest = scored[scored.length - 1];
   const prev = scored.length > 1 ? scored[scored.length - 2] : null;
-  const overall = latest.coachOverall ?? 0;
-  const overallDelta = prev ? overall - (prev.coachOverall ?? 0) : null;
+  const versionScore = (version: EssayDraft) => version.readinessOverall ?? version.coachOverall ?? 0;
+  const overall = versionScore(latest);
+  const overallDelta = prev ? overall - versionScore(prev) : null;
   const deltas =
     prev?.coachScores && latest.coachScores
       ? Object.entries(latest.coachScores)
@@ -5965,7 +5581,7 @@ function ProgressCard({ versions }: { versions: EssayDraft[] }) {
       <div className="flex items-center gap-3">
         <ScoreRing score={overall} size={52} stroke={4} />
         <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-semibold">Overall coach score</div>
+          <div className="text-[13px] font-semibold">Overall score</div>
           <div className="text-[12px] text-muted-foreground">
             {prev && overallDelta != null ? (
               <>
@@ -5981,7 +5597,7 @@ function ProgressCard({ versions }: { versions: EssayDraft[] }) {
           </div>
         </div>
       </div>
-      {scored.length > 1 && <Sparkline points={scored.map((v) => v.coachOverall ?? 0)} />}
+      {scored.length > 1 && <Sparkline points={scored.map(versionScore)} />}
       {deltas.length > 0 && (
         <div className="flex flex-wrap gap-1">
           {deltas.slice(0, 5).map((x) => (
@@ -5998,7 +5614,7 @@ function ProgressCard({ versions }: { versions: EssayDraft[] }) {
         {[...scored].reverse().slice(0, 6).map((v) => (
           <div key={v.id} className="flex items-center justify-between text-[12px]">
             <span className="text-muted-foreground">Draft {v.version} · {v.wordCount} words</span>
-            <span className="font-semibold tabular-nums" style={{ color: scoreColor(v.coachOverall ?? 0) }}>{v.coachOverall}</span>
+            <span className="font-semibold tabular-nums" style={{ color: scoreColor(versionScore(v)) }}>{versionScore(v)}</span>
           </div>
         ))}
       </div>
@@ -6006,59 +5622,168 @@ function ProgressCard({ versions }: { versions: EssayDraft[] }) {
   );
 }
 
-function WorkspaceEvaluationTab({ isEvaluating }: { isEvaluating: boolean }) {
+function WorkspaceEvaluationTab({
+  isEvaluating,
+  coachResult,
+  coachLoading,
+  coachSummary,
+}: {
+  isEvaluating: boolean;
+  coachResult: EssayCoachResult | null;
+  coachLoading: boolean;
+  coachSummary: string | null;
+}) {
   const { user } = useUser();
-  const [localEvaluating, setLocalEvaluating] = useState(false);
-  const [evalStatus, setEvalStatus] = useState<string | null>(null);
-  const evaluating = isEvaluating || localEvaluating;
+  const [selectedCriterion, setSelectedCriterion] = useState<string | null>(null);
+  const evaluating = isEvaluating;
   const analysis = user?.lastAnalysis;
-  const entries = Object.entries(analysis?.readiness_index ?? {});
-  const score = overallEssayScore(analysis);
-  const scoredVersions = (user?.drafts ?? []).filter((v) => typeof v.coachOverall === "number");
+  const scoredVersions = (user?.drafts ?? []).filter(
+    (v) => typeof v.readinessOverall === "number" || typeof v.coachOverall === "number",
+  );
+  const criterionGroups = [
+    {
+      label: "Content — What the essay says",
+      criteria: [
+        ["alignment", "Alignment"],
+        ["evidence_strength", "Evidence Strength"],
+        ["insight", "Insight"],
+      ],
+    },
+    {
+      label: "Structure — How the essay is organized",
+      criteria: [
+        ["coherence_continuity", "Coherence & Continuity"],
+        ["flow_narrative_arc", "Flow & Narrative Arc"],
+      ],
+    },
+    {
+      label: "Voice — How the essay sounds",
+      criteria: [
+        ["tone_authenticity", "Tone & Authenticity"],
+        ["clarity_concision", "Clarity & Concision"],
+      ],
+    },
+  ] as const;
+  const criterionEntries = criterionGroups.flatMap((group) =>
+    group.criteria.flatMap(([key, label]) => {
+      const value = analysis?.readiness_index?.[key];
+      return value && typeof value.score === "number" ? [[key, label, value] as const] : [];
+    }),
+  );
+  const activeCriterion =
+    criterionEntries.find(([key]) => key === selectedCriterion) ?? criterionEntries[0];
+  const criterionPriorities = activeCriterion?.[2].revision_actions ?? [];
+
+  useEffect(() => {
+    if (!criterionEntries.length) {
+      setSelectedCriterion(null);
+      return;
+    }
+    if (!criterionEntries.some(([key]) => key === selectedCriterion)) {
+      setSelectedCriterion(criterionEntries[0][0]);
+    }
+  }, [analysis?.readiness_index, selectedCriterion]);
 
   return (
     <div className="space-y-3">
-      <PanelLabel>Progress &amp; Evaluation</PanelLabel>
+      <PanelLabel>Scores &amp; Evaluation</PanelLabel>
+
+      {!coachLoading && !evaluating && (
+        <p className="text-[12px] text-muted-foreground">
+          {coachResult ? 'Click "Evaluate" to regenerate.' : 'Click "Evaluate" to generate.'}
+        </p>
+      )}
+
+      {coachSummary && (
+        <div className="rounded-xl border border-info/20 bg-info/5 p-3 text-[13px] leading-relaxed text-foreground/85">
+          {coachSummary}
+        </div>
+      )}
 
       {scoredVersions.length > 0 && <ProgressCard versions={scoredVersions} />}
 
-      <CoachRunButton
-        label="Run deep evaluation"
-        loadingLabel="Evaluating…"
-        onRunningChange={setLocalEvaluating}
-        onStatus={setEvalStatus}
-        className="flex w-full items-center justify-center gap-2 rounded-lg border border-border px-3 py-2 text-[13px] font-semibold text-foreground transition-colors duration-150 hover:bg-accent disabled:opacity-50"
-      />
-      {evalStatus && <div className="rounded-md bg-accent px-3 py-2 text-[12px] text-muted-foreground">{evalStatus}</div>}
+      {coachLoading && <CoachSkeleton />}
 
-      {evaluating && <EvaluationSkeleton />}
-
-      {!evaluating && entries.length > 0 && (
-        <>
-          <div className="flex items-center gap-3 rounded-xl border border-border bg-background p-3">
-            <ScoreRing score={score} size={52} stroke={4} />
-            <div className="min-w-0">
-              <div className="text-[13px] font-semibold">Readiness index</div>
-              <div className="text-[12px] text-muted-foreground">{score != null ? levelWord(score) : "Not scored yet"}</div>
-            </div>
-          </div>
-          <div className="space-y-2">
-            {entries.map(([key, value]) => (
-              <ReadinessRow key={key} label={labelize(key)} value={value} />
-            ))}
-          </div>
-          {analysis?.coaching_brief?.coach_message && (
-            <div className="rounded-xl border border-info/20 bg-info/5 p-3 text-[13px] leading-relaxed text-foreground/85">
-              {analysis.coaching_brief.coach_message}
-            </div>
-          )}
-          <EssayAlignmentMatrixCard matrix={analysis?.essay_alignment_matrix} />
-        </>
+      {!!criterionEntries.length && (
+        <div className="grid gap-2 md:grid-cols-3">
+          {criterionGroups.map((group) => {
+            const available = group.criteria.filter(([key]) => analysis?.readiness_index?.[key]);
+            if (!available.length) return null;
+            const [title, subtitle] = group.label.split(" — ");
+            return (
+              <section key={group.label} className="bg-background px-3 py-3">
+                <div className="text-center">
+                  <div className="text-[20px] font-bold leading-tight text-foreground">{title}</div>
+                  <div className="mt-0.5 text-[10px] text-muted-foreground">{subtitle}</div>
+                </div>
+                <div className={`mt-3 grid gap-1 ${available.length === 3 ? "grid-cols-3" : "grid-cols-2"}`}>
+                  {available.map(([key, label]) => {
+                    const value = analysis?.readiness_index?.[key];
+                    if (!value) return null;
+                    const active = activeCriterion?.[0] === key;
+                    return (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => setSelectedCriterion(key)}
+                        aria-pressed={active}
+                        className={`min-w-0 px-1.5 py-2 text-center transition-colors ${
+                          active ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/60 hover:text-foreground"
+                        }`}
+                      >
+                        <span className="flex h-8 items-center justify-center text-[11px] font-semibold leading-tight">{label}</span>
+                        <span
+                          className="mt-1.5 block text-[17px] font-bold tabular-nums"
+                          style={{ color: scoreColor(value.score ?? 0) }}
+                        >
+                          {value.score ?? 0}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
+            );
+          })}
+        </div>
       )}
 
-      {!evaluating && !entries.length && scoredVersions.length === 0 && (
+      {activeCriterion && (
+        <div className="space-y-4 border-t border-border px-1 pt-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-[16px] font-semibold text-foreground">{activeCriterion[1]}</div>
+              {activeCriterion[2].rubric?.description && (
+                <p className="mt-0.5 text-[12px] italic leading-snug text-muted-foreground">
+                  {activeCriterion[2].rubric.description}
+                </p>
+              )}
+            </div>
+            <div
+              className="shrink-0 text-[18px] font-bold tabular-nums"
+              style={{ color: scoreColor(activeCriterion[2].score ?? 0) }}
+            >
+              {activeCriterion[2].score ?? 0}/100
+            </div>
+          </div>
+          {!!criterionPriorities.length && (
+            <div>
+              <div className="text-[11px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
+                Detailed feedback
+              </div>
+              <div className="mt-2">
+                <DetailedFeedbackItem item={criterionPriorities[0]} />
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {!evaluating && !criterionEntries.length && (
         <div className="rounded-xl border border-dashed border-border bg-background p-4 text-[13px] leading-relaxed text-muted-foreground">
-          Run the coach to start tracking your draft scores, or run a deep evaluation for the readiness index, coach message, and alignment matrix.
+          {scoredVersions.length > 0
+            ? 'This overall score is from an earlier evaluation. Click "Evaluate" to generate the new seven-criterion scores and detailed QA-reviewed feedback.'
+            : 'Click "Evaluate" to generate the tailored rubric, seven criterion scores, QA-reviewed feedback, and revision actions.'}
         </div>
       )}
     </div>
@@ -6134,10 +5859,8 @@ function WorkspaceHighlightsTab({
   onReveal,
   onAcceptAllQuickFixes,
   quickFixCount,
-  onRunCoach,
   coachLoading,
-  coachSummary,
-  coachWarnings,
+  hasAssessment,
 }: {
   isEvaluating: boolean;
   suggestions: Suggestion[];
@@ -6146,77 +5869,67 @@ function WorkspaceHighlightsTab({
   onReveal: (s: Suggestion) => void;
   onAcceptAllQuickFixes: () => void;
   quickFixCount: number;
-  onRunCoach: (mode?: EssayCoachMode, writingSupportLevel?: WritingSupportLevel) => void;
   coachLoading: boolean;
-  coachSummary: string | null;
-  coachWarnings: string[];
+  hasAssessment: boolean;
 }) {
-  const [writingSupportLevel, setWritingSupportLevel] = useState<WritingSupportLevel>("sentence_polish");
   const { user } = useUser();
-  const analysis = user?.lastAnalysis;
-  const priorities = analysis?.revision_priorities ?? [];
-  const reviewers = analysis?.reviewer_comments ?? [];
-  const strengths = analysis?.essay_alignment_matrix?.strengths ?? [];
-  const counts = countByCategory(suggestions);
-  const hasBackend = priorities.length || reviewers.length || strengths.length;
+  const draft = user?.essayDraft ?? "";
+  const grammarSuggestions = suggestions.filter((suggestion) => suggestion.category === "correctness");
+  const wordCount = draft.trim() ? draft.trim().split(/\s+/).length : 0;
+  const wordLimit = parseWordTarget(buildOutlinePayload(user).word_limit);
+  const paragraphCount = draft.trim() ? draft.trim().split(/\n\s*\n/).filter(Boolean).length : 0;
+  const scholarship = user?.activeScholarship ?? {};
+  const formattingContext = [
+    scholarship.otherRequiredMaterials,
+    scholarship.requirementsPreview,
+    ...(scholarship.requiredApplicationMaterials ?? []),
+  ].filter(Boolean).join(" ");
+  const formattingRules = formattingContext
+    .split(/(?<=[.!?])\s+|\n+/)
+    .filter((rule) => /\b(?:font|spacing|margin|page|pdf|docx?|file format|formatting|double-spaced|single-spaced)\b/i.test(rule))
+    .slice(0, 2);
+  const formattingChecks = [
+    {
+      label: "Word count",
+      ok: !!wordLimit && wordCount <= wordLimit,
+      detail: wordLimit
+        ? `${wordCount} of ${wordLimit} words${wordCount > wordLimit ? ` — shorten by ${wordCount - wordLimit}` : ""}.`
+        : `${wordCount} words — no word limit was found in the scholarship requirements.`,
+    },
+    {
+      label: "Paragraph breaks",
+      ok: paragraphCount > 1 || wordCount < 100,
+      detail: paragraphCount > 1
+        ? `${paragraphCount} paragraphs detected.`
+        : wordCount < 100
+          ? "Add paragraph breaks as the draft grows."
+          : "The draft appears to be one long paragraph; add breaks for readability.",
+    },
+    {
+      label: "Required formatting rules",
+      ok: formattingRules.length === 0,
+      detail: formattingRules.length
+        ? `Confirm before submitting: ${formattingRules.join(" ")}`
+        : "No special font, spacing, margin, page, or file-format rules were found.",
+    },
+  ];
 
   if (isEvaluating) return <HighlightsSkeleton />;
 
   return (
     <div className="space-y-3">
-      <div className="rounded-xl border border-border bg-background p-3">
-        <div className="text-[12px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Writing Support Level</div>
-        <div className="mt-1 text-[12px] leading-relaxed text-muted-foreground">
-          Choose how much help you want. You stay in control of every change.
-        </div>
-        <div className="mt-3 inline-flex w-full rounded-xl border border-border bg-card p-1 shadow-sm" aria-label="Writing support level">
-          {WRITING_SUPPORT_OPTIONS.map((option) => {
-            const selected = writingSupportLevel === option.id;
-            return (
-              <button
-                key={option.id}
-                type="button"
-                onClick={() => setWritingSupportLevel(option.id)}
-                aria-pressed={selected}
-                title={option.description}
-                className={`flex-1 rounded-lg px-2 py-1.5 text-[11px] font-semibold transition-colors duration-150 ${
-                  selected
-                    ? "bg-gradient-to-br from-[#26385F] to-[#5550A4] text-white shadow-sm"
-                    : "text-muted-foreground hover:bg-info/10 hover:text-info"
-                }`}
-              >
-                {option.label}
-              </button>
-            );
-          })}
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <PanelLabel>Fixes</PanelLabel>
+          <div className="mt-1 text-[12px] font-semibold text-muted-foreground">Grammar and formatting review</div>
         </div>
       </div>
 
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <PanelLabel>Sentence Fixes</PanelLabel>
-          <div className="mt-1 text-[12px] font-semibold text-muted-foreground">{suggestions.length} open</div>
-        </div>
-        <button
-          type="button"
-          onClick={() => {
-            onRunCoach("grammar_tone", writingSupportLevel);
-          }}
-          disabled={coachLoading}
-          aria-busy={coachLoading}
-          className={`inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 py-1.5 text-[12px] font-semibold text-foreground transition-colors duration-150 hover:border-info/40 hover:bg-info/10 hover:text-info focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/30 disabled:opacity-50 ${coachLoading ? "agent-loading text-info" : ""}`}
-        >
-          {coachLoading ? <Spinner className="size-3.5" /> : <RefreshCw className="size-3.5" />}
-          {coachLoading ? (
-            "Updating..."
-          ) : (
-            <span className="leading-tight">
-              <span className="block">Update coaching</span>
-              <span className="block">to regenerate fixes</span>
-            </span>
-          )}
-        </button>
-      </div>
+      {!coachLoading && (
+        <p className="text-[12px] text-muted-foreground">
+          {hasAssessment ? 'Click "Evaluate" to regenerate.' : 'Click "Evaluate" to generate.'}
+        </p>
+      )}
 
       {quickFixCount > 0 && (
         <button
@@ -6230,85 +5943,46 @@ function WorkspaceHighlightsTab({
         </button>
       )}
 
-      {coachSummary && (
-        <div className="rounded-xl border border-info/20 bg-info/5 p-3 text-[13px] leading-relaxed text-foreground/85">
-          {coachSummary}
-        </div>
-      )}
-
-      {!!coachWarnings.length && (
-        <div className="rounded-xl border border-warning/25 bg-warning/5 p-3">
-          <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-warning">Coaching notes</div>
-          <MiniList items={coachWarnings} />
-        </div>
-      )}
-
       {coachLoading && <HighlightsSkeleton />}
 
-      {!coachLoading && !suggestions.length && (
+      <div className="space-y-2">
+        <div>
+          <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Grammar</div>
+          <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+            Spelling, punctuation, capitalization, verb tense, agreement, grammar, and sentence-level correctness.
+          </p>
+        </div>
+
+      {!coachLoading && !grammarSuggestions.length && (
         <div className="rounded-xl border border-dashed border-border bg-background p-4 text-[13px] leading-relaxed text-muted-foreground">
-          {coachSummary
-            ? "No sentence-level fixes to show right now. Keep writing, then run the coach again."
-            : "Write your draft, then run the writing coach for grammar, clarity, tone, and specificity suggestions. Quick fixes also appear here as you type."}
+          {draft.trim() ? "No spelling, punctuation, capitalization, grammar, or sentence-level correctness fixes are open." : "Write your draft, then update the review to check grammar."}
         </div>
       )}
 
-      {CATEGORY_ORDER.filter((cat) => counts[cat] > 0).map((cat) => {
-        const meta = CATEGORY_META[cat];
-        const items = suggestions.filter((s) => s.category === cat);
-        return (
-          <div key={cat} className="space-y-2">
-            <div className="flex items-center gap-1.5">
-              <span className={`size-2 rounded-full ${meta.dotClass}`} />
-              <span className="text-[12px] font-semibold">{meta.label}</span>
-              <span className="text-[11px] text-muted-foreground">· {items.length}</span>
+        {grammarSuggestions.map((suggestion) => (
+          <SuggestionCard key={suggestion.id} s={suggestion} onAccept={onAccept} onDismiss={onDismiss} onReveal={onReveal} />
+        ))}
+      </div>
+
+      <div className="space-y-2 border-t border-border pt-3">
+        <div>
+          <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Formatting</div>
+          <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+            Word count, paragraph breaks, and required formatting rules.
+          </p>
+        </div>
+        {formattingChecks.map((check) => (
+          <div key={check.label} className="flex gap-2 rounded-lg border border-border bg-background p-3">
+            {check.ok
+              ? <Check className="mt-0.5 size-4 shrink-0 text-success" />
+              : <AlertCircle className="mt-0.5 size-4 shrink-0 text-warning" />}
+            <div>
+              <div className="text-[12px] font-semibold text-foreground">{check.label}</div>
+              <div className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">{check.detail}</div>
             </div>
-            {items.map((s) => (
-              <SuggestionCard key={s.id} s={s} onAccept={onAccept} onDismiss={onDismiss} onReveal={onReveal} />
-            ))}
           </div>
-        );
-      })}
-
-      {!!hasBackend && (
-        <div className="space-y-3 border-t border-border pt-3">
-          {!!priorities.length && (
-            <div className="rounded-xl border border-warning/25 bg-warning/5 p-3">
-              <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-warning">Top revision priorities</div>
-              <ol className="mt-2 space-y-1.5 text-[13px] leading-relaxed">
-                {priorities.slice(0, 4).map((item, i) => (
-                  <li key={item} className="flex gap-2">
-                    <span className="font-semibold text-warning">{i + 1}.</span>
-                    <span>{item}</span>
-                  </li>
-                ))}
-              </ol>
-            </div>
-          )}
-
-          {!!strengths.length && (
-            <div className="rounded-xl border border-success/20 bg-success/5 p-3">
-              <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-success">Working well</div>
-              <MiniList items={strengths} />
-            </div>
-          )}
-
-          {!!reviewers.length && (
-            <div className="space-y-2">
-              <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Reviewer reactions</div>
-              {reviewers.map((reviewer, i) => (
-                <div key={`${reviewer.persona}-${i}`} className="rounded-lg border border-border bg-background p-3">
-                  <div className="flex items-center gap-1.5 text-[12px] font-semibold">
-                    <MessageSquare className="size-3.5 text-info" />
-                    {reviewer.persona ?? "Reviewer"}
-                  </div>
-                  <p className="mt-1.5 text-[13px] leading-relaxed text-foreground/85">{reviewer.comment}</p>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+        ))}
+      </div>
     </div>
   );
 }

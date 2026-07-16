@@ -1,0 +1,79 @@
+{
+  "ethnomusicology": {
+    "canonical_label": "Ethnomusicology",
+    "synonyms": [
+      "Ethnomusicology"
+    ],
+    "parent_disciplines": [],
+    "umbrella_terms": [
+      "Humanities",
+      "Social Sciences"
+    ],
+    "funder_vocabulary": [
+      "music research grants",
+      "ethnomusicology fellowships",
+      "cultural studies funding"
+    ]
+  },
+  "materials science": {
+    "canonical_label": "Materials Science",
+    "synonyms": [
+      "Materials Engineering",
+      "Materials Technology",
+      "Material Science"
+    ],
+    "parent_disciplines": [
+      "Engineering",
+      "Physical Sciences"
+    ],
+    "umbrella_terms": [
+      "Science and Technology",
+      "Engineering"
+    ],
+    "funder_vocabulary": [
+      "materials research grants",
+      "engineering fellowships",
+      "science funding opportunities"
+    ]
+  },
+  "political science": {
+    "canonical_label": "Political Science",
+    "synonyms": [
+      "Poli Sci",
+      "Political Studies",
+      "Government Studies"
+    ],
+    "parent_disciplines": [],
+    "umbrella_terms": [
+      "Social Sciences",
+      "Humanities"
+    ],
+    "funder_vocabulary": [
+      "political science scholarships",
+      "government studies funding",
+      "social sciences grants"
+    ]
+  },
+  "computer science": {
+    "canonical_label": "Computer Science",
+    "synonyms": [
+      "CS",
+      "Computing",
+      "Software Engineering"
+    ],
+    "parent_disciplines": [
+      "Engineering",
+      "Information Technology"
+    ],
+    "umbrella_terms": [
+      "STEM",
+      "Technology"
+    ],
+    "funder_vocabulary": [
+      "computer science scholarships",
+      "STEM funding opportunities",
+      "technology grants",
+      "technology fellowships"
+    ]
+  }
+}
