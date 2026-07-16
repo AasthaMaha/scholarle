@@ -22,6 +22,9 @@ def critic_review(state):
         "eligibility_matrix": state.get("eligibility_matrix", {}),
         "discovery": state.get("discovery_report", {}),
         "narrative": state.get("narrative_report", {}),
+        "tailored_rubric": (state.get("coaching_reports", {}) or {}).get(
+            "evaluation_rubric", {}
+        ),
     }
 
     critique = run_critic_review(context, combined)

@@ -5,13 +5,9 @@ import hashlib
 import io
 import json
 import re
-from html import unescape
-from html.parser import HTMLParser
+import time
 from pathlib import Path
 from typing import Dict, Optional
-from urllib.error import URLError
-from urllib.parse import parse_qs, quote_plus, unquote, urlparse
-from urllib.request import Request, urlopen
 
 import pypdf
 from langchain_core.documents import Document
@@ -26,6 +22,12 @@ from graph.fit_builder import build_fit_analysis_graph
 from graph.opportunity_builder import build_opportunity_extraction_graph
 from graph.profile_builder import build_profile_extraction_graph
 from graph.wiki_builder import build_wiki_discovery_graph
+from discovery.compatibility import assess_candidate
+from discovery.evidence import candidate_evidence
+from discovery.intent_service import generate_intent_options
+from discovery.normalization import build_discovery_context
+from discovery.ranking import score_candidate
+from discovery.schemas import model_dict
 from llm.client import llm
 from persistence.memory_text import (
     build_feedback_memory_text,
@@ -39,6 +41,7 @@ from persistence.services import (
     run_agent_with_persistence,
 )
 from persistence.vector_service import VectorService
+from utils.opportunity_sources import resolve_opportunity_sources
 
 
 class AnalyzeRequest(BaseModel):
@@ -110,6 +113,15 @@ class OpportunityExtractResponse(BaseModel):
     requirementsPreview: str = ""
     fullText: str = ""
     sourceUrls: list[str] = Field(default_factory=list)
+    sourceMetadata: list[dict] = Field(default_factory=list)
+    fieldEvidence: list[dict] = Field(default_factory=list)
+    extractionWarnings: list[str] = Field(default_factory=list)
+    validationWarnings: list[str] = Field(default_factory=list)
+    criticalFieldsFound: list[str] = Field(default_factory=list)
+    criticalFieldsMissing: list[str] = Field(default_factory=list)
+    completenessScore: int = Field(default=0, ge=0, le=100)
+    resolutionStatus: str = ""
+    extractedAt: str = ""
 
 
 class FitAnalyzeRequest(BaseModel):
@@ -134,13 +146,37 @@ class FitAnalyzeResponse(BaseModel):
     application_readiness_matrix: dict = Field(default_factory=dict)
 
 
+class DiscoveryIntentSelection(BaseModel):
+    id: str = Field(default="", max_length=80)
+    label: str = Field(default="", max_length=120)
+    dimension: str = Field(default="", max_length=50)
+    value: str = Field(default="", max_length=200)
+    canonical_values: list[str] = Field(default_factory=list, max_length=10)
+    derived_from: list[str] = Field(default_factory=list, max_length=10)
+
+
 class WikiDiscoverRequest(BaseModel):
     user_id: str = Field(default="", max_length=100)
     student_profile: dict = Field(default_factory=dict)
+    discovery_focus: str = Field(default="", max_length=1000)
+    selected_intents: list[DiscoveryIntentSelection] = Field(default_factory=list, max_length=4)
+    free_text_intent: str = Field(default="", max_length=1000)
+    excluded_urls: list[str] = Field(default_factory=list, max_length=100)
+    feedback: list[dict] = Field(default_factory=list, max_length=100)
+
+
+class WikiBootstrapRequest(BaseModel):
+    student_profile: dict = Field(default_factory=dict)
+
+
+class WikiBootstrapResponse(BaseModel):
+    intent_options: list[dict] = Field(default_factory=list)
+    platform_defaults: list[dict] = Field(default_factory=list)
+    profile_summary: dict = Field(default_factory=dict)
 
 
 class WikiDiscoverResponse(BaseModel):
-    page_title: str = "Scholarship Discovery Wiki"
+    page_title: str = "Scholarship Discovery"
     profile_summary: dict = Field(default_factory=dict)
     recommended_source_groups: list[dict] = Field(default_factory=list)
     top_free_platforms: list[dict] = Field(default_factory=list)
@@ -149,6 +185,11 @@ class WikiDiscoverResponse(BaseModel):
     personalized_search_queries: list[str] = Field(default_factory=list)
     next_steps: list[str] = Field(default_factory=list)
     missing_profile_fields: list[str] = Field(default_factory=list)
+    discovery_focus: str = ""
+    selected_intents: list[dict] = Field(default_factory=list)
+    free_text_intent: str = ""
+    generated_at: str = ""
+    result_note: str = ""
 
 
 class EssayCoachRequest(BaseModel):
@@ -311,201 +352,13 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
         ) from exc
 
 
-class _ReadableTextParser(HTMLParser):
-    def __init__(self):
-        super().__init__()
-        self._skip_depth = 0
-        self.parts = []
-
-    def handle_starttag(self, tag, attrs):
-        if tag in {"script", "style", "noscript", "svg"}:
-            self._skip_depth += 1
-        if tag in {"p", "br", "div", "li", "tr", "h1", "h2", "h3", "h4"}:
-            self.parts.append("\n")
-
-    def handle_endtag(self, tag):
-        if tag in {"script", "style", "noscript", "svg"} and self._skip_depth:
-            self._skip_depth -= 1
-        if tag in {"p", "div", "li", "tr", "h1", "h2", "h3", "h4"}:
-            self.parts.append("\n")
-
-    def handle_data(self, data):
-        if not self._skip_depth:
-            text = data.strip()
-            if text:
-                self.parts.append(text)
-
-    def text(self) -> str:
-        raw = " ".join(self.parts)
-        raw = re.sub(r"[ \t]+", " ", raw)
-        raw = re.sub(r"\n\s*\n+", "\n\n", raw)
-        return unescape(raw).strip()
-
-
-def _looks_like_url(value: str) -> bool:
-    text = value.strip()
-    return text.startswith(("http://", "https://")) or "." in text and " " not in text
-
-
-def _normalize_url(value: str) -> str:
-    text = value.strip()
-    if text and not text.startswith(("http://", "https://")):
-        return f"https://{text}"
-    return text
-
-
-def _is_fetchable_url(value: str) -> bool:
-    parsed = urlparse(_normalize_url(value))
-    host = parsed.hostname or ""
-    return parsed.scheme in {"http", "https"} and "." in host
-
-
-def _candidate_urls_from_clues(*values: str) -> list[str]:
-    candidates = []
-
-    def add(url: str) -> None:
-        if _is_fetchable_url(url) and url not in candidates:
-            candidates.append(_normalize_url(url))
-
-    for value in values:
-        text = value.strip()
-        if not text:
-            continue
-        parsed = urlparse(_normalize_url(text))
-        host = parsed.hostname or ""
-        if host and "." not in host and re.fullmatch(r"[a-zA-Z0-9-]{3,40}", host):
-            for suffix in (".org", ".edu", ".com", ".gov"):
-                add(f"https://{host}{suffix}/")
-                add(f"https://www.{host}{suffix}/")
-
-        words = re.findall(r"\b[A-Z][A-Z0-9]{2,}\b", text)
-        for word in words:
-            slug = word.lower()
-            for suffix in (".org", ".edu", ".com", ".gov"):
-                add(f"https://{slug}{suffix}/")
-                add(f"https://www.{slug}{suffix}/")
-
-    return candidates
-
-
-def _fetch_page_text(url: str, timeout: int = 12) -> str:
-    request = Request(
-        _normalize_url(url),
-        headers={
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 Scholar-E/0.1"
-            )
-        },
+def _gather_opportunity_source_text(request: OpportunityExtractRequest):
+    """Resolve the pasted page, recover through search, and collect supporting official pages."""
+    return resolve_opportunity_sources(
+        scholarship_name=request.scholarship_name,
+        scholarship_url=request.scholarship_url,
+        additional_notes=request.additional_notes,
     )
-    with urlopen(request, timeout=timeout) as response:
-        content_type = response.headers.get("content-type", "")
-        body = response.read(1_500_000)
-    if "pdf" in content_type.lower() or url.lower().endswith(".pdf"):
-        return extract_text_from_pdf(body)
-    html = body.decode("utf-8", errors="ignore")
-    parser = _ReadableTextParser()
-    parser.feed(html)
-    return parser.text()
-
-
-def _search_opportunity_urls(query: str, limit: int = 3) -> list[str]:
-    if not query.strip():
-        return []
-    search_url = f"https://duckduckgo.com/html/?q={quote_plus(query + ' scholarship requirements deadline')}"
-    try:
-        html = _fetch_raw(search_url)
-    except Exception:
-        return []
-    urls = []
-    for match in re.finditer(r'href="([^"]+)"[^>]*class="result__a"', html):
-        href = unescape(match.group(1))
-        parsed = urlparse(href)
-        if parsed.netloc.endswith("duckduckgo.com"):
-            target = parse_qs(parsed.query).get("uddg", [""])[0]
-            href = unquote(target) if target else href
-        if href.startswith("http") and href not in urls:
-            urls.append(href)
-        if len(urls) >= limit:
-            break
-    return urls
-
-
-def _fetch_raw(url: str, timeout: int = 12) -> str:
-    request = Request(
-        url,
-        headers={"User-Agent": "Mozilla/5.0 Scholar-E/0.1"},
-    )
-    with urlopen(request, timeout=timeout) as response:
-        return response.read(1_500_000).decode("utf-8", errors="ignore")
-
-
-def _gather_opportunity_source_text(request: OpportunityExtractRequest) -> tuple[str, list[str]]:
-    source_urls = []
-    chunks = []
-
-    def add_search_results(query: str) -> None:
-        for url in _search_opportunity_urls(query):
-            if _is_fetchable_url(url) and url not in source_urls:
-                source_urls.append(url)
-
-    def add_candidate_urls(*values: str) -> None:
-        for url in _candidate_urls_from_clues(*values):
-            if url not in source_urls:
-                source_urls.append(url)
-
-    def search_from_clues(include_broken_link: bool = False) -> None:
-        queries = [
-            request.scholarship_name.strip(),
-            " ".join([request.scholarship_name.strip(), request.additional_notes.strip()[:500]]).strip(),
-        ]
-        if include_broken_link:
-            queries.append(" ".join([request.scholarship_name.strip(), request.scholarship_url.strip()]).strip())
-        for query in queries:
-            if query and not source_urls:
-                add_search_results(query)
-
-    if request.scholarship_url.strip():
-        if _is_fetchable_url(request.scholarship_url):
-            source_urls.append(_normalize_url(request.scholarship_url))
-        else:
-            chunks.append(
-                "USER LINK WARNING: The scholarship link/source is incomplete or malformed. "
-                f"Use it only as a search clue, not as the official website: {request.scholarship_url.strip()}"
-            )
-            search_from_clues(include_broken_link=True)
-            add_candidate_urls(request.scholarship_url, request.scholarship_name)
-    elif _looks_like_url(request.scholarship_name):
-        if _is_fetchable_url(request.scholarship_name):
-            source_urls.append(_normalize_url(request.scholarship_name))
-        else:
-            chunks.append(
-                "USER LINK WARNING: The scholarship name/query looks like an incomplete URL. "
-                f"Use it only as a search clue, not as the official website: {request.scholarship_name.strip()}"
-            )
-            add_search_results(request.scholarship_name.strip())
-            add_candidate_urls(request.scholarship_name)
-    else:
-        search_from_clues()
-        add_candidate_urls(request.scholarship_name)
-
-    for url in source_urls[:8]:
-        try:
-            text = _fetch_page_text(url)
-        except (HTTPException, OSError, URLError, TimeoutError, ValueError) as exc:
-            chunks.append(f"SOURCE FETCH WARNING: Could not read {url}. Use the user-provided name, link, and notes instead. Error: {exc}")
-            continue
-        if text:
-            chunks.append(f"SOURCE URL: {url}\n{text[:12000]}")
-
-    if request.additional_notes.strip():
-        chunks.append(f"USER NOTES:\n{request.additional_notes.strip()}")
-    if request.scholarship_name.strip():
-        chunks.append(f"USER SCHOLARSHIP NAME/QUERY:\n{request.scholarship_name.strip()}")
-    if request.scholarship_url.strip():
-        chunks.append(f"USER SCHOLARSHIP URL/SOURCE:\n{request.scholarship_url.strip()}")
-
-    return "\n\n---\n\n".join(chunks).strip(), source_urls
 
 
 def run_application_pipeline(
@@ -899,7 +752,11 @@ def extract_scholarship_opportunity(request: OpportunityExtractRequest) -> dict:
             detail="Enter a scholarship name, link, source, or notes before extracting requirements.",
         )
 
-    source_text, source_urls = _gather_opportunity_source_text(request)
+    resolution_started = time.perf_counter()
+    resolution = _gather_opportunity_source_text(request)
+    source_text = resolution.source_text
+    source_urls = resolution.source_urls
+    resolution_ms = int((time.perf_counter() - resolution_started) * 1000)
     if not source_text:
         source_text = "\n\n".join(
             [
@@ -911,11 +768,15 @@ def extract_scholarship_opportunity(request: OpportunityExtractRequest) -> dict:
 
     graph = build_opportunity_extraction_graph()
     payload = {
-            "scholarship_name": request.scholarship_name,
-            "scholarship_url": request.scholarship_url,
-            "additional_notes": request.additional_notes,
-            "source_text": source_text,
-            "source_urls": source_urls,
+        "scholarship_name": request.scholarship_name,
+        "scholarship_url": request.scholarship_url,
+        "additional_notes": request.additional_notes,
+        "source_text": source_text,
+        "source_urls": source_urls,
+        "source_metadata": resolution.source_metadata,
+        "extraction_warnings": resolution.warnings,
+        "resolution_status": resolution.resolution_status,
+        "primary_url": resolution.primary_url,
     }
     result, agent_run_id = run_agent_with_persistence(
         user_id=request.user_id,
@@ -926,6 +787,8 @@ def extract_scholarship_opportunity(request: OpportunityExtractRequest) -> dict:
             "additional_notes_chars": len(request.additional_notes),
             "source_text_chars": len(source_text),
             "source_url_count": len(source_urls),
+            "source_resolution_ms": resolution_ms,
+            "resolution_status": resolution.resolution_status,
         },
         run_fn=lambda _: graph.invoke(payload),
     )
@@ -1053,14 +916,69 @@ def analyze_scholarship_fit(request: FitAnalyzeRequest) -> dict:
 
 
 def _load_wiki_source_library() -> list[dict]:
-    library_path = Path(__file__).resolve().parent.parent / "data" / "scholarship_source_library.json"
+    library_path = Path(__file__).resolve().parent.parent / "data" / "discovery_platform_library.json"
     try:
-        return json.loads(library_path.read_text(encoding="utf-8"))
+        items = json.loads(library_path.read_text(encoding="utf-8"))
+        return [item for item in items if str(item.get("kind") or "").lower() == "platform"]
     except Exception as exc:
-        raise HTTPException(status_code=500, detail="Scholarship source library could not be loaded.") from exc
+        raise HTTPException(status_code=500, detail="Discovery platform library could not be loaded.") from exc
+
+
+def get_scholarship_discovery_bootstrap(request: WikiBootstrapRequest) -> dict:
+    context = build_discovery_context(request.student_profile)
+    platforms = []
+    for index, raw in enumerate(_load_wiki_source_library()):
+        if str(raw.get("kind") or "").lower() != "platform":
+            continue
+        item = {**raw, "origin": "library", "candidate_id": str(raw.get("url") or raw.get("name") or index).lower()}
+        assessment = assess_candidate(item, context)
+        if not assessment.compatible:
+            continue
+        item["source_evidence"] = candidate_evidence(item)
+        score, components = score_candidate(item, context)
+        field = context.profile.field.canonical_label
+        student_type = context.profile.student_type.value
+        reason = (
+            f"Selected for {field} and related opportunities."
+            if field
+            else f"Selected for {student_type} scholarship discovery."
+            if student_type != "unknown"
+            else "Selected as a trusted place to continue scholarship discovery."
+        )
+        platforms.append((score, index, {
+            "name": item.get("name", ""),
+            "url": item.get("url", ""),
+            "category": item.get("category", ""),
+            "best_for": item.get("best_for") or [],
+            "search_tips": item.get("search_tips") or [],
+            "why_recommended": reason,
+            "source_authority": "Curated discovery platform",
+            "score_components": components,
+        }))
+    platforms.sort(key=lambda value: (-value[0], value[1]))
+    profile = context.profile
+    response = WikiBootstrapResponse(
+        intent_options=generate_intent_options(request.student_profile, limit=4),
+        platform_defaults=[item for _, _, item in platforms[:3]],
+        profile_summary={
+            "education_level": profile.education.current_level.value,
+            "field_of_study": profile.field.canonical_label,
+            "student_type": profile.student_type.value,
+        },
+    )
+    return response.model_dump() if hasattr(response, "model_dump") else response.dict()
 
 
 def discover_scholarship_wiki(request: WikiDiscoverRequest) -> dict:
+    if not settings.openai_api_key:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Missing OPENAI_API_KEY. Add a .env file in the project root "
+                "with OPENAI_API_KEY=your_key, then restart the server."
+            ),
+        )
+
     user_id = default_user_id(request.user_id)
     profile_text = build_profile_memory_text(request.student_profile)
     _persist_domain_record(ProfileService.save_current_profile, user_id, request.student_profile, profile_text, None)
@@ -1076,8 +994,16 @@ def discover_scholarship_wiki(request: WikiDiscoverRequest) -> dict:
     )
     graph = build_wiki_discovery_graph()
     payload = {
-            "student_profile": request.student_profile,
-            "source_library": _load_wiki_source_library(),
+        "student_profile": request.student_profile,
+        "source_library": _load_wiki_source_library(),
+        "discovery_focus": request.discovery_focus,
+        "selected_intents": [
+            intent.model_dump() if hasattr(intent, "model_dump") else intent.dict()
+            for intent in request.selected_intents
+        ],
+        "free_text_intent": request.free_text_intent or request.discovery_focus,
+        "excluded_urls": request.excluded_urls,
+        "discovery_feedback": request.feedback,
     }
     result, _ = run_agent_with_persistence(
         user_id=request.user_id,
@@ -1086,6 +1012,10 @@ def discover_scholarship_wiki(request: WikiDiscoverRequest) -> dict:
             "profile_keys": sorted(request.student_profile.keys()),
             "education_level": request.student_profile.get("educationLevel", ""),
             "has_opportunity_preferences": bool(request.student_profile.get("opportunityPreferences")),
+            "has_discovery_focus": bool(request.discovery_focus.strip()),
+            "selected_intent_count": len(request.selected_intents),
+            "has_free_text_intent": bool((request.free_text_intent or request.discovery_focus).strip()),
+            "excluded_url_count": len(request.excluded_urls),
         },
         run_fn=lambda _: graph.invoke(payload),
     )

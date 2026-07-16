@@ -30,5 +30,9 @@ scholar_e.db
 *.sqlite
 *.sqlite3
 
+# Wiki freshness sidecar (runtime verification status)
+data/scholarship_source_status.json
+
 # OS junk
 .DS_Store
+data/scholarship_source_status.json

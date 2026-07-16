@@ -15,7 +15,10 @@ CURRENT_AGENT_DEFINITIONS = [
     {
         "agent_name": "scholarship_discovery_wiki",
         "display_name": "Scholarship Discovery Wiki Agents",
-        "description": "Recommends curated platforms and specific scholarship sources from the saved profile.",
+        "description": (
+            "Four-agent wiki discovery: interpret profile, search+verify+rank grounded "
+            "candidates, normalize Wiki fields, and always run a grounding critic."
+        ),
         "agent_type": "discovery",
         "uses_rag": True,
         "rag_sources": ["scholarship_sources", "global_wiki_memory"],

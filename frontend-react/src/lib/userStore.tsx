@@ -11,7 +11,17 @@ import {
 
 export type EducationLevel = "high_school" | "undergrad" | "grad" | "phd";
 
+export type DiscoveryIntent = {
+  id: string;
+  label: string;
+  dimension: "opportunity_type" | "field" | "funding_outcome" | "student_context" | "career_direction";
+  value: string;
+  canonical_values?: string[];
+  derived_from: string[];
+};
+
 export type HighSchoolProfile = {
+  institution?: string;
   currentGrade?: string;
   gradMonth?: string;
   gradYear?: string;
@@ -59,6 +69,8 @@ export type GradProfile = {
 
 export type EducationHistoryEntry = {
   id: string;
+  source?: "onboarding" | "resume" | "manual";
+  isCurrent?: boolean;
   educationLevel?: string;
   institution?: string;
   degreeProgram?: string;
@@ -93,6 +105,7 @@ export type WorkExperienceEntry = {
 
 export type OptionalSections = {
   resumeFileName?: string;
+  volunteering?: string;
   societyInvolvement?: string;
   leadership?: string;
   sports?: string;
@@ -158,6 +171,32 @@ export type ActiveScholarship = {
   additionalNotes?: string;
   fullText?: string;
   sourceUrls?: string[];
+  sourceMetadata?: Array<{
+    url?: string;
+    title?: string;
+    content_type?: string;
+    authority?: string;
+    fetched?: boolean;
+    error?: string;
+    textChars?: number;
+  }>;
+  fieldEvidence?: Array<{
+    field?: string;
+    value?: string;
+    sourceUrl?: string;
+    evidence?: string;
+    confidence?: number;
+    authority?: string;
+  }>;
+  extractionWarnings?: string[];
+  validationWarnings?: string[];
+  criticalFieldsFound?: string[];
+  criticalFieldsMissing?: string[];
+  completenessScore?: number;
+  resolutionStatus?: string;
+  extractedAt?: string;
+  discoverySource?: string;
+  discoverySourceKind?: "scholarship" | "platform" | "user_entry" | string;
   extractionCompletedAt?: string;
 };
 
@@ -165,6 +204,21 @@ export type AnalysisScore = {
   score?: number;
   level?: string;
   coaching?: string;
+  justification?: string;
+  feedback?: string;
+  revision_actions?: Array<{
+    priority?: string;
+    why_it_matters?: string;
+    how_to_fix?: string;
+    impact?: string;
+    estimated_effort?: string;
+  }>;
+  rubric?: {
+    description?: string;
+    excellent?: string;
+    developing?: string;
+    weak?: string;
+  };
   delta?: number;
 };
 
@@ -333,6 +387,9 @@ export type WikiDiscoveryResult = {
     category?: string;
     best_for?: string[];
     search_tips?: string[];
+    why_recommended?: string;
+    access_note?: string;
+    source_authority?: string;
   }>;
   specific_opportunities?: Array<{
     name?: string;
@@ -344,9 +401,14 @@ export type WikiDiscoveryResult = {
     status_note?: string;
     award_amount?: string;
     deadline_window?: string;
+    deadline_status?: "open" | "upcoming" | "unknown" | "closed" | string;
+    deadline_verified?: boolean;
+    deadline_checked_at?: string;
+    deadline_source_url?: string;
     competitiveness?: string;
     search_tips?: string[];
     suggested_queries?: string[];
+    source_authority?: string;
   }>;
   funding_categories?: Array<{
     category_name?: string;
@@ -358,6 +420,11 @@ export type WikiDiscoveryResult = {
   personalized_search_queries?: string[];
   next_steps?: string[];
   missing_profile_fields?: string[];
+  discovery_focus?: string;
+  selected_intents?: DiscoveryIntent[];
+  free_text_intent?: string;
+  generated_at?: string;
+  result_note?: string;
 };
 
 export type PersonalizedOutlineResult = {
@@ -421,6 +488,8 @@ export type UserProfile = {
   undergrad?: UndergradProfile;
   graduate?: GradProfile;
   educationHistory?: EducationHistoryEntry[];
+  academicOnboardingCompleted?: boolean;
+  profileSetupCompleted?: boolean;
   researchExperience?: ResearchExperienceEntry[];
   workExperience?: WorkExperienceEntry[];
   // optional
@@ -430,16 +499,28 @@ export type UserProfile = {
   // essay (current working draft)
   essayTitle?: string;
   essayDraft?: string;
+  essayDraftHtml?: string;
   // last journey step index, so the student resumes where they left off
   lastStep?: number;
   // scholarship currently being analyzed
   activeScholarship?: ActiveScholarship;
   // latest result returned by the Scholar-E AI coach
   lastAnalysis?: AnalysisResult;
+  // latest Essay Workspace coach result, persisted so sleep/reload/remount does
+  // not clear the Coach and Reader tabs.
+  essayCoachResult?: Record<string, unknown>;
+  essayCoachSummary?: string;
+  essayCoachUpdatedAt?: number;
   // latest dedicated scholarship fit analysis
   fitAnalysis?: FitAnalysisResult;
   // latest discovery wiki recommendations
   wikiDiscovery?: WikiDiscoveryResult;
+  discoveryFocus?: string;
+  discoveryIntents?: DiscoveryIntent[];
+  discoveryIntentOptions?: DiscoveryIntent[];
+  discoveryPlatformDefaults?: NonNullable<WikiDiscoveryResult["top_free_platforms"]>;
+  dismissedDiscoveryUrls?: string[];
+  discoveryFeedback?: Array<{ url?: string; reason?: string; name?: string }>;
   personalizedOutline?: PersonalizedOutlineResult;
   savedWikiSources?: SavedWikiSource[];
   // versioned drafts

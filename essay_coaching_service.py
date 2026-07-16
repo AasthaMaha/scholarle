@@ -594,13 +594,13 @@ def run_essay_workspace_coach(
 
     outline_points = outline_points or []
     enabled = {
-        "sentence": mode in ("full", "grammar_tone", "auto_check"),
+        "sentence": mode in ("full", "workspace_refresh", "grammar_tone", "auto_check"),
         "alignment": mode in ("full", "prompt_alignment"),
         "grounding": mode in ("full", "prompt_alignment"),
         "structure": mode in ("full", "structure"),
         "specificity": mode in ("full", "structure"),
         "tone": mode in ("full",),
-        "reviewer": mode in ("full", "reviewer"),
+        "reviewer": mode in ("full", "workspace_refresh", "reviewer"),
         "coverage": mode in ("full", "auto_check") and bool(outline_points),
     }
     runners = {
@@ -680,7 +680,7 @@ def run_essay_workspace_coach(
         return _run_combiner(summary_input)
 
     post_jobs = {}
-    if package["sentence_suggestions"] and mode == "full":
+    if package["sentence_suggestions"] and mode in ("full", "workspace_refresh"):
         post_jobs["guardrail"] = lambda: _run_guardrail_critic(essay_draft, profile_text, package["sentence_suggestions"])
     if mode == "full" and any(results.get(name) is not None for name in results):
         post_jobs["combiner"] = _combiner_job

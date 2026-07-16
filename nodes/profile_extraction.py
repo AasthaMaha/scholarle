@@ -17,7 +17,6 @@ class HighSchoolAutofill(BaseModel):
     apIb: str = Field(description="AP, IB, dual-credit, honors, or advanced coursework from the resume.")
     extracurricular: str = Field(description="Extracurricular clubs, teams, or organizations.")
     activities: str = Field(description="Activities, work, family duties, athletics, awards, or responsibilities.")
-    volunteer: str = Field(description="Volunteer service from the resume.")
 
 
 class UndergradAutofill(BaseModel):
@@ -48,6 +47,7 @@ class GradAutofill(BaseModel):
 
 
 class OptionalAutofill(BaseModel):
+    volunteering: str = Field(description="Volunteer work, community service, nonprofit involvement, and service roles.")
     societyInvolvement: str = Field(description="Clubs, societies, organizations, memberships, and roles.")
     leadership: str = Field(description="Leadership experience and leadership titles.")
     sports: str = Field(description="Sports, teams, varsity or club athletics.")
@@ -95,7 +95,7 @@ class WorkExperienceAutofill(BaseModel):
     id: str = Field(description="Stable short id for this entry, such as work-1.")
     roleTitle: str = Field(description="Role or title if explicit.")
     organization: str = Field(description="Organization, company, lab, school, or group if explicit.")
-    experienceType: str = Field(description="Work, Internship, Research Assistant, Teaching Assistant, Volunteer, Leadership, or Other.")
+    experienceType: str = Field(description="Work, Internship, Research Assistant, Teaching Assistant, Leadership, or Other. Do not include volunteer roles.")
     startDate: str = Field(description="Start date if explicit.")
     endDate: str = Field(description="End date or Present if explicit.")
     description: str = Field(description="Responsibilities, accomplishments, or role description.")
@@ -127,7 +127,7 @@ class ExtractedProfile(BaseModel):
         )
     )
     workExperience: List[WorkExperienceAutofill] = Field(
-        description="Work, internship, research assistant, teaching assistant, volunteer, and leadership roles found in the resume."
+        description="Professional work, internship, research assistant, teaching assistant, and leadership roles found in the resume. Volunteer roles belong in optional.volunteering instead."
     )
     optional: OptionalAutofill
 
@@ -149,7 +149,9 @@ def extract_profile_fields(state):
                 "citizenship, Pell eligibility, first-generation status, parent education, "
                 "pronouns, or financial need. Use empty strings when a field is not explicit. "
                 "Extract every visible education entry, research/academic experience, and "
-                "work/internship/assistantship/volunteer/leadership role as separate editable list entries. "
+                "work/internship/assistantship/leadership role as separate editable list entries. "
+                "Put all volunteer work, community service, nonprofit involvement, and service roles in "
+                "optional.volunteering, not workExperience. "
                 "Do not create or populate researchExperience only because the resume shows a Master's, "
                 "PhD, major, department, or program. Leave researchExperience empty unless there is concrete "
                 "research evidence like an advisor/PI/lab, research assistantship, thesis/dissertation, "
@@ -176,6 +178,30 @@ def _clean_text(value):
 
 def _clean_dict(data):
     return {key: _clean_text(value) for key, value in (data or {}).items()}
+
+
+def _is_volunteer_work(entry):
+    experience_type = _clean_text(entry.get("experienceType")).lower()
+    return any(term in experience_type for term in ["volunteer", "community service", "nonprofit"])
+
+
+def _format_volunteer_work(entries):
+    sections = []
+    for entry in entries:
+        heading = " — ".join(
+            value for value in [_clean_text(entry.get("roleTitle")), _clean_text(entry.get("organization"))] if value
+        )
+        dates = " – ".join(
+            value for value in [_clean_text(entry.get("startDate")), _clean_text(entry.get("endDate"))] if value
+        )
+        section = "\n".join(
+            value
+            for value in [heading, dates, _clean_text(entry.get("description")), _clean_text(entry.get("skillsTechnologies"))]
+            if value
+        )
+        if section:
+            sections.append(section)
+    return "\n\n".join(sections)
 
 
 def _clean_list(items):
@@ -230,6 +256,12 @@ def clean_profile_fields(state):
     if education_level not in {"high_school", "undergrad", "grad", "phd"}:
         education_level = ""
 
+    work_experience = _clean_list(state.get("workExperience"))
+    volunteer_work = [entry for entry in work_experience if _is_volunteer_work(entry)]
+    optional = _clean_dict(state.get("optional"))
+    volunteering = [optional.get("volunteering", ""), _format_volunteer_work(volunteer_work)]
+    optional["volunteering"] = "\n\n".join(dict.fromkeys(value for value in volunteering if value))
+
     return {
         "name": _clean_text(state.get("name")),
         "email": _clean_text(state.get("email")),
@@ -245,11 +277,8 @@ def clean_profile_fields(state):
             for entry in _clean_list(state.get("researchExperience"))
             if _has_concrete_research_evidence(entry)
         ],
-        "workExperience": _clean_list(state.get("workExperience")),
-        "optional": _clean_dict(state.get("optional")),
+        "workExperience": [entry for entry in work_experience if not _is_volunteer_work(entry)],
+        "optional": optional,
     }
-
-
-
 
 

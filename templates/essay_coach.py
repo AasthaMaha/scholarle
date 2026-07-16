@@ -38,7 +38,8 @@ WRITING_SUPPORT_LEVELS = ["grammar_only", "sentence_polish", "rewrite_help"]
 
 _WRITING_SUPPORT_GUIDANCE = {
     "grammar_only": (
-        "Grammar only: suggest spelling, punctuation, grammar, capitalization, and mechanics fixes only. "
+        "Grammar only: evaluate spelling, punctuation, capitalization, verb tense, subject-verb and pronoun agreement, "
+        "grammar, and sentence-level correctness. Suggest mechanics fixes only. "
         "Do NOT change meaning, voice, style, structure, specificity, or word choice unless required for correctness. "
         "Use suggestion_type='grammar' whenever possible."
     ),
@@ -283,7 +284,8 @@ Rules:
   most valuable improvement. Warm, specific, and grounded in the findings.
 - "top_revision_priorities": 3-5 items, each with priority (short title), why_it_matters,
   how_to_fix (coaching guidance, NOT a rewrite), estimated_effort (quick/moderate/deep),
-  and impact (low/medium/high). Order by impact.
+  and impact (low/medium/high). Order by impact. When discussing alignment, explicitly
+  address both the essay prompt and the scholarship mission rather than naming only one.
 - "quick_fixes": small, fast wins (grammar, wording).
 - "deeper_revision_tasks": bigger content/structure work.
 - "ready_for_evaluation": true only if there are no major blockers.

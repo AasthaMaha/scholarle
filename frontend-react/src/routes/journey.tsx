@@ -4,19 +4,22 @@ import scholarELogoUrl from "../../logo/logoPic.jpeg";
 import {
   AlertCircle,
   ArrowLeft,
+  ArrowRight,
   CalendarDays,
   Check,
-  ChevronLeft,
-  ChevronRight,
   ChevronDown,
   ClipboardList,
+  Compass,
   Copy,
   FileUp,
   Gauge,
   Lightbulb,
+  LineChart,
   ListChecks,
   Menu,
   MessageSquare,
+  PanelLeftClose,
+  PanelLeftOpen,
   PencilLine,
   Power,
   ReceiptText,
@@ -25,6 +28,7 @@ import {
   ShieldCheck,
   Sparkles,
   Target,
+  UserRound,
   Wand2,
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -34,23 +38,26 @@ import {
   anchorCoachSuggestions,
   applySuggestion,
   CATEGORY_META,
-  CATEGORY_ORDER,
-  countByCategory,
   mergeSuggestions,
   type CoachSentenceSuggestion,
   type Suggestion,
 } from "@/lib/suggestions";
 import { essayDraft as exampleEssayDraft, journeySteps } from "@/lib/persona";
 import { CoachRunButton } from "@/components/CoachRunButton";
+import { Spinner } from "@/components/Spinner";
+import { AcademicOnboarding } from "@/components/AcademicOnboarding";
 import {
   analyzeScholarshipFit,
+  analyzeApplication,
   autofillProfileFromResume,
+  buildAnalyzePayload,
   buildEssayCoachPayload,
   buildFitPayload,
   buildOutlinePayload,
   buildOutlinePoints,
   buildWikiPayload,
   discoverScholarshipWiki,
+  getScholarshipDiscoveryBootstrap,
   buildRewritePayload,
   extractScholarshipOpportunity,
   generatePersonalizedOutline,
@@ -70,7 +77,6 @@ import {
   type WorkExperienceEntry,
   type UserProfile,
   type AnalysisResult,
-  type AnalysisScore,
   type EssayDraft,
   type ActiveScholarship,
   type WikiDiscoveryResult,
@@ -107,11 +113,31 @@ export const Route = createFileRoute("/journey")({
   component: Journey,
 });
 
+const SIDEBAR_MIN_WIDTH = 232;
+const SIDEBAR_MAX_WIDTH = 420;
+const SIDEBAR_DEFAULT_WIDTH = 288;
+const SIDEBAR_WIDTH_KEY = "scholar-e:sidebarWidth";
+
 function Journey() {
   const { user, updateProfile, resetProfile } = useUser();
   const [stepIdx, setStepIdx] = useState(0);
   const [profileError, setProfileError] = useState("");
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [panelWidth, setPanelWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
+  const [sidebarDragging, setSidebarDragging] = useState(false);
+
+  // Restore the user's chosen sidebar width (client-only; SSR-safe).
+  useEffect(() => {
+    const saved = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY));
+    if (saved >= SIDEBAR_MIN_WIDTH && saved <= SIDEBAR_MAX_WIDTH) setPanelWidth(saved);
+  }, []);
+  useEffect(() => {
+    try {
+      localStorage.setItem(SIDEBAR_WIDTH_KEY, String(panelWidth));
+    } catch {
+      /* ignore quota / privacy-mode errors */
+    }
+  }, [panelWidth]);
 
   // Resume the last step once the saved profile hydrates from storage.
   const restoredStep = useRef(false);
@@ -150,33 +176,46 @@ function Journey() {
   const selectStep = (idx: number) => {
     setStepIdx(idx);
   };
-
   return (
     <TooltipProvider delayDuration={150}>
-      <div className="min-h-screen flex overflow-x-hidden">
+      <div
+        className="min-h-screen flex overflow-x-hidden"
+        style={{ ["--sw" as string]: `${panelWidth}px` } as React.CSSProperties}
+      >
+        <SidebarRail
+          activeIdx={stepIdx}
+          onSelect={selectStep}
+          onExpand={() => setIsSidebarOpen(true)}
+        />
         <Sidebar
           activeIdx={stepIdx}
           isOpen={isSidebarOpen}
           onClose={() => setIsSidebarOpen(false)}
-          onSelect={selectStep}
+          onSelect={(idx) => {
+            selectStep(idx);
+            setIsSidebarOpen(false);
+          }}
+          onClearAll={handleClearAll}
+          onResize={(w) => setPanelWidth(Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, w)))}
+          onResizeActive={setSidebarDragging}
         />
         <div
-          className={`flex flex-col min-w-0 transition-[margin,width] duration-300 ease-out ${
-            isSidebarOpen ? "w-full md:ml-80 md:w-[calc(100%-20rem)]" : "w-full md:ml-0"
-          }`}
+          className={`flex w-full min-w-0 flex-col ${
+            sidebarDragging ? "" : "transition-[padding] duration-300 ease-out"
+          } ${isSidebarOpen ? "md:pl-[var(--sw)]" : "md:pl-14"}`}
         >
-          <TopBar
-            step={step}
-            onNext={goNext}
-            onPrev={goPrev}
-            stepIdx={stepIdx}
-            onClearAll={handleClearAll}
-          />
+          <TopBar step={step} stepIdx={stepIdx} />
           <FloatingSidebarToggle
             isOpen={isSidebarOpen}
             onOpen={() => setIsSidebarOpen(true)}
           />
-          <main className="flex-1 overflow-y-auto">
+          <main className={`flex-1 overflow-y-auto transition-colors duration-500 ${
+            step.slug === "discovery"
+              ? user?.wikiDiscovery
+                ? "bg-[radial-gradient(circle_at_85%_8%,rgba(109,93,246,0.10),transparent_28%),linear-gradient(180deg,#f4f6fb_0%,#ffffff_48%,#f4f2fb_100%)]"
+                : "bg-[radial-gradient(circle_at_18%_15%,rgba(109,93,246,0.18),transparent_34%),radial-gradient(circle_at_82%_75%,rgba(46,196,182,0.12),transparent_30%),linear-gradient(145deg,#f7f8ff_0%,#eef2fb_52%,#f8f5ff_100%)]"
+              : ""
+          }`}>
             <div
               className={`mx-auto ${
                 step.slug === "essay-workspace"
@@ -200,7 +239,12 @@ function Journey() {
                 profileError={profileError}
               />
               </div>
-              <Nav stepIdx={stepIdx} onNext={goNext} onPrev={goPrev} />
+              <Nav
+                stepIdx={stepIdx}
+                onNext={goNext}
+                onPrev={goPrev}
+                hideNext={step.slug === "discovery"}
+              />
             </div>
           </main>
         </div>
@@ -211,12 +255,32 @@ function Journey() {
 
 function isProfileComplete(user: UserProfile | null) {
   return !!(
+    isRequiredAboutComplete(user) &&
+    (user.educationHistory?.some((entry) => entry.educationLevel?.trim()) || user.educationLevel)
+  );
+}
+
+function isRequiredAboutComplete(user: UserProfile | null) {
+  return !!(
     user?.gender?.trim() &&
     user.location?.trim() &&
     user.citizenshipStatus?.trim() &&
-    user.raceEthnicity &&
-    (user.educationHistory?.some((entry) => entry.educationLevel?.trim()) || user.educationLevel)
+    user.raceEthnicity
   );
+}
+
+/** Related icon per journey step (shown in the rail + expanded sidebar instead of a number). */
+const STEP_ICONS: Record<string, typeof Target> = {
+  profile: UserRound,
+  discovery: Compass,
+  requirements: Target,
+  "essay-workspace": PencilLine,
+  revise: Sparkles,
+  "final-check": ShieldCheck,
+  tracker: LineChart,
+};
+function stepIcon(slug: string) {
+  return STEP_ICONS[slug] ?? Target;
 }
 
 function Sidebar({
@@ -224,12 +288,31 @@ function Sidebar({
   isOpen,
   onClose,
   onSelect,
+  onClearAll,
+  onResize,
+  onResizeActive,
 }: {
   activeIdx: number;
   isOpen: boolean;
   onClose: () => void;
   onSelect: (i: number) => void;
+  onClearAll: () => void;
+  onResize: (width: number) => void;
+  onResizeActive: (active: boolean) => void;
 }) {
+  function startResize(e: React.MouseEvent) {
+    e.preventDefault();
+    onResizeActive(true);
+    const onMove = (ev: MouseEvent) => onResize(ev.clientX);
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      onResizeActive(false);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
+
   const groups = useMemo(() => {
     const map = new Map<string, typeof journeySteps>();
     journeySteps.forEach((s) => {
@@ -251,28 +334,29 @@ function Sidebar({
         }`}
       />
       <aside
-        className={`fixed inset-y-0 left-0 z-40 flex w-80 max-w-[85vw] shrink-0 flex-col border-r border-border bg-card/95 backdrop-blur transition-transform duration-300 ease-out ${
+        className={`fixed inset-y-0 left-0 z-40 flex w-80 max-w-[85vw] shrink-0 flex-col border-r border-border bg-card/95 backdrop-blur transition-transform duration-300 ease-out md:w-[var(--sw)] md:max-w-none ${
           isOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
-        <div className="flex items-center gap-2 px-6 h-16 border-b border-border">
+        <div className="flex items-center gap-2 px-5 h-14 border-b border-border">
           <Link to="/" className="flex min-w-0 flex-1 items-center gap-2">
-            <img src={scholarELogoUrl} alt="" className="size-8 rounded-full object-cover" />
-            <div className="font-display font-semibold tracking-tight">Scholar-E</div>
+            <img src={scholarELogoUrl} alt="" className="size-7 rounded-full object-cover" />
+            <div className="text-sm font-display font-semibold tracking-tight">Scholar-E</div>
             <span className="ml-auto text-[10px] uppercase tracking-widest text-muted-foreground">journey</span>
           </Link>
-          <button
-            type="button"
-            aria-label="Close sidebar"
-            onClick={onClose}
-            className="grid size-8 shrink-0 place-items-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground"
-          >
-            <Menu className="size-5" strokeWidth={2.5} />
-          </button>
-        </div>
-
-        <div className="px-6 py-5 border-b border-border">
-          <SidebarUser />
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                aria-label="Collapse sidebar"
+                onClick={onClose}
+                className="grid size-8 shrink-0 place-items-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                <PanelLeftClose className="size-5" strokeWidth={2} />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>Collapse sidebar</TooltipContent>
+          </Tooltip>
         </div>
 
         <div className="flex-1 overflow-y-auto px-3 py-4 space-y-5">
@@ -284,26 +368,32 @@ function Sidebar({
                   const idx = journeySteps.findIndex((x) => x.id === s.id);
                   const isActive = idx === activeIdx;
                   const isDone = idx < activeIdx;
+                  const Icon = stepIcon(s.slug);
                   return (
                     <button
                       key={s.id}
                       onClick={() => onSelect(idx)}
-                      className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-left text-sm transition-colors ${
+                      className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-left text-[13px] transition-colors ${
                         isActive
                           ? "bg-primary text-primary-foreground"
                           : "hover:bg-accent text-foreground/80"
                       }`}
                     >
                       <span
-                        className={`size-6 shrink-0 rounded-full grid place-items-center text-[11px] font-mono ${
+                        className={`relative size-6 shrink-0 rounded-md grid place-items-center ${
                           isActive
                             ? "bg-gold text-gold-foreground"
                             : isDone
                             ? "bg-success/20 text-success"
-                            : "bg-secondary text-secondary-foreground"
+                            : "bg-secondary text-muted-foreground"
                         }`}
                       >
-                        {isDone ? "✓" : s.id}
+                        <Icon className="size-3.5" strokeWidth={2} />
+                        {isDone && (
+                          <span className="absolute -bottom-0.5 -right-0.5 grid size-3 place-items-center rounded-full bg-success text-white ring-2 ring-card">
+                            <Check className="size-2" strokeWidth={4} />
+                          </span>
+                        )}
                       </span>
                       <span className="truncate">{s.title}</span>
                     </button>
@@ -314,8 +404,31 @@ function Sidebar({
           ))}
         </div>
 
-        <div className="px-6 py-4 border-t border-border text-[11px] text-muted-foreground">
-          A coach, not a ghostwriter.
+        <div className="border-t border-border px-6 py-4">
+          <SidebarUser />
+        </div>
+
+        <div className="border-t border-border px-6 py-3">
+          <button
+            type="button"
+            onClick={onClearAll}
+            className="flex items-center gap-1.5 text-[11px] text-muted-foreground transition-colors hover:text-destructive"
+          >
+            <RefreshCw className="size-3.5" />
+            Reset all data
+          </button>
+          <div className="mt-2 text-[11px] text-muted-foreground/60">A coach, not a ghostwriter.</div>
+        </div>
+
+        {/* Drag-to-resize handle (desktop). Widens/narrows the panel; width persists. */}
+        <div
+          onMouseDown={startResize}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize sidebar"
+          className="group absolute inset-y-0 -right-1 hidden w-2 cursor-col-resize md:block"
+        >
+          <div className="mx-auto h-full w-px bg-transparent transition-colors group-hover:bg-info/60" />
         </div>
       </aside>
     </>
@@ -324,65 +437,29 @@ function Sidebar({
 
 function TopBar({
   step,
-  onNext,
-  onPrev,
   stepIdx,
-  onClearAll,
 }: {
   step: (typeof journeySteps)[number];
-  onNext: () => void;
-  onPrev: () => void;
   stepIdx: number;
-  onClearAll: () => void;
 }) {
   const pct = ((stepIdx + 1) / journeySteps.length) * 100;
   return (
     <div className="sticky top-0 z-20 border-b border-border bg-background/85 backdrop-blur">
-      <div className="px-6 md:px-10 h-16 flex items-center gap-4">
-        <Link to="/" className="flex items-center gap-2 rounded-lg px-2.5 py-1.5">
-          <img src={scholarELogoUrl} alt="" className="size-7 rounded-full object-cover" />
-          <span className="font-display font-semibold">Scholar-E</span>
-        </Link>
-        <div className="flex-1 min-w-0">
-          <div className="text-xs text-muted-foreground">
-            Step {step.id} of {journeySteps.length} · {step.group}
-          </div>
-          <div className="text-sm font-medium truncate">{step.title}</div>
-          <div className="text-xs text-muted-foreground truncate">Goal: {step.goal}</div>
-        </div>
-        <div className="flex items-center gap-2">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                onClick={onClearAll}
-                className="rounded-full border border-border bg-card px-3 py-1.5 text-sm hover:bg-accent"
-              >
-                Clear all
-              </button>
-            </TooltipTrigger>
-            <TooltipContent>Reset every field and return to step 1</TooltipContent>
-          </Tooltip>
-        <div className="hidden md:flex items-center gap-2">
-          <button
-            onClick={onPrev}
-            disabled={stepIdx === 0}
-            className="rounded-full border border-border bg-card px-3 py-1.5 text-sm hover:bg-accent disabled:opacity-40"
-          >
-            ← Back
-          </button>
-          <button
-            onClick={onNext}
-            disabled={stepIdx === journeySteps.length - 1}
-            className="rounded-full bg-primary text-primary-foreground px-4 py-1.5 text-sm hover:opacity-90 disabled:opacity-40"
-          >
-            Next →
-          </button>
-        </div>
-        </div>
+      <div className="flex h-14 items-center gap-4 pl-16 pr-6 md:px-10">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <div className="flex min-w-0 flex-1 items-baseline gap-2">
+              <span className="truncate text-sm font-medium text-foreground">{step.title}</span>
+              <span className="hidden shrink-0 text-xs text-muted-foreground sm:inline">
+                {step.group} · Step {step.id}/{journeySteps.length}
+              </span>
+            </div>
+          </TooltipTrigger>
+          <TooltipContent>Goal: {step.goal}</TooltipContent>
+        </Tooltip>
       </div>
       <div className="h-1 bg-secondary">
-        <div className="h-full bg-gold transition-all duration-500" style={{ width: `${pct}%` }} />
+        <div className="h-full bg-success transition-all duration-500" style={{ width: `${pct}%` }} />
       </div>
     </div>
   );
@@ -398,27 +475,133 @@ function FloatingSidebarToggle({
   return (
     <button
       type="button"
-      aria-label="Open sidebar"
+      aria-label="Open menu"
       onClick={onOpen}
-      className={`fixed left-0 top-[70px] z-30 flex h-10 items-center gap-3 rounded-full rounded-l-none border border-l-0 border-border/70 bg-white px-3 text-foreground shadow-md shadow-black/10 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg ${
+      className={`fixed left-3 top-3 z-30 grid size-10 place-items-center rounded-lg border border-border bg-card text-foreground shadow-sm transition-opacity duration-200 md:hidden ${
         isOpen ? "opacity-0 pointer-events-none" : "opacity-100"
       }`}
     >
-      <img src={scholarELogoUrl} alt="" className="size-6 rounded-full object-cover" />
-      <Menu className="size-5 text-muted-foreground" strokeWidth={2.5} />
+      <Menu className="size-5" strokeWidth={2.5} />
     </button>
   );
 }
 
-function Nav({ stepIdx, onNext, onPrev }: { stepIdx: number; onNext: () => void; onPrev: () => void }) {
+/**
+ * Persistent slim navigation rail (md+). Replaces the old floating toggle pill:
+ * docked to the left edge with the logo (home), a dedicated panel-toggle button,
+ * the journey steps as icon markers (teal = done, gold = current, gray = upcoming),
+ * and the user avatar. The toggle and avatar expand the full sidebar panel.
+ */
+function SidebarRail({
+  activeIdx,
+  onSelect,
+  onExpand,
+}: {
+  activeIdx: number;
+  onSelect: (i: number) => void;
+  onExpand: () => void;
+}) {
+  const { user } = useUser();
+  return (
+    <aside className="fixed inset-y-0 left-0 z-30 hidden w-14 flex-col items-center border-r border-border bg-card/95 backdrop-blur md:flex">
+      <Link
+        to="/"
+        aria-label="Scholar-E home"
+        className="mt-2.5 grid size-9 place-items-center rounded-lg transition-transform hover:scale-105"
+      >
+        <img src={scholarELogoUrl} alt="" className="size-8 rounded-full object-cover" />
+      </Link>
+
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={onExpand}
+            aria-label="Expand sidebar"
+            className="mt-1.5 grid size-8 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            <PanelLeftOpen className="size-5" strokeWidth={2} />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="right">Expand sidebar</TooltipContent>
+      </Tooltip>
+
+      <div className="mt-3 flex flex-1 flex-col items-center gap-1.5 overflow-y-auto py-1">
+        {journeySteps.map((s, idx) => {
+          const isActive = idx === activeIdx;
+          const isDone = idx < activeIdx;
+          const Icon = stepIcon(s.slug);
+          return (
+            <Tooltip key={s.id}>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={() => onSelect(idx)}
+                  aria-label={s.title}
+                  aria-current={isActive ? "step" : undefined}
+                  className={`relative grid size-9 shrink-0 place-items-center rounded-lg transition-colors ${
+                    isActive
+                      ? "bg-gold text-gold-foreground"
+                      : isDone
+                        ? "bg-success/20 text-success hover:bg-success/30"
+                        : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                  }`}
+                >
+                  <Icon className="size-5" strokeWidth={2} />
+                  {isDone && (
+                    <span className="absolute -bottom-0.5 -right-0.5 grid size-3.5 place-items-center rounded-full bg-success text-white ring-2 ring-card">
+                      <Check className="size-2.5" strokeWidth={3.5} />
+                    </span>
+                  )}
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right">
+                {s.group} · {s.title}
+              </TooltipContent>
+            </Tooltip>
+          );
+        })}
+      </div>
+
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={onExpand}
+            aria-label="Your profile"
+            className="mb-3 mt-1 grid size-9 place-items-center rounded-full"
+          >
+            <span className="grid size-8 place-items-center rounded-full bg-primary text-[11px] font-display text-primary-foreground">
+              {toInitials(user?.name)}
+            </span>
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="right">Your profile</TooltipContent>
+      </Tooltip>
+    </aside>
+  );
+}
+
+function Nav({
+  stepIdx,
+  onNext,
+  onPrev,
+  hideNext = false,
+}: {
+  stepIdx: number;
+  onNext: () => void;
+  onPrev: () => void;
+  hideNext?: boolean;
+}) {
   return (
     <div className="mt-12 flex items-center justify-between border-t border-border pt-6">
       <button
         onClick={onPrev}
         disabled={stepIdx === 0}
-        className="rounded-full border border-border bg-card px-5 py-2 text-sm hover:bg-accent disabled:opacity-40"
+        className="inline-flex items-center gap-2 rounded-lg border border-border bg-card px-5 py-2 text-sm hover:bg-accent disabled:opacity-40"
       >
-        ← Previous
+        <ArrowLeft className="size-4" />
+        Previous
       </button>
       <div className="text-xs text-muted-foreground font-mono">
         {stepIdx + 1} / {journeySteps.length}
@@ -426,9 +609,12 @@ function Nav({ stepIdx, onNext, onPrev }: { stepIdx: number; onNext: () => void;
       <button
         onClick={onNext}
         disabled={stepIdx === journeySteps.length - 1}
-        className="rounded-full bg-primary text-primary-foreground px-6 py-2 text-sm hover:opacity-90 disabled:opacity-40"
+        aria-hidden={hideNext}
+        tabIndex={hideNext ? -1 : undefined}
+        className={`inline-flex items-center gap-2 rounded-lg bg-primary px-6 py-2 text-sm text-primary-foreground hover:opacity-90 disabled:opacity-40 ${hideNext ? "invisible" : ""}`}
       >
-        Continue →
+        Continue
+        <ArrowRight className="size-4" />
       </button>
     </div>
   );
@@ -450,7 +636,7 @@ function StepBody({
   profileError: string;
 }) {
   switch (slug) {
-    case "profile": return <StepProfile error={profileError} />;
+    case "profile": return <StepProfile error={profileError} onComplete={goNext} />;
     case "discovery": return <StepDiscovery onUpdateProfile={goToProfile} onUseSource={goToRequirements} />;
     case "opportunities": return <StepOpportunities onAnalyze={goNext} />;
     case "requirements": return <StepRequirementsAndFit />;
@@ -732,18 +918,18 @@ function SidebarUser() {
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center gap-3">
-        <div className="size-10 rounded-full bg-primary text-primary-foreground grid place-items-center font-display">
+      <div className="flex items-center gap-2.5">
+        <div className="size-8 rounded-full bg-primary text-primary-foreground grid place-items-center text-[11px] font-display">
           {toInitials(user?.name)}
         </div>
         <div className="min-w-0">
-          <div className="text-sm font-medium truncate">{user?.name || "Your profile"}</div>
+          <div className="text-[13px] font-medium truncate">{user?.name || "Your profile"}</div>
           <button
             type="button"
             onClick={handleSignOut}
-            className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
+            className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
           >
-            <Power className="size-3.5" strokeWidth={2.5} />
+            <Power className="size-3" strokeWidth={2.5} />
             <span>Sign Out</span>
           </button>
         </div>
@@ -847,9 +1033,9 @@ const SCHOLARSHIP_TYPE_OPTIONS = [
 const PROFILE_SECTION_CLASS = "!rounded-none !border-0 !bg-transparent !p-0 !shadow-none";
 const PROFILE_ENTRY_CLASS = "rounded-lg border border-border/60 bg-white/60 p-4";
 
-/* ---------------- Step 2: Profile (with materials before story prompts) ---------------- */
+/* ---------------- Step 2: Profile ---------------- */
 
-function StepProfile({ error }: { error: string }) {
+function StepProfile({ error, onComplete }: { error: string; onComplete: () => void }) {
   const { user, updateProfile } = useUser();
   const level = user?.educationLevel;
   const [showExtended, setShowExtended] = useState(false);
@@ -858,9 +1044,24 @@ function StepProfile({ error }: { error: string }) {
   const [profileStartMode, setProfileStartMode] = useState<"resume" | "manual" | null>(
     user?.optional?.resumeFileName ? "resume" : user?.educationLevel ? "manual" : null,
   );
-  const [showStartDialog, setShowStartDialog] = useState(
-    !user?.educationLevel && !user?.optional?.resumeFileName,
+  const hasExistingAcademicProfile = !!(
+    user?.educationLevel ||
+    user?.educationHistory?.some((entry) => entry.educationLevel?.trim()) ||
+    user?.optional?.resumeFileName
   );
+  const [showAcademicOnboarding, setShowAcademicOnboarding] = useState(
+    !user?.academicOnboardingCompleted && !hasExistingAcademicProfile,
+  );
+  const [showStartDialog, setShowStartDialog] = useState(
+    !user?.academicOnboardingCompleted && !hasExistingAcademicProfile ? false :
+      !user?.educationLevel && !user?.optional?.resumeFileName,
+  );
+  const [profileSetupStep, setProfileSetupStep] = useState(0);
+  const [highestProfileSetupStep, setHighestProfileSetupStep] = useState(0);
+  const [showProfileSetupValidation, setShowProfileSetupValidation] = useState(false);
+  const [resumeImportedProfileSteps, setResumeImportedProfileSteps] = useState<number[]>([]);
+  const volunteerMigrationDone = useRef(false);
+  const profileSetupHeadingRef = useRef<HTMLHeadingElement | null>(null);
   const startResumeInputRef = useRef<HTMLInputElement | null>(null);
 
   function set<K extends keyof UserProfile>(key: K, value: UserProfile[K]) {
@@ -877,9 +1078,6 @@ function StepProfile({ error }: { error: string }) {
   function setOptional(patch: Record<string, unknown>) {
     updateProfile({ optional: { ...(user?.optional ?? {}), ...patch } });
   }
-  function setPrompts(patch: Record<string, unknown>) {
-    updateProfile({ prompts: { ...(user?.prompts ?? {}), ...patch } });
-  }
   function setExt(key: string, v: boolean) {
     updateProfile({ extendedContext: { ...(user?.extendedContext ?? {}), [key]: v } });
   }
@@ -890,6 +1088,25 @@ function StepProfile({ error }: { error: string }) {
     ? user.researchExperience
     : buildResearchExperienceFromProfile(user);
   const workExperience = user?.workExperience ?? [];
+  useEffect(() => {
+    if (!user || volunteerMigrationDone.current) return;
+    volunteerMigrationDone.current = true;
+    const volunteerEntries = (user.workExperience ?? []).filter(isVolunteerExperience);
+    const legacyVolunteering = mergeVolunteerText([
+      user.highSchool?.volunteer,
+      formatVolunteerExperiences(volunteerEntries),
+    ]);
+    if (!legacyVolunteering) return;
+    const { volunteer: _legacyVolunteer, ...highSchool } = user.highSchool ?? {};
+    updateProfile({
+      highSchool,
+      workExperience: (user.workExperience ?? []).filter((entry) => !isVolunteerExperience(entry)),
+      optional: {
+        ...(user.optional ?? {}),
+        volunteering: mergeVolunteerText([user.optional?.volunteering, legacyVolunteering]),
+      },
+    });
+  }, [user, updateProfile]);
   const hasGraduateEducation = educationHistory.some((entry) =>
     /grad|master|phd|doctor|mba|jd|md/i.test(
       [entry.educationLevel, entry.degreeProgram].filter(Boolean).join(" "),
@@ -916,6 +1133,8 @@ function StepProfile({ error }: { error: string }) {
         ...educationHistory,
         {
           id: newId("edu"),
+          source: "manual",
+          isCurrent: false,
           educationLevel: "",
           institution: "",
           degreeProgram: "",
@@ -1002,49 +1221,93 @@ function StepProfile({ error }: { error: string }) {
     setProfileStartMode("resume");
     try {
       const profile = await autofillProfileFromResume(file);
-      const nextLevel = profile.educationLevel || user?.educationLevel;
+      const nextLevel = user?.educationLevel || profile.educationLevel;
       const parsedHighSchool = compactObject(profile.highSchool);
+      const { volunteer: parsedHighSchoolVolunteering, ...parsedHighSchoolWithoutVolunteering } =
+        parsedHighSchool;
       const parsedUndergrad = compactObject(profile.undergrad);
       const parsedGraduate = compactObject(profile.graduate);
       const parsedProfile: UserProfile = {
         name: profile.name || user?.name || "",
         email: profile.email || user?.email || "",
         educationLevel: (nextLevel || undefined) as EducationLevel | undefined,
-        highSchool: parsedHighSchool,
+        highSchool: parsedHighSchoolWithoutVolunteering,
         undergrad: parsedUndergrad,
         graduate: parsedGraduate,
       };
-      const nextEducationHistory = (profile.educationHistory?.length
+      const parsedEducationHistory = (profile.educationHistory?.length
         ? profile.educationHistory
         : buildEducationHistoryFromProfile(parsedProfile)
       ).map((entry, index) => ({
         ...entry,
         id: entry.id || `edu-${index + 1}`,
+        source: "resume" as const,
+        isCurrent: false,
         majorField: entry.majorField || inferMajorField(entry.degreeProgram),
         educationLevel:
           normalizeEducationLevelLabel(entry.educationLevel) ||
           inferEducationLevelLabel(entry) ||
           educationLevelLabelFromCode(nextLevel),
       }));
+      const nextEducationHistory = mergeEducationHistory(
+        user?.educationHistory ?? [],
+        parsedEducationHistory,
+      );
       const nextResearchExperience = (profile.researchExperience?.length
         ? profile.researchExperience
         : buildResearchExperienceFromProfile(parsedProfile)
       )
         .filter(hasConcreteResearchEvidence)
         .map((entry, index) => ({ ...entry, id: entry.id || `research-${index + 1}` }));
-      const nextWorkExperience = (profile.workExperience ?? []).map((entry, index) => ({
-        ...entry,
-        id: entry.id || `work-${index + 1}`,
-      }));
+      const parsedVolunteerExperience = (profile.workExperience ?? []).filter(
+        isVolunteerExperience,
+      );
+      const nextWorkExperience = (profile.workExperience ?? [])
+        .filter((entry) => !isVolunteerExperience(entry))
+        .map((entry, index) => ({
+          ...entry,
+          id: entry.id || `work-${index + 1}`,
+        }));
+      const mergedResearchExperience = mergeStructuredEntries(
+        user?.researchExperience ?? [],
+        nextResearchExperience,
+        (entry) =>
+          normalizeEducationIdentity(
+            [entry.researchAreas, entry.advisorLabDepartment].filter(Boolean).join(" "),
+          ),
+        "research-resume",
+      );
+      const mergedWorkExperience = mergeStructuredEntries(
+        user?.workExperience ?? [],
+        nextWorkExperience,
+        (entry) =>
+          normalizeEducationIdentity(
+            [entry.roleTitle, entry.organization, entry.startDate, entry.endDate]
+              .filter(Boolean)
+              .join(" "),
+          ),
+        "work-resume",
+      );
+      const parsedOptional = compactObject(profile.optional);
+      const importedVolunteering = mergeVolunteerText([
+        String(parsedOptional.volunteering ?? ""),
+        String(parsedHighSchoolVolunteering ?? ""),
+        formatVolunteerExperiences(parsedVolunteerExperience),
+      ]);
+      const mergedOptional = preferExistingValues(parsedOptional, user?.optional ?? {});
+      mergedOptional.volunteering = mergeVolunteerText([
+        user?.optional?.volunteering,
+        importedVolunteering,
+      ]);
       updateProfile({
-        name: profile.name || user?.name || "",
-        email: profile.email || user?.email || "",
-        location: profile.location || user?.location,
-        careerGoal: profile.careerGoal || user?.careerGoal,
+        name: user?.name || profile.name || "",
+        email: user?.email || profile.email || "",
+        location: user?.location || profile.location,
+        careerGoal: user?.careerGoal || profile.careerGoal,
         educationLevel: (nextLevel || undefined) as EducationLevel | undefined,
         highSchool: {
           ...(user?.highSchool ?? {}),
-          ...parsedHighSchool,
+          ...parsedHighSchoolWithoutVolunteering,
         },
         undergrad: {
           ...(user?.undergrad ?? {}),
@@ -1055,15 +1318,22 @@ function StepProfile({ error }: { error: string }) {
           ...parsedGraduate,
         },
         educationHistory: nextEducationHistory.length ? nextEducationHistory : user?.educationHistory,
-        researchExperience: nextResearchExperience,
-        workExperience: nextWorkExperience.length ? nextWorkExperience : user?.workExperience,
+        researchExperience: mergedResearchExperience,
+        workExperience: mergedWorkExperience,
         optional: {
-          ...(user?.optional ?? {}),
-          ...compactObject(profile.optional),
+          ...mergedOptional,
           resumeFileName: file.name,
         },
         documents: [...docs, { name: file.name, kind: "Resume" }],
       });
+      setResumeImportedProfileSteps([
+        ...(parsedEducationHistory.length ? [1] : []),
+        ...(nextResearchExperience.length || nextWorkExperience.length ? [2] : []),
+        ...(Object.keys(parsedOptional).length || importedVolunteering ? [3] : []),
+      ]);
+      setProfileSetupStep(0);
+      setHighestProfileSetupStep(0);
+      setShowProfileSetupValidation(false);
       setResumeStatus("");
       setShowStartDialog(false);
     } catch (err) {
@@ -1086,11 +1356,26 @@ function StepProfile({ error }: { error: string }) {
     "A-U.S. Citizen, U.S. National, Permanent Resident (Green Card Holder), Refugee, or Asylee",
     "B-International Student or Other Visa Status (F-1, J-1, H-4, TN, DACA, TPS, etc.)",
   ];
+  const showRequiredErrors = !!error;
+  const aboutYouComplete = isRequiredAboutComplete(user);
+  const hasEducationLevel = educationHistory.some((entry) => entry.educationLevel?.trim()) || !!user?.educationLevel;
+  const shouldShowProfileSetup = !showAcademicOnboarding && !showStartDialog && !user?.profileSetupCompleted;
+  const showSetupErrors = showRequiredErrors || showProfileSetupValidation;
+  const importedFromResumeBadge = resumeImportedProfileSteps.includes(profileSetupStep) ? (
+    <span className="inline-flex rounded-full bg-info/10 px-2 py-0.5 text-[11px] font-medium text-info">
+      Imported from resume
+    </span>
+  ) : null;
+  useEffect(() => {
+    if (!shouldShowProfileSetup) return;
+    profileSetupHeadingRef.current?.focus();
+  }, [shouldShowProfileSetup, profileSetupStep]);
+
   const uploadedDocsList = docs.length > 0 && (
     <div className="mt-4 divide-y divide-border">
       {docs.map((d) => (
         <div key={d.name} className="py-3 flex items-center gap-4">
-          <div className="size-10 rounded-lg bg-success/15 text-success grid place-items-center text-xs font-mono">✓</div>
+          <div className="size-10 rounded-lg bg-success/15 text-success grid place-items-center"><Check className="size-5" strokeWidth={2.5} /></div>
           <div className="flex-1 min-w-0">
             <div className="text-sm font-medium truncate">{d.name}</div>
             <div className="text-xs text-muted-foreground">{d.kind}</div>
@@ -1131,15 +1416,225 @@ function StepProfile({ error }: { error: string }) {
       </div>
     </Card>
   );
+  const profileSummaryCard = (
+    <Card className={PROFILE_SECTION_CLASS}>
+      <div className="flex items-center gap-3">
+        <div className="size-10 rounded-xl bg-primary text-primary-foreground grid place-items-center font-display text-base">
+          {toInitials(user?.name)}
+        </div>
+        <div>
+          <div className="font-display text-xl font-semibold">{user?.name}</div>
+          <div className="text-sm text-muted-foreground">{user?.email}</div>
+        </div>
+      </div>
+      <div className="mt-4 grid sm:grid-cols-2 gap-3">
+        <Input label="Full name" value={user?.name ?? ""} onChange={(v) => set("name", v)} placeholder="Maya Rodriguez" />
+        <Input label="Email" value={user?.email ?? ""} onChange={(v) => set("email", v)} placeholder="you@school.edu" type="email" />
+      </div>
+    </Card>
+  );
+  const aboutYouCard = (
+    <Card className={PROFILE_SECTION_CLASS}>
+      <SectionLabel>About you *</SectionLabel>
+      <div className="grid sm:grid-cols-2 gap-3 mt-3">
+        <Select
+          label="Gender"
+          value={user?.gender ?? ""}
+          onChange={(v) => set("gender", v)}
+          options={genderOptions}
+          invalid={showSetupErrors && !user?.gender?.trim()}
+        />
+        <Input
+          label="Location"
+          value={user?.location ?? ""}
+          onChange={(v) => set("location", v)}
+          placeholder="City, State"
+          invalid={showSetupErrors && !user?.location?.trim()}
+        />
+        <Select
+          label="Citizenship / Residency Status"
+          value={user?.citizenshipStatus ?? ""}
+          onChange={(v) => set("citizenshipStatus", v)}
+          options={citizenshipOptions}
+          invalid={showSetupErrors && !user?.citizenshipStatus?.trim()}
+        />
+        <Select
+          label="Please select your Race / Ethnicity"
+          value={user?.raceEthnicity ?? ""}
+          onChange={(v) => set("raceEthnicity", v)}
+          options={raceOptions}
+          className="sm:col-span-2"
+          invalid={showSetupErrors && !user?.raceEthnicity}
+        />
+      </div>
+
+      <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2">
+        <GlossaryCheck label="First-generation college student" checked={!!user?.firstGen} onChange={(v) => set("firstGen", v)} />
+        <GlossaryCheck label="Pell Grant eligible" checked={!!user?.pellEligible} onChange={(v) => set("pellEligible", v)} />
+      </div>
+
+      <button
+        type="button"
+        onClick={() => setShowExtended((s) => !s)}
+        className="mt-4 text-xs underline text-muted-foreground hover:text-foreground"
+      >
+        {showExtended ? "− Hide" : "+ Add more personalized context"}
+      </button>
+
+      {showExtended && (
+        <div className="mt-4 space-y-4">
+          {EXTENDED_CONTEXT_GROUPS.map((grp) => (
+            <div key={grp.group}>
+              <div className="text-[11px] uppercase tracking-widest text-gold">{grp.group}</div>
+              <div className="mt-2 grid sm:grid-cols-2 gap-2">
+                {grp.options.map((opt) => (
+                  <GlossaryCheck
+                    key={opt}
+                    label={opt}
+                    checked={!!user?.extendedContext?.[opt]}
+                    onChange={(v) => setExt(opt, v)}
+                  />
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+  const educationCard = (
+    <EducationHistorySection
+      entries={educationHistory}
+      onAdd={addEducationEntry}
+      onRemove={removeEducationEntry}
+      onChange={updateEducationEntry}
+      showMissingEducationLevel={showSetupErrors && !hasEducationLevel}
+    />
+  );
+  const experienceSection = (
+    <>
+      <ResearchExperienceSection
+        entries={researchExperience}
+        isOpen={researchOpen}
+        onToggle={() => setResearchOpen((open) => !open)}
+        onAdd={addResearchEntry}
+        onRemove={removeResearchEntry}
+        onChange={updateResearchEntry}
+      />
+      <WorkExperienceSection
+        entries={workExperience}
+        onAdd={addWorkEntry}
+        onRemove={removeWorkEntry}
+        onChange={updateWorkEntry}
+      />
+    </>
+  );
+  const optionalContextCard = (
+    <Card className={`${PROFILE_SECTION_CLASS}`}>
+      <SectionLabel>Optional context</SectionLabel>
+      <p className="text-xs text-muted-foreground mt-1">
+        All optional — add whatever helps scholarships see who you are.
+      </p>
+      <div className="mt-3 grid gap-3 md:grid-cols-2">
+        <Textarea label="Volunteering" value={user?.optional?.volunteering ?? ""} onChange={(v) => setOptional({ volunteering: v })} placeholder="Describe any volunteer work, community service, or nonprofit involvement you’d like Scholar-E to consider." />
+        <Textarea label="Society / club involvement" value={user?.optional?.societyInvolvement ?? ""} onChange={(v) => setOptional({ societyInvolvement: v })} placeholder="Clubs, organizations, roles…" />
+        <Textarea label="Leadership experience" value={user?.optional?.leadership ?? ""} onChange={(v) => setOptional({ leadership: v })} placeholder="Captain, president, lead organizer, founder…" />
+        <Textarea label="Sports" value={user?.optional?.sports ?? ""} onChange={(v) => setOptional({ sports: v })} placeholder="Teams, varsity/club, captaincy…" />
+        <Textarea label="Articles published" value={user?.optional?.articlesPublished ?? ""} onChange={(v) => setOptional({ articlesPublished: v })} placeholder="Titles, outlets, links…" />
+        <Textarea label="Projects" value={user?.optional?.projects ?? ""} onChange={(v) => setOptional({ projects: v })} placeholder="Personal, school, or research projects…" />
+      </div>
+    </Card>
+  );
+  const profileSetupSteps = [
+    {
+      title: "About You",
+      helper: "Complete these required details so Scholar-E can personalize your profile and improve opportunity matching.",
+      required: true,
+      complete: aboutYouComplete,
+      content: (
+        <div className="space-y-6">
+          {profileSummaryCard}
+          {aboutYouCard}
+        </div>
+      ),
+    },
+    {
+      title: "Education",
+      helper: "Review your education information to ensure it is complete and accurate.",
+      required: true,
+      complete: hasEducationLevel,
+      content: educationCard,
+    },
+    {
+      title: "Experience",
+      helper: "Review your experiences and add or update anything that best represents your background.",
+      required: false,
+      complete: true,
+      content: <div className="space-y-6">{experienceSection}</div>,
+    },
+    {
+      title: "Skills & Activities",
+      helper: "Review your skills, activities, leadership, and achievements to help strengthen your profile.",
+      required: false,
+      complete: true,
+      content: optionalContextCard,
+    },
+    {
+      title: "Upload Materials",
+      helper: "Upload supporting documents to strengthen your profile and reuse them across future applications.",
+      required: false,
+      complete: true,
+      content: uploadMaterialsCard,
+    },
+  ];
+  const currentProfileSetupStep = profileSetupSteps[profileSetupStep] ?? profileSetupSteps[0];
+  const isCurrentSetupStepOptional = !currentProfileSetupStep.required;
+  const currentSetupStepComplete = currentProfileSetupStep.complete;
+  function goToProfileSetupStep(index: number) {
+    if (index > highestProfileSetupStep) return;
+    setProfileSetupStep(index);
+    setShowProfileSetupValidation(false);
+  }
+  function continueProfileSetup() {
+    if (!currentSetupStepComplete) {
+      setShowProfileSetupValidation(true);
+      profileSetupHeadingRef.current?.focus();
+      return;
+    }
+    if (profileSetupStep === profileSetupSteps.length - 1) {
+      updateProfile({ profileSetupCompleted: true });
+      onComplete();
+      return;
+    }
+    const nextStep = profileSetupStep + 1;
+    setProfileSetupStep(nextStep);
+    setHighestProfileSetupStep((step) => Math.max(step, nextStep));
+    setShowProfileSetupValidation(false);
+  }
 
   return (
     <div className="mx-auto max-w-7xl">
+      {user && (
+        <AcademicOnboarding
+          open={showAcademicOnboarding}
+          user={user}
+          updateProfile={updateProfile}
+          onComplete={() => {
+            setShowAcademicOnboarding(false);
+            setShowStartDialog(true);
+          }}
+        />
+      )}
       <Dialog open={showStartDialog} onOpenChange={setShowStartDialog}>
-        <DialogContent className="max-w-md">
+        <DialogContent
+          className="max-w-md"
+          onPointerDownOutside={(event) => event.preventDefault()}
+        >
           <DialogHeader>
             <DialogTitle className="font-display text-2xl">Start your profile</DialogTitle>
             <DialogDescription>
-              Use your resume to fill in many of the fields for creating students profile
+              Upload your resume to automatically fill in many of your profile details. You can
+              review and edit everything before continuing.
             </DialogDescription>
           </DialogHeader>
 
@@ -1148,16 +1643,25 @@ function StepProfile({ error }: { error: string }) {
               type="button"
               onClick={() => startResumeInputRef.current?.click()}
               disabled={!!resumeStatus}
-              className="flex w-full items-center gap-3 rounded-lg border border-border bg-primary px-4 py-3 text-left text-sm font-medium text-primary-foreground hover:opacity-90"
+              aria-busy={!!resumeStatus && !resumeError}
+              className={`flex w-full items-center gap-3 rounded-lg border border-border bg-primary px-4 py-3 text-left text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-90 ${resumeStatus && !resumeError ? "agent-loading" : ""}`}
             >
-              <FileUp className="size-5 shrink-0" />
-              <span>Autofill with Resume</span>
+              {resumeStatus && !resumeError ? (
+                <Spinner className="size-5" />
+              ) : (
+                <FileUp className="size-5 shrink-0" />
+              )}
+              <span>{resumeStatus && !resumeError ? "Reading your resume…" : "Autofill with Resume"}</span>
             </button>
             <button
               type="button"
               onClick={() => {
                 setProfileStartMode("manual");
                 setResumeError("");
+                setResumeImportedProfileSteps([]);
+                setProfileSetupStep(0);
+                setHighestProfileSetupStep(0);
+                setShowProfileSetupValidation(false);
                 setShowStartDialog(false);
               }}
               disabled={!!resumeStatus}
@@ -1194,148 +1698,217 @@ function StepProfile({ error }: { error: string }) {
         </DialogContent>
       </Dialog>
 
-      <div className="grid items-start gap-8 xl:grid-cols-2">
-        <div className="space-y-8">
-      <Card className={PROFILE_SECTION_CLASS}>
-        <div className="flex items-center gap-3">
-          <div className="size-10 rounded-xl bg-primary text-primary-foreground grid place-items-center font-display text-base">
-            {toInitials(user?.name)}
-          </div>
-          <div>
-            <div className="font-display text-xl font-semibold">{user?.name}</div>
-            <div className="text-sm text-muted-foreground">{user?.email}</div>
-          </div>
-        </div>
-        <p className="mt-3 text-xs text-muted-foreground">
-          {profileStartMode === "resume"
-            ? "Review and edit the fields filled from your resume."
-            : "Fill out the fields below to build your student profile."}
-        </p>
-        <div className="mt-4 grid sm:grid-cols-2 gap-3">
-          <Input label="Full name" value={user?.name ?? ""} onChange={(v) => set("name", v)} placeholder="Maya Rodriguez" />
-          <Input label="Email" value={user?.email ?? ""} onChange={(v) => set("email", v)} placeholder="you@school.edu" type="email" />
-        </div>
-      </Card>
-
-      {error && (
-        <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm font-medium text-destructive">
-          {error}
-        </div>
-      )}
-
-      <Card className={PROFILE_SECTION_CLASS}>
-        <SectionLabel>About you *</SectionLabel>
-        <div className="grid sm:grid-cols-2 gap-3 mt-3">
-          <Select
-            label="Gender"
-            value={user?.gender ?? ""}
-            onChange={(v) => set("gender", v)}
-            options={genderOptions}
-          />
-          <Input label="Location" value={user?.location ?? ""} onChange={(v) => set("location", v)} placeholder="City, State" />
-          <Select
-            label="Citizenship / Residency Status"
-            value={user?.citizenshipStatus ?? ""}
-            onChange={(v) => set("citizenshipStatus", v)}
-            options={citizenshipOptions}
-          />
-          <Select
-            label="Please select your Race / Ethnicity"
-            value={user?.raceEthnicity ?? ""}
-            onChange={(v) => set("raceEthnicity", v)}
-            options={raceOptions}
-            className="sm:col-span-2"
-          />
-        </div>
-
-        <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2">
-          <GlossaryCheck label="First-generation college student" checked={!!user?.firstGen} onChange={(v) => set("firstGen", v)} />
-          <GlossaryCheck label="Pell Grant eligible" checked={!!user?.pellEligible} onChange={(v) => set("pellEligible", v)} />
-        </div>
-
-        <button
-          onClick={() => setShowExtended((s) => !s)}
-          className="mt-4 text-xs underline text-muted-foreground hover:text-foreground"
-        >
-          {showExtended ? "− Hide" : "+ Add more personalized context"}
-        </button>
-
-        {showExtended && (
-          <div className="mt-4 space-y-4">
-            {EXTENDED_CONTEXT_GROUPS.map((grp) => (
-              <div key={grp.group}>
-                <div className="text-[11px] uppercase tracking-widest text-gold">{grp.group}</div>
-                <div className="mt-2 grid sm:grid-cols-2 gap-2">
-                  {grp.options.map((opt) => (
-                    <GlossaryCheck
-                      key={opt}
-                      label={opt}
-                      checked={!!user?.extendedContext?.[opt]}
-                      onChange={(v) => setExt(opt, v)}
-                    />
-                  ))}
+      {shouldShowProfileSetup ? (
+        <GuidedProfileSetup
+          steps={profileSetupSteps}
+          currentStep={profileSetupStep}
+          highestStep={highestProfileSetupStep}
+          headingRef={profileSetupHeadingRef}
+          importedBadge={importedFromResumeBadge}
+          currentComplete={currentSetupStepComplete}
+          currentOptional={isCurrentSetupStepOptional}
+          showValidation={showProfileSetupValidation}
+          onStepSelect={goToProfileSetupStep}
+          onBack={() => {
+            setProfileSetupStep((step) => Math.max(0, step - 1));
+            setShowProfileSetupValidation(false);
+          }}
+          onContinue={continueProfileSetup}
+        />
+      ) : (
+        <>
+          <div className="grid items-start gap-8 xl:grid-cols-2">
+            <div className="space-y-8">
+              {profileSummaryCard}
+              {error && (
+                <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm font-medium text-destructive">
+                  {error}
                 </div>
-              </div>
-            ))}
+              )}
+              {aboutYouCard}
+              {educationCard}
+            </div>
+            <div className="space-y-8">
+              {experienceSection}
+              {uploadMaterialsCard}
+            </div>
           </div>
-        )}
-      </Card>
+          <div className="mt-8">{optionalContextCard}</div>
+        </>
+      )}
+    </div>
+  );
+}
 
-      <EducationHistorySection
-        entries={educationHistory}
-        onAdd={addEducationEntry}
-        onRemove={removeEducationEntry}
-        onChange={updateEducationEntry}
-      />
+type GuidedProfileSetupStep = {
+  title: string;
+  helper: string;
+  required: boolean;
+  complete: boolean;
+  content: React.ReactNode;
+};
 
+function GuidedProfileSetup({
+  steps,
+  currentStep,
+  highestStep,
+  headingRef,
+  importedBadge,
+  currentComplete,
+  currentOptional,
+  showValidation,
+  onStepSelect,
+  onBack,
+  onContinue,
+}: {
+  steps: GuidedProfileSetupStep[];
+  currentStep: number;
+  highestStep: number;
+  headingRef: React.RefObject<HTMLHeadingElement | null>;
+  importedBadge: React.ReactNode;
+  currentComplete: boolean;
+  currentOptional: boolean;
+  showValidation: boolean;
+  onStepSelect: (step: number) => void;
+  onBack: () => void;
+  onContinue: () => void;
+}) {
+  const step = steps[currentStep] ?? steps[0];
+  const isFinalStep = currentStep === steps.length - 1;
+  const continueLabel = isFinalStep
+    ? "Finish Profile Setup"
+    : currentOptional
+      ? "Continue"
+      : "Continue";
+
+  return (
+    <section className="mx-auto max-w-6xl" aria-labelledby="profile-setup-title">
+      <div className="mb-6 rounded-2xl border border-border bg-card p-5 md:p-6">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <div className="text-xs uppercase tracking-widest text-muted-foreground">Create Profile</div>
+            <h1 id="profile-setup-title" className="mt-2 font-display text-3xl font-semibold">
+              Complete Your Profile
+            </h1>
+            <p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted-foreground">
+              Review the information below. Some details may already be filled from your resume. You can edit everything now or later.
+            </p>
+          </div>
+          <div className="rounded-full bg-secondary px-3 py-1.5 text-xs font-medium text-secondary-foreground">
+            Step {currentStep + 1} of {steps.length}
+          </div>
         </div>
-        <div className="space-y-8">
-      <ResearchExperienceSection
-        entries={researchExperience}
-        isOpen={researchOpen}
-        onToggle={() => setResearchOpen((open) => !open)}
-        onAdd={addResearchEntry}
-        onRemove={removeResearchEntry}
-        onChange={updateResearchEntry}
-      />
-
-      <WorkExperienceSection
-        entries={workExperience}
-        onAdd={addWorkEntry}
-        onRemove={removeWorkEntry}
-        onChange={updateWorkEntry}
-      />
-
-      {uploadMaterialsCard}
+        <div className="mt-5 flex gap-2 overflow-x-auto pb-1 md:hidden" aria-label="Profile setup progress">
+          {steps.map((item, index) => (
+            <button
+              key={item.title}
+              type="button"
+              onClick={() => onStepSelect(index)}
+              disabled={index > highestStep}
+              className={`min-w-36 rounded-full border px-3 py-1.5 text-left text-xs font-medium ${
+                index === currentStep
+                  ? "border-primary bg-primary text-primary-foreground"
+                  : index <= highestStep
+                    ? "border-border bg-background text-foreground"
+                    : "border-border bg-muted/50 text-muted-foreground opacity-60"
+              }`}
+            >
+              {index + 1}. {item.title}
+            </button>
+          ))}
         </div>
       </div>
 
-      <Card className={`${PROFILE_SECTION_CLASS} mt-8`}>
-        <SectionLabel>Optional context</SectionLabel>
-        <p className="text-xs text-muted-foreground mt-1">
-          All optional — add whatever helps scholarships see who you are.
-        </p>
-        <div className="mt-3 grid gap-3 md:grid-cols-2">
-          <Textarea label="Society / club involvement" value={user?.optional?.societyInvolvement ?? ""} onChange={(v) => setOptional({ societyInvolvement: v })} placeholder="Clubs, organizations, roles…" />
-          <Textarea label="Leadership experience" value={user?.optional?.leadership ?? ""} onChange={(v) => setOptional({ leadership: v })} placeholder="Captain, president, lead organizer, founder…" />
-          <Textarea label="Sports" value={user?.optional?.sports ?? ""} onChange={(v) => setOptional({ sports: v })} placeholder="Teams, varsity/club, captaincy…" />
-          <Textarea label="Articles published" value={user?.optional?.articlesPublished ?? ""} onChange={(v) => setOptional({ articlesPublished: v })} placeholder="Titles, outlets, links…" />
-          <Textarea label="Projects" value={user?.optional?.projects ?? ""} onChange={(v) => setOptional({ projects: v })} placeholder="Personal, school, or research projects…" />
-        </div>
-      </Card>
+      <div className="grid gap-6 md:grid-cols-[240px_minmax(0,1fr)]">
+        <aside className="hidden md:block">
+          <nav className="sticky top-24 rounded-2xl border border-border bg-card p-3" aria-label="Profile setup steps">
+            {steps.map((item, index) => {
+              const isActive = index === currentStep;
+              const isReachable = index <= highestStep;
+              const isComplete = index < currentStep || item.complete;
+              return (
+                <button
+                  key={item.title}
+                  type="button"
+                  onClick={() => onStepSelect(index)}
+                  disabled={!isReachable}
+                  className={`mb-1 flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-sm transition-colors ${
+                    isActive
+                      ? "bg-primary text-primary-foreground"
+                      : isReachable
+                        ? "hover:bg-accent"
+                        : "cursor-not-allowed text-muted-foreground opacity-60"
+                  }`}
+                  aria-current={isActive ? "step" : undefined}
+                >
+                  <span className={`grid size-6 shrink-0 place-items-center rounded-full text-[11px] ${
+                    isComplete ? "bg-success/20 text-success" : "bg-secondary text-secondary-foreground"
+                  }`}>
+                    {isComplete ? "✓" : index + 1}
+                  </span>
+                  <span>
+                    <span className="block font-medium">{item.title}</span>
+                    <span className="block text-[11px] opacity-75">{item.required ? "Required" : "Optional"}</span>
+                  </span>
+                </button>
+              );
+            })}
+          </nav>
+        </aside>
 
-      <Card className={`${PROFILE_SECTION_CLASS} mt-8`}>
-        <SectionLabel>Story prompts (optional)</SectionLabel>
-        <p className="text-xs text-muted-foreground mt-1">
-          Short reflections you can reuse across scholarship essays.
-        </p>
-        <div className="mt-3 grid gap-3 md:grid-cols-2">
-          <Textarea label="Name a time you overcame a challenge." value={user?.prompts?.challenge ?? ""} onChange={(v) => setPrompts({ challenge: v })} />
-          <Textarea label="Leadership — describe a time you had to lead." value={user?.prompts?.leadership ?? ""} onChange={(v) => setPrompts({ leadership: v })} />
-          <Textarea label="Name a time you worked with a team." value={user?.prompts?.teamwork ?? ""} onChange={(v) => setPrompts({ teamwork: v })} />
+        <div className="min-w-0 rounded-2xl border border-border bg-card p-5 md:p-6">
+          <div className="sr-only" aria-live="polite">
+            Step {currentStep + 1} of {steps.length}: {step.title}
+          </div>
+          <div className="mb-5 border-b border-border pb-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2
+                ref={headingRef}
+                tabIndex={-1}
+                className="font-display text-2xl font-semibold outline-none"
+              >
+                {step.title}
+              </h2>
+              <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                step.required ? "bg-warning/20 text-foreground" : "bg-secondary text-secondary-foreground"
+              }`}>
+                {step.required ? "Required" : "Optional"}
+              </span>
+              {importedBadge}
+            </div>
+            <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{step.helper}</p>
+            {showValidation && !currentComplete && (
+              <p className="mt-3 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm font-medium text-destructive">
+                Complete the required fields in this step before continuing.
+              </p>
+            )}
+          </div>
+
+          <div className="animate-in fade-in slide-in-from-bottom-1 duration-200 motion-reduce:animate-none">
+            {step.content}
+          </div>
+
+          <div className="mt-8 flex flex-col-reverse gap-3 border-t border-border pt-5 sm:flex-row sm:items-center sm:justify-between">
+            <button
+              type="button"
+              onClick={onBack}
+              disabled={currentStep === 0}
+              className="rounded-full border border-border px-5 py-2 text-sm font-medium hover:bg-accent disabled:opacity-40"
+            >
+              Back
+            </button>
+            <button
+              type="button"
+              onClick={onContinue}
+              disabled={!currentComplete && !currentOptional}
+              className="rounded-full bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {continueLabel}
+            </button>
+          </div>
         </div>
-      </Card>
-    </div>
+      </div>
+    </section>
   );
 }
 
@@ -1344,8 +1917,8 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   return <div className="text-xs uppercase tracking-widest text-muted-foreground">{children}</div>;
 }
 function Input({
-  label, value, onChange, placeholder, className = "", type = "text",
-}: { label: string; value: string; onChange: (v: string) => void; placeholder?: string; className?: string; type?: string }) {
+  label, value, onChange, placeholder, className = "", type = "text", invalid = false,
+}: { label: string; value: string; onChange: (v: string) => void; placeholder?: string; className?: string; type?: string; invalid?: boolean }) {
   return (
     <label className={`block ${className}`}>
       <span className="text-xs font-medium text-muted-foreground">{label}</span>
@@ -1354,7 +1927,10 @@ function Input({
         value={value}
         placeholder={placeholder}
         onChange={(e) => onChange(e.target.value)}
-        className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+        aria-invalid={invalid}
+        className={`mt-1 w-full rounded-lg border bg-background px-3 py-2 text-sm ${
+          invalid ? "border-destructive ring-2 ring-destructive/20" : "border-border"
+        }`}
       />
     </label>
   );
@@ -1376,15 +1952,18 @@ function Textarea({
   );
 }
 function Select({
-  label, value, onChange, options, className = "",
-}: { label: string; value: string; onChange: (v: string) => void; options: string[]; className?: string }) {
+  label, value, onChange, options, className = "", invalid = false,
+}: { label: string; value: string; onChange: (v: string) => void; options: string[]; className?: string; invalid?: boolean }) {
   return (
     <label className={`block ${className}`}>
       <span className="text-xs font-medium text-muted-foreground">{label}</span>
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+        aria-invalid={invalid}
+        className={`mt-1 w-full rounded-lg border bg-background px-3 py-2 text-sm ${
+          invalid ? "border-destructive ring-2 ring-destructive/20" : "border-border"
+        }`}
       >
         <option value="">Select…</option>
         {options.map((o) => <option key={o} value={o}>{o}</option>)}
@@ -1406,7 +1985,7 @@ function FileField({ label, fileName, onFile }: { label: string; fileName?: stri
           }}
           className="text-sm"
         />
-        {fileName && <span className="text-xs text-success">✓ {fileName}</span>}
+        {fileName && <span className="inline-flex items-center gap-1 text-xs text-success"><Check className="size-3.5" strokeWidth={2.5} /> {fileName}</span>}
       </div>
     </div>
   );
@@ -1446,7 +2025,7 @@ function buildEducationHistoryFromProfile(user: UserProfile | null): EducationHi
     entries.push({
       id: "edu-high-school",
       educationLevel: "High school",
-      institution: "",
+      institution: user.highSchool.institution ?? "",
       degreeProgram: "High school diploma",
       majorField: user.highSchool.intendedMajor ?? "",
       department: "",
@@ -1536,17 +2115,188 @@ function educationLevelCode(value?: string): EducationLevel | undefined {
   return undefined;
 }
 
+function normalizeEducationIdentity(value?: string) {
+  return (value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\buniversity\b/g, "univ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function educationIdentityLevel(entry: Partial<EducationHistoryEntry>) {
+  return normalizeEducationLevelLabel(entry.educationLevel) || inferEducationLevelLabel(entry);
+}
+
+function educationYears(entry: Partial<EducationHistoryEntry>) {
+  return new Set(
+    [entry.startDate, entry.endDate]
+      .flatMap((value) => String(value ?? "").match(/\b(?:19|20)\d{2}\b/g) ?? []),
+  );
+}
+
+function isLikelySameEducation(
+  existing: EducationHistoryEntry,
+  imported: EducationHistoryEntry,
+) {
+  if (existing.source === "resume" && existing.id === imported.id) return true;
+  const existingInstitution = normalizeEducationIdentity(existing.institution);
+  const importedInstitution = normalizeEducationIdentity(imported.institution);
+  const institutionMatches =
+    !!existingInstitution &&
+    !!importedInstitution &&
+    existingInstitution === importedInstitution;
+  const existingLevel = educationIdentityLevel(existing);
+  const importedLevel = educationIdentityLevel(imported);
+  const levelMatches = !!existingLevel && !!importedLevel && existingLevel === importedLevel;
+  const existingMajor = normalizeEducationIdentity(
+    existing.majorField || inferMajorField(existing.degreeProgram),
+  );
+  const importedMajor = normalizeEducationIdentity(
+    imported.majorField || inferMajorField(imported.degreeProgram),
+  );
+  const majorMatches = !!existingMajor && !!importedMajor && existingMajor === importedMajor;
+  const existingYears = educationYears(existing);
+  const importedYears = educationYears(imported);
+  const datesOverlap = [...importedYears].some((year) => existingYears.has(year));
+
+  if (institutionMatches && levelMatches) {
+    if (
+      existingMajor &&
+      importedMajor &&
+      !majorMatches &&
+      existingYears.size &&
+      importedYears.size &&
+      !datesOverlap
+    ) {
+      return false;
+    }
+    return true;
+  }
+  if (institutionMatches && (majorMatches || datesOverlap)) return true;
+  return !existingInstitution && !importedInstitution && levelMatches && majorMatches && datesOverlap;
+}
+
+function fillEducationBlanks(
+  existing: EducationHistoryEntry,
+  imported: EducationHistoryEntry,
+) {
+  const merged = { ...imported } as EducationHistoryEntry;
+  for (const [key, value] of Object.entries(existing)) {
+    if (value !== undefined && value !== null && String(value).trim() !== "") {
+      (merged as Record<string, unknown>)[key] = value;
+    }
+  }
+  merged.id = existing.id;
+  merged.source = existing.source ?? "manual";
+  merged.isCurrent = existing.isCurrent ?? false;
+  return merged;
+}
+
+function mergeEducationHistory(
+  existingEntries: EducationHistoryEntry[],
+  importedEntries: EducationHistoryEntry[],
+) {
+  const merged = existingEntries.map((entry) => ({ ...entry }));
+  const usedIds = new Set(merged.map((entry) => entry.id));
+
+  importedEntries.forEach((imported, importedIndex) => {
+    const matchIndex = merged.findIndex((existing) => isLikelySameEducation(existing, imported));
+    if (matchIndex >= 0) {
+      merged[matchIndex] = fillEducationBlanks(merged[matchIndex], imported);
+      return;
+    }
+    let id = imported.id || `edu-resume-${importedIndex + 1}`;
+    if (usedIds.has(id)) id = `edu-resume-${importedIndex + 1}`;
+    while (usedIds.has(id)) id = `${id}-imported`;
+    usedIds.add(id);
+    merged.push({ ...imported, id, source: "resume", isCurrent: imported.isCurrent ?? false });
+  });
+
+  return merged;
+}
+
+function preferExistingValues<T extends Record<string, unknown>>(
+  imported: T,
+  existing: Partial<T>,
+) {
+  const merged = { ...imported };
+  for (const [key, value] of Object.entries(existing)) {
+    if (value !== undefined && value !== null && String(value).trim() !== "") {
+      (merged as Record<string, unknown>)[key] = value;
+    }
+  }
+  return merged;
+}
+
+function mergeStructuredEntries<T extends { id: string }>(
+  existingEntries: T[],
+  importedEntries: T[],
+  identity: (entry: T) => string,
+  idPrefix: string,
+) {
+  const merged = existingEntries.map((entry) => ({ ...entry }));
+  const usedIds = new Set(merged.map((entry) => entry.id));
+  importedEntries.forEach((imported, index) => {
+    const importedIdentity = identity(imported);
+    const matchIndex = importedIdentity
+      ? merged.findIndex((existing) => identity(existing) === importedIdentity)
+      : -1;
+    if (matchIndex >= 0) {
+      merged[matchIndex] = preferExistingValues(imported, merged[matchIndex]);
+      return;
+    }
+    let id = imported.id || `${idPrefix}-${index + 1}`;
+    if (usedIds.has(id)) id = `${idPrefix}-${index + 1}`;
+    while (usedIds.has(id)) id = `${id}-imported`;
+    usedIds.add(id);
+    merged.push({ ...imported, id });
+  });
+  return merged;
+}
+
+function isVolunteerExperience(entry: Partial<WorkExperienceEntry>) {
+  return /\b(volunteer|community service|nonprofit)\b/i.test(entry.experienceType ?? "");
+}
+
+function formatVolunteerExperiences(entries: Partial<WorkExperienceEntry>[]) {
+  return entries
+    .map((entry) => {
+      const heading = [entry.roleTitle, entry.organization].filter(Boolean).join(" — ");
+      const dates = [entry.startDate, entry.endDate].filter(Boolean).join(" – ");
+      return [heading, dates, entry.description, entry.skillsTechnologies]
+        .filter((value) => String(value ?? "").trim())
+        .join("\n");
+    })
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function mergeVolunteerText(values: Array<string | undefined>) {
+  const unique = new Set<string>();
+  const sections: string[] = [];
+  values.forEach((value) => {
+    const text = value?.trim();
+    if (!text) return;
+    const normalized = text.toLowerCase().replace(/\s+/g, " ");
+    if (unique.has(normalized)) return;
+    unique.add(normalized);
+    sections.push(text);
+  });
+  return sections.join("\n\n");
+}
+
 function normalizeEducationLevelLabel(value?: string) {
   const text = value?.trim() ?? "";
   if (!text) return "";
   if (/^high school$/i.test(text)) return "High School";
-  if (/^associate'?s?( degree)?$/i.test(text)) return "Associate Degree";
+  if (/^(associate'?s?|associate of (arts|science)|a\.?a\.?|a\.?s\.?)\s*(degree)?$/i.test(text)) return "Associate Degree";
   if (/^undergrad(uate)?$/i.test(text)) return "Bachelor's Degree";
-  if (/^bachelor'?s?( degree)?$/i.test(text)) return "Bachelor's Degree";
-  if (/^master'?s?( degree)?$/i.test(text)) return "Master's Degree";
+  if (/^(bachelor'?s?|bachelor of (arts|science)|b\.?a\.?|b\.?s\.?|bba)\s*(degree)?$/i.test(text)) return "Bachelor's Degree";
+  if (/^(master'?s?|master of (arts|science)|m\.?a\.?|m\.?s\.?|mba|mfa|mph)\s*(degree)?$/i.test(text)) return "Master's Degree";
   if (/^masters?\b/i.test(text)) return "Master's Degree";
   if (/^(phd|ph\.d\.?|doctoral|doctorate)( degree)?$/i.test(text)) return "Doctoral Degree";
-  if (/^professional degree/i.test(text)) return "Professional Degree (JD, MD, DDS, etc.)";
+  if (/^(professional degree|j\.?d\.?|m\.?d\.?|d\.?d\.?s\.?|dvm|pharm\.?d\.?)$/i.test(text)) return "Professional Degree (JD, MD, DDS, etc.)";
   return text;
 }
 
@@ -1613,11 +2363,13 @@ function EducationHistorySection({
   onAdd,
   onRemove,
   onChange,
+  showMissingEducationLevel = false,
 }: {
   entries: EducationHistoryEntry[];
   onAdd: () => void;
   onRemove: (id: string) => void;
   onChange: (id: string, patch: Partial<EducationHistoryEntry>) => void;
+  showMissingEducationLevel?: boolean;
 }) {
   return (
     <Card className={PROFILE_SECTION_CLASS}>
@@ -1628,14 +2380,20 @@ function EducationHistorySection({
             Review every school or program parsed from your resume in one place.
           </p>
         </div>
-        <button type="button" onClick={onAdd} className="rounded-full border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent">
+        <button type="button" onClick={onAdd} className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent">
           + Add education
         </button>
       </div>
 
       <div className="mt-4 space-y-3">
         {entries.length === 0 && (
-          <div className="rounded-lg border border-dashed border-border p-3 text-sm text-muted-foreground">
+          <div
+            className={`rounded-lg border border-dashed p-3 text-sm ${
+              showMissingEducationLevel
+                ? "border-destructive bg-destructive/10 text-destructive"
+                : "border-border text-muted-foreground"
+            }`}
+          >
             No education entries yet. Add an education entry or upload a resume to autofill this section.
           </div>
         )}
@@ -1661,6 +2419,7 @@ function EducationHistorySection({
                   "Professional Degree (JD, MD, DDS, etc.)",
                   "Other",
                 ]}
+                invalid={showMissingEducationLevel && !entry.educationLevel?.trim()}
               />
               <Input label="Institution" value={entry.institution ?? ""} onChange={(value) => onChange(entry.id, { institution: value })} />
               <Input label="Major / field" value={entry.majorField ?? ""} onChange={(value) => onChange(entry.id, { majorField: value })} />
@@ -1700,10 +2459,10 @@ function ResearchExperienceSection({
           </p>
         </button>
         <div className="flex gap-2">
-          <button type="button" onClick={onToggle} className="rounded-full border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent">
+          <button type="button" onClick={onToggle} className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent">
             {isOpen ? "Collapse" : "Expand"}
           </button>
-          <button type="button" onClick={onAdd} className="rounded-full border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent">
+          <button type="button" onClick={onAdd} className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent">
             + Add research
           </button>
         </div>
@@ -1758,10 +2517,10 @@ function WorkExperienceSection({
         <div>
           <SectionLabel>Work & Internship Experience</SectionLabel>
           <p className="text-xs text-muted-foreground mt-1">
-            Work, internships, research assistantships, teaching assistantships, volunteer roles, and leadership experience.
+            Work, internships, research assistantships, teaching assistantships, and leadership experience.
           </p>
         </div>
-        <button type="button" onClick={onAdd} className="rounded-full border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent">
+        <button type="button" onClick={onAdd} className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent">
           + Add experience
         </button>
       </div>
@@ -1787,7 +2546,7 @@ function WorkExperienceSection({
                 label="Experience type"
                 value={entry.experienceType ?? ""}
                 onChange={(value) => onChange(entry.id, { experienceType: value })}
-                options={["Work", "Internship", "Research Assistant", "Teaching Assistant", "Volunteer", "Leadership", "Other"]}
+                options={["Work", "Internship", "Research Assistant", "Teaching Assistant", "Leadership", "Other"]}
               />
               <Input label="Start date" value={entry.startDate ?? ""} onChange={(value) => onChange(entry.id, { startDate: value })} />
               <Input label="End date" value={entry.endDate ?? ""} onChange={(value) => onChange(entry.id, { endDate: value })} />
@@ -1822,7 +2581,6 @@ function HighSchoolForm({ value, setBranch }: { value: Record<string, unknown>; 
         <Select label="Parent / guardian education level" value={(v.parentEducation as string) ?? ""} onChange={(x) => setBranch("highSchool", { parentEducation: x })} options={["Did not finish high school", "High school", "Some college", "Associate's", "Bachelor's", "Graduate degree"]} />
         <Textarea label="Extracurriculars" value={(v.extracurricular as string) ?? ""} onChange={(x) => setBranch("highSchool", { extracurricular: x })} />
         <Textarea label="Activities, work, family duties, athletics" value={(v.activities as string) ?? ""} onChange={(x) => setBranch("highSchool", { activities: x })} />
-        <Textarea label="Volunteer service" value={(v.volunteer as string) ?? ""} onChange={(x) => setBranch("highSchool", { volunteer: x })} />
         <CheckGroup
           label="I need help with"
           options={needsOptions}
@@ -1895,7 +2653,12 @@ function GradForm({ value, setBranch, level }: { value: Record<string, unknown>;
   );
 }
 
-/* ---------------- Step 3: Scholarship Discovery Wiki ---------------- */
+/* ---------------- Step 2: Scholarship Discovery ---------------- */
+
+type DiscoverySource = NonNullable<WikiDiscoveryResult["specific_opportunities"]>[number] & {
+  access_note?: string;
+  source_authority?: string;
+};
 
 function StepDiscovery({
   onUpdateProfile,
@@ -1907,327 +2670,517 @@ function StepDiscovery({
   const { user, updateProfile } = useUser();
   const wiki = user?.wikiDiscovery;
   const [loading, setLoading] = useState(false);
+  // Always land on the search setup; earlier results stay one click away.
+  const [showResults, setShowResults] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
+  const [focus, setFocus] = useState(user?.discoveryFocus ?? "");
+  const [intentOptions, setIntentOptions] = useState(user?.discoveryIntentOptions ?? []);
+  const [platformDefaults, setPlatformDefaults] = useState(user?.discoveryPlatformDefaults ?? []);
+  const [bootstrapSummary, setBootstrapSummary] = useState<Record<string, string>>({});
+  const [bootstrapLoading, setBootstrapLoading] = useState(!user?.discoveryIntentOptions?.length);
+  const [bootstrapError, setBootstrapError] = useState("");
+  const [selectedIntentIds, setSelectedIntentIds] = useState<string[]>(
+    () => user?.discoveryIntents?.map((intent) => intent.id) ?? [],
+  );
+  const [bringValue, setBringValue] = useState("");
+  const [platformContext, setPlatformContext] = useState("");
+  const [showBring, setShowBring] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    const studentProfile = buildWikiPayload(user).student_profile;
+    getScholarshipDiscoveryBootstrap(studentProfile)
+      .then((result) => {
+        if (!active) return;
+        setIntentOptions(result.intent_options ?? []);
+        setPlatformDefaults(result.platform_defaults ?? []);
+        setBootstrapSummary(result.profile_summary ?? {});
+        setBootstrapError("");
+        updateProfile({
+          discoveryIntentOptions: result.intent_options ?? [],
+          discoveryPlatformDefaults: result.platform_defaults ?? [],
+        });
+      })
+      .catch(() => {
+        if (!active) return;
+        setBootstrapError("We couldn’t prepare profile suggestions. You can still describe what you want below.");
+      })
+      .finally(() => {
+        if (active) setBootstrapLoading(false);
+      });
+    return () => { active = false; };
+    // Step 2 remounts after profile updates; bootstrap once per visit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function refreshWiki() {
     setLoading(true);
-    setStatus("Building your discovery wiki...");
+    setStatus("Looking for scholarships related to your profile...");
+    const progressTimer = window.setTimeout(
+      () => setStatus("Checking trusted sources and organizing useful places to search..."),
+      5000,
+    );
     try {
-      const result = await discoverScholarshipWiki(buildWikiPayload(user));
-      updateProfile({ wikiDiscovery: result });
-      setStatus("Wiki recommendations refreshed.");
+      const discoveryFocus = focus.trim();
+      const selectedIntents = intentOptions.filter((intent) => selectedIntentIds.includes(intent.id));
+      const result = await discoverScholarshipWiki({
+        ...buildWikiPayload(user),
+        selected_intents: selectedIntents,
+        free_text_intent: discoveryFocus,
+      });
+      updateProfile({ wikiDiscovery: result, discoveryFocus, discoveryIntents: selectedIntents });
+      setStatus(result.result_note || "Your discovery results are ready.");
+      setShowResults(true);
     } catch (err) {
-      setStatus(err instanceof Error ? err.message : "Wiki discovery failed.");
+      setStatus(err instanceof Error ? err.message : "We couldn't complete this search. Please try again.");
+      setShowResults(false);
     } finally {
+      window.clearTimeout(progressTimer);
       setLoading(false);
     }
   }
 
-  function copyText(value: string) {
-    void navigator.clipboard?.writeText(value);
-    setStatus("Copied.");
-  }
-
-  function useSourceForExtraction(source: {
-    name?: string;
-    url?: string;
-    category?: string;
-    status_note?: string;
-    why_recommended?: string;
-    award_amount?: string;
-    deadline_window?: string;
-    competitiveness?: string;
-    search_tips?: string[];
-    suggested_queries?: string[];
-  }) {
+  function useSourceForExtraction(source: DiscoverySource) {
+    const sourceUrl = source.url ?? "";
+    const deadlineStatus = source.deadline_status === "open"
+      ? "Applications open"
+      : source.deadline_status === "upcoming"
+        ? "Upcoming application cycle"
+        : "Current deadline needs confirmation";
+    const transferNotes = [
+      source.category && `Source category: ${source.category}`,
+      source.source_authority && `Source authority: ${source.source_authority}`,
+      source.award_amount && `Award amount: ${source.award_amount}`,
+      source.deadline_window && `Deadline: ${source.deadline_window}`,
+      `Discovery deadline status: ${deadlineStatus}`,
+      source.why_recommended && `Why this appeared in discovery: ${source.why_recommended}`,
+      source.status_note,
+    ].filter(Boolean).join("\n");
     updateProfile({
       activeScholarship: {
-        ...(user?.activeScholarship ?? {}),
         name: source.name ?? "",
-        url: source.url ?? "",
-        additionalNotes: [
-          source.category && `Source category: ${source.category}`,
-          source.award_amount && `Award amount: ${source.award_amount}`,
-          source.deadline_window && `Deadline window: ${source.deadline_window}`,
-          source.competitiveness && `Ranking / likelihood signal: ${source.competitiveness}`,
-          source.why_recommended && `Why Scholar-E recommended it: ${source.why_recommended}`,
-          source.status_note,
-          ...(source.search_tips ?? []).map((tip) => `Search tip: ${tip}`),
-          ...(source.suggested_queries ?? []).map((query) => `Suggested query: ${query}`),
-        ].filter(Boolean).join("\n"),
+        url: sourceUrl,
+        officialWebsite: sourceUrl,
+        awardAmount: source.award_amount ?? "",
+        applicationDeadline: source.deadline_window ?? "",
+        currentStatus: deadlineStatus,
+        description: source.why_recommended ?? "",
+        importantNotes: source.status_note ? [source.status_note] : [],
+        sourceUrls: sourceUrl ? [sourceUrl] : [],
+        discoverySource: "Scholar-E discovery",
+        discoverySourceKind: "scholarship",
+        additionalNotes: transferNotes,
       },
+      fitAnalysis: undefined,
+      personalizedOutline: undefined,
+    });
+    onUseSource();
+  }
+
+  function toggleSaved(source: DiscoverySource, kind: "scholarship" | "platform") {
+    const id = (source.url || source.name || "").toLowerCase();
+    if (!id) return;
+    const saved = user?.savedWikiSources ?? [];
+    const exists = saved.some((item) => item.id === id);
+    updateProfile({
+      savedWikiSources: exists
+        ? saved.filter((item) => item.id !== id)
+        : [...saved, {
+            id,
+            name: source.name || "Saved discovery source",
+            url: source.url,
+            category: source.category || kind,
+            notes: source.why_recommended,
+            saved_at: new Date().toISOString(),
+          }],
+    });
+    setStatus(exists ? "Removed from saved opportunities." : "Saved for later.");
+  }
+
+  function openPlatform(source: DiscoverySource) {
+    setPlatformContext(source.name || "the platform");
+    if (source.url) window.open(source.url, "_blank", "noopener,noreferrer");
+  }
+
+  function continueWithOwnOpportunity() {
+    const raw = bringValue.trim();
+    if (!raw) {
+      setStatus("Paste a scholarship link, name, or the details you found first.");
+      return;
+    }
+    const platformOnly = platformSources.some(
+      (platform) => (platform.name || "").trim().toLowerCase() === raw.toLowerCase(),
+    );
+    if (platformOnly) {
+      setPlatformContext(raw);
+      setStatus(`${raw} is a search platform. Paste a particular scholarship name, listing, or link from it.`);
+      return;
+    }
+    const url = raw.match(/https?:\/\/[^\s]+/i)?.[0]?.replace(/[),.;]+$/, "") ?? "";
+    const withoutUrl = raw.replace(url, "").replace(/^\s*(found on [^:]+:)?\s*/i, "").trim();
+    const name = withoutUrl.length <= 180 ? withoutUrl : withoutUrl.split(/\r?\n|[.!?]/)[0].slice(0, 180);
+    updateProfile({
+      activeScholarship: {
+        name,
+        url,
+        additionalNotes: [platformContext && `Discovered on platform: ${platformContext}`, raw].filter(Boolean).join("\n"),
+        discoverySource: platformContext || "User-provided discovery",
+        discoverySourceKind: "user_entry",
+      },
+      fitAnalysis: undefined,
+      personalizedOutline: undefined,
     });
     onUseSource();
   }
 
   const hasWiki = !!wiki;
-  const directSources = wiki?.specific_opportunities?.slice(0, 5) ?? [];
-  const platformSources = wiki?.top_free_platforms?.slice(0, 5) ?? [];
-  const profileSummary = wiki?.profile_summary ?? {};
+  const dismissedUrls = new Set(user?.dismissedDiscoveryUrls ?? []);
+  const directSources = (wiki?.specific_opportunities ?? []).filter((source) => !dismissedUrls.has(source.url ?? "")).slice(0, 3);
+  const apiPlatforms = (wiki?.top_free_platforms ?? []).filter((source) => source.name && source.url);
+  const platformSources = [...apiPlatforms, ...platformDefaults]
+    .filter((source, index, sources) => sources.findIndex((candidate) => candidate.url === source.url) === index)
+    .slice(0, 3);
+  const savedIds = new Set((user?.savedWikiSources ?? []).map((item) => item.id));
+  const presentSummary = (value?: string) => value && value !== "unknown"
+    ? value.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase())
+    : "";
+  const preSearchProfileChips = [
+    presentSummary(bootstrapSummary.education_level),
+    presentSummary(bootstrapSummary.field_of_study),
+    presentSummary(bootstrapSummary.student_type),
+  ].filter(Boolean);
+  const resultIntentLabels = (wiki?.selected_intents ?? user?.discoveryIntents ?? [])
+    .map((intent) => intent.label)
+    .filter(Boolean);
+
+  function toggleDiscoveryIntent(intentId: string) {
+    setSelectedIntentIds((current) => current.includes(intentId)
+      ? current.filter((id) => id !== intentId)
+      : [...current, intentId]);
+  }
+
+  const resultsVisible = showResults && hasWiki;
 
   return (
-    <div className="space-y-8">
-      <div>
-        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-          <div>
-            <div className="text-sm font-semibold uppercase tracking-widest text-muted-foreground">Scholarship Discovery Wiki</div>
-            <h2 className="mt-2 max-w-3xl font-display text-[42px] font-extrabold leading-[0.98] tracking-tight">
-              Search scholarships from your profile.
-            </h2>
-            <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground/85">
-              Scholar-E recommends trusted platforms, source pages, funding categories, and search queries based on your profile.
-            </p>
-            <div className="mt-5 grid max-w-xl grid-cols-3 gap-3">
-              <div className="rounded-lg border border-border/60 bg-white/60 p-3">
-                <div className="text-2xl font-bold">{directSources.length || "-"}</div>
-                <div className="text-xs text-muted-foreground">Direct sources</div>
+    <div className={resultsVisible && !loading ? "space-y-7 pb-3" : "flex min-h-[calc(100vh-190px)] items-center justify-center py-6"}>
+      {!resultsVisible && !loading && (
+        <section className="w-full max-w-6xl overflow-hidden rounded-[2rem] border border-white/80 bg-white/90 p-10 shadow-[0_28px_90px_-45px_rgba(38,56,95,0.5)] backdrop-blur-xl">
+          <header className="flex items-start justify-between border-b border-border/70 pb-7">
+            <div className="max-w-3xl">
+              <div className="flex items-center gap-3">
+                <span className="grid size-11 place-items-center rounded-2xl bg-primary text-primary-foreground shadow-lg shadow-primary/20"><Compass className="size-5" /></span>
+                <div className="text-xs font-semibold uppercase tracking-[0.22em] text-primary">Scholarship discovery</div>
               </div>
-              <div className="rounded-lg border border-border/60 bg-white/60 p-3">
-                <div className="text-2xl font-bold">{platformSources.length || "-"}</div>
-                <div className="text-xs text-muted-foreground">Platforms</div>
-              </div>
-              <div className="rounded-lg border border-border/60 bg-white/60 p-3">
-                <div className="text-2xl font-bold">{wiki?.personalized_search_queries?.length || "-"}</div>
-                <div className="text-xs text-muted-foreground">Searches</div>
-              </div>
+              <h2 className="mt-5 font-display text-[42px] font-extrabold leading-[1.05] tracking-tight">Build a search around what matters to you</h2>
+              <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">Follow the three steps below. We’ll combine your verified profile, the priorities you choose, and any detail you add into one grounded search.</p>
             </div>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <button onClick={refreshWiki} disabled={loading} className="rounded-full bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-40">
-              {loading ? "Searching..." : "Search"}
-            </button>
-            <button onClick={onUpdateProfile} className="rounded-full border border-border bg-card px-4 py-2 text-sm hover:bg-accent">
-              Update profile
-            </button>
-          </div>
-        </div>
-        {status && <p className="mt-3 text-xs text-muted-foreground">{status}</p>}
-        {!wiki && !loading && (
-          <div className="mt-5 rounded-lg border border-dashed border-border bg-white/60 p-4">
-            <div className="font-medium">Ready to search from your saved profile</div>
-            <p className="mt-1 text-sm text-muted-foreground/85">
-              Click Search to generate profile-specific scholarship sources. Results appear after the Wiki agents finish.
-            </p>
-          </div>
-        )}
-      </div>
-
-      {hasWiki && <section>
-        <div className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Profile used for discovery</div>
-        <div className="mt-4 grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
-          {Object.entries(profileSummary).map(([key, value]) => (
-            <div key={key} className="rounded-lg border border-border/60 bg-white/60 p-3">
-              <div className="text-xs uppercase tracking-widest text-muted-foreground">{key.replace(/_/g, " ")}</div>
-              <div className="mt-1 text-sm font-medium">{Array.isArray(value) ? value.join(", ") : String(value)}</div>
+            <div className="flex items-center gap-3">
+              {hasWiki && (
+                <button onClick={() => setShowResults(true)} className="rounded-full border border-border bg-white px-4 py-2 text-xs font-semibold text-muted-foreground hover:border-primary/30 hover:text-primary">View last results</button>
+              )}
+              <button onClick={onUpdateProfile} className="rounded-full border border-border bg-white px-4 py-2 text-xs font-semibold text-muted-foreground hover:border-primary/30 hover:text-primary">Edit profile</button>
             </div>
-          ))}
-        </div>
-        {!!wiki?.missing_profile_fields?.length && (
-          <p className="mt-3 text-xs text-muted-foreground">
-            Add more profile details to improve recommendations: {wiki.missing_profile_fields.join(", ")}.
-          </p>
-        )}
-      </section>}
+          </header>
+          {status && !loading && (
+            <p role="status" aria-live="polite" className="mt-4 text-sm text-muted-foreground">{status}</p>
+          )}
 
-      {hasWiki && (
-        <div className="space-y-8">
-          <section>
-            <div className="text-sm font-semibold uppercase tracking-widest text-muted-foreground">Top 5 direct scholarship sources</div>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Send one into Step 4 with its name, link, and notes filled for requirement extraction.
-            </p>
-            <div className="mt-4 grid gap-4 xl:grid-cols-2">
-              {directSources.map((source) => (
-                <WikiSourceCard
-                  key={`direct-${source.name}`}
-                  source={source}
-                  onCopy={copyText}
-                  onUseSource={useSourceForExtraction}
-                  mode="direct"
-                />
-              ))}
-              {!directSources.length && <p className="text-sm text-muted-foreground">No direct sources matched this profile.</p>}
-            </div>
-          </section>
-
-          <section>
-            <div className="text-sm font-semibold uppercase tracking-widest text-muted-foreground">Top 5 scholarship platforms</div>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Use these platforms to continue searching for real opportunities.
-            </p>
-            <div className="mt-4 grid gap-4 xl:grid-cols-2">
-              {platformSources.map((source) => (
-                <WikiSourceCard
-                  key={`platform-${source.name}`}
-                  source={{ ...source, cost: "Free" }}
-                  onCopy={copyText}
-                  mode="platform"
-                />
-              ))}
-              {!platformSources.length && <p className="text-sm text-muted-foreground">No platforms matched this profile.</p>}
-            </div>
-          </section>
-        </div>
-      )}
-
-      {hasWiki && <section>
-        <div className="text-sm font-semibold uppercase tracking-widest text-muted-foreground">Funding categories</div>
-        <div className="mt-4 grid md:grid-cols-2 lg:grid-cols-3 gap-3">
-          {(wiki?.funding_categories ?? []).map((category) => (
-            <div key={category.category_name} className="rounded-lg border border-border/60 bg-white/60 p-4">
-              <div className="font-display text-[18px] font-bold">{category.category_name}</div>
-              <p className="mt-2 text-sm text-muted-foreground/85">{category.description}</p>
-              <div className="mt-3 flex flex-wrap gap-1.5">
-                {(category.best_for ?? []).map((item) => <Pill key={item}>{item}</Pill>)}
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>}
-
-      {hasWiki && <section>
-            <div className="text-sm font-semibold uppercase tracking-widest text-muted-foreground">Personalized search queries</div>
-          <div className="mt-4 space-y-2">
-            {(wiki?.personalized_search_queries ?? []).slice(0, 3).map((query) => (
-              <div key={query} className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-white/60 p-3">
-                <span className="text-sm">{query}</span>
-                <div className="flex shrink-0 gap-2">
-                  <button onClick={() => window.open(`https://www.google.com/search?q=${encodeURIComponent(query)}`, "_blank")} className="rounded-full bg-primary px-2.5 py-1 text-xs text-primary-foreground hover:opacity-90">Search</button>
+          <div className="mt-8 grid grid-cols-[240px_minmax(0,1fr)] gap-10">
+            <aside className="rounded-2xl border border-[#dfe3f3] bg-[#f3f5fb] p-5">
+              <div className="text-xs font-semibold uppercase tracking-[0.16em] text-[#53608d]">Your search path</div>
+              <ol className="mt-5 space-y-5">
+                {[
+                  ["1", "Confirm context", "We use your saved profile."],
+                  ["2", "Choose priorities", "Select what matters today."],
+                  ["3", "Add details & search", "Optional notes make it sharper."],
+                ].map(([number, title, detail], index) => (
+                  <li key={number} className="flex gap-3">
+                    <span className={`grid size-7 shrink-0 place-items-center rounded-full text-xs font-bold ${index === 0 ? "bg-success text-white" : "bg-white text-[#53608d] ring-1 ring-[#d7dced]"}`}>{index === 0 ? <Check className="size-3.5" /> : number}</span>
+                    <div><div className="text-sm font-semibold">{title}</div><p className="mt-0.5 text-xs leading-5 text-muted-foreground">{detail}</p></div>
+                  </li>
+                ))}
+              </ol>
+              <div className="mt-6 border-t border-[#dce1f0] pt-5">
+                <div className="text-xs font-semibold text-foreground">Profile context</div>
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {preSearchProfileChips.length
+                    ? preSearchProfileChips.map((value) => <Pill key={value}>{value}</Pill>)
+                    : <span className="text-xs leading-5 text-muted-foreground">Add your education and field to receive stronger suggestions.</span>}
                 </div>
               </div>
-            ))}
+            </aside>
+
+            <div className="min-w-0">
+              <section aria-labelledby="discovery-priorities-heading">
+                <div className="flex items-start gap-3">
+                  <span className="grid size-8 shrink-0 place-items-center rounded-full bg-primary text-sm font-bold text-primary-foreground">2</span>
+                  <div>
+                    <h3 id="discovery-priorities-heading" className="font-display text-2xl font-bold">Choose your priorities</h3>
+                    <p className="mt-1 text-sm text-muted-foreground">These suggestions come from your profile. Select any that match what you want now.</p>
+                  </div>
+                </div>
+                {bootstrapLoading ? (
+                  <div className="mt-5 grid grid-cols-2 gap-3">{[0, 1, 2, 3].map((item) => <Skeleton key={item} className="h-14 rounded-xl" />)}</div>
+                ) : intentOptions.length ? (
+                  <div className="mt-5 grid grid-cols-2 gap-3">
+                    {intentOptions.map((intent) => {
+                      const selected = selectedIntentIds.includes(intent.id);
+                      return (
+                        <button key={intent.id} type="button" aria-pressed={selected} onClick={() => toggleDiscoveryIntent(intent.id)} className={`flex min-h-14 items-center gap-3 rounded-xl border px-4 py-3 text-left text-sm font-medium transition ${selected ? "border-primary bg-primary/8 text-primary shadow-sm ring-2 ring-primary/10" : "border-border/80 bg-white text-foreground hover:border-primary/40 hover:bg-primary/[0.03]"}`}>
+                          <span className={`grid size-5 shrink-0 place-items-center rounded-full border ${selected ? "border-primary bg-primary text-primary-foreground" : "border-border bg-background"}`}>{selected && <Check className="size-3" />}</span>
+                          {intent.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="mt-4 rounded-xl bg-muted/50 p-3 text-sm text-muted-foreground">No profile priorities are available yet. Use the detail box below or update your profile.</p>
+                )}
+                {bootstrapError && <p className="mt-3 text-xs text-amber-700">{bootstrapError}</p>}
+              </section>
+
+              <section aria-labelledby="discovery-details-heading" className="mt-8 border-t border-border/70 pt-7">
+                <div className="flex items-start gap-3">
+                  <span className="grid size-8 shrink-0 place-items-center rounded-full bg-primary text-sm font-bold text-primary-foreground">3</span>
+                  <div>
+                    <h3 id="discovery-details-heading" className="font-display text-2xl font-bold">Add any detail, then search</h3>
+                    <p className="mt-1 text-sm text-muted-foreground">Optional. Mention a topic, funding need, location, or something you want excluded.</p>
+                  </div>
+                </div>
+                <div className="mt-5 rounded-2xl border border-border/80 bg-white p-2 shadow-sm ring-primary/15 focus-within:ring-4">
+                  <label htmlFor="discovery-focus" className="sr-only">Additional scholarship search details</label>
+                  <textarea id="discovery-focus" rows={3} value={focus} onChange={(event) => setFocus(event.target.value)} placeholder="For example: Battery-materials research funding without a service commitment" className="w-full resize-none border-0 bg-transparent px-3 py-2 text-base leading-6 outline-none placeholder:text-muted-foreground" />
+                  <div className="border-t border-border/70 px-3 pt-3">
+                    <p className="text-xs text-muted-foreground">We’ll search curated sources and the live web together.</p>
+                  </div>
+                </div>
+              </section>
+
+              <div className="mt-6 flex items-center justify-between gap-6 rounded-2xl border border-primary/15 bg-primary/[0.035] px-5 py-4">
+                <div>
+                  <p className="text-sm font-semibold text-foreground">Ready to discover scholarships?</p>
+                  <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                    We’ll combine your profile, selected priorities, and the details you added above.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={refreshWiki}
+                  disabled={loading || bootstrapLoading}
+                  className="inline-flex shrink-0 items-center gap-2 rounded-xl bg-primary px-5 py-3 text-sm font-semibold text-primary-foreground shadow-sm transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Find scholarships
+                  <ArrowRight className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div className="mt-5 border-t border-border/60 pt-5 text-center">
+                {!showBring ? (
+                  <button onClick={() => setShowBring(true)} className="text-sm font-medium text-muted-foreground hover:text-primary">Already found a scholarship? Bring it here instead</button>
+                ) : (
+                  <div className="flex gap-2 rounded-2xl border border-border/70 bg-white/75 p-3 text-left">
+                    <input value={bringValue} onChange={(event) => setBringValue(event.target.value)} placeholder="Paste a scholarship link, name, or details" className="min-w-0 flex-1 rounded-xl border border-input bg-white px-4 py-3 text-sm outline-none focus:ring-4 focus:ring-primary/15" />
+                    <button onClick={continueWithOwnOpportunity} className="rounded-xl border border-primary bg-primary px-5 py-3 text-sm font-semibold text-primary-foreground">Continue to Step 3</button>
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
-      </section>}
+        </section>
+      )}
+
+      {loading && (
+        <section className="w-full max-w-5xl space-y-5 rounded-[2rem] border border-white/80 bg-white/80 p-8 shadow-xl backdrop-blur-xl">
+          <div className="flex items-center gap-3">
+            <Spinner className="size-5 text-primary" />
+            <div>
+              <h2 className="font-display text-2xl font-bold">Building your discovery shortlist</h2>
+              <p role="status" aria-live="polite" className="mt-1 text-sm text-muted-foreground">{status}</p>
+            </div>
+          </div>
+          <div className="space-y-3">
+            {[0, 1, 2].map((item) => <Skeleton key={item} className="h-32 rounded-2xl" />)}
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            {[0, 1, 2].map((item) => <Skeleton key={item} className="h-24 rounded-2xl" />)}
+          </div>
+        </section>
+      )}
+
+      {resultsVisible && !loading && (
+        <>
+          <section className="rounded-3xl border border-white/80 bg-white/80 px-7 py-5 shadow-sm backdrop-blur-xl">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-success">
+                  <span className="grid size-6 place-items-center rounded-full bg-success/10"><Check className="size-3.5" /></span>
+                  Discovery complete
+                </div>
+                <h2 className="mt-2 font-display text-3xl font-bold">Your scholarship shortlist</h2>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Grounded in your student profile{resultIntentLabels.length ? ` · ${resultIntentLabels.join(" · ")}` : ""}
+                </p>
+                {(wiki?.free_text_intent || user?.discoveryFocus) && (
+                  <p className="mt-1 line-clamp-1 text-xs text-muted-foreground">Also requested: {wiki?.free_text_intent || user?.discoveryFocus}</p>
+                )}
+              </div>
+              <div className="flex shrink-0 items-center gap-2 self-start">
+                <button onClick={onUpdateProfile} className="rounded-full border border-border bg-white px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent">
+                  Profile used for this search
+                </button>
+                <button onClick={() => setShowResults(false)} className="inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/5 px-3 py-1.5 text-xs font-semibold text-primary hover:bg-primary/10">
+                  New search
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <section>
+            <div className="mb-4 flex items-end justify-between gap-3">
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">Scholarships to explore</div>
+                <p className="mt-1 text-sm text-muted-foreground">Discovery suggestions only—eligibility is checked in the next step.</p>
+              </div>
+            </div>
+            <div className="space-y-3">
+              {directSources.map((source) => (
+                <DiscoverySourceCard
+                  key={`direct-${source.url || source.name}`}
+                  source={source}
+                  mode="scholarship"
+                  saved={savedIds.has((source.url || source.name || "").toLowerCase())}
+                  onExplore={() => useSourceForExtraction(source)}
+                  onSave={() => toggleSaved(source, "scholarship")}
+                />
+              ))}
+            </div>
+            {!directSources.length && (
+              <div className="rounded-2xl border border-dashed border-border bg-white/70 p-5">
+                <h3 className="font-semibold">We couldn’t confirm a close scholarship.</h3>
+                <p className="mt-1 text-sm text-muted-foreground">We left out weaker matches. The profile-matched platforms below are the best places to continue.</p>
+              </div>
+            )}
+          </section>
+
+          <section className="rounded-3xl border border-[#d9def3] bg-[#eef1fb]/90 p-6 shadow-sm">
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-[0.18em] text-[#4a5685]">Continue searching elsewhere</div>
+              <h3 className="mt-2 font-display text-2xl font-bold">Places selected for your profile</h3>
+              <p className="mt-1 text-sm text-muted-foreground">Open a platform, find a scholarship, then paste it into the return bar below.</p>
+            </div>
+            <div className="mt-4 grid grid-cols-3 gap-3">
+              {platformSources.map((source) => (
+                <button key={`platform-${source.url || source.name}`} onClick={() => openPlatform(source)} className="group min-h-32 rounded-2xl border border-white/90 bg-white p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="grid size-9 place-items-center rounded-xl bg-[#eef1fb] font-display text-sm font-bold text-[#4a5685]">{source.name?.charAt(0) || "P"}</div>
+                    <ArrowRight className="size-4 -rotate-45 text-muted-foreground transition group-hover:text-primary" />
+                  </div>
+                  <div className="mt-3 font-display text-lg font-bold leading-tight">{source.name}</div>
+                  <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{source.why_recommended}</p>
+                </button>
+              ))}
+            </div>
+          </section>
+
+          <section className="sticky bottom-4 z-20 rounded-2xl border border-primary/20 bg-white/95 p-3 shadow-[0_18px_45px_-18px_rgba(38,56,95,0.45)] backdrop-blur-xl">
+            {platformContext && <p className="mb-2 px-1 text-xs font-medium text-primary">Found something on {platformContext}?</p>}
+            <div className="flex items-center gap-2">
+              <div className="min-w-0 flex-1">
+                {!platformContext && <div className="px-1 text-xs font-semibold text-foreground">Found a scholarship here or somewhere else?</div>}
+                <label htmlFor="bring-opportunity" className="sr-only">Scholarship link, name, or details</label>
+                <input id="bring-opportunity" value={bringValue} onChange={(event) => setBringValue(event.target.value)} placeholder="Paste a link, scholarship name, or listing details" className="mt-1 w-full rounded-xl border border-input bg-white px-4 py-3 text-sm outline-none focus:ring-4 focus:ring-primary/15" />
+              </div>
+              <button onClick={continueWithOwnOpportunity} className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-xl bg-primary px-5 py-3 text-sm font-semibold text-primary-foreground hover:opacity-90">
+                Continue to Step 3 <ArrowRight className="size-4" />
+              </button>
+            </div>
+          </section>
+        </>
+      )}
     </div>
   );
 }
 
-function WikiSourceCard({
+function DiscoverySourceCard({
   source,
-  onCopy,
-  onUseSource,
-  mode,
+  saved,
+  onExplore,
+  onSave,
 }: {
-  source: {
-    name?: string;
-    url?: string;
-    category?: string;
-    cost?: string;
-    best_for?: string[];
-    why_recommended?: string;
-    search_tips?: string[];
-    suggested_queries?: string[];
-    status_note?: string;
-    award_amount?: string;
-    deadline_window?: string;
-    competitiveness?: string;
-  };
-  onCopy: (value: string) => void;
-  onUseSource?: (source: {
-    name?: string;
-    url?: string;
-    category?: string;
-    status_note?: string;
-    why_recommended?: string;
-    award_amount?: string;
-    deadline_window?: string;
-    competitiveness?: string;
-    search_tips?: string[];
-    suggested_queries?: string[];
-  }) => void;
-  mode: "direct" | "platform";
+  source: DiscoverySource;
+  mode: "scholarship";
+  saved: boolean;
+  onExplore: () => void;
+  onSave: () => void;
 }) {
-  const metaItems = [
-    source.award_amount && { label: "Amount", value: source.award_amount },
-    source.deadline_window && { label: "Deadline", value: source.deadline_window },
-    source.competitiveness && { label: "Signal", value: source.competitiveness },
-  ].filter(Boolean) as { label: string; value: string }[];
-  const headerLabel = mode === "direct" ? "Direct source" : source.cost ? `${source.cost} platform` : "Platform";
-  const isDirect = mode === "direct";
-  const headerClass = "bg-gradient-to-br from-[#26385F] via-[#33406F] to-[#5550A4] text-primary-foreground";
-  const accentClass = "bg-[#6d5df6]/65";
-  const headerTextClass = "text-primary-foreground/70";
-  const headerSubtextClass = "text-primary-foreground/90";
-  const headerLabelSize = "text-[11px]";
-  const headerSubtextSize = "text-[15px]";
-  const headerSubtextWeight = "font-semibold";
-  const titleSize = isDirect ? "text-[1.35rem]" : "text-xl";
-
+  const deadlineLabel = source.deadline_status === "open"
+    ? "Applications open"
+    : source.deadline_status === "upcoming"
+      ? "Upcoming application cycle"
+      : "Confirm current deadline";
+  const deadlineTone = source.deadline_status === "open"
+    ? "bg-success/10 text-success"
+    : source.deadline_status === "upcoming"
+      ? "bg-primary/10 text-primary"
+      : "bg-amber-100 text-amber-800";
   return (
-    <div className="group flex h-full min-h-[300px] flex-col overflow-hidden rounded-xl border border-border/70 bg-white shadow-sm shadow-black/5 transition-shadow hover:shadow-lg hover:shadow-black/10">
-      <div className={headerClass}>
-        <div className={`h-3 ${accentClass}`} />
-        <div className="min-h-[88px] p-4">
-          <div className="flex items-start justify-between gap-3">
+    <article className="group rounded-2xl border border-white/90 bg-white/90 p-5 shadow-sm transition hover:border-primary/20 hover:shadow-md">
+      <div className="flex items-start gap-4">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 grid size-10 shrink-0 place-items-center rounded-xl bg-primary/[0.07] font-display text-sm font-bold text-primary">
+              {source.name?.charAt(0) || "S"}
+            </div>
             <div className="min-w-0">
-              <div className={`${headerLabelSize} font-semibold uppercase tracking-widest ${headerTextClass}`}>{headerLabel}</div>
-              <div className={`mt-4 ${headerSubtextSize} ${headerSubtextWeight} ${headerSubtextClass}`}>
-                {source.category || (mode === "direct" ? "Scholarship source" : "Search platform")}
+              <h4 className="font-display text-xl font-bold leading-tight">{source.name}</h4>
+              {source.category && <p className="mt-1 text-xs text-muted-foreground">{source.category}</p>}
+              {source.why_recommended && <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">{source.why_recommended}</p>}
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${deadlineTone}`}>{deadlineLabel}</span>
+                {source.status_note && <span className="text-xs text-muted-foreground">{source.status_note}</span>}
               </div>
             </div>
           </div>
         </div>
-      </div>
 
-      <div className="flex flex-1 flex-col p-4">
-        <div>
-          <div className={`font-display ${titleSize} font-bold leading-tight text-foreground`}>{source.name}</div>
-          {source.cost && <div className="mt-2 text-xs text-muted-foreground">{source.cost}</div>}
-        </div>
-
-        {source.why_recommended && (
-          <p className="mt-3 text-sm leading-6 text-muted-foreground/90">{source.why_recommended}</p>
-        )}
-
-        {!!metaItems.length && (
-          <>
-            <div className="my-4 border-t border-dashed border-border" />
-            <div className="grid gap-2 sm:grid-cols-3">
-              {metaItems.map((item) => (
-                <div key={item.label} className="rounded-lg border border-border/70 bg-secondary/20 p-2">
-                  <div className="text-[10px] uppercase tracking-widest text-muted-foreground">{item.label}</div>
-                  <div className="mt-1 text-sm font-semibold">{item.value}</div>
-                </div>
-              ))}
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-3">
+          {(source.deadline_window || source.award_amount) && (
+            <div className="mr-1 hidden max-w-52 text-right lg:block">
+              {source.deadline_window && <div className="text-xs font-medium text-foreground">{source.deadline_window}</div>}
+              {source.award_amount && <div className="mt-1 truncate text-xs text-muted-foreground">{source.award_amount}</div>}
             </div>
-          </>
-        )}
-
-        {source.status_note && <p className="mt-3 text-xs font-medium text-warning">{source.status_note}</p>}
-
-        {!!source.best_for?.length && (
-          <div className="mt-3 flex flex-wrap gap-1.5">
-            {source.best_for.slice(0, 3).map((item) => <Pill key={item}>{item}</Pill>)}
-          </div>
-        )}
-
-        {!!source.search_tips?.length && (
-          <div className="mt-3 border-t border-border/70 pt-3">
-            <ul className="space-y-1 text-xs leading-5 text-muted-foreground">
-              {source.search_tips.map((tip) => <li key={tip}>{tip}</li>)}
-            </ul>
-          </div>
-        )}
-
-      <div className="mt-auto flex flex-wrap gap-2 pt-4">
-        {source.url && (
-          <button onClick={() => window.open(source.url, "_blank")} className="rounded-full bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:opacity-90">
-            Open source
+          )}
+          <button onClick={onSave} aria-label={saved ? "Remove from saved" : "Save for later"} className={`rounded-full border p-2.5 ${saved ? "border-primary/30 bg-primary/10 text-primary" : "border-border bg-white text-muted-foreground hover:bg-accent"}`}>
+            {saved ? <Check className="size-4" /> : <Save className="size-4" />}
           </button>
-        )}
-        {!!source.suggested_queries?.[0] && mode === "platform" && (
-          <button onClick={() => onCopy(source.suggested_queries?.[0] ?? "")} className="rounded-full border border-border px-3 py-1.5 text-xs hover:bg-accent">
-            Copy query
-          </button>
-        )}
-        {mode === "direct" && (
-          <button onClick={() => onUseSource?.(source)} className="rounded-full bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:opacity-90">
-            Copy query to extractor
-          </button>
-        )}
+          {source.url && (
+            <button onClick={() => window.open(source.url, "_blank", "noopener,noreferrer")} className="rounded-xl border border-border bg-white px-3 py-2.5 text-xs font-medium hover:bg-accent">
+              Official site
+            </button>
+          )}
+        </div>
       </div>
+      <div className="mt-5 flex flex-col gap-4 rounded-2xl border border-primary/15 bg-gradient-to-r from-primary/[0.07] via-primary/[0.035] to-transparent p-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex min-w-0 items-start gap-3">
+          <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground shadow-sm">
+            <Sparkles className="size-4.5" />
+          </span>
+          <div>
+            <h5 className="font-display text-base font-bold">Worth a closer look?</h5>
+            <p className="mt-1 text-sm leading-5 text-muted-foreground">
+              Select this opportunity to collect its official requirements and evaluate how well it aligns with your profile.
+            </p>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onExplore}
+          className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-xl bg-primary px-5 py-3 text-sm font-semibold text-primary-foreground shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
+        >
+          Select &amp; continue to Step 3 <ArrowRight className="size-4" />
+        </button>
       </div>
-    </div>
+    </article>
   );
 }
 
@@ -2338,9 +3291,10 @@ function StepOpportunities({ onAnalyze }: { onAnalyze: () => void }) {
                   });
                   onAnalyze();
                 }}
-                className="rounded-full px-3 py-1.5 text-xs bg-primary text-primary-foreground hover:opacity-90"
+                className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs bg-primary text-primary-foreground hover:opacity-90"
               >
-                Paste real opportunity →
+                Paste real opportunity
+                <ArrowRight className="size-3.5" />
               </button>
             </div>
           </Card>
@@ -2397,7 +3351,7 @@ function WorkflowStep({
     <section className="relative grid gap-4 md:grid-cols-[76px_1fr]">
       <div className="relative hidden md:flex justify-center">
         <div className={`relative z-10 grid size-12 place-items-center rounded-full border-2 text-sm font-semibold ${markerClass}`}>
-          {complete ? "✓" : number}
+          {complete ? <Check className="size-5" strokeWidth={3} /> : number}
         </div>
         {!isLast && <div className="absolute left-1/2 top-12 h-[calc(100%+2rem)] -translate-x-1/2 border-l-2 border-dashed border-border" />}
       </div>
@@ -2408,13 +3362,13 @@ function WorkflowStep({
           </div>
           <div className="flex items-center gap-3 md:hidden">
             <div className={`grid size-10 place-items-center rounded-full border-2 text-sm font-semibold ${markerClass}`}>
-              {complete ? "✓" : number}
+              {complete ? <Check className="size-4" strokeWidth={3} /> : number}
             </div>
             <div className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Step {number}</div>
           </div>
           <div className="hidden text-sm font-semibold uppercase tracking-widest text-muted-foreground md:block">Step {number}</div>
           <h3 className="mt-1 font-display text-2xl font-bold leading-tight text-foreground">{title}</h3>
-          {description && <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground/85">{description}</p>}
+          {description && <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">{description}</p>}
         </div>
         <div className="overflow-hidden rounded-2xl border border-border/70 bg-white shadow-sm">
           <div className={`h-1 ${active ? "bg-primary" : complete ? "bg-success" : "bg-border"}`} />
@@ -2447,8 +3401,8 @@ function ScholarshipDetailsCard({
   return (
     <WorkflowStep
       number={1}
-      title="Scholarship details for extraction"
-      description="After using the Wiki to find a real opportunity, paste its name, link, or copied description here. Scholar-E will extract requirements into editable fields."
+      title="Confirm the opportunity you want to explore"
+      description="We carried over what you selected or entered during discovery. Add or correct anything you know, then Scholar-E will collect the available requirements into editable fields."
       complete={complete}
       active={active}
     >
@@ -2480,9 +3434,11 @@ function ScholarshipDetailsCard({
           type="button"
           onClick={onExtract}
           disabled={extracting}
-          className="rounded-full bg-primary text-primary-foreground px-5 py-2.5 text-sm font-medium hover:opacity-90 disabled:opacity-50"
+          aria-busy={extracting}
+          className={`inline-flex items-center justify-center gap-2 rounded-lg bg-primary text-primary-foreground px-5 py-2.5 text-sm font-medium hover:opacity-90 disabled:opacity-90 ${extracting ? "agent-loading" : ""}`}
         >
-          {extracting ? "Extracting requirements..." : "Extract Requirements"}
+          {extracting && <Spinner className="size-4" />}
+          {extracting ? "Extracting requirements…" : "Extract Requirements"}
         </button>
       </div>
       {extractionStatus && <p className="mt-3 text-xs text-muted-foreground text-right">{extractionStatus}</p>}
@@ -2786,6 +3742,11 @@ function EditableScholarshipFields({
             </div>
             <p className="mt-1 text-xs text-muted-foreground">{extractedCount} of {extractedValues.length} fields extracted successfully.</p>
             <p className="mt-0.5 text-xs text-muted-foreground">{needsReviewCount} fields require review or manual entry.</p>
+            {typeof scholarship.completenessScore === "number" && (
+              <p className="mt-0.5 text-xs font-medium text-foreground">
+                Important-field completeness: {scholarship.completenessScore}%
+              </p>
+            )}
           </div>
           {sourceUrl && (
             <a
@@ -2798,6 +3759,19 @@ function EditableScholarshipFields({
             </a>
           )}
         </div>
+        {!!scholarship.criticalFieldsMissing?.length && (
+          <div className="mt-3 rounded-xl border border-warning/20 bg-warning/[0.035] px-3 py-2 text-xs text-muted-foreground">
+            <span className="font-semibold text-foreground">Important fields still missing:</span>{" "}
+            {scholarship.criticalFieldsMissing.join(", ")}.
+          </div>
+        )}
+        {!![...(scholarship.extractionWarnings ?? []), ...(scholarship.validationWarnings ?? [])].length && (
+          <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+            {[...(scholarship.extractionWarnings ?? []), ...(scholarship.validationWarnings ?? [])]
+              .slice(0, 4)
+              .map((warning) => <p key={warning}>• {warning}</p>)}
+          </div>
+        )}
       </div>
 
       <div className="mt-5 space-y-5">
@@ -2875,9 +3849,11 @@ function EditableScholarshipFields({
           type="button"
           onClick={onAnalyze}
           disabled={analyzing}
-          className="rounded-full bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
+          aria-busy={analyzing}
+          className={`inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-90 ${analyzing ? "agent-loading" : ""}`}
         >
-          {analyzing ? "Analyzing fit..." : "Accept and Analyze Fit"}
+          {analyzing && <Spinner className="size-4" />}
+          {analyzing ? "Analyzing fit…" : "Accept and Analyze Fit"}
         </button>
         {analysisStatus && <p className="mt-2 text-right text-xs text-muted-foreground">{analysisStatus}</p>}
       </div>
@@ -2885,7 +3861,7 @@ function EditableScholarshipFields({
   );
 }
 
-/* ---------------- Step 4: Requirements + Fit combined ---------------- */
+/* ---------------- Step 3: Requirements + Fit combined ---------------- */
 
 function StepRequirementsAndFit() {
   const { user, updateProfile } = useUser();
@@ -2896,10 +3872,28 @@ function StepRequirementsAndFit() {
   const [extractionStatus, setExtractionStatus] = useState<string | null>(null);
   const [extractionError, setExtractionError] = useState<string | null>(null);
   const [rubricOpen, setRubricOpen] = useState(false);
+  const sourceRevisionRef = useRef(0);
   function updateScholarship(patch: ActiveScholarship) {
     updateProfile({ activeScholarship: { ...scholarship, ...patch } });
   }
+  function replaceScholarshipSource(patch: ActiveScholarship) {
+    sourceRevisionRef.current += 1;
+    const nextSource: ActiveScholarship = {
+      name: patch.name ?? scholarship.name ?? "",
+      url: patch.url ?? scholarship.url ?? "",
+      additionalNotes: patch.additionalNotes ?? scholarship.additionalNotes ?? "",
+    };
+    updateProfile({
+      activeScholarship: nextSource,
+      fitAnalysis: undefined,
+      personalizedOutline: undefined,
+    });
+    setFitStatus(null);
+    setExtractionStatus(null);
+    setExtractionError(null);
+  }
   async function runScholarshipExtraction() {
+    const extractionRevision = sourceRevisionRef.current;
     setExtracting(true);
     setExtractionStatus("Looking up scholarship details and extracting requirements...");
     setExtractionError(null);
@@ -2909,12 +3903,23 @@ function StepRequirementsAndFit() {
         scholarship_url: scholarship.url ?? "",
         additional_notes: scholarship.additionalNotes ?? "",
       });
-      updateScholarship({
-        ...extracted,
-        additionalNotes: scholarship.additionalNotes,
-        url: extracted.url || scholarship.url,
-        name: extracted.name || scholarship.name,
-        extractionCompletedAt: new Date().toISOString(),
+      if (sourceRevisionRef.current !== extractionRevision) {
+        setExtractionStatus("The scholarship source changed while extraction was running. Run extraction again for the current source.");
+        return;
+      }
+      updateProfile({
+        activeScholarship: {
+          ...scholarship,
+          ...extracted,
+          additionalNotes: scholarship.additionalNotes,
+          url: extracted.url || scholarship.url,
+          name: extracted.name || scholarship.name,
+          discoverySource: scholarship.discoverySource,
+          discoverySourceKind: scholarship.discoverySourceKind,
+          extractionCompletedAt: new Date().toISOString(),
+        },
+        fitAnalysis: undefined,
+        personalizedOutline: undefined,
       });
       setExtractionStatus("Requirements extracted. Review and edit the fields below.");
       window.setTimeout(() => {
@@ -2954,7 +3959,7 @@ function StepRequirementsAndFit() {
     <div className="space-y-8">
       <ScholarshipDetailsCard
         scholarship={scholarship}
-        updateScholarship={updateScholarship}
+        updateScholarship={replaceScholarshipSource}
         onExtract={runScholarshipExtraction}
         extracting={extracting}
         extractionStatus={extractionStatus}
@@ -3040,7 +4045,7 @@ function StepRequirementsAndFit() {
                 <button
                   type="button"
                   onClick={() => setRubricOpen(true)}
-                  className="mt-2.5 rounded-full border border-border bg-background px-3 py-1 text-[12px] font-medium text-foreground transition-colors hover:bg-accent"
+                  className="mt-2.5 rounded-lg border border-border bg-background px-3 py-1 text-[12px] font-medium text-foreground transition-colors hover:bg-accent"
                 >
                   What does this score mean?
                 </button>
@@ -3281,25 +4286,16 @@ function criteriaAlignmentTone(alignment?: string): "default" | "gold" | "succes
 
 /* ---------------- Step 5: Essay Workspace ---------------- */
 
-type WorkspaceTab = "outline" | "coach" | "evaluation" | "highlights";
+type WorkspaceTab = "outline" | "reader" | "evaluation" | "highlights";
 
-const WRITING_SUPPORT_OPTIONS: Array<{ id: WritingSupportLevel; label: string; description: string }> = [
-  {
-    id: "grammar_only",
-    label: "Grammar only",
-    description: "Fix spelling, punctuation, and grammar without changing meaning.",
-  },
-  {
-    id: "sentence_polish",
-    label: "Sentence polish",
-    description: "Improve clarity and flow while preserving the student's meaning and voice.",
-  },
-  {
-    id: "rewrite_help",
-    label: "Rewrite help",
-    description: "Suggest rewritten versions, but require user approval.",
-  },
-];
+function normalizePdfDraftText(pages: string[]) {
+  return pages
+    .map((page) => page.replace(/[ \t]+/g, " ").trim())
+    .filter(Boolean)
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
 
 /** Pull the largest 2–5 digit number out of a word-limit string (e.g. "400-500 words" → 500). */
 function parseWordTarget(limit?: string): number | null {
@@ -3317,13 +4313,6 @@ function overallEssayScore(analysis?: AnalysisResult): number | null {
   return Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
 }
 
-/** Mean of a flat score map (e.g. the coach's 8-dim overall_scores) → 0–100. */
-function meanScore(scores?: Record<string, number> | null): number | null {
-  const vals = Object.values(scores ?? {}).filter((v): v is number => typeof v === "number");
-  if (!vals.length) return null;
-  return Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
-}
-
 function scoreColor(score: number): string {
   if (score >= 80) return "var(--success)";
   if (score >= 60) return "var(--warning)";
@@ -3332,26 +4321,6 @@ function scoreColor(score: number): string {
 
 function labelize(key: string): string {
   return key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
-function levelWord(score: number): string {
-  if (score >= 80) return "Strong — competitive draft";
-  if (score >= 60) return "Developing — keep refining";
-  return "Needs work — focus on the priorities";
-}
-
-function relativeTimeLabel(timestamp: number | null, now: number): string {
-  if (!timestamp) return "Not run yet";
-  const mins = Math.floor((now - timestamp) / 60000);
-  if (mins < 1) return "just now";
-  if (mins === 1) return "1 minute ago";
-  if (mins < 60) return `${mins} minutes ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours === 1) return "1 hour ago";
-  if (hours < 24) return `${hours} hours ago`;
-  const days = Math.floor(hours / 24);
-  if (days === 1) return "1 day ago";
-  return `${days} days ago`;
 }
 
 /** Grammarly-style circular score badge with a colored ring. */
@@ -3416,11 +4385,11 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
   const [coachRaw, setCoachRaw] = useState<CoachSentenceSuggestion[]>([]);
   const [coachLoading, setCoachLoading] = useState(false);
-  const [coachSummary, setCoachSummary] = useState<string | null>(null);
-  const [coachWarnings, setCoachWarnings] = useState<string[]>([]);
-  const [coachResult, setCoachResult] = useState<EssayCoachResult | null>(null);
-  const [coachUpdatedAt, setCoachUpdatedAt] = useState<number | null>(null);
-  const [coachDraftAtRun, setCoachDraftAtRun] = useState<string>("");
+  const [coachSummary, setCoachSummary] = useState<string | null>(() => user?.essayCoachSummary ?? null);
+  const [coachResult, setCoachResult] = useState<EssayCoachResult | null>(
+    () => (user?.essayCoachResult as EssayCoachResult | undefined) ?? null,
+  );
+  const [coachUpdatedAt, setCoachUpdatedAt] = useState<number | null>(() => user?.essayCoachUpdatedAt ?? null);
   // Outline coverage is layered: `autoCovered` comes from the AI coverage agent;
   // `manualChecked`/`manualUnchecked` are the student's overrides, which persist
   // across auto-runs. Displayed = (auto ∪ manualChecked) − manualUnchecked.
@@ -3432,21 +4401,83 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   const wordCount = draft.trim() ? draft.trim().split(/\s+/).filter(Boolean).length : 0;
   const characterCount = draft.length;
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("outline");
-  const [panelOpen, setPanelOpen] = useState(true);
+  const [panelWidth, setPanelWidth] = useState(() => {
+    if (typeof window === "undefined") return 380;
+    const saved = Number(window.localStorage.getItem("scholar-e:essay-panel-width"));
+    return Number.isFinite(saved) && saved >= 300 ? saved : 380;
+  });
+  const [panelResizing, setPanelResizing] = useState(false);
   const [isEvaluating, setIsEvaluating] = useState(false);
-  const [pdfStatus, setPdfStatus] = useState<string | null>(null);
-  const [analysisStatus, setAnalysisStatus] = useState<string | null>(null);
-  const [bgStatus, setBgStatus] = useState<string | null>(null);
+  const [evaluationProgress, setEvaluationProgress] = useState(0);
+  const [, setPdfStatus] = useState<string | null>(null);
+  const [, setBgStatus] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [nowTick, setNowTick] = useState(() => Date.now());
+  const [outlineLoading, setOutlineLoading] = useState(false);
+  const [outlineStatus, setOutlineStatus] = useState<string | null>(null);
+
+  const essayPrompt = user?.activeScholarship?.essayPrompts
+    || user?.activeScholarship?.otherRequiredMaterials
+    || user?.activeScholarship?.requirementsPreview
+    || "";
+  const outlineKey = useMemo(() => {
+    const scholarship = user?.activeScholarship ?? {};
+    return JSON.stringify({
+      scholarshipName: scholarship.name ?? "",
+      scholarshipUrl: scholarship.url ?? scholarship.officialWebsite ?? "",
+      prompt: essayPrompt,
+      requirementsPreview: scholarship.requirementsPreview ?? "",
+      updatedAt: scholarship.extractionCompletedAt ?? "",
+      profileName: user?.name ?? "",
+      educationLevel: user?.educationLevel ?? "",
+      careerGoal: user?.careerGoal ?? "",
+      highSchool: user?.highSchool ?? {},
+      undergrad: user?.undergrad ?? {},
+      graduate: user?.graduate ?? {},
+      researchExperience: user?.researchExperience ?? [],
+      workExperience: user?.workExperience ?? [],
+      optional: user?.optional ?? {},
+      prompts: user?.prompts ?? {},
+    });
+  }, [essayPrompt, user]);
 
   const wordTarget = useMemo(() => parseWordTarget(buildOutlinePayload(user).word_limit), [user]);
-  const score = useMemo(() => overallEssayScore(user?.lastAnalysis), [user?.lastAnalysis]);
+  const score = useMemo(() => {
+    const latestScoredDraft = [...(user?.drafts ?? [])]
+      .reverse()
+      .find((version) => typeof version.readinessOverall === "number" || typeof version.coachOverall === "number");
+    return latestScoredDraft?.readinessOverall ?? latestScoredDraft?.coachOverall ?? overallEssayScore(user?.lastAnalysis);
+  }, [user?.drafts, user?.lastAnalysis]);
   const suggestions = useMemo(() => {
     const auto = analyzeText(draft);
     const coach = anchorCoachSuggestions(coachRaw, draft);
     return mergeSuggestions(coach, auto).filter((s) => !dismissed.has(s.id));
   }, [draft, coachRaw, dismissed]);
+
+  function updateEssayPrompt(value: string) {
+    if (!user) return;
+    updateProfile({
+      activeScholarship: { ...(user.activeScholarship ?? {}), essayPrompts: value },
+      personalizedOutline: undefined,
+    });
+    setOutlineStatus(null);
+  }
+
+  async function runOutlineGeneration() {
+    if (!user || outlineLoading || !essayPrompt.trim()) return;
+    setOutlineLoading(true);
+    setOutlineStatus("Building your personalized outline from the prompt and your profile...");
+    try {
+      const result = await generatePersonalizedOutline(buildOutlinePayload(user));
+      updateProfile({ personalizedOutline: { ...result, generatedForKey: outlineKey } });
+      setOutlineStatus(result.status === "error" ? "A fallback outline is ready." : "Personalized outline ready.");
+      setActiveTab("outline");
+    } catch (error) {
+      setOutlineStatus(error instanceof Error ? error.message : "Could not generate the outline.");
+    } finally {
+      setOutlineLoading(false);
+    }
+  }
 
   // Lightweight autosave indicator — the working draft is continuously synced to
   // the store, so treat each settled edit as an autosave checkpoint.
@@ -3461,6 +4492,43 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     return () => window.clearInterval(id);
   }, []);
 
+  // The user store hydrates after this route first mounts. Restore persisted
+  // coach output when hydration completes or the account changes.
+  useEffect(() => {
+    if (!user?.essayCoachResult) return;
+    const restoredResult = user.essayCoachResult as EssayCoachResult;
+    setCoachResult(restoredResult);
+    setCoachRaw(restoredResult.sentence_suggestions ?? []);
+    setCoachSummary(user.essayCoachSummary ?? null);
+    setCoachUpdatedAt(user.essayCoachUpdatedAt ?? null);
+  }, [user?.email, user?.essayCoachResult, user?.essayCoachSummary, user?.essayCoachUpdatedAt]);
+
+  useEffect(() => {
+    if (!panelResizing) return;
+    const resize = (event: PointerEvent) => {
+      const maximum = Math.min(720, window.innerWidth * 0.6);
+      setPanelWidth(Math.max(300, Math.min(maximum, window.innerWidth - event.clientX)));
+    };
+    const stop = () => setPanelResizing(false);
+    const previousCursor = document.body.style.cursor;
+    const previousSelection = document.body.style.userSelect;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("pointermove", resize);
+    window.addEventListener("pointerup", stop, { once: true });
+    return () => {
+      window.removeEventListener("pointermove", resize);
+      window.removeEventListener("pointerup", stop);
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousSelection;
+    };
+  }, [panelResizing]);
+
+  useEffect(() => {
+    if (panelResizing) return;
+    window.localStorage.setItem("scholar-e:essay-panel-width", String(Math.round(panelWidth)));
+  }, [panelWidth, panelResizing]);
+
   const savedLabel = (() => {
     if (!savedAt) return "Not saved yet";
     const mins = Math.floor((nowTick - savedAt) / 60000);
@@ -3469,14 +4537,6 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     if (mins < 60) return `Saved · ${mins}m ago`;
     return `Saved · ${Math.floor(mins / 60)}h ago`;
   })();
-
-  function handleRunningChange(running: boolean) {
-    setIsEvaluating(running);
-    if (running) {
-      setPanelOpen(true);
-      setActiveTab("evaluation");
-    }
-  }
 
   function acceptSuggestion(s: Suggestion) {
     editorApiRef.current?.accept(s);
@@ -3535,21 +4595,18 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   }
 
   function openHighlights() {
-    setPanelOpen(true);
     setActiveTab("highlights");
     if (suggestions[0]) requestAnimationFrame(() => editorApiRef.current?.reveal(suggestions[0]));
   }
 
-  async function runCoach(mode: EssayCoachMode = "full", writingSupportLevel?: WritingSupportLevel) {
+  async function runAssessment(mode: EssayCoachMode = "full", writingSupportLevel?: WritingSupportLevel) {
     if (coachLoading) return;
     const silent = mode === "auto_check";
-    const draftForRun = draft;
     if (silent && draft === lastAutoCheckRef.current) return; // dedupe unchanged drafts
     if (wordCount < 20) {
       if (!silent) {
-        setPanelOpen(true);
-        setActiveTab("coach");
-        setCoachSummary("Write at least a short paragraph, then run the writing coach.");
+        setActiveTab("evaluation");
+        setCoachSummary('Write at least a short paragraph, then click "Evaluate."');
       }
       return;
     }
@@ -3558,10 +4615,8 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
       lastAutoCheckRef.current = draft;
       setBgStatus("Checking grammar and outline coverage…");
     } else {
-      setCoachSummary(mode === "final_check" ? "Running your final readiness check…" : "Scholar-E is reading your draft…");
-      setCoachWarnings([]);
-      setPanelOpen(true);
-      setActiveTab(mode === "grammar_tone" ? "highlights" : "coach");
+      setCoachSummary("Scholar-E is reading your draft…");
+      setActiveTab(mode === "grammar_tone" ? "highlights" : "evaluation");
     }
     try {
       const result = await runEssayCoach(buildEssayCoachPayload(user, mode, writingSupportLevel));
@@ -3573,27 +4628,21 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
       }
       setCoachRaw(result.sentence_suggestions ?? []);
       if (!silent) {
+        const updatedAt = Date.now();
         setCoachResult(result);
         setCoachSummary(result.coach_summary ?? null);
-        setCoachWarnings(result.warnings ?? []);
-        setCoachUpdatedAt(Date.now());
-        setCoachDraftAtRun(draftForRun);
-      }
-      // A full coach run is a checkpoint: snapshot the draft + its 8-dim scores
-      // so Progress can chart improvement across drafts (deduped on draft text).
-      if (mode === "full" && result.overall_scores && Object.keys(result.overall_scores).length) {
-        upsertVersion({
-          coachScores: result.overall_scores,
-          coachOverall: meanScore(result.overall_scores) ?? undefined,
-          coachSummary: result.coach_summary ?? undefined,
+        setCoachUpdatedAt(updatedAt);
+        updateProfile({
+          essayCoachResult: result as unknown as Record<string, unknown>,
+          essayCoachSummary: result.coach_summary ?? undefined,
+          essayCoachUpdatedAt: updatedAt,
         });
       }
     } catch (error) {
       if (!silent) {
         setCoachResult(null);
         setCoachRaw([]);
-        setCoachSummary(error instanceof Error ? error.message : "The writing coach could not analyze your draft.");
-        setCoachWarnings([]);
+        setCoachSummary(error instanceof Error ? error.message : "The assessment could not analyze your draft.");
       }
     } finally {
       setCoachLoading(false);
@@ -3601,18 +4650,58 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     }
   }
 
+  async function runEvaluation() {
+    if (coachLoading || isEvaluating) return;
+    if (wordCount < 30) return;
+    setIsEvaluating(true);
+    setEvaluationProgress(5);
+    setActiveTab("evaluation");
+    try {
+      // Refresh only the data still used by the workspace's Reader and Fixes
+      // tabs. The seven-criterion Evaluation below is the sole scoring pipeline.
+      await runAssessment("workspace_refresh");
+      setEvaluationProgress((progress) => Math.max(progress, 40));
+      const payload = buildAnalyzePayload(user);
+      payload.cv_text = payload.cv_text || "No student profile evidence was provided.";
+      payload.scholarship_name = payload.scholarship_name || "Scholarship opportunity";
+      payload.scholarship_type = payload.scholarship_type || "Scholarship";
+      if (!payload.prompt) throw new Error("Add the scholarship essay prompt before evaluating.");
+      const result = await analyzeApplication(payload);
+      updateProfile({ lastAnalysis: result });
+      setEvaluationProgress(100);
+      await new Promise((resolve) => window.setTimeout(resolve, 250));
+    } catch (error) {
+      console.error("Scholar-E evaluation failed.", error);
+    } finally {
+      setIsEvaluating(false);
+      setEvaluationProgress(0);
+    }
+  }
+
+  useEffect(() => {
+    if (!isEvaluating) return;
+    const interval = window.setInterval(() => {
+      setEvaluationProgress((progress) => {
+        if (progress >= 92) return progress;
+        const increment = progress < 35 ? 4 : progress < 70 ? 2 : 1;
+        return Math.min(92, progress + increment);
+      });
+    }, 650);
+    return () => window.clearInterval(interval);
+  }, [isEvaluating]);
+
   // Paste/upload auto-check: a paste bumps `pasteNonce`, and a debounced effect runs
   // the cheap `auto_check` (grammar + outline coverage) once the draft has settled.
-  // `runCoachRef` keeps the latest closure so the timeout sees the post-paste draft.
-  const runCoachRef = useRef(runCoach);
+  // Keep the latest assessment closure so the timeout sees the post-paste draft.
+  const runAssessmentRef = useRef(runAssessment);
   useEffect(() => {
-    runCoachRef.current = runCoach;
+    runAssessmentRef.current = runAssessment;
   });
   const lastAutoCheckRef = useRef("");
   const [pasteNonce, setPasteNonce] = useState(0);
   useEffect(() => {
     if (pasteNonce === 0) return;
-    const id = window.setTimeout(() => void runCoachRef.current("auto_check"), 800);
+    const id = window.setTimeout(() => void runAssessmentRef.current("auto_check"), 800);
     return () => window.clearTimeout(id);
   }, [pasteNonce]);
   function triggerAutoCheck() {
@@ -3661,13 +4750,13 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
 
       const buf = await file.arrayBuffer();
       const pdf: PdfDoc = await w.pdfjsLib.getDocument({ data: buf }).promise;
-      let full = "";
+      const pages: string[] = [];
       for (let p = 1; p <= pdf.numPages; p++) {
         const page = await pdf.getPage(p);
         const tc = await page.getTextContent();
-        full += tc.items.map((i) => i.str ?? "").join(" ") + "\n\n";
+        pages.push(tc.items.map((i) => i.str ?? "").join(" "));
       }
-      updateProfile({ essayDraft: full.trim() });
+      updateProfile({ essayDraft: normalizePdfDraftText(pages) });
       setPdfStatus(`Imported ${pdf.numPages} pages from ${file.name}.`);
       triggerAutoCheck();
     } catch (e) {
@@ -3742,14 +4831,9 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
           </button>
 
           <div className="flex min-w-0 flex-1 flex-col justify-center">
-            <input
-              type="text"
-              value={essayTitle}
-              onChange={(e) => updateProfile({ essayTitle: e.target.value })}
-              placeholder="Untitled scholarship essay"
-              aria-label="Essay title"
-              className="w-full truncate border-none bg-transparent p-0 text-[15px] font-semibold leading-tight text-foreground outline-none placeholder:text-muted-foreground"
-            />
+            <div className="w-full truncate text-[15px] font-semibold leading-tight text-foreground">
+              {user?.activeScholarship?.name || essayTitle || "Scholarship essay"}
+            </div>
             <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
               <span className={`inline-block size-1.5 rounded-full ${savedAt ? "bg-success" : "bg-muted-foreground/40"}`} />
               {savedLabel}
@@ -3808,29 +4892,14 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
 
             <button
               type="button"
-              onClick={() => runCoach()}
-              disabled={coachLoading}
-              className="ml-0.5 inline-flex items-center gap-1.5 rounded-lg bg-info px-3 py-2 text-[13px] font-medium text-white transition-opacity duration-150 hover:opacity-90 disabled:opacity-60"
+              onClick={() => void runEvaluation()}
+              disabled={wordCount < 30 || coachLoading || isEvaluating}
+              aria-busy={coachLoading || isEvaluating}
+              className={`ml-0.5 inline-flex items-center gap-1.5 rounded-lg bg-info px-4 py-2 text-[13px] font-medium text-white transition-opacity duration-150 hover:opacity-90 disabled:opacity-40 ${coachLoading || isEvaluating ? "agent-loading" : ""}`}
             >
-              <Wand2 className={`size-4 ${coachLoading ? "animate-pulse" : ""}`} />
-              {coachLoading ? "Coaching…" : "Run coach"}
+              {coachLoading || isEvaluating ? <Spinner className="size-4" /> : <Gauge className="size-4" />}
+              {coachLoading || isEvaluating ? "Evaluating…" : "Evaluate"}
             </button>
-
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <div className="hidden md:block">
-                  <CoachRunButton
-                    label={wordCount < 30 ? "Write more" : "Evaluate"}
-                    loadingLabel="Analyzing…"
-                    disabled={wordCount < 30}
-                    onStatus={setAnalysisStatus}
-                    onRunningChange={handleRunningChange}
-                    className="rounded-lg border border-border px-3 py-2 text-[13px] font-medium text-foreground transition-colors duration-150 hover:bg-accent disabled:opacity-40"
-                  />
-                </div>
-              </TooltipTrigger>
-              <TooltipContent>Score the draft (readiness index)</TooltipContent>
-            </Tooltip>
 
             <Tooltip>
               <TooltipTrigger asChild>
@@ -3841,24 +4910,39 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
               <TooltipContent>{score == null ? "Run an evaluation to get your essay score" : `Essay score: ${score}/100`}</TooltipContent>
             </Tooltip>
 
-            <button
-              type="button"
-              onClick={() => setPanelOpen((open) => !open)}
-              aria-label={panelOpen ? "Hide panel" : "Show panel"}
-              className="ml-0.5 hidden size-9 place-items-center rounded-lg text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground lg:grid"
-            >
-              {panelOpen ? <ChevronRight className="size-4" /> : <ChevronLeft className="size-4" />}
-            </button>
           </div>
         </div>
 
-        {(pdfStatus || analysisStatus || bgStatus) && (
-          <div className="flex items-center gap-1.5 border-t border-border bg-accent/40 px-4 py-1.5 text-[11px] text-muted-foreground">
-            {bgStatus && <span className="size-2.5 shrink-0 animate-spin rounded-full border-2 border-info/30 border-t-info" />}
-            {bgStatus ?? pdfStatus ?? analysisStatus}
-          </div>
-        )}
       </header>
+
+      <section className="border-b border-border bg-card">
+        <div className="mx-auto max-w-[1440px] px-4 py-3 md:px-6">
+          <div className="flex items-center gap-3">
+            <label htmlFor="workspace-essay-prompt" className="shrink-0 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+              Essay prompt
+            </label>
+            <input
+              id="workspace-essay-prompt"
+              type="text"
+              value={essayPrompt}
+              onChange={(event) => updateEssayPrompt(event.target.value)}
+              placeholder="Paste or enter the scholarship essay prompt here."
+              className="h-10 min-w-0 flex-1 rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground/60 focus:border-info focus:ring-2 focus:ring-info/10"
+            />
+            <button
+              type="button"
+              onClick={() => void runOutlineGeneration()}
+              disabled={outlineLoading || !essayPrompt.trim()}
+              aria-busy={outlineLoading}
+              className={`inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-lg bg-primary px-5 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${outlineLoading ? "agent-loading" : ""}`}
+            >
+              {outlineLoading ? <Spinner className="size-4" /> : user?.personalizedOutline?.outline ? <RefreshCw className="size-4" /> : <Sparkles className="size-4" />}
+              {outlineLoading ? "Generating Outline…" : user?.personalizedOutline?.outline ? "Regenerate Outline" : "Generate Outline"}
+            </button>
+          </div>
+          {outlineStatus && <p className="mt-2 text-xs text-muted-foreground">{outlineStatus}</p>}
+        </div>
+      </section>
 
       {/* Zone 2 (editor) + Zone 3 (sidebar) */}
       <div className="mx-auto flex max-w-[1440px] flex-col items-stretch lg:flex-row lg:items-start">
@@ -3868,6 +4952,8 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
               ref={editorApiRef}
               value={draft}
               onChange={(v) => updateProfile({ essayDraft: v })}
+              richValue={user?.essayDraftHtml}
+              onRichChange={(v) => updateProfile({ essayDraftHtml: v })}
               suggestions={suggestions}
               onDismiss={dismissSuggestion}
               onOpenHighlights={openHighlights}
@@ -3879,34 +4965,57 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
         </div>
 
         <div
-          className={`w-full overflow-hidden transition-[max-height,opacity,width] duration-300 ease-out lg:shrink-0 ${
-            panelOpen
-              ? "max-h-[1200px] opacity-100 lg:w-[440px]"
-              : "max-h-0 opacity-0 pointer-events-none lg:max-h-none lg:w-0"
+          style={{ "--essay-panel-width": `${panelWidth}px` } as React.CSSProperties}
+          className={`relative max-h-[1200px] w-full overflow-visible lg:w-[var(--essay-panel-width)] lg:shrink-0 ${
+            panelResizing ? "transition-none" : "transition-[width] duration-300 ease-out"
           }`}
         >
-          <EssayWorkspacePanel
-            activeTab={activeTab}
-            onTabChange={setActiveTab}
-            isEvaluating={isEvaluating}
-            onCollapse={() => setPanelOpen(false)}
-            suggestions={suggestions}
-            onAccept={acceptSuggestion}
-            onDismiss={dismissSuggestion}
-            onReveal={revealSuggestion}
-            onAcceptAllQuickFixes={acceptAllQuickFixes}
-            quickFixCount={quickFixSuggestions.length}
-            onRunCoach={runCoach}
-            coachLoading={coachLoading}
-            coachSummary={coachSummary}
-            coachWarnings={coachWarnings}
-            coachResult={coachResult}
-            coachUpdatedAt={coachUpdatedAt}
-            coachDraftChanged={!!coachUpdatedAt && draft !== coachDraftAtRun}
-            now={nowTick}
-            covered={coveredPoints}
-            onToggleCovered={toggleCovered}
-          />
+          <div
+            role="separator"
+            aria-label="Resize coaching sidebar"
+            aria-orientation="vertical"
+            aria-valuemin={300}
+            aria-valuemax={720}
+            aria-valuenow={Math.round(panelWidth)}
+            tabIndex={0}
+            onPointerDown={(event) => {
+              event.preventDefault();
+              setPanelResizing(true);
+            }}
+            onKeyDown={(event) => {
+              if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+              event.preventDefault();
+              const direction = event.key === "ArrowLeft" ? 1 : -1;
+              setPanelWidth((width) => Math.max(300, Math.min(720, width + direction * 24)));
+            }}
+            className={`absolute inset-y-0 left-0 z-30 hidden w-2 -translate-x-1/2 cursor-col-resize touch-none items-center justify-center outline-none lg:flex ${
+              panelResizing ? "bg-info/10" : "hover:bg-info/10 focus:bg-info/10"
+            }`}
+          >
+            <span className={`h-12 w-1 rounded-full transition-colors ${panelResizing ? "bg-info" : "bg-border group-hover:bg-info"}`} />
+          </div>
+          <div>
+            <EssayWorkspacePanel
+              activeTab={activeTab}
+              onTabChange={setActiveTab}
+              isEvaluating={isEvaluating}
+              evaluationProgress={evaluationProgress}
+              suggestions={suggestions}
+              onAccept={acceptSuggestion}
+              onDismiss={dismissSuggestion}
+              onReveal={revealSuggestion}
+              onAcceptAllQuickFixes={acceptAllQuickFixes}
+              quickFixCount={quickFixSuggestions.length}
+              coachLoading={coachLoading}
+              coachSummary={coachSummary}
+              coachResult={coachResult}
+              coachUpdatedAt={coachUpdatedAt}
+              outlineLoading={outlineLoading}
+              outlineStatus={outlineStatus}
+              covered={coveredPoints}
+              onToggleCovered={toggleCovered}
+            />
+          </div>
         </div>
       </div>
     </div>
@@ -3917,179 +5026,143 @@ function EssayWorkspacePanel({
   activeTab,
   onTabChange,
   isEvaluating,
-  onCollapse,
+  evaluationProgress,
   suggestions,
   onAccept,
   onDismiss,
   onReveal,
   onAcceptAllQuickFixes,
   quickFixCount,
-  onRunCoach,
   coachLoading,
   coachSummary,
-  coachWarnings,
   coachResult,
   coachUpdatedAt,
-  coachDraftChanged,
-  now,
+  outlineLoading,
+  outlineStatus,
   covered,
   onToggleCovered,
 }: {
   activeTab: WorkspaceTab;
   onTabChange: (tab: WorkspaceTab) => void;
   isEvaluating: boolean;
-  onCollapse: () => void;
+  evaluationProgress: number;
   suggestions: Suggestion[];
   onAccept: (s: Suggestion) => void;
   onDismiss: (s: Suggestion) => void;
   onReveal: (s: Suggestion) => void;
   onAcceptAllQuickFixes: () => void;
   quickFixCount: number;
-  onRunCoach: (mode?: EssayCoachMode, writingSupportLevel?: WritingSupportLevel) => void;
   coachLoading: boolean;
   coachSummary: string | null;
-  coachWarnings: string[];
   coachResult: EssayCoachResult | null;
   coachUpdatedAt: number | null;
-  coachDraftChanged: boolean;
-  now: number;
+  outlineLoading: boolean;
+  outlineStatus: string | null;
   covered: Set<string>;
   onToggleCovered: (id: string) => void;
 }) {
-  const { user, updateProfile } = useUser();
-  const [outlineLoading, setOutlineLoading] = useState(false);
-  const [outlineStatus, setOutlineStatus] = useState<string | null>(null);
-  const outlineKey = useMemo(() => {
-    const scholarship = user?.activeScholarship ?? {};
-    return JSON.stringify({
-      scholarshipName: scholarship.name ?? "",
-      scholarshipUrl: scholarship.url ?? scholarship.officialWebsite ?? "",
-      prompt: scholarship.essayPrompts || scholarship.otherRequiredMaterials || scholarship.requirementsPreview || "",
-      requirementsPreview: scholarship.requirementsPreview ?? "",
-      updatedAt: scholarship.extractionCompletedAt ?? "",
-      profileName: user?.name ?? "",
-      educationLevel: user?.educationLevel ?? "",
-      careerGoal: user?.careerGoal ?? "",
-      highSchool: user?.highSchool ?? {},
-      undergrad: user?.undergrad ?? {},
-      graduate: user?.graduate ?? {},
-      researchExperience: user?.researchExperience ?? [],
-      workExperience: user?.workExperience ?? [],
-      optional: user?.optional ?? {},
-      prompts: user?.prompts ?? {},
-    });
-  }, [user]);
-
-  async function runOutlineGeneration(force = false) {
-    if (!user || outlineLoading) return;
-    if (!force && user.personalizedOutline?.generatedForKey === outlineKey) return;
-    setOutlineLoading(true);
-    setOutlineStatus("Building your personalized outline from the scholarship requirements and your profile...");
-    try {
-      const result = await generatePersonalizedOutline(buildOutlinePayload(user));
-      updateProfile({ personalizedOutline: { ...result, generatedForKey: outlineKey } });
-      setOutlineStatus(result.status === "error" ? "A fallback outline is ready." : "Personalized outline ready.");
-    } catch (error) {
-      setOutlineStatus(error instanceof Error ? error.message : "Could not generate the outline.");
-    } finally {
-      setOutlineLoading(false);
-    }
-  }
-
-  // Auto-generate the outline as soon as the student reaches the workspace (the
-  // panel mounts on entry), not only when the Outline tab is opened.
-  useEffect(() => {
-    if (!user) return;
-    if (user.personalizedOutline?.generatedForKey === outlineKey) return;
-    void runOutlineGeneration(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [outlineKey, user?.personalizedOutline?.generatedForKey]);
+  const { user } = useUser();
 
   const tabs: Array<{ id: WorkspaceTab; label: string; icon: typeof ListChecks; count?: number }> = [
     { id: "outline", label: "Outline", icon: ListChecks },
-    { id: "coach", label: "Coach", icon: Wand2 },
-    { id: "evaluation", label: "Evaluation", icon: Gauge },
     { id: "highlights", label: "Fixes", icon: Sparkles, count: suggestions.length },
+    { id: "evaluation", label: "Evaluation", icon: Gauge },
+    { id: "reader", label: "Reader", icon: MessageSquare },
   ];
 
   return (
-    <aside className="w-full shrink-0 border-t border-border bg-card lg:sticky lg:top-[56px] lg:h-[calc(100vh-120px)] lg:w-[440px] lg:overflow-y-auto lg:border-l lg:border-t-0">
-      <div className="sticky top-0 z-10 flex items-center gap-1 border-b border-border bg-card/95 p-2 backdrop-blur">
-        <div className="flex flex-1 items-center gap-1 rounded-lg bg-muted/60 p-1">
-          {tabs.map((tab) => {
-            const Icon = tab.icon;
-            const active = activeTab === tab.id;
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => onTabChange(tab.id)}
-                className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-[12px] font-medium transition-colors duration-150 ${
-                  active ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                <Icon className="size-3.5" />
-                <span className="hidden sm:inline">{tab.label}</span>
-                {tab.count ? (
-                  <span className={`grid h-4 min-w-4 place-items-center rounded-full px-1 text-[10px] font-bold ${active ? "bg-info text-white" : "bg-info/15 text-info"}`}>
-                    {tab.count}
-                  </span>
-                ) : null}
-              </button>
-            );
-          })}
+    <aside
+      aria-busy={isEvaluating}
+      className={`relative w-full shrink-0 border-t border-border bg-card lg:sticky lg:top-[56px] lg:h-[calc(100vh-120px)] lg:border-l lg:border-t-0 ${
+        isEvaluating ? "overflow-hidden" : "lg:overflow-y-auto"
+      }`}
+    >
+      <div className={isEvaluating ? "pointer-events-none select-none opacity-30 grayscale" : ""}>
+        <div className="sticky top-0 z-10 flex items-center gap-1 border-b border-border bg-card/95 p-2 backdrop-blur">
+          <div className="flex flex-1 items-center gap-1 rounded-lg bg-muted/60 p-1">
+            {tabs.map((tab) => {
+              const Icon = tab.icon;
+              const active = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => onTabChange(tab.id)}
+                  className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-[12px] font-medium transition-colors duration-150 ${
+                    active ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <Icon className="size-3.5" />
+                  <span className="hidden sm:inline">{tab.label}</span>
+                  {tab.count ? (
+                    <span className={`grid h-4 min-w-4 place-items-center rounded-full px-1 text-[10px] font-bold ${active ? "bg-info text-white" : "bg-info/15 text-info"}`}>
+                      {tab.count}
+                    </span>
+                  ) : null}
+                </button>
+              );
+            })}
+          </div>
         </div>
-        <button
-          type="button"
-          onClick={onCollapse}
-          aria-label="Collapse panel"
-          className="hidden size-8 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground lg:grid"
-        >
-          <ChevronRight className="size-4" />
-        </button>
+        <div key={activeTab} className="animate-in fade-in slide-in-from-bottom-1 p-4 duration-200">
+          {activeTab === "outline" && (
+            <PersonalizedOutlinePanel
+              outline={user?.personalizedOutline}
+              loading={outlineLoading}
+              status={outlineStatus}
+              covered={covered}
+              onToggleCovered={onToggleCovered}
+            />
+          )}
+          {activeTab === "reader" && (
+            <ReaderPerspectiveTab result={coachResult} loading={coachLoading} />
+          )}
+          {activeTab === "evaluation" && (
+            <WorkspaceEvaluationTab
+              isEvaluating={isEvaluating}
+              coachResult={coachResult}
+              coachLoading={coachLoading}
+              coachSummary={coachSummary}
+            />
+          )}
+          {activeTab === "highlights" && (
+            <WorkspaceHighlightsTab
+              isEvaluating={isEvaluating}
+              suggestions={suggestions}
+              onAccept={onAccept}
+              onDismiss={onDismiss}
+              onReveal={onReveal}
+              onAcceptAllQuickFixes={onAcceptAllQuickFixes}
+              quickFixCount={quickFixCount}
+              coachLoading={coachLoading}
+              hasAssessment={!!coachUpdatedAt}
+            />
+          )}
+        </div>
       </div>
-      <div key={activeTab} className="animate-in fade-in slide-in-from-bottom-1 p-4 duration-200">
-        {activeTab === "outline" && (
-          <PersonalizedOutlinePanel
-            outline={user?.personalizedOutline}
-            scholarshipName={user?.activeScholarship?.name}
-            wordLimit={buildOutlinePayload(user).word_limit}
-            loading={outlineLoading}
-            status={outlineStatus}
-            onRegenerate={() => void runOutlineGeneration(true)}
-            covered={covered}
-            onToggleCovered={onToggleCovered}
-          />
-        )}
-        {activeTab === "coach" && (
-          <WorkspaceCoachTab
-            result={coachResult}
-            loading={coachLoading}
-            onRunCoach={onRunCoach}
-            coachSummary={coachSummary}
-            coachWarnings={coachWarnings}
-            updatedAt={coachUpdatedAt}
-            draftChanged={coachDraftChanged}
-            now={now}
-          />
-        )}
-        {activeTab === "evaluation" && <WorkspaceEvaluationTab isEvaluating={isEvaluating} />}
-        {activeTab === "highlights" && (
-          <WorkspaceHighlightsTab
-            isEvaluating={isEvaluating}
-            suggestions={suggestions}
-            onAccept={onAccept}
-            onDismiss={onDismiss}
-            onReveal={onReveal}
-            onAcceptAllQuickFixes={onAcceptAllQuickFixes}
-            quickFixCount={quickFixCount}
-            onRunCoach={onRunCoach}
-            coachLoading={coachLoading}
-            coachSummary={coachSummary}
-            coachWarnings={coachWarnings}
-          />
-        )}
-      </div>
+      {isEvaluating && (
+        <div className="absolute inset-0 z-50 grid place-items-center bg-muted/80 backdrop-blur-[1px]">
+          <div className="w-[min(82%,360px)] rounded-xl border border-border bg-card/95 p-4 shadow-sm">
+            <div className="flex items-center justify-between gap-3 text-sm font-medium text-muted-foreground">
+              <span>Regenerating Fixes, Evaluation, and Reader…</span>
+              <span className="tabular-nums text-foreground">{evaluationProgress}%</span>
+            </div>
+            <div
+              className="mt-3 h-2 overflow-hidden rounded-full bg-border"
+              role="progressbar"
+              aria-label="Evaluation progress"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={evaluationProgress}
+            >
+              <div
+                className="h-full rounded-full bg-info transition-[width] duration-500 ease-out"
+                style={{ width: `${evaluationProgress}%` }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </aside>
   );
 }
@@ -4181,77 +5254,21 @@ function OutlineCheckRow({
   );
 }
 
-function OutlineGroup({
-  id,
-  title,
-  icon: Icon,
-  total,
-  coveredCount,
-  open,
-  onToggle,
-  children,
-}: {
-  id: string;
-  title: string;
-  icon: typeof Target;
-  total: number;
-  coveredCount: number;
-  open: boolean;
-  onToggle: (id: string) => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="overflow-hidden rounded-xl border border-border">
-      <button
-        type="button"
-        onClick={() => onToggle(id)}
-        className="flex w-full items-center gap-2 bg-accent/40 px-3 py-2.5 text-left transition-colors duration-150 hover:bg-accent/70"
-      >
-        <Icon className="size-4 text-info" />
-        <span className="flex-1 text-[13px] font-semibold">{title}</span>
-        <span className="text-[11px] tabular-nums text-muted-foreground">{coveredCount}/{total}</span>
-        <ChevronDown className={`size-4 text-muted-foreground transition-transform duration-200 ${open ? "rotate-180" : ""}`} />
-      </button>
-      {open && <div className="space-y-2 p-2.5">{children}</div>}
-    </div>
-  );
-}
-
 function PersonalizedOutlinePanel({
   outline,
-  scholarshipName,
-  wordLimit,
   loading,
   status,
-  onRegenerate,
   covered,
   onToggleCovered,
 }: {
   outline?: PersonalizedOutlineResult;
-  scholarshipName?: string;
-  wordLimit?: string;
   loading: boolean;
   status?: string | null;
-  onRegenerate: () => void;
   covered: Set<string>;
   onToggleCovered: (id: string) => void;
 }) {
   const [copyStatus, setCopyStatus] = useState("");
-  const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set(["core"]));
-  const toggleGroup = (id: string) =>
-    setOpenGroups((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
   const data = outline?.outline;
-
-  useEffect(() => {
-    if (!loading && data) {
-      setOpenGroups(new Set(["core"]));
-    }
-  }, [loading, Boolean(data), outline?.generatedForKey]);
 
   async function copyOutline() {
     const text = outlineToText(outline);
@@ -4263,37 +5280,9 @@ function PersonalizedOutlinePanel({
 
   return (
     <div className="text-foreground">
-      <div className="border-b border-border pb-4">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="inline-flex items-center gap-2 rounded-md bg-info/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-info">
-              <Sparkles className="size-3.5" />
-              Personalized Outline
-            </div>
-            <div className="mt-2 truncate font-display text-lg font-semibold leading-tight">
-              {scholarshipName || "Current scholarship"}
-            </div>
-            {wordLimit && (
-              <div className="mt-2 inline-flex items-center rounded-md border border-border bg-background px-2.5 py-1 text-xs text-muted-foreground">
-                {wordLimit}
-              </div>
-            )}
-          </div>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                onClick={onRegenerate}
-                disabled={loading}
-                className="grid size-9 shrink-0 place-items-center rounded-md border border-border text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
-                aria-label="Regenerate outline"
-              >
-                <RefreshCw className={`size-4 ${loading ? "animate-spin" : ""}`} />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent>{loading ? "Generating outline" : "Regenerate outline"}</TooltipContent>
-          </Tooltip>
-        </div>
+      <div className="flex items-center gap-2 px-1 text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+        <Sparkles className="size-3.5 text-info" />
+        Personalized Outline
       </div>
 
       {loading && (
@@ -4321,7 +5310,7 @@ function PersonalizedOutlinePanel({
 
       {!loading && !data && (
         <div className="mt-5 rounded-lg border border-dashed border-border bg-background p-4 text-sm text-muted-foreground">
-          Add a scholarship prompt or requirement details to generate a personalized outline.
+          Review the essay prompt at the top of the workspace, then select Generate Outline.
         </div>
       )}
 
@@ -4329,37 +5318,17 @@ function PersonalizedOutlinePanel({
         (() => {
           type Pt = { id: string; label: string; detail?: string };
           const points = buildOutlinePoints(outline);
-          const corePoints: Pt[] = points.filter((p) => p.group === "core");
           const strategyPoints: Pt[] = points.filter((p) => p.group === "strategy");
           const structurePoints: Pt[] = points.filter((p) => p.group === "structure");
-          const keyPoints: Pt[] = points.filter((p) => p.group === "keypoints");
           const sections = data.sections ?? [];
-          const total = points.length;
-          const coveredCount = points.filter((p) => covered.has(p.id)).length;
-          const cc = (pts: Pt[]) => pts.filter((p) => covered.has(p.id)).length;
-          const pct = total ? Math.round((coveredCount / total) * 100) : 0;
-
+          const namedIntroductionIndex = sections.findIndex((section) => /intro|opening/i.test(section.section_name ?? ""));
+          const namedConclusionIndex = sections.findIndex((section) => /conclu|closing/i.test(section.section_name ?? ""));
+          const introductionIndex = namedIntroductionIndex >= 0 ? namedIntroductionIndex : 0;
+          const conclusionIndex = namedConclusionIndex >= 0 ? namedConclusionIndex : Math.max(0, sections.length - 1);
           return (
             <div className="mt-4 space-y-3">
-              <div className="rounded-xl border border-border bg-background p-3">
-                <div className="flex items-center justify-between text-[12px]">
-                  <span className="font-semibold uppercase tracking-[0.12em] text-muted-foreground">Coverage</span>
-                  <span className="font-semibold tabular-nums text-foreground">{coveredCount}/{total} covered</span>
-                </div>
-                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-border">
-                  <div className="h-full rounded-full bg-info transition-all duration-500" style={{ width: `${pct}%` }} />
-                </div>
-                <div className="mt-1.5 text-[11px] text-muted-foreground">AI-detected from your draft — tap any point to adjust.</div>
-              </div>
-
-              <OutlineGroup id="core" title="Core Message" icon={Target} total={corePoints.length} coveredCount={cc(corePoints)} open={openGroups.has("core")} onToggle={toggleGroup}>
-                {corePoints.map((p) => (
-                  <OutlineCheckRow key={p.id} id={p.id} label={p.label} detail={p.detail} covered={covered} onToggle={onToggleCovered} />
-                ))}
-              </OutlineGroup>
-
               {!!structurePoints.length && (
-                <OutlineGroup id="structure" title="Structure" icon={ClipboardList} total={structurePoints.length} coveredCount={cc(structurePoints)} open={openGroups.has("structure")} onToggle={toggleGroup}>
+                <div className="space-y-2">
                   {sections.map((s, i) => (
                     <OutlineCheckRow key={`p-sec-${i}`} id={`p-sec-${i}`} label={s.section_name || `Section ${i + 1}`} detail={s.purpose} covered={covered} onToggle={onToggleCovered}>
                       {!!s.scholarship_requirement_addressed?.length && (
@@ -4379,33 +5348,35 @@ function PersonalizedOutlinePanel({
                           ))}
                         </ul>
                       )}
-                      {s.estimated_word_count && <div className="mt-1.5 text-[11px] text-muted-foreground">~{s.estimated_word_count}</div>}
+                      {i === introductionIndex && data.recommended_opening && (
+                        <div className="mt-2 rounded-md bg-info/5 px-2.5 py-2 text-[12px] leading-relaxed text-muted-foreground">
+                          <span className="font-semibold text-foreground">Opening tip:</span> {data.recommended_opening}
+                        </div>
+                      )}
+                      {i === conclusionIndex && data.recommended_conclusion && (
+                        <div className="mt-2 rounded-md bg-info/5 px-2.5 py-2 text-[12px] leading-relaxed text-muted-foreground">
+                          <span className="font-semibold text-foreground">Conclusion tip:</span> {data.recommended_conclusion}
+                        </div>
+                      )}
+                      {s.estimated_word_count && (
+                        <div className="mt-1.5 text-[11px] text-muted-foreground">
+                          ~{s.estimated_word_count}{/\bwords?\b/i.test(s.estimated_word_count) ? "" : " words"}
+                        </div>
+                      )}
                     </OutlineCheckRow>
                   ))}
-                </OutlineGroup>
-              )}
-
-              {!!keyPoints.length && (
-                <OutlineGroup id="keypoints" title="Key Points to Hit" icon={ListChecks} total={keyPoints.length} coveredCount={cc(keyPoints)} open={openGroups.has("keypoints")} onToggle={toggleGroup}>
-                  {keyPoints.map((p) => (
-                    <OutlineCheckRow key={p.id} id={p.id} label={p.label} detail={p.detail} covered={covered} onToggle={onToggleCovered} />
-                  ))}
-                </OutlineGroup>
+                </div>
               )}
 
               {!!strategyPoints.length && (
-                <OutlineGroup id="strategy" title="Strategy Notes" icon={Lightbulb} total={strategyPoints.length} coveredCount={cc(strategyPoints)} open={openGroups.has("strategy")} onToggle={toggleGroup}>
-                  {strategyPoints.map((p) => (
-                    <OutlineCheckRow key={p.id} id={p.id} label={p.label} covered={covered} onToggle={onToggleCovered} />
+                <div className="space-y-2 pt-1">
+                  <div className="flex items-center gap-2 px-1 text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                    <Lightbulb className="size-3.5 text-info" />
+                    Strategy Notes
+                  </div>
+                  {strategyPoints.map((point) => (
+                    <OutlineCheckRow key={point.id} id={point.id} label={point.label} detail={point.detail} covered={covered} onToggle={onToggleCovered} />
                   ))}
-                </OutlineGroup>
-              )}
-
-              {(data.recommended_opening || data.recommended_conclusion) && (
-                <div className="rounded-xl border border-border bg-background p-3">
-                  <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Opening &amp; Closing Tips</div>
-                  {data.recommended_opening && <p className="mt-2 text-[13px] leading-relaxed"><span className="font-medium">Opening:</span> {data.recommended_opening}</p>}
-                  {data.recommended_conclusion && <p className="mt-2 text-[13px] leading-relaxed"><span className="font-medium">Conclusion:</span> {data.recommended_conclusion}</p>}
                 </div>
               )}
 
@@ -4451,51 +5422,6 @@ function PanelEmpty({ label, message }: { label: string; message: string }) {
   );
 }
 
-function ReadinessRow({ label, value }: { label: string; value: AnalysisScore }) {
-  const [open, setOpen] = useState(false);
-  const s = typeof value.score === "number" ? value.score : 0;
-  const hasDetail = !!value.coaching?.trim();
-  return (
-    <div className="rounded-lg border border-border bg-background p-3">
-      <button
-        type="button"
-        onClick={() => hasDetail && setOpen((o) => !o)}
-        className="flex w-full items-center justify-between gap-2 text-left"
-        aria-expanded={open}
-      >
-        <span className="flex items-center gap-1.5 text-[13px] font-medium">
-          {label}
-          {hasDetail && <ChevronDown className={`size-3.5 text-muted-foreground transition-transform duration-200 ${open ? "rotate-180" : ""}`} />}
-        </span>
-        <span className="text-[12px] font-semibold tabular-nums" style={{ color: scoreColor(s) }}>
-          {s}
-        </span>
-      </button>
-      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-border">
-        <div className="h-full rounded-full transition-all duration-500" style={{ width: `${s}%`, background: scoreColor(s) }} />
-      </div>
-      {value.level && <div className="mt-1.5 text-[11px] text-muted-foreground">{value.level}</div>}
-      {open && hasDetail && (
-        <div className="mt-2 border-t border-border pt-2 text-[12px] leading-relaxed text-muted-foreground animate-in fade-in slide-in-from-top-1 duration-150">
-          {value.coaching}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function EvaluationSkeleton() {
-  return (
-    <div className="space-y-3">
-      <Skeleton className="h-4 w-40" />
-      <Skeleton className="h-16 w-full rounded-xl" />
-      {[0, 1, 2, 3, 4].map((i) => (
-        <Skeleton key={i} className="h-14 w-full rounded-lg" />
-      ))}
-    </div>
-  );
-}
-
 function HighlightsSkeleton() {
   return (
     <div className="space-y-3">
@@ -4520,12 +5446,10 @@ function CoachSkeleton() {
 
 type CoachTone = "success" | "warning" | "danger" | "info" | "muted";
 
-function CoachList({ label, items, tone, icon: Icon }: { label: string; items?: string[]; tone: CoachTone; icon?: typeof Check }) {
-  const [showAll, setShowAll] = useState(false);
+function CoachList({ label, items, tone, icon: Icon, maxItems }: { label: string; items?: string[]; tone: CoachTone; icon?: typeof Check; maxItems?: number }) {
   const clean = (items ?? []).filter(Boolean);
   if (!clean.length) return null;
-  const visible = showAll ? clean : clean.slice(0, 2);
-  const hiddenCount = Math.max(0, clean.length - 2);
+  const visible = typeof maxItems === "number" ? clean.slice(0, maxItems) : clean;
   const toneText: Record<CoachTone, string> = {
     success: "text-success",
     warning: "text-warning",
@@ -4554,353 +5478,67 @@ function CoachList({ label, items, tone, icon: Icon }: { label: string; items?: 
           </li>
         ))}
       </ul>
-      {hiddenCount > 0 && (
-        <button
-          type="button"
-          onClick={() => setShowAll((open) => !open)}
-          className="mt-1 inline-flex items-center rounded-md px-2 py-1 text-[12px] font-semibold text-info transition-colors hover:bg-info/10 hover:text-info"
-          aria-expanded={showAll}
-        >
-          {showAll ? "Show less ▲" : `Show ${hiddenCount} more ▼`}
-        </button>
+    </div>
+  );
+}
+
+function DetailedFeedbackItem({ item }: { item: RevisionPriority }) {
+  const includePromptContext = (text: string) => text
+    .replace(/scholarship mission/gi, "Essay Prompt / Scholarship Mission")
+    .replace(/the scholarship(?:'s|’s) goals/gi, "the essay prompt and scholarship's goals");
+  return (
+    <div>
+      <div className="text-[13px] font-semibold leading-snug text-foreground">
+        {includePromptContext(item.priority ?? "")}
+      </div>
+      {item.why_it_matters && (
+        <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground">
+          {includePromptContext(item.why_it_matters)}
+        </p>
+      )}
+      {item.how_to_fix && (
+        <p className="mt-2 text-[12px] leading-relaxed text-foreground/85">
+          <span className="font-medium text-foreground">How: </span>
+          {includePromptContext(item.how_to_fix)}
+        </p>
       )}
     </div>
   );
 }
 
-function CoachAccordion({
-  id,
-  title,
-  score,
-  open,
-  onToggle,
-  icon: Icon,
-  children,
-}: {
-  id: string;
-  title: string;
-  score?: number;
-  open: boolean;
-  onToggle: (id: string) => void;
-  icon?: typeof Check;
-  children: React.ReactNode;
-}) {
-  const hasScore = typeof score === "number";
-  return (
-    <div className="overflow-hidden rounded-xl border border-border bg-background">
-      <button
-        type="button"
-        onClick={() => onToggle(id)}
-        aria-expanded={open}
-        className="flex w-full items-center gap-2 bg-accent/40 px-3 py-2.5 text-left transition-colors duration-150 hover:bg-accent/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/30"
-      >
-        {Icon && <Icon className="size-4 text-info" />}
-        <span className="min-w-0 flex-1 text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">{title}</span>
-        <span
-          className="shrink-0 text-[12px] font-semibold tabular-nums text-muted-foreground"
-          style={hasScore ? { color: scoreColor(score) } : undefined}
-        >
-          {hasScore ? `${score}/100` : "Not scored"}
-        </span>
-        <ChevronDown className={`size-4 shrink-0 text-muted-foreground transition-transform duration-200 ${open ? "rotate-180" : ""}`} />
-      </button>
-      {open && <div className="space-y-2.5 p-3">{children}</div>}
-    </div>
+function ReaderPerspectiveTab({ result, loading }: { result: EssayCoachResult | null; loading: boolean }) {
+  const reviewer = result?.reviewer_simulation;
+  const hasFeedback = !!(
+    reviewer?.reviewer_reaction
+    || reviewer?.likely_strengths_seen_by_reviewer?.length
+    || reviewer?.likely_concerns_seen_by_reviewer?.length
+    || reviewer?.questions_reviewer_may_have?.length
+    || reviewer?.competitiveness_notes?.length
   );
-}
 
-function CoachScoreBar({ label, score }: { label: string; score: number }) {
-  return (
-    <div>
-      <div className="flex items-center justify-between text-[12px]">
-        <span className="font-medium">{label}</span>
-        <span className="font-semibold tabular-nums" style={{ color: scoreColor(score) }}>{score}</span>
-      </div>
-      <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-border">
-        <div className="h-full rounded-full transition-all duration-500" style={{ width: `${score}%`, background: scoreColor(score) }} />
-      </div>
-    </div>
-  );
-}
-
-function RevisionPriorityCard({ item, index }: { item: RevisionPriority; index: number }) {
-  const impact = (item.impact ?? "").toLowerCase();
-  const impactClass = impact.includes("high")
-    ? "bg-destructive/10 text-destructive"
-    : impact.includes("low")
-      ? "bg-success/10 text-success"
-      : "bg-warning/10 text-warning";
-  return (
-    <div className="rounded-lg border border-border bg-background p-3">
-      <div className="flex items-start gap-2">
-        <span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-info text-[11px] font-bold text-white">{index + 1}</span>
-        <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-semibold leading-snug">{item.priority}</div>
-          {item.why_it_matters && <div className="mt-0.5 text-[12px] leading-relaxed text-muted-foreground">{item.why_it_matters}</div>}
-          {item.how_to_fix && (
-            <div className="mt-1.5 text-[12px] leading-relaxed text-foreground/85">
-              <span className="font-medium text-foreground">How: </span>
-              {item.how_to_fix}
-            </div>
-          )}
-          {(item.impact || item.estimated_effort) && (
-            <div className="mt-2 flex flex-wrap gap-1">
-              {item.impact && <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${impactClass}`}>{item.impact} impact</span>}
-              {item.estimated_effort && <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{item.estimated_effort}</span>}
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function WorkspaceCoachTab({
-  result,
-  loading,
-  onRunCoach,
-  coachSummary,
-  coachWarnings,
-  updatedAt,
-  draftChanged,
-  now,
-}: {
-  result: EssayCoachResult | null;
-  loading: boolean;
-  onRunCoach: (mode?: EssayCoachMode, writingSupportLevel?: WritingSupportLevel) => void;
-  coachSummary: string | null;
-  coachWarnings: string[];
-  updatedAt: number | null;
-  draftChanged: boolean;
-  now: number;
-}) {
-  const [showAllPriorities, setShowAllPriorities] = useState(false);
-  const [showAllParagraphFeedback, setShowAllParagraphFeedback] = useState(false);
-  const [openCoachSections, setOpenCoachSections] = useState<Set<string>>(() => new Set());
-  const hasContent = <T extends object>(obj: T | undefined | null): T | undefined =>
-    obj && Object.values(obj).some((v) => (Array.isArray(v) ? v.length > 0 : typeof v === "number" ? v > 0 : !!v))
-      ? obj
-      : undefined;
-  const align = hasContent(result?.prompt_alignment);
-  const ground = hasContent(result?.profile_grounding);
-  const structure = hasContent(result?.structure_feedback);
-  const specificity = hasContent(result?.specificity_feedback);
-  const tone = hasContent(result?.tone_feedback);
-  const reviewer = hasContent(result?.reviewer_simulation);
-  const finalCheck = hasContent(result?.final_check);
-  const priorities = result?.revision_priorities ?? [];
-  const visiblePriorities = showAllPriorities ? priorities : priorities.slice(0, 2);
-  const hiddenPriorityCount = Math.max(0, priorities.length - 2);
-  const quickFixes = result?.quick_fixes ?? [];
-  const deeperTasks = result?.deeper_revision_tasks ?? [];
-  const scoreEntries = Object.entries(result?.overall_scores ?? {});
-  const paragraphFeedback = structure?.paragraph_feedback ?? [];
-  const visibleParagraphFeedback = showAllParagraphFeedback ? paragraphFeedback : paragraphFeedback.slice(0, 2);
-  const hiddenParagraphFeedbackCount = Math.max(0, paragraphFeedback.length - 2);
-  const hasData =
-    !loading &&
-    !!(result && (align || ground || structure || specificity || tone || reviewer || finalCheck || priorities.length || scoreEntries.length));
-
-  function toggleCoachSection(id: string) {
-    setOpenCoachSections((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
+  if (loading) return <CoachSkeleton />;
 
   return (
     <div className="space-y-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <PanelLabel>Coach</PanelLabel>
-          <div className="mt-1 text-[12px] text-muted-foreground">
-            Last updated: {relativeTimeLabel(updatedAt, now)}
-          </div>
-          {draftChanged && (
-            <div className="mt-1 text-[12px] font-medium text-warning">
-              Essay changed since last coach run.
-            </div>
-          )}
-        </div>
-        <button
-          type="button"
-          onClick={() => onRunCoach()}
-          disabled={loading}
-          className="inline-flex min-w-[158px] shrink-0 items-center justify-center gap-2 rounded-lg border border-border bg-background px-3 py-1.5 text-[12px] font-semibold text-foreground transition-colors duration-150 hover:border-info/40 hover:bg-info/10 hover:text-info focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/30 disabled:opacity-50"
-        >
-          <RefreshCw className={`size-3.5 ${loading ? "animate-spin" : ""}`} />
-          {loading ? "Running..." : "Re-run Coach"}
-        </button>
+      <div className="flex items-center gap-2 text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+        <MessageSquare className="size-3.5 text-info" />
+        Reader Perspective Feedback
       </div>
-
-      <button
-        type="button"
-        onClick={() => onRunCoach("final_check")}
-        disabled={loading}
-        className="flex w-full items-center justify-center gap-2 rounded-lg border border-border px-3 py-1.5 text-[12px] font-semibold text-foreground transition-colors duration-150 hover:bg-accent disabled:opacity-50"
-      >
-        <Check className="size-3.5 text-success" />
-        Final check
-      </button>
-
-      {finalCheck && (
-        <div className={`space-y-2 rounded-xl border p-3 ${finalCheck.ready_for_final_review ? "border-success/30 bg-success/5" : "border-warning/30 bg-warning/5"}`}>
-          <div className="flex items-center gap-2">
-            <span className={`grid size-5 place-items-center rounded-full text-[11px] font-bold text-white ${finalCheck.ready_for_final_review ? "bg-success" : "bg-warning"}`}>
-              {finalCheck.ready_for_final_review ? <Check className="size-3.5" /> : "!"}
-            </span>
-            <span className="text-[13px] font-semibold">{finalCheck.ready_for_final_review ? "Ready for final review" : "Not ready for final review"}</span>
-          </div>
-          {finalCheck.submission_warning && (
-            <div className="rounded-md bg-destructive/10 px-2.5 py-1.5 text-[12px] font-medium text-destructive">{finalCheck.submission_warning}</div>
-          )}
-          <CoachList label="Remaining blockers" items={finalCheck.remaining_blockers} tone="danger" />
-          <CoachList label="Final polish notes" items={finalCheck.final_polish_notes} tone="info" />
-        </div>
-      )}
-
-      {coachSummary && (
-        <div className="rounded-xl border border-info/20 bg-info/5 p-3 text-[13px] leading-relaxed text-foreground/85">
-          {coachSummary}
-        </div>
-      )}
-
-      {loading && <CoachSkeleton />}
-
-      {!loading && !hasData && !coachSummary && (
+      {!hasFeedback && (
         <div className="rounded-xl border border-dashed border-border bg-background p-4 text-[13px] leading-relaxed text-muted-foreground">
-          Run the writing coach to check how well your essay answers the scholarship prompt and whether it's grounded in your real profile.
+          Click "Evaluate" to see how a scholarship reader may respond to your essay.
         </div>
       )}
-
-      {!!coachWarnings.length && (
-        <div className="rounded-xl border border-warning/25 bg-warning/5 p-3">
-          <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-warning">Coaching notes</div>
-          <MiniList items={coachWarnings} />
-        </div>
-      )}
-
-      {!!priorities.length && (
-        <div className="space-y-2">
-          <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Top revision priorities</div>
-          {visiblePriorities.map((p, i) => (
-            <RevisionPriorityCard key={i} item={p} index={i} />
-          ))}
-          {hiddenPriorityCount > 0 && (
-            <button
-              type="button"
-              onClick={() => setShowAllPriorities((open) => !open)}
-              className="inline-flex items-center rounded-md px-2 py-1 text-[12px] font-semibold text-info transition-colors hover:bg-info/10 hover:text-info"
-            >
-              {showAllPriorities ? "Show less ▲" : `Show ${hiddenPriorityCount} more ▼`}
-            </button>
-          )}
-        </div>
-      )}
-
-      {!!quickFixes.length && (
-        <div className="rounded-xl border border-success/20 bg-success/5 p-3">
-          <CoachList label="Quick fixes" items={quickFixes} tone="success" icon={Check} />
-        </div>
-      )}
-
-      {!!deeperTasks.length && (
-        <div className="rounded-xl border border-info/20 bg-info/5 p-3">
-          <CoachList label="Deeper revision tasks" items={deeperTasks} tone="info" />
-        </div>
-      )}
-
-      {!!scoreEntries.length && (
-        <div className="space-y-2.5 rounded-xl border border-border bg-background p-3">
-          <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Scores</div>
-          {scoreEntries.map(([key, val]) => (
-            <CoachScoreBar key={key} label={labelize(key)} score={typeof val === "number" ? val : 0} />
-          ))}
-        </div>
-      )}
-
-      {reviewer && (reviewer.reviewer_reaction || reviewer.likely_strengths_seen_by_reviewer?.length || reviewer.likely_concerns_seen_by_reviewer?.length) && (
-        <CoachAccordion id="reviewer" title="Reviewer Simulation" icon={MessageSquare} score={reviewer.competitiveness_score} open={openCoachSections.has("reviewer")} onToggle={toggleCoachSection}>
+      {hasFeedback && reviewer && (
+        <>
           {reviewer.reviewer_reaction && (
             <p className="border-l-2 border-info/40 pl-2.5 text-[13px] italic leading-relaxed text-foreground/85">{reviewer.reviewer_reaction}</p>
           )}
-          <CoachList label="Strengths a reviewer sees" items={reviewer.likely_strengths_seen_by_reviewer} tone="success" icon={Check} />
-          <CoachList label="Concerns a reviewer may have" items={reviewer.likely_concerns_seen_by_reviewer} tone="warning" />
-          <CoachList label="Questions a reviewer may ask" items={reviewer.questions_reviewer_may_have} tone="muted" />
-          <CoachList label="To raise competitiveness" items={reviewer.competitiveness_notes} tone="info" />
-        </CoachAccordion>
-      )}
-
-      {align && (
-        <CoachAccordion id="alignment" title="Prompt Alignment" score={align.alignment_score} open={openCoachSections.has("alignment")} onToggle={toggleCoachSection}>
-          <CoachList label="Covered" items={align.covered_requirements} tone="success" icon={Check} />
-          <CoachList label="Weakly covered" items={align.weakly_covered_requirements} tone="warning" />
-          <CoachList label="Missing" items={align.missing_requirements} tone="danger" />
-          <CoachList label="Notes" items={align.comments} tone="muted" />
-          <CoachList label="Revision tasks" items={align.revision_tasks} tone="info" />
-        </CoachAccordion>
-      )}
-
-      {ground && (
-        <CoachAccordion id="grounding" title="Profile Grounding" score={ground.grounding_score} open={openCoachSections.has("grounding")} onToggle={toggleCoachSection}>
-          <CoachList label="Supported by your profile" items={ground.supported_claims} tone="success" icon={Check} />
-          <CoachList label="Unsupported — verify or soften" items={ground.unsupported_or_risky_claims} tone="danger" />
-          <CoachList label="Strong evidence you haven't used" items={ground.unused_relevant_profile_evidence} tone="info" />
-          <CoachList label="Recommendations" items={ground.recommendations} tone="muted" />
-        </CoachAccordion>
-      )}
-
-      {structure && (
-        <CoachAccordion id="structure-flow" title="Structure & Flow" score={structure.structure_score} open={openCoachSections.has("structure-flow")} onToggle={toggleCoachSection}>
-          {!!paragraphFeedback.length && (
-            <div className="space-y-1.5">
-              {visibleParagraphFeedback.map((pf, i) => (
-                <div key={i} className="rounded-md border border-border/70 p-2">
-                  <div className="text-[12px] font-semibold">
-                    Paragraph {pf.paragraph_number || i + 1}
-                    {pf.priority ? <span className="ml-1 font-normal text-muted-foreground">· {pf.priority}</span> : null}
-                  </div>
-                  {pf.strength && <div className="mt-0.5 text-[12px] text-success">＋ {pf.strength}</div>}
-                  {pf.main_issue && <div className="mt-0.5 text-[12px] text-warning">！ {pf.main_issue}</div>}
-                  {pf.suggestion && <div className="mt-0.5 text-[12px] leading-relaxed text-muted-foreground">{pf.suggestion}</div>}
-                </div>
-              ))}
-              {hiddenParagraphFeedbackCount > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setShowAllParagraphFeedback((open) => !open)}
-                  className="inline-flex items-center rounded-md px-2 py-1 text-[12px] font-semibold text-info transition-colors hover:bg-info/10 hover:text-info"
-                  aria-expanded={showAllParagraphFeedback}
-                >
-                  {showAllParagraphFeedback ? "Show less ▲" : `Show ${hiddenParagraphFeedbackCount} more ▼`}
-                </button>
-              )}
-            </div>
-          )}
-          <CoachList label="Flow issues" items={structure.flow_issues} tone="warning" />
-          <CoachList label="Suggested reordering" items={structure.recommended_reordering} tone="info" />
-          <CoachList label="Structure tasks" items={structure.revision_tasks} tone="muted" />
-        </CoachAccordion>
-      )}
-
-      {specificity && (
-        <CoachAccordion id="specificity" title="Specificity & Impact" score={specificity.specificity_score} open={openCoachSections.has("specificity")} onToggle={toggleCoachSection}>
-          <CoachList label="Vague statements" items={specificity.vague_statements} tone="warning" />
-          <CoachList label="Add concrete detail here" items={specificity.places_to_add_detail} tone="info" />
-          <CoachList label="Impact opportunities" items={specificity.impact_opportunities} tone="success" />
-          <CoachList label="Questions to answer" items={specificity.recommended_questions} tone="muted" />
-        </CoachAccordion>
-      )}
-
-      {tone && (
-        <CoachAccordion id="tone" title="Tone & Authenticity" score={tone.authenticity_score} open={openCoachSections.has("tone")} onToggle={toggleCoachSection}>
-          <CoachList label="Voice worth keeping" items={tone.voice_preservation_notes} tone="success" icon={Check} />
-          <CoachList label="AI-like phrases" items={tone.ai_like_phrases} tone="danger" />
-          <CoachList label="Generic phrases" items={tone.generic_phrases} tone="warning" />
-          <CoachList label="Tone suggestions" items={tone.tone_improvement_suggestions} tone="info" />
-        </CoachAccordion>
+          <CoachList label="Strengths a reader sees" items={reviewer.likely_strengths_seen_by_reviewer} tone="success" icon={Check} />
+          <CoachList label="Concerns a reader may have" items={reviewer.likely_concerns_seen_by_reviewer} tone="warning" maxItems={2} />
+          <CoachList label="Questions a reader may ask" items={reviewer.questions_reviewer_may_have} tone="muted" maxItems={2} />
+          <CoachList label="To strengthen the essay" items={reviewer.competitiveness_notes} tone="info" maxItems={2} />
+        </>
       )}
     </div>
   );
@@ -4924,12 +5562,13 @@ function Sparkline({ points }: { points: number[] }) {
 }
 
 function ProgressCard({ versions }: { versions: EssayDraft[] }) {
-  const scored = versions.filter((v) => typeof v.coachOverall === "number");
+  const scored = versions.filter((v) => typeof v.readinessOverall === "number" || typeof v.coachOverall === "number");
   if (!scored.length) return null;
   const latest = scored[scored.length - 1];
   const prev = scored.length > 1 ? scored[scored.length - 2] : null;
-  const overall = latest.coachOverall ?? 0;
-  const overallDelta = prev ? overall - (prev.coachOverall ?? 0) : null;
+  const versionScore = (version: EssayDraft) => version.readinessOverall ?? version.coachOverall ?? 0;
+  const overall = versionScore(latest);
+  const overallDelta = prev ? overall - versionScore(prev) : null;
   const deltas =
     prev?.coachScores && latest.coachScores
       ? Object.entries(latest.coachScores)
@@ -4942,7 +5581,7 @@ function ProgressCard({ versions }: { versions: EssayDraft[] }) {
       <div className="flex items-center gap-3">
         <ScoreRing score={overall} size={52} stroke={4} />
         <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-semibold">Overall coach score</div>
+          <div className="text-[13px] font-semibold">Overall score</div>
           <div className="text-[12px] text-muted-foreground">
             {prev && overallDelta != null ? (
               <>
@@ -4958,7 +5597,7 @@ function ProgressCard({ versions }: { versions: EssayDraft[] }) {
           </div>
         </div>
       </div>
-      {scored.length > 1 && <Sparkline points={scored.map((v) => v.coachOverall ?? 0)} />}
+      {scored.length > 1 && <Sparkline points={scored.map(versionScore)} />}
       {deltas.length > 0 && (
         <div className="flex flex-wrap gap-1">
           {deltas.slice(0, 5).map((x) => (
@@ -4975,7 +5614,7 @@ function ProgressCard({ versions }: { versions: EssayDraft[] }) {
         {[...scored].reverse().slice(0, 6).map((v) => (
           <div key={v.id} className="flex items-center justify-between text-[12px]">
             <span className="text-muted-foreground">Draft {v.version} · {v.wordCount} words</span>
-            <span className="font-semibold tabular-nums" style={{ color: scoreColor(v.coachOverall ?? 0) }}>{v.coachOverall}</span>
+            <span className="font-semibold tabular-nums" style={{ color: scoreColor(versionScore(v)) }}>{versionScore(v)}</span>
           </div>
         ))}
       </div>
@@ -4983,59 +5622,168 @@ function ProgressCard({ versions }: { versions: EssayDraft[] }) {
   );
 }
 
-function WorkspaceEvaluationTab({ isEvaluating }: { isEvaluating: boolean }) {
+function WorkspaceEvaluationTab({
+  isEvaluating,
+  coachResult,
+  coachLoading,
+  coachSummary,
+}: {
+  isEvaluating: boolean;
+  coachResult: EssayCoachResult | null;
+  coachLoading: boolean;
+  coachSummary: string | null;
+}) {
   const { user } = useUser();
-  const [localEvaluating, setLocalEvaluating] = useState(false);
-  const [evalStatus, setEvalStatus] = useState<string | null>(null);
-  const evaluating = isEvaluating || localEvaluating;
+  const [selectedCriterion, setSelectedCriterion] = useState<string | null>(null);
+  const evaluating = isEvaluating;
   const analysis = user?.lastAnalysis;
-  const entries = Object.entries(analysis?.readiness_index ?? {});
-  const score = overallEssayScore(analysis);
-  const scoredVersions = (user?.drafts ?? []).filter((v) => typeof v.coachOverall === "number");
+  const scoredVersions = (user?.drafts ?? []).filter(
+    (v) => typeof v.readinessOverall === "number" || typeof v.coachOverall === "number",
+  );
+  const criterionGroups = [
+    {
+      label: "Content — What the essay says",
+      criteria: [
+        ["alignment", "Alignment"],
+        ["evidence_strength", "Evidence Strength"],
+        ["insight", "Insight"],
+      ],
+    },
+    {
+      label: "Structure — How the essay is organized",
+      criteria: [
+        ["coherence_continuity", "Coherence & Continuity"],
+        ["flow_narrative_arc", "Flow & Narrative Arc"],
+      ],
+    },
+    {
+      label: "Voice — How the essay sounds",
+      criteria: [
+        ["tone_authenticity", "Tone & Authenticity"],
+        ["clarity_concision", "Clarity & Concision"],
+      ],
+    },
+  ] as const;
+  const criterionEntries = criterionGroups.flatMap((group) =>
+    group.criteria.flatMap(([key, label]) => {
+      const value = analysis?.readiness_index?.[key];
+      return value && typeof value.score === "number" ? [[key, label, value] as const] : [];
+    }),
+  );
+  const activeCriterion =
+    criterionEntries.find(([key]) => key === selectedCriterion) ?? criterionEntries[0];
+  const criterionPriorities = activeCriterion?.[2].revision_actions ?? [];
+
+  useEffect(() => {
+    if (!criterionEntries.length) {
+      setSelectedCriterion(null);
+      return;
+    }
+    if (!criterionEntries.some(([key]) => key === selectedCriterion)) {
+      setSelectedCriterion(criterionEntries[0][0]);
+    }
+  }, [analysis?.readiness_index, selectedCriterion]);
 
   return (
     <div className="space-y-3">
-      <PanelLabel>Progress &amp; Evaluation</PanelLabel>
+      <PanelLabel>Scores &amp; Evaluation</PanelLabel>
+
+      {!coachLoading && !evaluating && (
+        <p className="text-[12px] text-muted-foreground">
+          {coachResult ? 'Click "Evaluate" to regenerate.' : 'Click "Evaluate" to generate.'}
+        </p>
+      )}
+
+      {coachSummary && (
+        <div className="rounded-xl border border-info/20 bg-info/5 p-3 text-[13px] leading-relaxed text-foreground/85">
+          {coachSummary}
+        </div>
+      )}
 
       {scoredVersions.length > 0 && <ProgressCard versions={scoredVersions} />}
 
-      <CoachRunButton
-        label="Run deep evaluation"
-        loadingLabel="Evaluating…"
-        onRunningChange={setLocalEvaluating}
-        onStatus={setEvalStatus}
-        className="flex w-full items-center justify-center gap-2 rounded-lg border border-border px-3 py-2 text-[13px] font-semibold text-foreground transition-colors duration-150 hover:bg-accent disabled:opacity-50"
-      />
-      {evalStatus && <div className="rounded-md bg-accent px-3 py-2 text-[12px] text-muted-foreground">{evalStatus}</div>}
+      {coachLoading && <CoachSkeleton />}
 
-      {evaluating && <EvaluationSkeleton />}
-
-      {!evaluating && entries.length > 0 && (
-        <>
-          <div className="flex items-center gap-3 rounded-xl border border-border bg-background p-3">
-            <ScoreRing score={score} size={52} stroke={4} />
-            <div className="min-w-0">
-              <div className="text-[13px] font-semibold">Readiness index</div>
-              <div className="text-[12px] text-muted-foreground">{score != null ? levelWord(score) : "Not scored yet"}</div>
-            </div>
-          </div>
-          <div className="space-y-2">
-            {entries.map(([key, value]) => (
-              <ReadinessRow key={key} label={labelize(key)} value={value} />
-            ))}
-          </div>
-          {analysis?.coaching_brief?.coach_message && (
-            <div className="rounded-xl border border-info/20 bg-info/5 p-3 text-[13px] leading-relaxed text-foreground/85">
-              {analysis.coaching_brief.coach_message}
-            </div>
-          )}
-          <EssayAlignmentMatrixCard matrix={analysis?.essay_alignment_matrix} />
-        </>
+      {!!criterionEntries.length && (
+        <div className="grid gap-2 md:grid-cols-3">
+          {criterionGroups.map((group) => {
+            const available = group.criteria.filter(([key]) => analysis?.readiness_index?.[key]);
+            if (!available.length) return null;
+            const [title, subtitle] = group.label.split(" — ");
+            return (
+              <section key={group.label} className="bg-background px-3 py-3">
+                <div className="text-center">
+                  <div className="text-[20px] font-bold leading-tight text-foreground">{title}</div>
+                  <div className="mt-0.5 text-[10px] text-muted-foreground">{subtitle}</div>
+                </div>
+                <div className={`mt-3 grid gap-1 ${available.length === 3 ? "grid-cols-3" : "grid-cols-2"}`}>
+                  {available.map(([key, label]) => {
+                    const value = analysis?.readiness_index?.[key];
+                    if (!value) return null;
+                    const active = activeCriterion?.[0] === key;
+                    return (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => setSelectedCriterion(key)}
+                        aria-pressed={active}
+                        className={`min-w-0 px-1.5 py-2 text-center transition-colors ${
+                          active ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/60 hover:text-foreground"
+                        }`}
+                      >
+                        <span className="flex h-8 items-center justify-center text-[11px] font-semibold leading-tight">{label}</span>
+                        <span
+                          className="mt-1.5 block text-[17px] font-bold tabular-nums"
+                          style={{ color: scoreColor(value.score ?? 0) }}
+                        >
+                          {value.score ?? 0}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
+            );
+          })}
+        </div>
       )}
 
-      {!evaluating && !entries.length && scoredVersions.length === 0 && (
+      {activeCriterion && (
+        <div className="space-y-4 border-t border-border px-1 pt-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-[16px] font-semibold text-foreground">{activeCriterion[1]}</div>
+              {activeCriterion[2].rubric?.description && (
+                <p className="mt-0.5 text-[12px] italic leading-snug text-muted-foreground">
+                  {activeCriterion[2].rubric.description}
+                </p>
+              )}
+            </div>
+            <div
+              className="shrink-0 text-[18px] font-bold tabular-nums"
+              style={{ color: scoreColor(activeCriterion[2].score ?? 0) }}
+            >
+              {activeCriterion[2].score ?? 0}/100
+            </div>
+          </div>
+          {!!criterionPriorities.length && (
+            <div>
+              <div className="text-[11px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
+                Detailed feedback
+              </div>
+              <div className="mt-2">
+                <DetailedFeedbackItem item={criterionPriorities[0]} />
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {!evaluating && !criterionEntries.length && (
         <div className="rounded-xl border border-dashed border-border bg-background p-4 text-[13px] leading-relaxed text-muted-foreground">
-          Run the coach to start tracking your draft scores, or run a deep evaluation for the readiness index, coach message, and alignment matrix.
+          {scoredVersions.length > 0
+            ? 'This overall score is from an earlier evaluation. Click "Evaluate" to generate the new seven-criterion scores and detailed QA-reviewed feedback.'
+            : 'Click "Evaluate" to generate the tailored rubric, seven criterion scores, QA-reviewed feedback, and revision actions.'}
         </div>
       )}
     </div>
@@ -5111,10 +5859,8 @@ function WorkspaceHighlightsTab({
   onReveal,
   onAcceptAllQuickFixes,
   quickFixCount,
-  onRunCoach,
   coachLoading,
-  coachSummary,
-  coachWarnings,
+  hasAssessment,
 }: {
   isEvaluating: boolean;
   suggestions: Suggestion[];
@@ -5123,76 +5869,67 @@ function WorkspaceHighlightsTab({
   onReveal: (s: Suggestion) => void;
   onAcceptAllQuickFixes: () => void;
   quickFixCount: number;
-  onRunCoach: (mode?: EssayCoachMode, writingSupportLevel?: WritingSupportLevel) => void;
   coachLoading: boolean;
-  coachSummary: string | null;
-  coachWarnings: string[];
+  hasAssessment: boolean;
 }) {
-  const [writingSupportLevel, setWritingSupportLevel] = useState<WritingSupportLevel>("sentence_polish");
   const { user } = useUser();
-  const analysis = user?.lastAnalysis;
-  const priorities = analysis?.revision_priorities ?? [];
-  const reviewers = analysis?.reviewer_comments ?? [];
-  const strengths = analysis?.essay_alignment_matrix?.strengths ?? [];
-  const counts = countByCategory(suggestions);
-  const hasBackend = priorities.length || reviewers.length || strengths.length;
+  const draft = user?.essayDraft ?? "";
+  const grammarSuggestions = suggestions.filter((suggestion) => suggestion.category === "correctness");
+  const wordCount = draft.trim() ? draft.trim().split(/\s+/).length : 0;
+  const wordLimit = parseWordTarget(buildOutlinePayload(user).word_limit);
+  const paragraphCount = draft.trim() ? draft.trim().split(/\n\s*\n/).filter(Boolean).length : 0;
+  const scholarship = user?.activeScholarship ?? {};
+  const formattingContext = [
+    scholarship.otherRequiredMaterials,
+    scholarship.requirementsPreview,
+    ...(scholarship.requiredApplicationMaterials ?? []),
+  ].filter(Boolean).join(" ");
+  const formattingRules = formattingContext
+    .split(/(?<=[.!?])\s+|\n+/)
+    .filter((rule) => /\b(?:font|spacing|margin|page|pdf|docx?|file format|formatting|double-spaced|single-spaced)\b/i.test(rule))
+    .slice(0, 2);
+  const formattingChecks = [
+    {
+      label: "Word count",
+      ok: !!wordLimit && wordCount <= wordLimit,
+      detail: wordLimit
+        ? `${wordCount} of ${wordLimit} words${wordCount > wordLimit ? ` — shorten by ${wordCount - wordLimit}` : ""}.`
+        : `${wordCount} words — no word limit was found in the scholarship requirements.`,
+    },
+    {
+      label: "Paragraph breaks",
+      ok: paragraphCount > 1 || wordCount < 100,
+      detail: paragraphCount > 1
+        ? `${paragraphCount} paragraphs detected.`
+        : wordCount < 100
+          ? "Add paragraph breaks as the draft grows."
+          : "The draft appears to be one long paragraph; add breaks for readability.",
+    },
+    {
+      label: "Required formatting rules",
+      ok: formattingRules.length === 0,
+      detail: formattingRules.length
+        ? `Confirm before submitting: ${formattingRules.join(" ")}`
+        : "No special font, spacing, margin, page, or file-format rules were found.",
+    },
+  ];
 
   if (isEvaluating) return <HighlightsSkeleton />;
 
   return (
     <div className="space-y-3">
-      <div className="rounded-xl border border-border bg-background p-3">
-        <div className="text-[12px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Writing Support Level</div>
-        <div className="mt-1 text-[12px] leading-relaxed text-muted-foreground">
-          Choose how much help you want. You stay in control of every change.
-        </div>
-        <div className="mt-3 inline-flex w-full rounded-xl border border-border bg-card p-1 shadow-sm" aria-label="Writing support level">
-          {WRITING_SUPPORT_OPTIONS.map((option) => {
-            const selected = writingSupportLevel === option.id;
-            return (
-              <button
-                key={option.id}
-                type="button"
-                onClick={() => setWritingSupportLevel(option.id)}
-                aria-pressed={selected}
-                title={option.description}
-                className={`flex-1 rounded-lg px-2 py-1.5 text-[11px] font-semibold transition-colors duration-150 ${
-                  selected
-                    ? "bg-gradient-to-br from-[#26385F] to-[#5550A4] text-white shadow-sm"
-                    : "text-muted-foreground hover:bg-info/10 hover:text-info"
-                }`}
-              >
-                {option.label}
-              </button>
-            );
-          })}
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <PanelLabel>Fixes</PanelLabel>
+          <div className="mt-1 text-[12px] font-semibold text-muted-foreground">Grammar and formatting review</div>
         </div>
       </div>
 
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <PanelLabel>Sentence Fixes</PanelLabel>
-          <div className="mt-1 text-[12px] font-semibold text-muted-foreground">{suggestions.length} open</div>
-        </div>
-        <button
-          type="button"
-          onClick={() => {
-            onRunCoach("grammar_tone", writingSupportLevel);
-          }}
-          disabled={coachLoading}
-          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 py-1.5 text-[12px] font-semibold text-foreground transition-colors duration-150 hover:border-info/40 hover:bg-info/10 hover:text-info focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/30 disabled:opacity-50"
-        >
-          <RefreshCw className={`size-3.5 ${coachLoading ? "animate-spin" : ""}`} />
-          {coachLoading ? (
-            "Updating..."
-          ) : (
-            <span className="leading-tight">
-              <span className="block">Update coaching</span>
-              <span className="block">to regenerate fixes</span>
-            </span>
-          )}
-        </button>
-      </div>
+      {!coachLoading && (
+        <p className="text-[12px] text-muted-foreground">
+          {hasAssessment ? 'Click "Evaluate" to regenerate.' : 'Click "Evaluate" to generate.'}
+        </p>
+      )}
 
       {quickFixCount > 0 && (
         <button
@@ -5206,85 +5943,46 @@ function WorkspaceHighlightsTab({
         </button>
       )}
 
-      {coachSummary && (
-        <div className="rounded-xl border border-info/20 bg-info/5 p-3 text-[13px] leading-relaxed text-foreground/85">
-          {coachSummary}
-        </div>
-      )}
-
-      {!!coachWarnings.length && (
-        <div className="rounded-xl border border-warning/25 bg-warning/5 p-3">
-          <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-warning">Coaching notes</div>
-          <MiniList items={coachWarnings} />
-        </div>
-      )}
-
       {coachLoading && <HighlightsSkeleton />}
 
-      {!coachLoading && !suggestions.length && (
+      <div className="space-y-2">
+        <div>
+          <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Grammar</div>
+          <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+            Spelling, punctuation, capitalization, verb tense, agreement, grammar, and sentence-level correctness.
+          </p>
+        </div>
+
+      {!coachLoading && !grammarSuggestions.length && (
         <div className="rounded-xl border border-dashed border-border bg-background p-4 text-[13px] leading-relaxed text-muted-foreground">
-          {coachSummary
-            ? "No sentence-level fixes to show right now. Keep writing, then run the coach again."
-            : "Write your draft, then run the writing coach for grammar, clarity, tone, and specificity suggestions. Quick fixes also appear here as you type."}
+          {draft.trim() ? "No spelling, punctuation, capitalization, grammar, or sentence-level correctness fixes are open." : "Write your draft, then update the review to check grammar."}
         </div>
       )}
 
-      {CATEGORY_ORDER.filter((cat) => counts[cat] > 0).map((cat) => {
-        const meta = CATEGORY_META[cat];
-        const items = suggestions.filter((s) => s.category === cat);
-        return (
-          <div key={cat} className="space-y-2">
-            <div className="flex items-center gap-1.5">
-              <span className={`size-2 rounded-full ${meta.dotClass}`} />
-              <span className="text-[12px] font-semibold">{meta.label}</span>
-              <span className="text-[11px] text-muted-foreground">· {items.length}</span>
+        {grammarSuggestions.map((suggestion) => (
+          <SuggestionCard key={suggestion.id} s={suggestion} onAccept={onAccept} onDismiss={onDismiss} onReveal={onReveal} />
+        ))}
+      </div>
+
+      <div className="space-y-2 border-t border-border pt-3">
+        <div>
+          <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Formatting</div>
+          <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+            Word count, paragraph breaks, and required formatting rules.
+          </p>
+        </div>
+        {formattingChecks.map((check) => (
+          <div key={check.label} className="flex gap-2 rounded-lg border border-border bg-background p-3">
+            {check.ok
+              ? <Check className="mt-0.5 size-4 shrink-0 text-success" />
+              : <AlertCircle className="mt-0.5 size-4 shrink-0 text-warning" />}
+            <div>
+              <div className="text-[12px] font-semibold text-foreground">{check.label}</div>
+              <div className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">{check.detail}</div>
             </div>
-            {items.map((s) => (
-              <SuggestionCard key={s.id} s={s} onAccept={onAccept} onDismiss={onDismiss} onReveal={onReveal} />
-            ))}
           </div>
-        );
-      })}
-
-      {!!hasBackend && (
-        <div className="space-y-3 border-t border-border pt-3">
-          {!!priorities.length && (
-            <div className="rounded-xl border border-warning/25 bg-warning/5 p-3">
-              <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-warning">Top revision priorities</div>
-              <ol className="mt-2 space-y-1.5 text-[13px] leading-relaxed">
-                {priorities.slice(0, 4).map((item, i) => (
-                  <li key={item} className="flex gap-2">
-                    <span className="font-semibold text-warning">{i + 1}.</span>
-                    <span>{item}</span>
-                  </li>
-                ))}
-              </ol>
-            </div>
-          )}
-
-          {!!strengths.length && (
-            <div className="rounded-xl border border-success/20 bg-success/5 p-3">
-              <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-success">Working well</div>
-              <MiniList items={strengths} />
-            </div>
-          )}
-
-          {!!reviewers.length && (
-            <div className="space-y-2">
-              <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Reviewer reactions</div>
-              {reviewers.map((reviewer, i) => (
-                <div key={`${reviewer.persona}-${i}`} className="rounded-lg border border-border bg-background p-3">
-                  <div className="flex items-center gap-1.5 text-[12px] font-semibold">
-                    <MessageSquare className="size-3.5 text-info" />
-                    {reviewer.persona ?? "Reviewer"}
-                  </div>
-                  <p className="mt-1.5 text-[13px] leading-relaxed text-foreground/85">{reviewer.comment}</p>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+        ))}
+      </div>
     </div>
   );
 }
@@ -5404,13 +6102,13 @@ function StepEssayUpload() {
 
       const buf = await file.arrayBuffer();
       const pdf: PdfDoc = await w.pdfjsLib.getDocument({ data: buf }).promise;
-      let full = "";
+      const pages: string[] = [];
       for (let p = 1; p <= pdf.numPages; p++) {
         const page = await pdf.getPage(p);
         const tc = await page.getTextContent();
-        full += tc.items.map((i) => i.str ?? "").join(" ") + "\n\n";
+        pages.push(tc.items.map((i) => i.str ?? "").join(" "));
       }
-      updateProfile({ essayDraft: full.trim() });
+      updateProfile({ essayDraft: normalizePdfDraftText(pages) });
       setPdfStatus(`Imported ${pdf.numPages} pages from ${file.name}.`);
     } catch (e) {
       setPdfStatus(`Could not parse PDF: ${(e as Error).message}`);
@@ -5478,7 +6176,7 @@ function StepEssayUpload() {
           <button
             onClick={saveAsDraft}
             disabled={wordCount < 30}
-            className="rounded-full bg-card border border-border px-4 py-2 text-sm hover:bg-accent disabled:opacity-40"
+            className="rounded-lg bg-card border border-border px-4 py-2 text-sm hover:bg-accent disabled:opacity-40"
           >
             Save as new draft
           </button>
@@ -5486,12 +6184,12 @@ function StepEssayUpload() {
             label={
               wordCount < 30
                 ? "Write at least a paragraph to send to the coach"
-                : "Send to AI Coach for evaluation →"
+                : "Send to AI Coach for evaluation"
             }
             loadingLabel="Analyzing…"
             disabled={wordCount < 30}
             onStatus={setAnalysisStatus}
-            className="flex-1 rounded-full bg-primary text-primary-foreground py-2 text-sm font-medium hover:opacity-90 disabled:opacity-40"
+            className="flex-1 rounded-lg bg-primary text-primary-foreground py-2 text-sm font-medium hover:opacity-90 disabled:opacity-40"
           />
         </div>
         {analysisStatus && <p className="mt-3 text-xs text-muted-foreground">{analysisStatus}</p>}
@@ -5562,7 +6260,7 @@ function StepScores() {
         <div className="mt-4 grid sm:grid-cols-5 gap-2 text-xs">
           {stages.map((s) => (
             <div key={s} className="rounded-lg bg-success/10 text-success p-2 flex items-center gap-1.5">
-              <span className="font-mono">✓</span>
+              <Check className="size-3.5 shrink-0" strokeWidth={2.5} />
               <span className="truncate">{s}</span>
             </div>
           ))}
@@ -6059,7 +6757,7 @@ function StepFinalCheck() {
           <div className="size-16 rounded-2xl bg-warning/20 grid place-items-center font-display text-2xl">!</div>
         </div>
         <div className="mt-4 h-2 rounded-full bg-secondary overflow-hidden">
-          <div className="h-full bg-gold" style={{ width: `${(done / checklist.length) * 100}%` }} />
+          <div className="h-full bg-success" style={{ width: `${(done / checklist.length) * 100}%` }} />
         </div>
       </Card>
 
@@ -6068,8 +6766,8 @@ function StepFinalCheck() {
         <ul className="mt-3 divide-y divide-border">
           {checklist.map((c) => (
             <li key={c.item} className="py-3 flex items-center gap-3">
-              <div className={`size-5 rounded-md grid place-items-center text-[11px] ${c.done ? "bg-success text-white" : "border-2 border-warning"}`}>
-                {c.done ? "✓" : ""}
+              <div className={`size-5 rounded-md grid place-items-center ${c.done ? "bg-success text-white" : "border-2 border-warning"}`}>
+                {c.done && <Check className="size-3.5" strokeWidth={3} />}
               </div>
               <div className={`text-sm flex-1 ${c.done ? "" : "text-foreground font-medium"}`}>{c.item}</div>
               {!c.done && <Pill tone="warn">action needed</Pill>}
@@ -6154,8 +6852,9 @@ function StepTracker() {
         <p className="text-primary-foreground/80 mt-2 text-sm">
           From landing on the homepage to a polished, sponsor-aligned submission — all without anyone writing your essay for you.
         </p>
-        <Link to="/" className="mt-4 inline-flex rounded-full bg-gold text-gold-foreground px-5 py-2 text-sm font-medium">
-          ← Back to landing
+        <Link to="/" className="mt-4 inline-flex items-center gap-2 rounded-lg bg-gold text-gold-foreground px-5 py-2 text-sm font-medium">
+          <ArrowLeft className="size-4" />
+          Back to landing
         </Link>
       </Card>
     </div>

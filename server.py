@@ -15,10 +15,12 @@ from api.routes import (
     OutlineGenerateRequest,
     RewriteRequest,
     WikiDiscoverRequest,
+    WikiBootstrapRequest,
     analyze_application,
     analyze_scholarship_fit,
     autofill_profile_from_resume,
     discover_scholarship_wiki,
+    get_scholarship_discovery_bootstrap,
     extract_scholarship_opportunity,
     generate_personalized_outline,
     rewrite_selection,
@@ -91,6 +93,16 @@ def analyze_fit(request: FitAnalyzeRequest):
 def discover_wiki(request: WikiDiscoverRequest):
     try:
         return discover_scholarship_wiki(request)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/wiki/bootstrap")
+def discovery_bootstrap(request: WikiBootstrapRequest):
+    try:
+        return get_scholarship_discovery_bootstrap(request)
     except HTTPException:
         raise
     except Exception as exc:

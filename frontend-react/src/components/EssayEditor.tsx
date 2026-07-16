@@ -10,6 +10,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import {
+  ArrowRight,
   Bold,
   Copy,
   Expand,
@@ -43,6 +44,8 @@ const REWRITE_LABEL: Record<RewriteAction, string> = {
 type Props = {
   value: string;
   onChange: (value: string) => void;
+  richValue?: string;
+  onRichChange?: (value: string) => void;
   suggestions: Suggestion[];
   onDismiss: (s: Suggestion) => void;
   onOpenHighlights: () => void;
@@ -53,7 +56,7 @@ type Props = {
 
 // Shared box metrics — the textarea and its backdrop MUST match exactly so the
 // underline marks line up under the visible glyphs.
-const EDITOR_BOX = "px-5 py-4 md:px-8 font-display text-[18px] leading-8 tracking-normal [overflow-wrap:break-word]";
+const EDITOR_BOX = "px-5 py-4 md:px-8 font-['Calibri','Carlito','Arial',sans-serif] text-[18px] leading-8 tracking-normal [overflow-wrap:break-word]";
 
 type Segment = { text: string; sugg?: Suggestion };
 
@@ -109,13 +112,52 @@ function rangeRect(backdrop: HTMLElement | null, start: number, end: number): DO
   return rects.length ? rects[0] : range.getBoundingClientRect();
 }
 
+function escapeHtml(text: string) {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function plainTextToHtml(text: string) {
+  return escapeHtml(text).replace(/\n/g, "<br>");
+}
+
+function normalizeEditorText(text: string) {
+  return text.replace(/\u00a0/g, " ").replace(/\n$/, "");
+}
+
+function sanitizeRichHtml(html: string) {
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  const allowedTags = new Set(["B", "STRONG", "I", "EM", "H2", "UL", "OL", "LI", "A", "DIV", "P", "BR"]);
+  const allowedAttrs = new Set(["href", "target", "rel"]);
+  template.content.querySelectorAll("*").forEach((el) => {
+    if (!allowedTags.has(el.tagName)) {
+      el.replaceWith(...Array.from(el.childNodes));
+      return;
+    }
+    Array.from(el.attributes).forEach((attr) => {
+      if (!allowedAttrs.has(attr.name)) el.removeAttribute(attr.name);
+    });
+    if (el.tagName === "A") {
+      const href = el.getAttribute("href") ?? "";
+      if (!/^https?:\/\//i.test(href) && !/^mailto:/i.test(href)) el.removeAttribute("href");
+      el.setAttribute("target", "_blank");
+      el.setAttribute("rel", "noreferrer");
+    }
+  });
+  return template.innerHTML;
+}
+
 let flashSeq = 0;
 
 export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEditor(
-  { value, onChange, suggestions, onDismiss, onOpenHighlights, onAutoCheck, onRequestRewrite, className = "" },
+  { value, onChange, richValue, onRichChange, suggestions, onDismiss, onOpenHighlights, onAutoCheck, onRequestRewrite, className = "" },
   ref,
 ) {
-  const taRef = useRef<HTMLTextAreaElement | null>(null);
+  const editorRef = useRef<HTMLDivElement | null>(null);
   const backdropRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
@@ -136,6 +178,7 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
   } | null>(null);
   const [mounted, setMounted] = useState(false);
   const pendingFlash = useRef<{ start: number; len: number; pulse: boolean } | null>(null);
+  const lastSyncedHtml = useRef("");
 
   // Overlays use position:fixed with viewport coords; an ancestor `transform`
   // (the full-bleed wrapper) would otherwise become their containing block, so
@@ -145,13 +188,38 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
   const segments = useMemo(() => buildSegments(value, suggestions), [value, suggestions]);
 
   const syncScroll = useCallback(() => {
-    if (backdropRef.current && taRef.current) {
-      backdropRef.current.scrollTop = taRef.current.scrollTop;
-      backdropRef.current.scrollLeft = taRef.current.scrollLeft;
+    if (backdropRef.current && editorRef.current) {
+      backdropRef.current.scrollTop = editorRef.current.scrollTop;
+      backdropRef.current.scrollLeft = editorRef.current.scrollLeft;
     }
   }, []);
 
   useEffect(syncScroll, [value, syncScroll]);
+
+  useLayoutEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const currentText = normalizeEditorText(editor.innerText ?? "");
+    if (currentText === value && editor.innerHTML === lastSyncedHtml.current) return;
+    if (currentText === value && editor.innerHTML) return;
+    const html = richValue && normalizeEditorText(editor.innerText ?? "") === value
+      ? sanitizeRichHtml(richValue)
+      : sanitizeRichHtml(richValue && normalizeEditorText(new DOMParser().parseFromString(richValue, "text/html").body.innerText) === value ? richValue : plainTextToHtml(value));
+    editor.innerHTML = html || "<br>";
+    lastSyncedHtml.current = editor.innerHTML;
+  }, [richValue, value]);
+
+  function syncFromEditor() {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const html = sanitizeRichHtml(editor.innerHTML);
+    const text = normalizeEditorText(editor.innerText ?? "");
+    lastSyncedHtml.current = html;
+    if (editor.innerHTML !== html) editor.innerHTML = html || "<br>";
+    onRichChange?.(html);
+    onChange(text);
+    syncScroll();
+  }
 
   function addFlash(start: number, len: number, pulse: boolean) {
     const rect = rangeRect(backdropRef.current, start, start + len);
@@ -170,15 +238,50 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
   }, [value]);
 
   function scrollOffsetIntoView(start: number, end: number) {
-    const ta = taRef.current;
+    const editor = editorRef.current;
     const backdrop = backdropRef.current;
-    if (!ta || !backdrop) return;
+    if (!editor || !backdrop) return;
     const rect = rangeRect(backdrop, start, end);
     if (!rect) return;
     const backdropRect = backdrop.getBoundingClientRect();
     const contentTop = rect.top - backdropRect.top + backdrop.scrollTop;
-    ta.scrollTop = Math.max(0, contentTop - ta.clientHeight / 2);
+    editor.scrollTop = Math.max(0, contentTop - editor.clientHeight / 2);
     syncScroll();
+  }
+
+  function getSelectionOffsets() {
+    const editor = editorRef.current;
+    const selection = window.getSelection();
+    if (!editor || !selection || selection.rangeCount === 0) return null;
+    const range = selection.getRangeAt(0);
+    if (!editor.contains(range.startContainer) || !editor.contains(range.endContainer)) return null;
+
+    const startRange = document.createRange();
+    startRange.selectNodeContents(editor);
+    startRange.setEnd(range.startContainer, range.startOffset);
+    const endRange = document.createRange();
+    endRange.selectNodeContents(editor);
+    endRange.setEnd(range.endContainer, range.endOffset);
+    const start = normalizeEditorText(startRange.toString()).length;
+    const end = normalizeEditorText(endRange.toString()).length;
+    return { start: Math.min(start, end), end: Math.max(start, end) };
+  }
+
+  function setSelectionByOffsets(start: number, end: number) {
+    const editor = editorRef.current;
+    if (!editor) return false;
+    if (!editor.textContent) editor.appendChild(document.createTextNode(""));
+    const nodes = collectTextNodes(editor);
+    const a = locate(nodes, start);
+    const b = locate(nodes, end);
+    if (!a || !b) return false;
+    const range = document.createRange();
+    range.setStart(a.node, a.pos);
+    range.setEnd(b.node, b.pos);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    return true;
   }
 
   useImperativeHandle(ref, () => ({
@@ -191,8 +294,8 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
     reveal(s: Suggestion) {
       scrollOffsetIntoView(s.start, s.end);
       requestAnimationFrame(() => addFlash(s.start, s.end - s.start, true));
-      taRef.current?.focus();
-      taRef.current?.setSelectionRange(s.start, s.end);
+      editorRef.current?.focus();
+      setSelectionByOffsets(s.start, s.end);
     },
   }));
 
@@ -223,40 +326,40 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
   }
 
   function handleClick() {
-    const ta = taRef.current;
-    if (!ta) return;
-    if (ta.selectionStart !== ta.selectionEnd) return;
-    const s = suggestionAt(ta.selectionStart);
+    const selection = getSelectionOffsets();
+    if (!selection) return;
+    if (selection.start !== selection.end) return;
+    const s = suggestionAt(selection.start);
     if (s) openCardFor(s);
     else setCard(null);
   }
 
   function refreshSelectionUi() {
-    const ta = taRef.current;
-    if (!ta) return;
+    const selection = getSelectionOffsets();
+    if (!selection) return;
     updateGutter();
-    if (ta.selectionStart === ta.selectionEnd) {
+    if (selection.start === selection.end) {
       setSelBar(null);
       return;
     }
-    const rect = rangeRect(backdropRef.current, ta.selectionStart, ta.selectionEnd);
+    const rect = rangeRect(backdropRef.current, selection.start, selection.end);
     if (!rect) return;
     // Flip below the selection when it's too close to the viewport top.
     const below = rect.top < 96;
     setSelBar({
       top: below ? rect.bottom + 8 : rect.top - 8,
       left: rect.left + rect.width / 2,
-      start: ta.selectionStart,
-      end: ta.selectionEnd,
+      start: selection.start,
+      end: selection.end,
       below,
     });
     setCard(null);
   }
 
   function updateGutter() {
-    const ta = taRef.current;
-    if (!ta) return;
-    const rect = rangeRect(backdropRef.current, ta.selectionStart, ta.selectionStart);
+    const selection = getSelectionOffsets();
+    if (!selection) return;
+    const rect = rangeRect(backdropRef.current, selection.start, selection.start);
     if (!rect) {
       setGutter(null);
       return;
@@ -265,31 +368,21 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
   }
 
   function replaceRange(start: number, end: number, text: string, pulse = false) {
-    const next = value.slice(0, start) + text + value.slice(end);
     pendingFlash.current = { start, len: text.length, pulse };
-    onChange(next);
-    const ta = taRef.current;
-    if (ta) requestAnimationFrame(() => ta.setSelectionRange(start, start + text.length));
+    if (setSelectionByOffsets(start, end)) {
+      document.execCommand("insertText", false, text);
+      syncFromEditor();
+      requestAnimationFrame(() => setSelectionByOffsets(start, start + text.length));
+      return;
+    }
+    onChange(value.slice(0, start) + text + value.slice(end));
   }
 
-  function wrapSelection(before: string, after: string) {
-    const ta = taRef.current;
-    if (!ta) return;
-    const { selectionStart: s, selectionEnd: e } = ta;
-    replaceRange(s, e, `${before}${value.slice(s, e)}${after}`);
-  }
-
-  function prefixLines(prefix: string) {
-    const ta = taRef.current;
-    if (!ta) return;
-    const { selectionStart: s, selectionEnd: e } = ta;
-    const lineStart = value.lastIndexOf("\n", s - 1) + 1;
-    const block = value.slice(lineStart, e);
-    const prefixed = block
-      .split("\n")
-      .map((line) => (line.length ? `${prefix}${line}` : line))
-      .join("\n");
-    replaceRange(lineStart, e, prefixed);
+  function runEditorCommand(command: string, valueArg?: string) {
+    editorRef.current?.focus();
+    document.execCommand(command, false, valueArg);
+    syncFromEditor();
+    refreshSelectionUi();
   }
 
   // Local, offline fallback transforms (used only if the AI rewrite call fails).
@@ -315,17 +408,17 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
   // Ask the AI rewrite agent for a version of the selection, shown as a preview
   // the student accepts or rejects (never applied automatically).
   async function requestRewrite(action: RewriteAction) {
-    const ta = taRef.current;
-    if (!ta) return;
-    const start = ta.selectionStart;
-    const end = ta.selectionEnd;
+    const selection = getSelectionOffsets();
+    if (!selection) return;
+    const { start, end } = selection;
     const original = value.slice(start, end);
     if (!original.trim()) return;
     const rect = rangeRect(backdropRef.current, start, end);
     const vw = window.innerWidth;
     const vh = window.innerHeight;
-    const left = rect ? Math.max(8, Math.min(rect.left, vw - 328)) : 24;
-    const top = rect ? (rect.bottom + 300 <= vh ? rect.bottom + 8 : Math.max(8, rect.top - 300)) : 80;
+    const previewWidth = vw >= 640 ? Math.min(608, vw - 16) : vw - 16;
+    const left = rect ? Math.max(8, Math.min(rect.left, vw - previewWidth - 8)) : 8;
+    const top = rect ? (rect.bottom + 360 <= vh ? rect.bottom + 8 : Math.max(8, rect.top - 360)) : 80;
     setSelBar(null);
     setCard(null);
     setRewrite({ action, start, end, original, status: "loading", result: "", note: "", top, left });
@@ -352,15 +445,15 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
   }
 
   function improveParagraph() {
-    const ta = taRef.current;
-    if (!ta) return;
-    const caret = ta.selectionStart;
+    const selection = getSelectionOffsets();
+    if (!selection) return;
+    const caret = selection.start;
     const before = value.lastIndexOf("\n\n", caret - 1);
     const start = before === -1 ? 0 : before + 2;
     const after = value.indexOf("\n\n", caret);
     const end = after === -1 ? value.length : after;
-    ta.focus();
-    ta.setSelectionRange(start, end);
+    editorRef.current?.focus();
+    setSelectionByOffsets(start, end);
     void requestRewrite("rewrite");
   }
 
@@ -382,18 +475,18 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
 
   const openCount = suggestions.length;
 
-  const markdownTools = [
-    { label: "Heading", icon: Heading2, run: () => prefixLines("## ") },
-    { label: "Bold", icon: Bold, run: () => wrapSelection("**", "**") },
-    { label: "Italic", icon: Italic, run: () => wrapSelection("*", "*") },
-    { label: "Bullet list", icon: List, run: () => prefixLines("- ") },
-    { label: "Numbered list", icon: ListOrdered, run: () => prefixLines("1. ") },
+  const formattingTools = [
+    { label: "Heading", icon: Heading2, run: () => runEditorCommand("formatBlock", "<h2>") },
+    { label: "Bold", icon: Bold, run: () => runEditorCommand("bold") },
+    { label: "Italic", icon: Italic, run: () => runEditorCommand("italic") },
+    { label: "Bullet list", icon: List, run: () => runEditorCommand("insertUnorderedList") },
+    { label: "Numbered list", icon: ListOrdered, run: () => runEditorCommand("insertOrderedList") },
     {
       label: "Link",
       icon: LinkIcon,
       run: () => {
         const url = window.prompt("Paste a link");
-        if (url) wrapSelection("[", `](${url})`);
+        if (url) runEditorCommand("createLink", url);
       },
     },
   ];
@@ -442,20 +535,20 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
           </div>
         )}
 
-        <textarea
-          ref={taRef}
-          value={value}
+        <div
+          ref={editorRef}
+          contentEditable
           spellCheck={false}
-          onChange={(e) => onChange(e.target.value)}
+          suppressContentEditableWarning
+          onInput={syncFromEditor}
           onPaste={() => onAutoCheck?.()}
           onScroll={syncScroll}
           onClick={handleClick}
           onKeyUp={refreshSelectionUi}
           onMouseUp={refreshSelectionUi}
-          onSelect={refreshSelectionUi}
           onFocus={updateGutter}
           aria-label="Essay draft editor"
-          className={`absolute inset-0 block h-full w-full resize-none whitespace-pre-wrap break-words border-0 bg-transparent text-foreground caret-foreground outline-none ${EDITOR_BOX}`}
+          className={`absolute inset-0 block h-full w-full overflow-y-auto whitespace-pre-wrap break-words border-0 bg-transparent text-foreground caret-foreground outline-none empty:before:content-[''] [&_h2]:mb-2 [&_h2]:mt-3 [&_h2]:text-2xl [&_h2]:font-semibold [&_h2]:leading-9 [&_h2]:text-foreground ${EDITOR_BOX}`}
         />
 
         {/* Paragraph gutter affordance */}
@@ -487,9 +580,9 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
         )}
       </div>
 
-      {/* Bottom markdown toolbar */}
+      {/* Bottom formatting toolbar */}
       <div className="flex flex-wrap items-center gap-0.5 border-t border-border px-2 py-1.5">
-        {markdownTools.map((tool) => {
+        {formattingTools.map((tool) => {
           const Icon = tool.icon;
           return (
             <button
@@ -518,10 +611,10 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
           style={{ top: selBar.top, left: selBar.left }}
           onMouseDown={(e) => e.preventDefault()}
         >
-          <button type="button" title="Bold" onClick={() => wrapSelection("**", "**")} className="grid size-8 place-items-center rounded-md text-foreground transition-colors hover:bg-accent">
+          <button type="button" title="Bold" onClick={() => runEditorCommand("bold")} className="grid size-8 place-items-center rounded-md text-foreground transition-colors hover:bg-accent">
             <Bold className="size-4" />
           </button>
-          <button type="button" title="Italic" onClick={() => wrapSelection("*", "*")} className="grid size-8 place-items-center rounded-md text-foreground transition-colors hover:bg-accent">
+          <button type="button" title="Italic" onClick={() => runEditorCommand("italic")} className="grid size-8 place-items-center rounded-md text-foreground transition-colors hover:bg-accent">
             <Italic className="size-4" />
           </button>
           <div className="mx-0.5 h-5 w-px bg-border" />
@@ -611,7 +704,7 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
         createPortal(
           <div
             data-editor-overlay
-            className="fixed z-40 flex max-h-[70vh] w-80 flex-col overflow-y-auto rounded-xl border border-border bg-popover p-3 shadow-2xl animate-in fade-in duration-150"
+            className="fixed z-40 flex max-h-[70vh] w-[calc(100vw-1rem)] flex-col overflow-y-auto rounded-xl border border-border bg-popover p-2 shadow-2xl animate-in fade-in duration-150 sm:w-[38rem] sm:max-w-[calc(100vw-1rem)]"
             style={{ top: rewrite.top, left: rewrite.left }}
           >
             <div className="flex items-center justify-between gap-2">
@@ -630,26 +723,38 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
               </div>
             ) : (
               <>
-                <div className="mt-2 rounded-lg border border-border bg-background p-2 text-[13px]">
-                  <div className="text-muted-foreground line-through decoration-muted-foreground/40">{rewrite.original}</div>
-                  <div className="my-1 text-center text-muted-foreground">↓</div>
-                  <div className="font-medium text-foreground">{rewrite.result}</div>
+                <div className="mt-1.5 grid grid-cols-1 items-stretch gap-1.5 text-[13px] sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] sm:gap-2">
+                  <section className="flex min-w-0 flex-col" aria-label="Original text">
+                    <div className="mb-0.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Original</div>
+                    <div className="min-h-[4.75rem] max-h-40 flex-1 overflow-y-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-background p-4 text-muted-foreground line-through decoration-muted-foreground/40">
+                      {rewrite.original}
+                    </div>
+                  </section>
+                  <div className="flex items-center justify-center text-muted-foreground/70" aria-hidden="true">
+                    <ArrowRight className="size-4 rotate-90 sm:rotate-0" />
+                  </div>
+                  <section className="flex min-w-0 flex-col" aria-label="Suggested revision">
+                    <div className="mb-0.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Suggested</div>
+                    <div className="min-h-[4.75rem] max-h-40 flex-1 overflow-y-auto whitespace-pre-wrap break-words rounded-lg border border-info/20 bg-background p-4 font-medium text-foreground">
+                      {rewrite.result}
+                    </div>
+                  </section>
                 </div>
-                {rewrite.note && <p className="mt-1.5 text-[12px] leading-relaxed text-muted-foreground">{rewrite.note}</p>}
-                {rewrite.status === "stale" && <p className="mt-1.5 text-[12px] text-warning">Your text changed — select it again to rewrite.</p>}
-                <div className="mt-2.5 flex items-center gap-2">
+                {rewrite.note && <p className="mt-1 text-[13px] leading-snug text-muted-foreground">{rewrite.note}</p>}
+                {rewrite.status === "stale" && <p className="mt-1 text-[12px] leading-snug text-warning">Your text changed — select it again to rewrite.</p>}
+                <div className="mt-1.5 flex items-center gap-2">
                   <button
                     type="button"
                     onClick={acceptRewrite}
                     disabled={rewrite.status === "stale" || rewrite.result === rewrite.original}
-                    className="flex-1 rounded-lg bg-info px-3 py-1.5 text-[12px] font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+                    className="h-11 flex-1 rounded-lg bg-info px-3 text-[12px] font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
                   >
                     Accept
                   </button>
                   <button
                     type="button"
                     onClick={() => setRewrite(null)}
-                    className="rounded-lg border border-border px-3 py-1.5 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                    className="h-11 rounded-lg border border-border px-3 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                   >
                     Reject
                   </button>

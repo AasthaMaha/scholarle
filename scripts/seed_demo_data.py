@@ -47,7 +47,7 @@ def main() -> None:
             )
             session.add(profile)
 
-        library_path = Path(__file__).resolve().parent.parent / "data" / "scholarship_source_library.json"
+        library_path = Path(__file__).resolve().parent.parent / "data" / "discovery_platform_library.json"
         for source in json.loads(library_path.read_text(encoding="utf-8")):
             if session.query(ScholarshipSource).filter_by(name=source["name"]).one_or_none() is None:
                 session.add(

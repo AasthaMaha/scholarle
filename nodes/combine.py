@@ -85,13 +85,20 @@ def combine_coaching(state):
     )
 
     raw_readiness = synthesis.get("readiness_index", {})
+    evaluation_rubric = synthesis.get("evaluation_rubric", {})
     readiness_index = {}
     for dim in READINESS_DIMENSIONS:
         entry = raw_readiness.get(dim, {})
-        readiness_index[dim] = build_readiness_entry(
+        normalized = build_readiness_entry(
             entry.get("score", 0),
-            entry.get("coaching", ""),
+            "",
         )
+        normalized.update({
+            "justification": entry.get("justification", ""),
+            "revision_actions": entry.get("revision_actions", []) or [],
+            "rubric": evaluation_rubric.get(dim, {}),
+        })
+        readiness_index[dim] = normalized
 
     coaching_brief = synthesis.get("coaching_brief", {})
     if not coaching_brief.get("current_strength_level"):
@@ -132,6 +139,7 @@ def combine_coaching(state):
     ]
 
     coaching_reports = {
+        "evaluation_rubric": evaluation_rubric,
         "strategy": strategy,
         "discovery": discovery,
         "narrative": narrative,

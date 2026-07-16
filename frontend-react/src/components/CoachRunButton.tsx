@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { analyzeApplication, buildAnalyzePayload } from "@/lib/api/scholarE";
 import { useUser } from "@/lib/userStore";
+import { Spinner } from "@/components/Spinner";
 
 type CoachRunButtonProps = {
   label: string;
@@ -61,7 +62,14 @@ export function CoachRunButton({
   }
 
   return (
-    <button type="button" onClick={run} disabled={disabled || isAnalyzing} className={className}>
+    <button
+      type="button"
+      onClick={run}
+      disabled={disabled || isAnalyzing}
+      aria-busy={isAnalyzing}
+      className={`inline-flex items-center justify-center gap-2 ${isAnalyzing ? "agent-loading" : ""} ${className ?? ""}`}
+    >
+      {isAnalyzing && <Spinner className="size-4" />}
       {isAnalyzing ? loadingLabel : label}
     </button>
   );
