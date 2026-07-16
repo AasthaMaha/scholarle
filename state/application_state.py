@@ -6,6 +6,7 @@ class ApplicationState(TypedDict, total=False):
     opportunity_text: str
     previous_readiness: Dict[str, int]
     draft_number: int
+    include_section_coaching: bool
 
     # Opportunity analysis
     opportunity_analysis: Dict[str, Any]
@@ -44,6 +45,7 @@ class ApplicationState(TypedDict, total=False):
     coaching_reports: Dict[str, Any]
     feedback: str
     revision_priorities: List[str]
+    ranked_revision_actions: List[Dict[str, Any]]
     scores: Dict[str, Any]
 
     # Critic agent output + bounded revision loop control

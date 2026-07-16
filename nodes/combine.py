@@ -8,9 +8,61 @@ from nodes.coaching.readiness import (
     READINESS_DIMENSIONS,
     READINESS_LABELS,
     build_readiness_entry,
+    clamp_score,
     compute_growth_report,
     overall_strength_level,
 )
+
+_IMPACT_RANK = {"High": 0, "Medium": 1, "Low": 2}
+
+
+def _normalize_revision_actions(actions) -> list:
+    """Keep at most one well-formed action per criterion."""
+    if not isinstance(actions, list):
+        return []
+    normalized = []
+    for action in actions:
+        if not isinstance(action, dict):
+            continue
+        priority = str(action.get("priority") or "").strip()
+        how = str(action.get("how_to_fix") or "").strip()
+        if not priority and not how:
+            continue
+        impact = str(action.get("impact") or "Medium").strip().title()
+        if impact not in _IMPACT_RANK:
+            impact = "Medium"
+        effort = str(action.get("estimated_effort") or "Moderate").strip().title()
+        if effort not in ("Quick", "Moderate", "Deep"):
+            effort = "Moderate"
+        normalized.append({
+            "priority": priority,
+            "why_it_matters": str(action.get("why_it_matters") or "").strip(),
+            "how_to_fix": how,
+            "impact": impact,
+            "estimated_effort": effort,
+        })
+        break  # exactly one structured action per criterion
+    return normalized
+
+
+def _rank_global_actions(readiness_index: dict) -> list:
+    ranked = []
+    for dim in READINESS_DIMENSIONS:
+        entry = readiness_index.get(dim) or {}
+        for action in entry.get("revision_actions") or []:
+            ranked.append({
+                **action,
+                "criterion": dim,
+                "criterion_label": READINESS_LABELS.get(dim, dim),
+                "score": entry.get("score", 0),
+            })
+    ranked.sort(
+        key=lambda a: (
+            _IMPACT_RANK.get(a.get("impact"), 9),
+            a.get("score", 100),
+        )
+    )
+    return ranked[:5]
 
 
 def _strongest_dim(readiness: dict) -> str:
@@ -79,21 +131,39 @@ def combine_coaching(state):
     critique = state.get("critique") or None
     previous_readiness = state.get("previous_readiness") or {}
     draft_number = int(state.get("draft_number") or 1)
+    # Sticky rubric across QA revise loops — avoid regenerating a moving target.
+    prior_rubric = (state.get("coaching_reports") or {}).get("evaluation_rubric") or {}
 
     synthesis = run_combiner(
-        context, strategy, discovery, narrative, reviewers, critique=critique
+        context,
+        strategy,
+        discovery,
+        narrative,
+        reviewers,
+        critique=critique,
+        sticky_rubric=prior_rubric or None,
     )
 
     raw_readiness = synthesis.get("readiness_index", {})
+    evaluation_rubric = synthesis.get("evaluation_rubric") or prior_rubric or {}
     readiness_index = {}
     for dim in READINESS_DIMENSIONS:
-        entry = raw_readiness.get(dim, {})
-        readiness_index[dim] = build_readiness_entry(
-            entry.get("score", 0),
-            entry.get("coaching", ""),
+        entry = raw_readiness.get(dim, {}) if isinstance(raw_readiness, dict) else {}
+        if not isinstance(entry, dict):
+            entry = {}
+        normalized = build_readiness_entry(
+            clamp_score(entry.get("score", 0)),
+            "",
         )
+        actions = _normalize_revision_actions(entry.get("revision_actions"))
+        normalized.update({
+            "justification": str(entry.get("justification") or "").strip(),
+            "revision_actions": actions,
+            "rubric": evaluation_rubric.get(dim, {}) if isinstance(evaluation_rubric, dict) else {},
+        })
+        readiness_index[dim] = normalized
 
-    coaching_brief = synthesis.get("coaching_brief", {})
+    coaching_brief = synthesis.get("coaching_brief", {}) or {}
     if not coaching_brief.get("current_strength_level"):
         coaching_brief["current_strength_level"] = overall_strength_level(
             readiness_index
@@ -132,6 +202,7 @@ def combine_coaching(state):
     ]
 
     coaching_reports = {
+        "evaluation_rubric": evaluation_rubric,
         "strategy": strategy,
         "discovery": discovery,
         "narrative": narrative,
@@ -143,8 +214,10 @@ def combine_coaching(state):
         / len(READINESS_DIMENSIONS)
     )
 
+    global_actions = _rank_global_actions(readiness_index)
     priorities = [
         coaching_brief.get("recommended_action", ""),
+        *[a.get("priority", "") for a in global_actions[:3]],
         narrative.get("biggest_narrative_gap", ""),
         discovery.get("recommended_experience_to_feature", ""),
     ]
@@ -158,6 +231,7 @@ def combine_coaching(state):
         "eligibility_matrix": _build_eligibility_matrix(eligibility),
         "feedback": coaching_brief.get("coach_message", ""),
         "revision_priorities": [p for p in priorities if p],
+        "ranked_revision_actions": global_actions,
         "scores": {
             "overall_score": avg_score,
             "strongest_metric": _strongest_dim(readiness_index),

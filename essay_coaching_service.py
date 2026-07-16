@@ -23,9 +23,11 @@ from pydantic import BaseModel, Field
 
 from llm.client import llm
 from templates.essay_coach import (
+    EDIT_RISK_TIERS,
     REWRITE_ACTIONS,
     SENTENCE_SEVERITIES,
     SENTENCE_TYPES,
+    WRITING_SUPPORT_LEVELS,
     build_combiner_prompt,
     build_final_check_prompt,
     build_guardrail_prompt,
@@ -39,6 +41,16 @@ from templates.essay_coach import (
     build_structure_flow_prompt,
     build_tone_authenticity_prompt,
 )
+
+# Modes where Evaluate / paste should stay mechanics-safe by default.
+_GRAMMAR_DEFAULT_MODES = frozenset({"workspace_refresh", "auto_check", "grammar_tone"})
+# Modes that emit sentence suggestions and must pass the Guardrail Critic.
+_GUARDED_SUGGESTION_MODES = frozenset({
+    "full",
+    "workspace_refresh",
+    "grammar_tone",
+    "auto_check",
+})
 
 
 def _clamp_score(value) -> int:
@@ -205,15 +217,29 @@ def _scholarship_context(record: Optional[dict]) -> str:
     return "\n".join(parts)[:4000]
 
 
+def _resolve_writing_support_level(mode: str, writing_support_level: str) -> str:
+    """Prefer grammar_only for Evaluate/auto paths unless the caller opts in."""
+    level = (writing_support_level or "").strip()
+    if level not in WRITING_SUPPORT_LEVELS:
+        level = "grammar_only" if mode in _GRAMMAR_DEFAULT_MODES else "sentence_polish"
+    if mode in _GRAMMAR_DEFAULT_MODES and level != "grammar_only":
+        # Evaluate / paste safety contract: mechanics first unless explicitly full coaching.
+        if mode in ("workspace_refresh", "auto_check"):
+            return "grammar_only"
+    return level
+
+
 def _clean_sentence_suggestions(
     draft: str,
     raw: list,
     max_suggestions: int = 40,
+    writing_support_level: str = "grammar_only",
 ) -> list[dict]:
     """Drop hallucinated anchors, over-long rewrites, and duplicates."""
     draft_lower = draft.lower()
     seen: set = set()
     cleaned: list[dict] = []
+    grammar_only = writing_support_level == "grammar_only"
     for item in raw:
         original = (item.original_text or "").strip()
         suggested = (item.suggested_text or "").strip()
@@ -222,10 +248,19 @@ def _clean_sentence_suggestions(
         # The anchor must exist verbatim in the draft.
         if original.lower() not in draft_lower:
             continue
-        # Guard against over-rewrites / full-essay generation.
+        stype = item.suggestion_type if item.suggestion_type in SENTENCE_TYPES else "clarity"
+        if grammar_only and stype not in ("grammar",):
+            # Hard filter: grammar_only must not leak polish/voice edits.
+            continue
+        # Blast-radius budgets by risk tier (minimal-edit principle).
+        risk = EDIT_RISK_TIERS.get(stype, "C1")
+        max_ratio = 1.35 if risk == "C0" else (1.8 if risk == "C1" else 2.2)
+        max_extra = 40 if risk == "C0" else (80 if risk == "C1" else 120)
+        if len(suggested) > max(int(len(original) * max_ratio), len(original) + max_extra):
+            continue
+        # Absolute ceiling against over-rewrites / full-essay generation.
         if len(suggested) > max(len(original) * 3, len(original) + 160):
             continue
-        stype = item.suggestion_type if item.suggestion_type in SENTENCE_TYPES else "clarity"
         severity = item.severity if item.severity in SENTENCE_SEVERITIES else "medium"
         key = (original.lower(), suggested.lower())
         if key in seen:
@@ -238,6 +273,7 @@ def _clean_sentence_suggestions(
                 "suggestion_type": stype,
                 "reason": (item.reason or "").strip(),
                 "severity": severity,
+                "risk_tier": risk,
             }
         )
         if len(cleaned) >= max_suggestions:
@@ -250,7 +286,7 @@ def _run_sentence_corrector(
     essay_prompt: str,
     scholarship_context: str,
     user_notes: str,
-    writing_support_level: str = "sentence_polish",
+    writing_support_level: str = "grammar_only",
 ) -> list:
     system, human = build_sentence_corrector_prompt(
         essay_draft=essay_draft,
@@ -374,7 +410,13 @@ def _run_combiner(specialist_summary: str) -> dict:
 def _run_guardrail_critic(essay_draft: str, profile_text: str, sentence_suggestions: list) -> dict:
     suggestions_json = json.dumps(
         [
-            {"index": i, "original": s.get("original_text", ""), "suggested": s.get("suggested_text", "")}
+            {
+                "index": i,
+                "original": s.get("original_text", ""),
+                "suggested": s.get("suggested_text", ""),
+                "type": s.get("suggestion_type", ""),
+                "risk_tier": s.get("risk_tier", ""),
+            }
             for i, s in enumerate(sentence_suggestions)
         ],
         default=str,
@@ -530,20 +572,21 @@ def run_essay_workspace_coach(
     word_limit: str = "",
     outline_points: Optional[list] = None,
     mode: str = "full",
-    writing_support_level: str = "sentence_polish",
+    writing_support_level: str = "grammar_only",
 ) -> dict:
     """Coordinate the Essay Workspace coaching specialists and return one package.
 
     Specialists run concurrently so even a "full" run stays close to one call's
     latency, then the Combiner synthesizes them into one action plan:
-      - Sentence Corrector      (modes: full, grammar_tone)
-      - Prompt Alignment Coach  (modes: full, prompt_alignment)
-      - Profile Grounding Coach (modes: full, prompt_alignment)
-      - Flow & Structure Coach  (modes: full, structure)
-      - Specificity Coach       (modes: full, structure)
-      - Tone & Authenticity     (modes: full)
-      - Reviewer Simulation     (modes: full, reviewer)
-      - Revision Combiner       (mode:  full)
+      - Sentence Corrector      (full, workspace_refresh, grammar_tone, auto_check)
+      - Prompt Alignment Coach  (full, prompt_alignment)
+      - Profile Grounding Coach (full, prompt_alignment, workspace_refresh)
+      - Flow & Structure Coach  (full, structure)
+      - Specificity Coach       (full, structure)
+      - Tone & Authenticity     (full, workspace_refresh)
+      - Reviewer Simulation     (full, workspace_refresh, reviewer)
+      - Revision Combiner       (full, workspace_refresh)
+      - Guardrail Critic        (any mode that emits sentence suggestions)
     Each specialist fails independently into a warning rather than failing the run.
     """
     essay_draft = (essay_draft or "").strip()
@@ -593,18 +636,26 @@ def run_essay_workspace_coach(
         return package
 
     outline_points = outline_points or []
+    support_level = _resolve_writing_support_level(mode, writing_support_level)
+    package["writing_support_level"] = support_level
+
+    # workspace_refresh = Evaluate companion pack: safe grammar fixes + grounding
+    # + authenticity + reviewer, parallelized. Deep 7-criterion scores come from
+    # /api/analyze; this pack must not invent polish that lowers authenticity.
     enabled = {
-        "sentence": mode in ("full", "grammar_tone", "auto_check"),
+        "sentence": mode in ("full", "workspace_refresh", "grammar_tone", "auto_check"),
         "alignment": mode in ("full", "prompt_alignment"),
-        "grounding": mode in ("full", "prompt_alignment"),
+        "grounding": mode in ("full", "prompt_alignment", "workspace_refresh"),
         "structure": mode in ("full", "structure"),
         "specificity": mode in ("full", "structure"),
-        "tone": mode in ("full",),
-        "reviewer": mode in ("full", "reviewer"),
-        "coverage": mode in ("full", "auto_check") and bool(outline_points),
+        "tone": mode in ("full", "workspace_refresh"),
+        "reviewer": mode in ("full", "workspace_refresh", "reviewer"),
+        "coverage": mode in ("full", "auto_check", "workspace_refresh") and bool(outline_points),
     }
     runners = {
-        "sentence": lambda: _run_sentence_corrector(essay_draft, essay_prompt, scholarship_context, user_notes or "", writing_support_level),
+        "sentence": lambda: _run_sentence_corrector(
+            essay_draft, essay_prompt, scholarship_context, user_notes or "", support_level
+        ),
         "alignment": lambda: _run_prompt_alignment(essay_draft, essay_prompt, scholarship_context),
         "grounding": lambda: _run_profile_grounding(essay_draft, profile_text, scholarship_context),
         "structure": lambda: _run_structure_flow(essay_draft, essay_prompt, outline_text),
@@ -627,7 +678,11 @@ def run_essay_workspace_coach(
 
     scores: dict = {}
     if results.get("sentence") is not None:
-        package["sentence_suggestions"] = _clean_sentence_suggestions(essay_draft, results["sentence"])
+        package["sentence_suggestions"] = _clean_sentence_suggestions(
+            essay_draft,
+            results["sentence"],
+            writing_support_level=support_level,
+        )
         clarity, grammar = _derive_writing_scores(package["sentence_suggestions"])
         scores["clarity"] = clarity
         scores["grammar_mechanics"] = grammar
@@ -661,8 +716,8 @@ def run_essay_workspace_coach(
         package["coach_summary"] = "Scholar-E could not analyze the draft this time. Please try again."
         return package
 
-    # Post-processing: the Guardrail Critic audits the sentence suggestions, and
-    # (for a full run) the Combiner synthesizes an action plan — run concurrently.
+    # Post-processing: Guardrail Critic audits sentence suggestions; Combiner
+    # synthesizes an action plan for full / workspace_refresh — run concurrently.
     def _combiner_job():
         summary_input = json.dumps(
             {
@@ -680,9 +735,11 @@ def run_essay_workspace_coach(
         return _run_combiner(summary_input)
 
     post_jobs = {}
-    if package["sentence_suggestions"] and mode == "full":
-        post_jobs["guardrail"] = lambda: _run_guardrail_critic(essay_draft, profile_text, package["sentence_suggestions"])
-    if mode == "full" and any(results.get(name) is not None for name in results):
+    if package["sentence_suggestions"] and mode in _GUARDED_SUGGESTION_MODES:
+        post_jobs["guardrail"] = lambda: _run_guardrail_critic(
+            essay_draft, profile_text, package["sentence_suggestions"]
+        )
+    if mode in ("full", "workspace_refresh") and any(results.get(name) is not None for name in results):
         post_jobs["combiner"] = _combiner_job
 
     post_results: dict = {}

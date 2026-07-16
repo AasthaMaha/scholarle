@@ -53,6 +53,8 @@ class AnalyzeRequest(BaseModel):
     prompt: str = Field(..., min_length=1, max_length=10000)
     previous_readiness: Optional[Dict[str, int]] = None
     draft_number: int = Field(default=1, ge=1, le=50)
+    # Fast Evaluate default: skip section essay coaching off the critical path.
+    include_section_coaching: bool = False
 
 
 class ProfileAutofillResponse(BaseModel):
@@ -203,7 +205,7 @@ class EssayCoachRequest(BaseModel):
     word_limit: str = Field(default="", max_length=120)
     outline_points: list[dict] = Field(default_factory=list)
     mode: str = Field(default="full", max_length=40)
-    writing_support_level: str = Field(default="sentence_polish", max_length=40)
+    writing_support_level: str = Field(default="grammar_only", max_length=40)
 
 
 class RewriteRequest(BaseModel):
@@ -368,6 +370,7 @@ def run_application_pipeline(
     profile_text: str,
     previous_readiness: Optional[Dict[str, int]] = None,
     draft_number: int = 1,
+    include_section_coaching: bool = False,
 ) -> dict:
     vector_service = _safe_vector_service()
     profile_docs = _text_to_chunks(profile_text, "uploaded_cv")
@@ -412,6 +415,7 @@ def run_application_pipeline(
             "student_draft": student_draft,
             "previous_readiness": previous_readiness or {},
             "draft_number": draft_number,
+            "include_section_coaching": include_section_coaching,
         }
     )
     feedback_text = build_feedback_memory_text(
@@ -602,6 +606,7 @@ def analyze_application(request: AnalyzeRequest) -> dict:
             profile_text=request.cv_text,
             previous_readiness=request.previous_readiness,
             draft_number=request.draft_number,
+            include_section_coaching=bool(request.include_section_coaching),
         ),
     )
 
@@ -619,6 +624,7 @@ def analyze_application(request: AnalyzeRequest) -> dict:
         "critique": result.get("critique", {}),
         "final_application_package": result.get("final_application_package", ""),
         "revision_priorities": result.get("revision_priorities", []),
+        "ranked_revision_actions": result.get("ranked_revision_actions", []),
         "draft_number": result.get("draft_number", request.draft_number),
     }
 
@@ -643,7 +649,7 @@ def run_essay_coach(request: EssayCoachRequest) -> dict:
         word_limit=request.word_limit,
         outline_points=request.outline_points,
         mode=request.mode or "full",
-        writing_support_level=request.writing_support_level or "sentence_polish",
+        writing_support_level=request.writing_support_level or "grammar_only",
     )
 
 

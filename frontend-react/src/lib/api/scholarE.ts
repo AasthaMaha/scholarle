@@ -10,6 +10,8 @@ export type AnalyzePayload = {
   prompt: string;
   previous_readiness?: Record<string, number>;
   draft_number?: number;
+  /** Off by default — keeps Evaluate on the critical scoring path. */
+  include_section_coaching?: boolean;
 };
 
 export type ResumeAutofillResult = {
@@ -125,32 +127,35 @@ export function buildAnalyzePayload(user: UserProfile | null): AnalyzePayload {
     if (typeof value?.score === "number") previousReadiness[key] = value.score;
   });
 
-  return {
-    cv_text: profileToText(user),
-    essay_text: user?.essayDraft ?? "",
-    scholarship_name: scholarship?.name ?? "",
-    scholarship_type: scholarship?.type ?? "",
-    prompt: compact([
+  const prompt = compact([
+      scholarship?.essayPrompts && `Essay prompt(s):\n${scholarship.essayPrompts}`,
+      scholarship?.description && `Scholarship description:\n${scholarship.description}`,
+      scholarship?.requirementsPreview && `Student-edited scholarship requirements preview:\n${scholarship.requirementsPreview}`,
+      scholarship?.financialNeedRequirement && `Financial need requirement: ${scholarship.financialNeedRequirement}`,
+      scholarship?.otherRequiredMaterials && `Other required materials:\n${scholarship.otherRequiredMaterials}`,
       scholarship?.url && `Scholarship URL/source: ${scholarship.url}`,
       scholarship?.awardAmount && `Award amount: ${scholarship.awardAmount}`,
       scholarship?.applicationDeadline && `Application deadline: ${scholarship.applicationDeadline}`,
-      scholarship?.description && `Scholarship description:\n${scholarship.description}`,
       scholarship?.minimumGpa && `Minimum GPA: ${scholarship.minimumGpa}`,
       scholarship?.enrollmentLevel && `Enrollment level: ${scholarship.enrollmentLevel}`,
       scholarship?.citizenshipRequirement && `Citizenship/residency requirement: ${scholarship.citizenshipRequirement}`,
-      scholarship?.financialNeedRequirement && `Financial need requirement: ${scholarship.financialNeedRequirement}`,
       scholarship?.locationRequirement && `Location/residency requirement: ${scholarship.locationRequirement}`,
       scholarship?.eligibleMajors && `Eligible majors/fields of study:\n${scholarship.eligibleMajors}`,
       scholarship?.otherEligibilityRules && `Other eligibility rules:\n${scholarship.otherEligibilityRules}`,
       !!scholarship?.requiredDocumentTypes?.length && `Required documents/materials: ${scholarship.requiredDocumentTypes.join(", ")}`,
-      scholarship?.otherRequiredMaterials && `Other required materials:\n${scholarship.otherRequiredMaterials}`,
-      scholarship?.essayPrompts && `Essay prompt(s):\n${scholarship.essayPrompts}`,
-      scholarship?.requirementsPreview && `Student-edited scholarship requirements preview:\n${scholarship.requirementsPreview}`,
       scholarship?.additionalNotes && `Additional notes:\n${scholarship.additionalNotes}`,
       scholarship?.fullText && `Full scholarship page text:\n${scholarship.fullText}`,
-    ]),
+    ]);
+
+  return {
+    cv_text: profileToText(user).slice(0, 50_000),
+    essay_text: (user?.essayDraft ?? "").slice(0, 20_000),
+    scholarship_name: (scholarship?.name ?? "").slice(0, 500),
+    scholarship_type: (scholarship?.type ?? "").slice(0, 200),
+    prompt: prompt.slice(0, 10_000),
     previous_readiness: previousReadiness,
     draft_number: (user?.drafts?.length ?? 0) + 1,
+    include_section_coaching: false,
   };
 }
 
@@ -164,7 +169,10 @@ export async function analyzeApplication(payload: AnalyzePayload): Promise<Analy
   const data = await response.json().catch(() => null);
   if (!response.ok) {
     const detail = data?.detail;
-    throw new Error(typeof detail === "string" ? detail : "Scholar-E analysis failed.");
+    const validationMessage = Array.isArray(detail)
+      ? detail.map((issue) => `${issue?.loc?.join(".") ?? "request"}: ${issue?.msg ?? "invalid value"}`).join("; ")
+      : null;
+    throw new Error(typeof detail === "string" ? detail : validationMessage || "Scholar-E analysis failed.");
   }
 
   return data as AnalysisResult;
@@ -330,7 +338,9 @@ export function buildOutlinePayload(user: UserProfile | null): OutlineGeneratePa
   void personalizedOutline;
 
   return {
-    opportunity_id: scholarship.url || scholarship.name || "",
+    // This is an identifier, not a source URL. Tracking-heavy scholarship URLs
+    // can exceed the backend's 200-character limit and cause a 422 response.
+    opportunity_id: (scholarship.name || scholarship.url || "").slice(0, 200),
     scholarship_name: scholarship.name || "",
     clean_scholarship_record: scholarship,
     essay_prompt: essayPrompt,
@@ -344,7 +354,7 @@ export function buildOutlinePayload(user: UserProfile | null): OutlineGeneratePa
   };
 }
 
-export type EssayCoachMode = "full" | "grammar_tone" | "prompt_alignment" | "structure" | "reviewer" | "final_check" | "auto_check";
+export type EssayCoachMode = "full" | "workspace_refresh" | "grammar_tone" | "prompt_alignment" | "structure" | "reviewer" | "final_check" | "auto_check";
 export type WritingSupportLevel = "grammar_only" | "sentence_polish" | "rewrite_help";
 
 export type EssayCoachSentenceSuggestion = {
@@ -353,6 +363,7 @@ export type EssayCoachSentenceSuggestion = {
   suggestion_type: string;
   reason: string;
   severity: "low" | "medium" | "high" | string;
+  risk_tier?: "C0" | "C1" | "C2" | "C3" | string;
 };
 
 export type PromptAlignmentFeedback = {
@@ -495,7 +506,11 @@ export function buildEssayCoachPayload(user: UserProfile | null, mode: EssayCoac
     word_limit: findWordLimit([essayPrompt, scholarship.otherRequiredMaterials, scholarship.requirementsPreview].filter(Boolean).join("\n")),
     outline_points: buildOutlinePoints(user?.personalizedOutline).map((p) => ({ id: p.id, label: p.label })),
     mode,
-    ...(writingSupportLevel ? { writing_support_level: writingSupportLevel } : {}),
+    writing_support_level:
+      writingSupportLevel
+      ?? (mode === "workspace_refresh" || mode === "auto_check" || mode === "grammar_tone"
+        ? "grammar_only"
+        : "sentence_polish"),
   };
 }
 
@@ -540,7 +555,9 @@ export function buildOutlinePoints(outline?: PersonalizedOutlineResult): Outline
     detail: c.where_covered || c.notes || undefined,
     group: "keypoints",
   }));
-  if (!keyPoints.length) keyPoints = (data.questions_for_student ?? []).map((q, i) => ({ id: `p-q-${i}`, label: q, group: "keypoints" }));
+  if (!keyPoints.length) {
+    keyPoints = (data.questions_for_student ?? []).map((q, i) => ({ id: `p-q-${i}`, label: q, group: "keypoints" }));
+  }
   if (!keyPoints.length) {
     const reqs = Array.from(new Set(sections.flatMap((s) => s.scholarship_requirement_addressed ?? [])));
     keyPoints = reqs.map((r, i) => ({ id: `p-req-${i}`, label: r, group: "keypoints" }));

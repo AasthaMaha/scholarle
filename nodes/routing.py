@@ -62,7 +62,9 @@ def route_generators(state) -> list:
         targets.append("discovery_agent")
     if has_draft(state):
         targets.append("narrative_agent")
-        targets.append("coach_sections")
+        # Section coaching is valuable but off the Evaluate critical path by default.
+        if state.get("include_section_coaching"):
+            targets.append("coach_sections")
     return targets
 
 

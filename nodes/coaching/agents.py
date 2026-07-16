@@ -197,10 +197,16 @@ def run_combiner(
     narrative: dict,
     reviewers: dict,
     critique: dict | None = None,
+    sticky_rubric: dict | None = None,
 ) -> dict:
-    """Combiner agent — synthesize all specialist outputs into the readiness
-    index and coaching brief. Re-runs with critique guidance when the Critic
-    requests a revision."""
+    """Manager + Evaluator stage of the scholarship-essay evaluation.
+
+    The Manager first tailors a seven-criterion rubric to the opportunity and
+    prompt. The Evaluator then scores the draft against that rubric. When QA
+    requests a revision, its notes are supplied to the Evaluator on the next
+    bounded graph pass. On revise loops, reuse sticky_rubric instead of
+    regenerating a moving-target rubric.
+    """
     critique_block = ""
     if critique:
         critique_block = f"""
@@ -211,16 +217,62 @@ Re-evaluate carefully. Correct any ungrounded scores or comments the critic
 identified, and make sure every score is justified by the submitted text.
 """
 
-    prompt = f"""
-You are the ScholarlE Combiner Coach. You synthesize the work of several
-specialist agents into one coherent evaluation.
-
-Assign Application Readiness Index scores (0–100) by evaluating ONLY the
-submitted CV, essay, and opportunity text. Scores must match content quality:
-placeholder text like "N/A" should receive very low scores with coaching that
-says why.
+    rubric = sticky_rubric if isinstance(sticky_rubric, dict) and sticky_rubric else {}
+    if not rubric:
+        manager_prompt = f"""
+You are the Manager Agent for a scholarship essay evaluation system.
+Create a tailored rubric for the exact scholarship and essay prompt below.
+Keep all seven required criteria, but tailor each criterion's observable
+standards to the scholarship's values, priorities, and every part of its prompt.
 
 {context}
+{_grounding_rules()}
+
+REQUIRED CRITERIA:
+CONTENT
+1. alignment — direct prompt coverage, scholarship values/priorities, and specific fit.
+2. evidence_strength — profile grounding, concrete specificity, measurable impact,
+   unsupported/invented claims, and missed stronger evidence.
+3. insight — meaning, reflection, learning, change, responsibility, and why it mattered.
+STRUCTURE
+4. coherence_continuity — logical consistency across ideas, timeline, motivations,
+   people, events, and claims; no contradictions or unexplained jumps.
+5. flow_narrative_arc — effective paragraph order, transitions, setup, action,
+   reflection, and takeaway.
+VOICE
+6. tone_authenticity — sincere, thoughtful, confident, respectful, student-written
+   voice; flag generic, corporate, formulaic, performative, or AI-like phrasing.
+7. clarity_concision — direct, understandable sentences without filler, repetition,
+   wordiness, unclear phrasing, or tangled construction.
+
+Return ONLY valid JSON:
+{{
+  "rubric": {{
+    "alignment": {{"description": "tailored standard", "excellent": "...", "developing": "...", "weak": "..."}},
+    "evidence_strength": {{"description": "...", "excellent": "...", "developing": "...", "weak": "..."}},
+    "insight": {{"description": "...", "excellent": "...", "developing": "...", "weak": "..."}},
+    "coherence_continuity": {{"description": "...", "excellent": "...", "developing": "...", "weak": "..."}},
+    "flow_narrative_arc": {{"description": "...", "excellent": "...", "developing": "...", "weak": "..."}},
+    "tone_authenticity": {{"description": "...", "excellent": "...", "developing": "...", "weak": "..."}},
+    "clarity_concision": {{"description": "...", "excellent": "...", "developing": "...", "weak": "..."}}
+  }}
+}}
+"""
+        rubric = safe_json_parse(llm.generate(manager_prompt)).get("rubric", {})
+
+    prompt = f"""
+You are the Evaluator Agent. Evaluate the scholarship essay independently
+against every criterion in the Manager Agent's tailored rubric. Use only the
+submitted essay, profile, scholarship information, and prompt. Provide a score,
+a hidden scoring justification, and one structured detailed feedback item for
+every criterion. Scores must
+be integers from 0 through 97; 97 is the absolute
+maximum so the system never implies perfect certainty.
+
+{context}
+
+MANAGER'S TAILORED RUBRIC:
+{json.dumps(rubric, indent=2)}
 
 OPPORTUNITY STRATEGY AGENT:
 {json.dumps(strategy, indent=2)}
@@ -236,14 +288,58 @@ REVIEWER SIMULATION AGENT:
 {critique_block}
 {_grounding_rules()}
 
+SCORING RULES:
+- Score all seven criteria. Never omit or merge one.
+- Cite or tightly paraphrase concrete draft/profile evidence in each justification.
+- Penalize unsupported or invented claims under evidence_strength.
+- Do not score eligibility facts as essay quality unless the prompt explicitly asks for them.
+- Apply the rubric consistently; do not inflate scores because the topic is admirable.
+
+STRUCTURED DETAILED FEEDBACK REQUIREMENTS:
+- For every criterion, generate exactly 1 detailed feedback item. Do not assign
+  an item to a different criterion merely because it is important overall.
+- Select the single best revision opportunity for that criterion. "Best" means
+  the most specific, actionable, well-grounded change that would materially
+  improve the essay—not the broadest observation or most dramatic label.
+- Preserve the specificity and usefulness of the former Revision Priority
+  Combiner: short ranked titles, a clear explanation of value, and actionable
+  location-aware coaching rather than broad evaluator advice.
+  Every action must include:
+  - "priority": a concise, action-oriented title.
+  - "why_it_matters": 1-2 essay-specific sentences explaining the criterion-level
+    benefit and naming the relevant prompt, scholarship value, passage, example,
+    or omission.
+  - "how_to_fix": a concrete instruction that says what to change and where.
+    Name a paragraph, passage, transition, example, or section whenever the
+    submitted text makes that possible.
+  - "impact": exactly "High", "Medium", or "Low".
+  - "estimated_effort": exactly "Quick", "Moderate", or "Deep".
+- Order actions by impact. Avoid duplicates within a criterion and across the
+  seven criteria.
+- Identify an exact passage, named example, paragraph, transition, claim, or
+  clearly described omission whenever possible.
+- The "how_to_fix" instruction must identify both the location and the content
+  of the change. Avoid vague directions such as "improve transitions,"
+  "clarify themes," or "add examples" unless you name the exact transition,
+  theme, or supported example and explain what the student should add or change.
+- For alignment, identify the affected prompt part or scholarship value. For
+  evidence strength, distinguish verified profile evidence from vague or
+  unsupported evidence. For insight, name the missing reflection or meaning.
+  For structure, name the affected paragraph, transition, or narrative stage.
+  For voice, identify representative wording while preserving authenticity.
+- Never use generic advice such as "add more detail" without naming the exact
+  detail needed and where it belongs.
+
 Return ONLY valid JSON:
 {{
   "readiness_index": {{
-    "opportunity_fit": {{"score": 0, "coaching": "one sentence citing submitted text"}},
-    "evidence_strength": {{"score": 0, "coaching": "one sentence citing profile/draft"}},
-    "narrative_quality": {{"score": 0, "coaching": "one sentence citing draft"}},
-    "authenticity": {{"score": 0, "coaching": "one sentence citing draft"}},
-    "competitiveness": {{"score": 0, "coaching": "one sentence citing draft vs opportunity"}}
+    "alignment": {{"score": 0, "justification": "...", "revision_actions": [{{"priority": "...", "why_it_matters": "...", "how_to_fix": "...", "impact": "High", "estimated_effort": "Moderate"}}]}},
+    "evidence_strength": {{"score": 0, "justification": "...", "revision_actions": []}},
+    "insight": {{"score": 0, "justification": "...", "revision_actions": []}},
+    "coherence_continuity": {{"score": 0, "justification": "...", "revision_actions": []}},
+    "flow_narrative_arc": {{"score": 0, "justification": "...", "revision_actions": []}},
+    "tone_authenticity": {{"score": 0, "justification": "...", "revision_actions": []}},
+    "clarity_concision": {{"score": 0, "justification": "...", "revision_actions": []}}
   }},
   "coaching_brief": {{
     "current_strength_level": "Strong|Developing|Emerging|Needs Work",
@@ -254,16 +350,16 @@ Return ONLY valid JSON:
   }}
 }}
 """
-    return safe_json_parse(llm.generate(prompt))
+    result = safe_json_parse(llm.generate(prompt))
+    result["evaluation_rubric"] = rubric
+    return result
 
 
 def run_critic_review(context: str, combined: dict) -> dict:
-    """Critic agent — verify the combined evaluation is grounded in the
-    submitted text and obeys the coaching guardrails. Flags revisions."""
+    """QA Agent — audit fairness, consistency, completeness, and clarity."""
     prompt = f"""
-You are the ScholarlE Critic. You are a strict quality-control reviewer of the
-OTHER agents' work. You do NOT coach the student. You audit the evaluation
-below against the submitted text and the grounding rules.
+You are the Quality Assurance (QA) Agent. Critically audit the Evaluator
+Agent's proposed scores and feedback. You do not rescore the essay yourself.
 
 {context}
 
@@ -272,18 +368,32 @@ EVALUATION TO AUDIT (produced by the combiner from specialist agents):
 {_grounding_rules()}
 
 Check specifically:
-- Is every readiness score justified by specific words in the submitted text?
-- Did any agent invent experiences, awards, metrics, or facts not present?
-- Is placeholder/empty content (e.g. "N/A") correctly scored low, not praised?
-- Are comments specific to THIS submission rather than generic template praise?
+- FAIRNESS: are scores evidence-based, unbiased, and neither inflated nor punitive?
+- RUBRIC CONSISTENCY: does each score match its tailored criterion description?
+- COMPLETENESS: are all seven criteria covered with score, justification, and
+  exactly 1 structured detailed feedback item?
+- ACTION CONSISTENCY: does every structured item belong to its own criterion,
+  without a cross-criterion mismatch?
+- ACTION QUALITY: does every action contain a specific priority,
+  why_it_matters, how_to_fix, impact, and estimated_effort in the required
+  format? Is it concrete enough to execute, grounded in the submitted essay,
+  and non-duplicative across criteria? Is it demonstrably the criterion's most
+  specific and actionable revision opportunity rather than generic advice?
+- GROUNDING: did the evaluator invent any fact or overlook unsupported claims?
+- SCORE CAP: is every score an integer from 0 through 97?
 
-Set "verdict" to "needs_revision" ONLY if you find a concrete grounding or
-guardrail violation that materially changes the evaluation. Otherwise "approved".
+Set "verdict" to "needs_revision" if you find a material grounding, rubric,
+completeness, feedback-quality, action-quality, or cross-criterion consistency
+violation. Otherwise set it to "approved".
 
 Return ONLY valid JSON:
 {{
   "grounding_pass": true,
   "guardrail_pass": true,
+  "fairness_pass": true,
+  "rubric_consistency_pass": true,
+  "completeness_pass": true,
+  "clarity_pass": true,
   "confidence": 0,
   "issues": ["concrete problems found, or empty list"],
   "revision_guidance": "what the combiner must fix, or empty string",

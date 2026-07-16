@@ -204,6 +204,21 @@ export type AnalysisScore = {
   score?: number;
   level?: string;
   coaching?: string;
+  justification?: string;
+  feedback?: string;
+  revision_actions?: Array<{
+    priority?: string;
+    why_it_matters?: string;
+    how_to_fix?: string;
+    impact?: string;
+    estimated_effort?: string;
+  }>;
+  rubric?: {
+    description?: string;
+    excellent?: string;
+    developing?: string;
+    weak?: string;
+  };
   delta?: number;
 };
 
@@ -305,6 +320,16 @@ export type AnalysisResult = {
   };
   final_application_package?: string;
   revision_priorities?: string[];
+  ranked_revision_actions?: Array<{
+    priority?: string;
+    why_it_matters?: string;
+    how_to_fix?: string;
+    impact?: string;
+    estimated_effort?: string;
+    criterion?: string;
+    criterion_label?: string;
+    score?: number;
+  }>;
   draft_number?: number;
 };
 
@@ -474,11 +499,7 @@ export type UserProfile = {
   graduate?: GradProfile;
   educationHistory?: EducationHistoryEntry[];
   academicOnboardingCompleted?: boolean;
-  profileStartChoiceCompleted?: boolean;
   profileSetupCompleted?: boolean;
-  journeyTutorialPending?: boolean;
-  journeyTutorialCompleted?: boolean;
-  journeyTutorialSkipped?: boolean;
   researchExperience?: ResearchExperienceEntry[];
   workExperience?: WorkExperienceEntry[];
   // optional
@@ -495,6 +516,11 @@ export type UserProfile = {
   activeScholarship?: ActiveScholarship;
   // latest result returned by the Scholar-E AI coach
   lastAnalysis?: AnalysisResult;
+  // latest Essay Workspace coach result, persisted so sleep/reload/remount does
+  // not clear the Coach and Reader tabs.
+  essayCoachResult?: Record<string, unknown>;
+  essayCoachSummary?: string;
+  essayCoachUpdatedAt?: number;
   // latest dedicated scholarship fit analysis
   fitAnalysis?: FitAnalysisResult;
   // latest discovery wiki recommendations
@@ -515,7 +541,6 @@ export type UserProfile = {
 
 type Ctx = {
   user: UserProfile | null;
-  isHydrated: boolean;
   updateProfile: (patch: Partial<UserProfile>) => void;
   resetProfile: () => void;
   signIn: (email: string, name?: string) => void;
@@ -564,7 +589,6 @@ const UserContext = createContext<Ctx | null>(null);
 
 export function UserProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<UserProfile | null>(null);
-  const [isHydrated, setIsHydrated] = useState(false);
   const hydrated = useRef(false);
 
   // Hydrate once on the client from the saved account for the current email.
@@ -576,7 +600,6 @@ export function UserProvider({ children }: { children: ReactNode }) {
     const saved = store.accounts[store.currentEmail] ?? store.accounts[""];
     if (saved) setUser(saved);
     hydrated.current = true;
-    setIsHydrated(true);
   }, []);
 
   // Persist (debounced) whenever the profile changes, keyed by email.
@@ -633,8 +656,8 @@ export function UserProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo<Ctx>(
-    () => ({ user, isHydrated, updateProfile, resetProfile, signIn, signOut }),
-    [user, isHydrated, updateProfile, resetProfile, signIn, signOut],
+    () => ({ user, updateProfile, resetProfile, signIn, signOut }),
+    [user, updateProfile, resetProfile, signIn, signOut],
   );
 
   return <UserContext.Provider value={value}>{children}</UserContext.Provider>;

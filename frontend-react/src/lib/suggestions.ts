@@ -8,6 +8,7 @@
 // "Accept" action always has something to apply.
 
 export type SuggestionCategory = "correctness" | "clarity" | "engagement" | "tone";
+export type EditRiskTier = "C0" | "C1" | "C2" | "C3";
 
 export type Suggestion = {
   id: string;
@@ -20,6 +21,8 @@ export type Suggestion = {
   replacement: string;
   severity?: "low" | "medium" | "high";
   source?: "auto" | "coach";
+  riskTier?: EditRiskTier;
+  suggestionType?: string;
 };
 
 // Raw sentence suggestion returned by the backend Sentence Corrector.
@@ -29,6 +32,7 @@ export type CoachSentenceSuggestion = {
   suggestion_type: string;
   reason: string;
   severity: "low" | "medium" | "high" | string;
+  risk_tier?: string;
 };
 
 export const CATEGORY_ORDER: SuggestionCategory[] = ["correctness", "clarity", "engagement", "tone"];
@@ -52,6 +56,7 @@ type Rule = {
   title: string;
   explanation: string;
   replace: (m: RegExpMatchArray) => string;
+  riskTier?: EditRiskTier;
 };
 
 function escapeRegExp(value: string): string {
@@ -114,6 +119,7 @@ function buildPhraseRule(
   category: SuggestionCategory,
   title: string,
   explanation: string,
+  riskTier: EditRiskTier = "C1",
 ): Rule {
   const alternation = Object.keys(map)
     .sort((a, b) => b.length - a.length)
@@ -123,17 +129,19 @@ function buildPhraseRule(
     category,
     title,
     explanation,
+    riskTier,
     regex: new RegExp(`\\b(${alternation})\\b`, "gi"),
     replace: (m) => matchCase(m[0], map[m[0].toLowerCase()] ?? m[0]),
   };
 }
 
 const RULES: Rule[] = [
-  // --- Correctness (red) ---
+  // --- Correctness (red) / C0 mechanics ---
   {
     category: "correctness",
     title: "Extra spaces",
     explanation: "Remove the extra whitespace so the spacing is consistent.",
+    riskTier: "C0",
     regex: /[^\S\n]{2,}/g,
     replace: () => " ",
   },
@@ -141,6 +149,7 @@ const RULES: Rule[] = [
     category: "correctness",
     title: "Repeated word",
     explanation: "This word appears twice in a row.",
+    riskTier: "C0",
     regex: /\b(\w+)\s+\1\b/gi,
     replace: (m) => m[1],
   },
@@ -148,6 +157,7 @@ const RULES: Rule[] = [
     category: "correctness",
     title: 'Capitalize "I"',
     explanation: 'The pronoun "I" is always capitalized.',
+    riskTier: "C0",
     regex: /\bi\b/g,
     replace: () => "I",
   },
@@ -155,6 +165,7 @@ const RULES: Rule[] = [
     category: "correctness",
     title: "Add a space",
     explanation: "Add a space after the punctuation mark.",
+    riskTier: "C0",
     regex: /([,;])(?=[A-Za-z])/g,
     replace: (m) => `${m[1]} `,
   },
@@ -162,29 +173,32 @@ const RULES: Rule[] = [
     category: "correctness",
     title: "Spacing before punctuation",
     explanation: "Remove the space before the punctuation mark.",
+    riskTier: "C0",
     regex: /[^\S\n]+([,.;:!?])/g,
     replace: (m) => m[1],
   },
-  buildPhraseRule(MISSPELLINGS, "correctness", "Possible misspelling", "This looks like a common misspelling."),
+  buildPhraseRule(MISSPELLINGS, "correctness", "Possible misspelling", "This looks like a common misspelling.", "C0"),
 
-  // --- Clarity (blue) ---
-  buildPhraseRule(WORDY_PHRASES, "clarity", "Wordy phrase", "This phrase can be tightened up."),
+  // --- Clarity (blue) / C1 ---
+  buildPhraseRule(WORDY_PHRASES, "clarity", "Wordy phrase", "This phrase can be tightened up.", "C1"),
 
-  // --- Engagement (green) ---
+  // --- Engagement (green) / C1 ---
   {
     category: "engagement",
     title: "Weak intensifier",
     explanation: "Cut the filler word and let the point stand on its own.",
+    riskTier: "C1",
     regex: /\b(?:very|really|extremely|basically|actually|literally)\s+([A-Za-z]+)/gi,
     replace: (m) => m[1],
   },
 
-  // --- Tone (purple) ---
-  buildPhraseRule(CLICHES, "tone", "Cliché", "This is an overused phrase — say it more directly."),
+  // --- Tone (purple) / C2 voice-affecting ---
+  buildPhraseRule(CLICHES, "tone", "Cliché", "This is an overused phrase — say it more directly.", "C2"),
   {
     category: "tone",
     title: "Hedging",
     explanation: "State it with confidence instead of hedging.",
+    riskTier: "C2",
     regex: /\bI (?:think|believe|feel) that\s+/gi,
     replace: () => "",
   },
@@ -219,6 +233,9 @@ export function analyzeText(text: string): Suggestion[] {
         title: rule.title,
         explanation: rule.explanation,
         replacement,
+        source: "auto",
+        riskTier: rule.riskTier ?? (rule.category === "correctness" ? "C0" : "C1"),
+        suggestionType: rule.title.toLowerCase(),
       });
     }
   }
@@ -260,21 +277,35 @@ export function countByCategory(suggestions: Suggestion[]): Record<SuggestionCat
   return counts;
 }
 
-// Map the backend's richer suggestion_type onto the four underline categories.
-const COACH_TYPE_MAP: Record<string, { category: SuggestionCategory; title: string }> = {
-  grammar: { category: "correctness", title: "Grammar" },
-  word_choice: { category: "correctness", title: "Word choice" },
-  clarity: { category: "clarity", title: "Clarity" },
-  flow: { category: "clarity", title: "Flow" },
-  transition: { category: "clarity", title: "Transition" },
-  concision: { category: "clarity", title: "Concision" },
-  specificity: { category: "engagement", title: "Specificity" },
-  tone: { category: "tone", title: "Tone" },
-  ai_like_language: { category: "tone", title: "AI-like language" },
+// Map the backend's richer suggestion_type onto underline categories + risk tiers.
+// word_choice is NOT correctness — Accept-all must never bulk-apply diction changes.
+const COACH_TYPE_MAP: Record<string, { category: SuggestionCategory; title: string; riskTier: EditRiskTier }> = {
+  grammar: { category: "correctness", title: "Grammar", riskTier: "C0" },
+  word_choice: { category: "clarity", title: "Word choice", riskTier: "C2" },
+  clarity: { category: "clarity", title: "Clarity", riskTier: "C1" },
+  flow: { category: "clarity", title: "Flow", riskTier: "C1" },
+  transition: { category: "clarity", title: "Transition", riskTier: "C1" },
+  concision: { category: "clarity", title: "Concision", riskTier: "C1" },
+  specificity: { category: "engagement", title: "Specificity", riskTier: "C3" },
+  tone: { category: "tone", title: "Tone", riskTier: "C2" },
+  ai_like_language: { category: "tone", title: "AI-like language", riskTier: "C2" },
 };
 
-function coachType(type: string): { category: SuggestionCategory; title: string } {
-  return COACH_TYPE_MAP[type] ?? { category: "clarity", title: "Suggestion" };
+function coachType(type: string): { category: SuggestionCategory; title: string; riskTier: EditRiskTier } {
+  return COACH_TYPE_MAP[type] ?? { category: "clarity", title: "Suggestion", riskTier: "C1" };
+}
+
+function normalizeRiskTier(value: string | undefined, fallback: EditRiskTier): EditRiskTier {
+  if (value === "C0" || value === "C1" || value === "C2" || value === "C3") return value;
+  return fallback;
+}
+
+/** True only for mechanical fixes safe for Accept-all. */
+export function isSafeQuickFix(s: Suggestion): boolean {
+  if (s.riskTier === "C0") return true;
+  if (s.source === "auto" && s.category === "correctness") return true;
+  if (s.source === "coach" && (s.suggestionType === "grammar" || s.title === "Grammar")) return true;
+  return false;
 }
 
 /**
@@ -360,6 +391,8 @@ export function anchorCoachSuggestions(raw: CoachSentenceSuggestion[], text: str
       replacement,
       severity,
       source: "coach",
+      riskTier: normalizeRiskTier(item.risk_tier, meta.riskTier),
+      suggestionType: item.suggestion_type,
     });
   }
   return results;

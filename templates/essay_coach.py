@@ -12,13 +12,31 @@ COACH_GUARDRAILS = """You are a scholarship essay COACH, not a ghostwriter.
 - Do NOT write or rewrite the whole essay, and do NOT produce a full essay.
 - Do NOT invent experiences, achievements, hardships, identity details,
   financial need, awards, research, or leadership roles.
-- Use ONLY the student's essay draft, profile, and scholarship context provided.
-- Preserve the student's own voice; keep every suggestion faithful to the
-  original meaning.
-- Prefer small sentence- or phrase-level suggestions over full-paragraph rewrites.
+- EVIDENCE LOCK: use ONLY facts present in the student's essay draft, profile,
+  and scholarship context. If a detail is missing, ask a question — never invent it.
+- Preserve the student's own voice, rhythm, and distinctive wording. Prefer keeping
+  first-person specificity, contractions, and concrete local phrasing over polished
+  corporate or AI-sounding language.
+- Prefer minimal edits: small sentence- or phrase-level suggestions over rewrites.
+- Never "improve" by making the essay sound more generic, more formal, or less personal.
 - If information is missing, say so or ask a question instead of inventing it.
 - Be respectful and careful with sensitive content (identity, hardship, finances,
-  family, health, immigration, trauma); never pressure the student to disclose more."""
+  family, health, immigration, trauma); never pressure the student to disclose more.
+- Quality rule: a suggestion that raises fluency but lowers authenticity, grounding,
+  or prompt fidelity is UNSAFE and must not be proposed."""
+
+# Risk tiers for sentence-level edits (used by cleaning + UI accept policies).
+EDIT_RISK_TIERS = {
+    "grammar": "C0",
+    "clarity": "C1",
+    "flow": "C1",
+    "transition": "C1",
+    "concision": "C1",
+    "word_choice": "C2",
+    "tone": "C2",
+    "ai_like_language": "C2",
+    "specificity": "C3",
+}
 
 # Allowed enums for the Sentence Corrector.
 SENTENCE_TYPES = [
@@ -38,7 +56,8 @@ WRITING_SUPPORT_LEVELS = ["grammar_only", "sentence_polish", "rewrite_help"]
 
 _WRITING_SUPPORT_GUIDANCE = {
     "grammar_only": (
-        "Grammar only: suggest spelling, punctuation, grammar, capitalization, and mechanics fixes only. "
+        "Grammar only: evaluate spelling, punctuation, capitalization, verb tense, subject-verb and pronoun agreement, "
+        "grammar, and sentence-level correctness. Suggest mechanics fixes only. "
         "Do NOT change meaning, voice, style, structure, specificity, or word choice unless required for correctness. "
         "Use suggestion_type='grammar' whenever possible."
     ),
@@ -283,7 +302,8 @@ Rules:
   most valuable improvement. Warm, specific, and grounded in the findings.
 - "top_revision_priorities": 3-5 items, each with priority (short title), why_it_matters,
   how_to_fix (coaching guidance, NOT a rewrite), estimated_effort (quick/moderate/deep),
-  and impact (low/medium/high). Order by impact.
+  and impact (low/medium/high). Order by impact. When discussing alignment, explicitly
+  address both the essay prompt and the scholarship mission rather than naming only one.
 - "quick_fixes": small, fast wins (grammar, wording).
 - "deeper_revision_tasks": bigger content/structure work.
 - "ready_for_evaluation": true only if there are no major blockers.
@@ -401,18 +421,24 @@ suggestions BEFORE they reach the student. Your only job is safety, not coaching
 
 Flag a suggestion as UNSAFE (by its index) if its "suggested_text":
 - adds a fact, number, award, experience, hardship, or claim NOT in the original
-  sentence, the student's draft, or the student's profile;
-- rewrites far more than the original sentence (approaches a full paragraph);
-- makes the essay sound less authentic or less like the student's own voice;
-- invents scholarship requirements.
+  sentence, the student's draft, or the student's profile (EVIDENCE LOCK violation);
+- rewrites far more than the original sentence (approaches a full paragraph) or
+  changes more than roughly one clause without necessity;
+- makes the essay sound less authentic, more corporate, more AI-like, or less like
+  the student's own voice (voice wipe);
+- invents scholarship requirements;
+- replaces distinctive personal phrasing with generic "polished" synonyms when a
+  smaller grammar/clarity fix would suffice;
+- pressures disclosure of sensitive personal details.
 If a suggestion is faithful and safe, do NOT flag it.
+Prefer removing risky polish over keeping a "prettier" sentence.
 
 Return:
 - "unsafe_suggestion_indices": indices of suggestions to remove.
 - "issues_found": short reasons for each removal.
 - "final_notes": brief safety notes for the student (optional).
 - "approved": true if nothing needed removal."""
-    human = f"""STUDENT PROFILE (allowed facts):
+    human = f"""STUDENT PROFILE (allowed facts / EVIDENCE LOCK):
 {profile_text or "(none provided)"}
 
 STUDENT ESSAY DRAFT:
@@ -420,7 +446,7 @@ STUDENT ESSAY DRAFT:
 {essay_draft}
 \"\"\"
 
-PROPOSED SENTENCE SUGGESTIONS (index → original/suggested):
+PROPOSED SENTENCE SUGGESTIONS (index → original/suggested/type):
 {suggestions_json}
 
 Return the audit as structured output."""
@@ -485,12 +511,11 @@ def build_sentence_corrector_prompt(
     max_suggestions: int = 25,
 ) -> tuple[str, str]:
     """Return (system, human) messages for the Sentence Corrector agent."""
-    support_level = writing_support_level if writing_support_level in WRITING_SUPPORT_LEVELS else "sentence_polish"
+    support_level = writing_support_level if writing_support_level in WRITING_SUPPORT_LEVELS else "grammar_only"
     support_guidance = _WRITING_SUPPORT_GUIDANCE[support_level]
     system = f"""You are the Sentence Corrector for Scholar-E, a scholarship essay coach.
-Provide sentence-level and phrase-level suggestions that improve grammar,
-clarity, tone, flow, concision, transitions, specificity, and word choice, and
-flag generic or AI-like language.
+Provide sentence-level and phrase-level suggestions that improve writing ONLY
+within the active writing-support level. Never sacrifice authenticity for polish.
 
 {COACH_GUARDRAILS}
 
@@ -503,13 +528,15 @@ For EACH suggestion:
 - "suggested_text" must stay faithful to the original meaning and keep the
   student's voice. It must NOT add new facts, experiences, numbers, or claims.
 - "suggested_text" should be about the same length as "original_text" — a single
-  sentence or phrase — never a whole paragraph or essay.
+  sentence or phrase — never a whole paragraph or essay. Prefer the smallest edit
+  that fixes the issue (minimal-edit principle).
 - "suggestion_type" must be exactly one of: {", ".join(SENTENCE_TYPES)}.
+- For grammar_only mode, use suggestion_type='grammar' almost always.
 - "severity" must be exactly one of: {", ".join(SENTENCE_SEVERITIES)}.
 - "reason" is one short sentence explaining why the change helps.
 
-Only include suggestions that genuinely improve the writing. Do not restate the
-whole essay. Return at most the {max_suggestions} most valuable suggestions."""
+Only include suggestions that genuinely improve the writing without flattening voice.
+Do not restate the whole essay. Return at most the {max_suggestions} most valuable suggestions."""
 
     human = f"""SCHOLARSHIP CONTEXT (for tone/appropriateness only — do NOT invent requirements):
 {scholarship_context or "(none provided)"}

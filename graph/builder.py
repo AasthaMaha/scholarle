@@ -1,5 +1,7 @@
 # graph/builder.py
 
+from concurrent.futures import ThreadPoolExecutor
+
 from langgraph.graph import END, StateGraph
 
 from state.application_state import ApplicationState
@@ -57,8 +59,10 @@ def retrieve_profile(state, vector_service, user_id: str):
 
     context_chunks = []
     seen = set()
-    for query in queries[:8]:
-        for item in vector_service.retrieve_context(
+    selected_queries = queries[:8]
+
+    def _retrieve(query: str):
+        return vector_service.retrieve_context(
             user_id=user_id,
             query=query,
             allowed_collections=[
@@ -68,12 +72,17 @@ def retrieve_profile(state, vector_service, user_id: str):
                 "user_feedback_memory",
             ],
             k=4,
-        ):
-            key = (item.get("collection"), item.get("chroma_id"), item.get("text"))
-            if key in seen:
-                continue
-            seen.add(key)
-            context_chunks.append(item)
+        )
+
+    # Parallel retrieval — formerly serial over up to 8 queries.
+    with ThreadPoolExecutor(max_workers=min(8, max(1, len(selected_queries)))) as pool:
+        for items in pool.map(_retrieve, selected_queries):
+            for item in items:
+                key = (item.get("collection"), item.get("chroma_id"), item.get("text"))
+                if key in seen:
+                    continue
+                seen.add(key)
+                context_chunks.append(item)
 
     profile_chunks = []
     for item in context_chunks[:10]:
