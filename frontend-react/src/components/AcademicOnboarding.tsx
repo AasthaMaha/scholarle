@@ -1,8 +1,8 @@
 import { ArrowLeft, ArrowRight, Check } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import scholarELogoUrl from "../../logo/logoPic.jpeg";
 
 import { type EducationHistoryEntry, type EducationLevel, type UserProfile } from "@/lib/userStore";
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 
 const ACADEMIC_LEVELS = [
   "High School",
@@ -151,7 +151,10 @@ export function AcademicOnboarding({
     ACADEMIC_LEVELS.find((level) => level === initialEntry?.educationLevel) ?? "";
   const [level, setLevel] = useState<AcademicLevel | "">(initialLevel);
   const [step, setStep] = useState(0);
+  const [leaving, setLeaving] = useState(false);
   const navigationLocked = useRef(false);
+  const questionHeadingRef = useRef<HTMLHeadingElement | null>(null);
+  const completionTimerRef = useRef<number | null>(null);
   const [entry, setEntry] = useState<EducationHistoryEntry>({
     id: initialEntry?.id || "edu-academic-onboarding",
     source: initialEntry?.source || "onboarding",
@@ -172,6 +175,15 @@ export function AcademicOnboarding({
     () => Array.from({ length: 16 }, (_, i) => String(new Date().getFullYear() + i)),
     [],
   );
+
+  useEffect(() => {
+    if (!open) return;
+    questionHeadingRef.current?.focus();
+  }, [open, step]);
+
+  useEffect(() => () => {
+    if (completionTimerRef.current !== null) window.clearTimeout(completionTimerRef.current);
+  }, []);
 
   function save(nextLevel: AcademicLevel, nextEntry: EducationHistoryEntry) {
     updateProfile(profilePatch(user, nextLevel, nextEntry));
@@ -223,7 +235,9 @@ export function AcademicOnboarding({
     navigationLocked.current = true;
     if (step === questions.length - 1) {
       updateProfile({ ...profilePatch(user, level, entry), academicOnboardingCompleted: true });
-      onComplete();
+      setLeaving(true);
+      const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      completionTimerRef.current = window.setTimeout(onComplete, reduceMotion ? 0 : 200);
       return;
     }
     setStep((current) => current + 1);
@@ -232,14 +246,32 @@ export function AcademicOnboarding({
     });
   }
 
+  if (!open) return null;
+
   return (
-    <Dialog open={open}>
-      <DialogContent
-        className="w-[calc(100%-1.5rem)] max-w-lg gap-0 overflow-hidden rounded-2xl p-0 [&>button]:hidden"
-        onEscapeKeyDown={(event) => event.preventDefault()}
-        onPointerDownOutside={(event) => event.preventDefault()}
-      >
-        <div className="border-b border-border/70 px-4 pb-3 pt-4 sm:px-5">
+    <div
+      className={`min-h-screen overflow-y-auto bg-[radial-gradient(circle_at_50%_24%,rgba(109,93,246,0.08),transparent_34%),linear-gradient(180deg,#f9faff_0%,#f3f5fb_100%)] transition-opacity duration-200 motion-reduce:transition-none ${leaving ? "opacity-0" : "opacity-100"}`}
+    >
+      <main className="mx-auto flex min-h-screen w-full max-w-3xl flex-col items-center px-3 pb-10 pt-[clamp(1.25rem,4vh,2.5rem)] sm:px-6">
+        <div className="mb-3 flex items-center justify-center gap-2">
+          <img src={scholarELogoUrl} alt="" className="size-8 rounded-full object-cover" />
+          <span className="font-display text-sm font-semibold tracking-tight text-foreground">Scholar-E</span>
+        </div>
+
+        <div className="text-center">
+          <h1 className="font-display text-2xl font-bold tracking-tight text-foreground sm:text-3xl">
+            Set up your profile
+          </h1>
+          <p className="mt-1.5 text-base font-medium text-foreground/75 sm:text-lg">
+            Answer a few quick questions so Scholar-E can personalize your experience.
+          </p>
+        </div>
+
+        <section
+          aria-labelledby="academic-onboarding-question"
+          className="mt-7 w-full max-w-xl overflow-hidden rounded-2xl border border-border/80 bg-card shadow-lg motion-reduce:animate-none"
+        >
+        <div className="border-b border-border/70 px-4 pb-3 pt-5 sm:px-5">
           <div className="flex items-center justify-between">
             <button
               type="button"
@@ -273,19 +305,24 @@ export function AcademicOnboarding({
           </div>
         </div>
 
-        <div className="max-h-[min(70vh,540px)] overflow-y-auto px-5 py-5 sm:px-6">
-          <DialogTitle className="font-display text-xl leading-snug sm:text-2xl">
+        <div className="px-5 py-5 sm:px-6">
+          <h2
+            id="academic-onboarding-question"
+            ref={questionHeadingRef}
+            tabIndex={-1}
+            className="font-display text-xl font-semibold leading-snug outline-none sm:text-2xl"
+          >
             {question === "level"
               ? "Which education level are you currently pursuing?"
               : promptFor(level as AcademicLevel, question)}
-          </DialogTitle>
-          <DialogDescription className="mt-1.5 text-sm">
+          </h2>
+          <p className={`mt-1.5 ${question === "major" ? "text-sm text-muted-foreground" : "text-[15px] font-medium text-foreground/70"}`}>
             {question === "major"
               ? level === "Professional Degree (JD, MD, DDS, etc.)"
                 ? "For example, Law, Medicine, Dentistry, Pharmacy, or Veterinary Medicine."
                 : "This helps personalize scholarship matches."
               : "This will be added to your student profile."}
-          </DialogDescription>
+          </p>
 
           {question === "level" && (
             <div className="mt-4 grid gap-2">
@@ -366,7 +403,8 @@ export function AcademicOnboarding({
             </div>
           )}
         </div>
-      </DialogContent>
-    </Dialog>
+        </section>
+      </main>
+    </div>
   );
 }

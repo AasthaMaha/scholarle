@@ -18,6 +18,7 @@ import {
   Lightbulb,
   LineChart,
   ListChecks,
+  Lock,
   Menu,
   MessageSquare,
   PanelLeftClose,
@@ -121,13 +122,57 @@ const SIDEBAR_MAX_WIDTH = 420;
 const SIDEBAR_DEFAULT_WIDTH = 288;
 const SIDEBAR_WIDTH_KEY = "scholar-e:sidebarWidth";
 
+function needsAcademicOnboarding(user: UserProfile | null) {
+  return !!(
+    user &&
+    !user.academicOnboardingCompleted &&
+    !user.educationLevel &&
+    !user.educationHistory?.some((entry) => entry.educationLevel?.trim()) &&
+    !user.optional?.resumeFileName
+  );
+}
+
 function Journey() {
-  const { user, updateProfile, resetProfile } = useUser();
+  const { user, isHydrated, updateProfile, resetProfile } = useUser();
   const [stepIdx, setStepIdx] = useState(0);
   const [profileError, setProfileError] = useState("");
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [panelWidth, setPanelWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
   const [sidebarDragging, setSidebarDragging] = useState(false);
+  const [academicOnboardingActive, setAcademicOnboardingActive] = useState<boolean | null>(null);
+  const [showResumePrompt, setShowResumePrompt] = useState(false);
+  const guidedSidebarExpanded = useRef(false);
+  const [journeyTutorialActive, setJourneyTutorialActive] = useState(false);
+  const journeyMainRef = useRef<HTMLElement | null>(null);
+  const accountIdentity = user?.email || (user ? "guest-profile" : "anonymous");
+
+  useEffect(() => {
+    if (!isHydrated) return;
+    setAcademicOnboardingActive(needsAcademicOnboarding(user));
+    setShowResumePrompt(false);
+    // Re-evaluate only when the active account changes, not while its onboarding answers save.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountIdentity, isHydrated]);
+
+  // Keep the Journey navigation expanded by default on layouts with room for it.
+  // After this initial setup, only the user's collapse/expand controls change it.
+  useEffect(() => {
+    if (window.matchMedia("(min-width: 768px)").matches) setIsSidebarOpen(true);
+  }, []);
+
+  useEffect(() => {
+    if (!isHydrated || !user?.journeyTutorialPending) return;
+    if (user.journeyTutorialCompleted || user.journeyTutorialSkipped) return;
+    setStepIdx(0);
+    setIsSidebarOpen(true);
+    setJourneyTutorialActive(true);
+  }, [isHydrated, user?.journeyTutorialPending, user?.journeyTutorialCompleted, user?.journeyTutorialSkipped]);
+
+  useEffect(() => {
+    if (academicOnboardingActive !== false || !showResumePrompt) return;
+    const frame = window.requestAnimationFrame(() => setShowResumePrompt(false));
+    return () => window.cancelAnimationFrame(frame);
+  }, [academicOnboardingActive, showResumePrompt]);
 
   // Restore the user's chosen sidebar width (client-only; SSR-safe).
   useEffect(() => {
@@ -163,7 +208,24 @@ function Journey() {
     setProfileError("");
   }
 
-  const step = journeySteps[stepIdx];
+  const guidedProfileSetupActive = !!(
+    user?.profileStartChoiceCompleted &&
+    !user?.profileSetupCompleted
+  );
+  const visibleStepIdx = guidedProfileSetupActive ? 0 : stepIdx;
+  const step = journeySteps[visibleStepIdx];
+
+  useEffect(() => {
+    if (!guidedProfileSetupActive) {
+      guidedSidebarExpanded.current = false;
+      return;
+    }
+    if (guidedSidebarExpanded.current) return;
+    guidedSidebarExpanded.current = true;
+    setStepIdx(0);
+    if (window.matchMedia("(min-width: 768px)").matches) setIsSidebarOpen(true);
+  }, [guidedProfileSetupActive]);
+
   const goNext = () => {
     if (step.slug === "profile" && !isProfileComplete(user)) {
       setProfileError("Fill out the required fields");
@@ -177,26 +239,67 @@ function Journey() {
     setStepIdx((i) => Math.max(i - 1, 0));
   };
   const selectStep = (idx: number) => {
+    if (journeyTutorialActive || (guidedProfileSetupActive && idx > 0)) return;
     setStepIdx(idx);
   };
+
+  function startJourneyTutorial() {
+    setStepIdx(0);
+    setIsSidebarOpen(true);
+    setJourneyTutorialActive(true);
+  }
+
+  function closeJourneyTutorial(skipped: boolean) {
+    updateProfile({
+      journeyTutorialPending: false,
+      journeyTutorialCompleted: !skipped,
+      journeyTutorialSkipped: skipped,
+    });
+    setJourneyTutorialActive(false);
+    setStepIdx(1);
+    window.requestAnimationFrame(() => journeyMainRef.current?.focus());
+  }
+
+  if (!isHydrated || academicOnboardingActive === null) {
+    return <div className="min-h-screen bg-[linear-gradient(180deg,#f9faff_0%,#f3f5fb_100%)]" />;
+  }
+
+  if (academicOnboardingActive && user) {
+    return (
+      <AcademicOnboarding
+        open
+        user={user}
+        updateProfile={updateProfile}
+        onComplete={() => {
+          setStepIdx(0);
+          setAcademicOnboardingActive(false);
+          setShowResumePrompt(true);
+        }}
+      />
+    );
+  }
+
   return (
     <TooltipProvider delayDuration={150}>
       <div
-        className="min-h-screen flex overflow-x-hidden"
+        className="flex h-screen overflow-hidden"
         style={{ ["--sw" as string]: `${panelWidth}px` } as React.CSSProperties}
       >
         <SidebarRail
-          activeIdx={stepIdx}
+          activeIdx={visibleStepIdx}
+          laterStepsLocked={guidedProfileSetupActive}
           onSelect={selectStep}
           onExpand={() => setIsSidebarOpen(true)}
         />
         <Sidebar
-          activeIdx={stepIdx}
+          activeIdx={visibleStepIdx}
+          laterStepsLocked={guidedProfileSetupActive}
+          tutorialActive={journeyTutorialActive}
           isOpen={isSidebarOpen}
           onClose={() => setIsSidebarOpen(false)}
           onSelect={(idx) => {
             selectStep(idx);
-            setIsSidebarOpen(false);
+            if (!window.matchMedia("(min-width: 768px)").matches) setIsSidebarOpen(false);
           }}
           onClearAll={handleClearAll}
           onResize={(w) => setPanelWidth(Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, w)))}
@@ -205,14 +308,14 @@ function Journey() {
         <div
           className={`flex w-full min-w-0 flex-col ${
             sidebarDragging ? "" : "transition-[padding] duration-300 ease-out"
-          } ${isSidebarOpen ? "md:pl-[var(--sw)]" : "md:pl-14"}`}
+          } ${isSidebarOpen ? "md:pl-[var(--sw)]" : "md:pl-[65px]"}`}
         >
-          <TopBar step={step} stepIdx={stepIdx} />
+          <TopBar step={step} stepIdx={visibleStepIdx} guidedProfileSetupActive={guidedProfileSetupActive} />
           <FloatingSidebarToggle
             isOpen={isSidebarOpen}
             onOpen={() => setIsSidebarOpen(true)}
           />
-          <main className={`flex-1 overflow-y-auto transition-colors duration-500 ${
+          <main ref={journeyMainRef} tabIndex={-1} className={`min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto outline-none transition-colors duration-500 ${
             step.slug === "discovery"
               ? user?.wikiDiscovery
                 ? "bg-[radial-gradient(circle_at_85%_8%,rgba(109,93,246,0.10),transparent_28%),linear-gradient(180deg,#f4f6fb_0%,#ffffff_48%,#f4f2fb_100%)]"
@@ -240,8 +343,14 @@ function Journey() {
                 goToProfile={() => setStepIdx(Math.max(0, journeySteps.findIndex((s) => s.slug === "profile")))}
                 goToRequirements={() => setStepIdx(Math.max(0, journeySteps.findIndex((s) => s.slug === "requirements")))}
                 profileError={profileError}
+                startProfilePrompt={showResumePrompt}
+                onProfileSetupComplete={startJourneyTutorial}
               />
               </div>
+            </div>
+          </main>
+          {!guidedProfileSetupActive && <footer className="shrink-0 border-t border-border bg-background/95 px-6 backdrop-blur md:px-10">
+            <div className="mx-auto max-w-7xl">
               <Nav
                 stepIdx={stepIdx}
                 onNext={goNext}
@@ -249,8 +358,14 @@ function Journey() {
                 hideNext={step.slug === "discovery"}
               />
             </div>
-          </main>
+          </footer>}
         </div>
+        {journeyTutorialActive && (
+          <JourneyNavigationTutorial
+            onFinish={() => closeJourneyTutorial(false)}
+            onSkip={() => closeJourneyTutorial(true)}
+          />
+        )}
       </div>
     </TooltipProvider>
   );
@@ -272,22 +387,10 @@ function isRequiredAboutComplete(user: UserProfile | null) {
   );
 }
 
-/** Related icon per journey step (shown in the rail + expanded sidebar instead of a number). */
-const STEP_ICONS: Record<string, typeof Target> = {
-  profile: UserRound,
-  discovery: Compass,
-  requirements: Target,
-  "essay-workspace": PencilLine,
-  revise: Sparkles,
-  "final-check": ShieldCheck,
-  tracker: LineChart,
-};
-function stepIcon(slug: string) {
-  return STEP_ICONS[slug] ?? Target;
-}
-
 function Sidebar({
   activeIdx,
+  laterStepsLocked,
+  tutorialActive,
   isOpen,
   onClose,
   onSelect,
@@ -296,6 +399,8 @@ function Sidebar({
   onResizeActive,
 }: {
   activeIdx: number;
+  laterStepsLocked: boolean;
+  tutorialActive: boolean;
   isOpen: boolean;
   onClose: () => void;
   onSelect: (i: number) => void;
@@ -337,6 +442,7 @@ function Sidebar({
         }`}
       />
       <aside
+        data-journey-sidebar
         className={`fixed inset-y-0 left-0 z-40 flex w-80 max-w-[85vw] shrink-0 flex-col border-r border-border bg-card/95 backdrop-blur transition-transform duration-300 ease-out md:w-[var(--sw)] md:max-w-none ${
           isOpen ? "translate-x-0" : "-translate-x-full"
         }`}
@@ -352,8 +458,10 @@ function Sidebar({
               <button
                 type="button"
                 aria-label="Collapse sidebar"
-                onClick={onClose}
-                className="grid size-8 shrink-0 place-items-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground"
+                aria-disabled={tutorialActive || undefined}
+                data-sidebar-collapse
+                onClick={() => { if (!tutorialActive) onClose(); }}
+                className="grid size-8 shrink-0 place-items-center rounded-lg text-muted-foreground transition-[background-color,color,box-shadow,transform] hover:bg-accent hover:text-foreground data-[tutorial-highlight=true]:ring-2 data-[tutorial-highlight=true]:ring-info/60"
               >
                 <PanelLeftClose className="size-5" strokeWidth={2} />
               </button>
@@ -364,42 +472,52 @@ function Sidebar({
 
         <div className="flex-1 overflow-y-auto px-3 py-4 space-y-5">
           {groups.map(([group, steps]) => (
-            <div key={group}>
+            <div key={group} data-journey-group={group}>
               <div className="px-3 text-[10px] uppercase tracking-widest text-muted-foreground mb-2">{group}</div>
               <div className="space-y-0.5">
                 {steps.map((s) => {
                   const idx = journeySteps.findIndex((x) => x.id === s.id);
                   const isActive = idx === activeIdx;
                   const isDone = idx < activeIdx;
-                  const Icon = stepIcon(s.slug);
+                  const isLocked = laterStepsLocked && idx > 0;
                   return (
-                    <button
-                      key={s.id}
-                      onClick={() => onSelect(idx)}
-                      className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-left text-[13px] transition-colors ${
-                        isActive
-                          ? "bg-primary text-primary-foreground"
-                          : "hover:bg-accent text-foreground/80"
-                      }`}
-                    >
-                      <span
-                        className={`relative size-6 shrink-0 rounded-md grid place-items-center ${
-                          isActive
-                            ? "bg-gold text-gold-foreground"
-                            : isDone
-                            ? "bg-success/20 text-success"
-                            : "bg-secondary text-muted-foreground"
-                        }`}
-                      >
-                        <Icon className="size-3.5" strokeWidth={2} />
-                        {isDone && (
-                          <span className="absolute -bottom-0.5 -right-0.5 grid size-3 place-items-center rounded-full bg-success text-white ring-2 ring-card">
-                            <Check className="size-2" strokeWidth={4} />
+                    <Tooltip key={s.id}>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          onClick={() => { if (!isLocked) onSelect(idx); }}
+                          aria-disabled={isLocked || undefined}
+                          aria-label={isLocked ? `${s.title}. Complete your profile to unlock this step.` : s.title}
+                          className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-left text-[13px] transition-colors ${
+                            isActive
+                              ? "bg-info/10 text-info"
+                              : isLocked
+                                ? "cursor-not-allowed text-muted-foreground opacity-55"
+                                : "hover:bg-accent text-foreground/80"
+                          }`}
+                        >
+                          <span
+                            className={`relative size-6 shrink-0 rounded-md grid place-items-center ${
+                              isActive
+                                ? "bg-info text-white"
+                                : isDone
+                                ? "bg-success/20 text-success"
+                                : "bg-secondary text-muted-foreground"
+                            }`}
+                          >
+                            <span className="text-xs font-bold tabular-nums">{idx + 1}</span>
+                            {isDone && (
+                              <span className="absolute -bottom-0.5 -right-0.5 grid size-3 place-items-center rounded-full bg-success text-white ring-2 ring-card">
+                                <Check className="size-2" strokeWidth={4} />
+                              </span>
+                            )}
                           </span>
-                        )}
-                      </span>
-                      <span className="truncate">{s.title}</span>
-                    </button>
+                          <span className="min-w-0 flex-1 truncate">{s.title}</span>
+                          {isLocked && <Lock className="size-3.5 shrink-0" aria-hidden="true" />}
+                        </button>
+                      </TooltipTrigger>
+                      {isLocked && <TooltipContent side="right">Complete your profile to unlock this step.</TooltipContent>}
+                    </Tooltip>
                   );
                 })}
               </div>
@@ -438,12 +556,233 @@ function Sidebar({
   );
 }
 
+const JOURNEY_TUTORIAL_STEPS = [
+  {
+    group: "Sidebar",
+    title: "Your Journey in Scholar-E",
+    description: "Use the Journey sidebar to move through each stage of your application process, from discovering opportunities to tracking submissions.",
+    tip: "Tip: You can collapse the sidebar anytime to create more workspace.",
+  },
+  {
+    group: "Analyze",
+    title: "Understand your fit",
+    description: "Review eligibility requirements and see how well each opportunity aligns with your profile.",
+    tip: "",
+  },
+  {
+    group: "Apply",
+    title: "Build a stronger application",
+    description: "Draft, review, and improve your essays while keeping your own voice and experiences at the center.",
+    tip: "",
+  },
+  {
+    group: "Track",
+    title: "Stay ready and organized",
+    description: "Confirm your application materials are complete and keep track of your submissions and progress.",
+    tip: "",
+  },
+] as const;
+
+function JourneyNavigationTutorial({
+  onFinish,
+  onSkip,
+}: {
+  onFinish: () => void;
+  onSkip: () => void;
+}) {
+  const [stepIndex, setStepIndex] = useState(0);
+  const [spotlight, setSpotlight] = useState({ left: 8, top: 8, width: 240, height: 100 });
+  const [compact, setCompact] = useState(false);
+  const [leaving, setLeaving] = useState(false);
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  const exitTimer = useRef<number | null>(null);
+  const collapseAnimationPlayed = useRef(false);
+  const step = JOURNEY_TUTORIAL_STEPS[stepIndex];
+
+  useEffect(() => {
+    cardRef.current?.focus();
+  }, [stepIndex]);
+
+  useEffect(() => {
+    if (stepIndex !== 0) return;
+    const collapseButton = document.querySelector<HTMLElement>("[data-sidebar-collapse]");
+    if (!collapseButton) return;
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduceMotion) collapseButton.dataset.tutorialHighlight = "true";
+    if (!reduceMotion && !collapseAnimationPlayed.current) {
+      collapseAnimationPlayed.current = true;
+      collapseButton.animate(
+        [
+          { transform: "scale(1)", boxShadow: "0 0 0 0 rgba(109, 93, 246, 0)", offset: 0 },
+          { transform: "scale(1.05)", boxShadow: "0 0 0 6px rgba(109, 93, 246, 0.22)", offset: 0.3 },
+          { transform: "scale(1.05)", boxShadow: "0 0 0 6px rgba(109, 93, 246, 0.22)", offset: 0.65 },
+          { transform: "scale(1)", boxShadow: "0 0 0 0 rgba(109, 93, 246, 0)", offset: 1 },
+        ],
+        { duration: 1200, iterations: 1, easing: "ease-in-out" },
+      );
+    }
+    return () => {
+      delete collapseButton.dataset.tutorialHighlight;
+    };
+  }, [stepIndex]);
+
+  useEffect(() => {
+    const keepFocusInTutorial = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        return;
+      }
+      if (event.key !== "Tab" || !cardRef.current) return;
+      const focusable = Array.from(
+        cardRef.current.querySelectorAll<HTMLElement>("button:not([disabled]), [href], [tabindex]:not([tabindex='-1'])"),
+      );
+      if (!focusable.length) {
+        event.preventDefault();
+        cardRef.current.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && (document.activeElement === first || document.activeElement === cardRef.current)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", keepFocusInTutorial);
+    return () => document.removeEventListener("keydown", keepFocusInTutorial);
+  }, []);
+
+  useEffect(() => {
+    let frame = 0;
+    const startedAt = window.performance.now();
+    const measure = () => {
+      const target = document.querySelector<HTMLElement>(
+        stepIndex === 0 ? "[data-journey-sidebar]" : `[data-journey-group="${step.group}"]`,
+      );
+      if (target) {
+        target.scrollIntoView({ block: "nearest" });
+        const rect = target.getBoundingClientRect();
+        const padding = 12;
+        setSpotlight({
+          left: Math.max(8, rect.left - padding),
+          top: Math.max(8, rect.top - padding),
+          width: Math.min(window.innerWidth - 16, rect.width + padding * 2),
+          height: Math.min(window.innerHeight - 16, rect.height + padding * 2),
+        });
+      }
+      setCompact(window.innerWidth < 768);
+      if (window.performance.now() - startedAt < 400) frame = window.requestAnimationFrame(measure);
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    window.addEventListener("scroll", measure, true);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure, true);
+    };
+  }, [step.group, stepIndex]);
+
+  useEffect(() => () => {
+    if (exitTimer.current !== null) window.clearTimeout(exitTimer.current);
+  }, []);
+
+  function close(callback: () => void) {
+    setLeaving(true);
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    exitTimer.current = window.setTimeout(callback, reduceMotion ? 0 : 200);
+  }
+
+  const cardWidth = compact ? window.innerWidth - 32 : Math.min(352, window.innerWidth - 32);
+  const cardStyle: React.CSSProperties = compact
+    ? { left: 16, right: 16, bottom: 16 }
+    : {
+        left: Math.min(spotlight.left + spotlight.width + 20, window.innerWidth - cardWidth - 16),
+        top: Math.max(16, Math.min(spotlight.top, window.innerHeight - 300)),
+        width: cardWidth,
+      };
+
+  return (
+    <div className={`fixed inset-0 z-50 transition-opacity duration-200 motion-reduce:transition-none ${leaving ? "opacity-0" : "opacity-100"}`}>
+      <div className="absolute inset-0 pointer-events-auto" aria-hidden="true" />
+      <div
+        className="pointer-events-none fixed rounded-2xl border border-info/60 shadow-[0_0_0_9999px_rgba(20,28,48,0.46),0_10px_30px_rgba(31,42,68,0.22)] transition-[left,top,width,height] duration-300 ease-out motion-reduce:transition-none"
+        style={spotlight}
+        aria-hidden="true"
+      />
+      <div
+        ref={cardRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="journey-tutorial-title"
+        aria-describedby="journey-tutorial-description"
+        tabIndex={-1}
+        className="fixed z-10 rounded-2xl border border-border bg-card p-5 shadow-xl outline-none motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-200"
+        style={cardStyle}
+      >
+        <div className="text-xs font-semibold uppercase tracking-[0.16em] text-info">
+          Step {stepIndex + 1} of {JOURNEY_TUTORIAL_STEPS.length}
+        </div>
+        <h2 id="journey-tutorial-title" className="mt-2 font-display text-xl font-bold">
+          {step.title}
+        </h2>
+        <p id="journey-tutorial-description" className="mt-2 text-sm leading-6 text-muted-foreground">
+          {step.description}
+        </p>
+        {step.tip && (
+          <p className="mt-3 rounded-lg bg-secondary/70 px-3 py-2 text-xs leading-5 text-muted-foreground">
+            {step.tip}
+          </p>
+        )}
+        <div className="sr-only" aria-live="polite">
+          Tutorial step {stepIndex + 1} of {JOURNEY_TUTORIAL_STEPS.length}: {step.group}
+        </div>
+        <div className="mt-5 flex items-center justify-between gap-3">
+          <button
+            type="button"
+            onClick={() => close(onSkip)}
+            className="text-sm font-medium text-muted-foreground hover:text-foreground"
+          >
+            Skip Tutorial
+          </button>
+          <div className="flex items-center gap-2">
+            {stepIndex > 0 && (
+              <button
+                type="button"
+                onClick={() => setStepIndex((current) => current - 1)}
+                className="rounded-full border border-border px-4 py-2 text-sm font-medium hover:bg-accent"
+              >
+                Back
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                if (stepIndex === JOURNEY_TUTORIAL_STEPS.length - 1) close(onFinish);
+                else setStepIndex((current) => current + 1);
+              }}
+              className="rounded-full bg-info px-4 py-2 text-sm font-medium text-white hover:opacity-90"
+            >
+              {stepIndex === JOURNEY_TUTORIAL_STEPS.length - 1 ? "Finish" : "Next"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TopBar({
   step,
   stepIdx,
+  guidedProfileSetupActive,
 }: {
   step: (typeof journeySteps)[number];
   stepIdx: number;
+  guidedProfileSetupActive: boolean;
 }) {
   const pct = ((stepIdx + 1) / journeySteps.length) * 100;
   return (
@@ -453,17 +792,23 @@ function TopBar({
           <TooltipTrigger asChild>
             <div className="flex min-w-0 flex-1 items-baseline gap-2">
               <span className="truncate text-sm font-medium text-foreground">{step.title}</span>
-              <span className="hidden shrink-0 text-xs text-muted-foreground sm:inline">
-                {step.group} · Step {step.id}/{journeySteps.length}
-              </span>
+              {guidedProfileSetupActive ? (
+                <span className="hidden shrink-0 text-xs text-muted-foreground sm:inline">Complete Your Profile</span>
+              ) : (
+                <span className="hidden shrink-0 text-xs text-muted-foreground sm:inline">
+                  {step.group} · Step {step.id}/{journeySteps.length}
+                </span>
+              )}
             </div>
           </TooltipTrigger>
           <TooltipContent>Goal: {step.goal}</TooltipContent>
         </Tooltip>
       </div>
-      <div className="h-1 bg-secondary">
-        <div className="h-full bg-success transition-all duration-500" style={{ width: `${pct}%` }} />
-      </div>
+      {!guidedProfileSetupActive && (
+        <div className="h-1 bg-secondary">
+          <div className="h-full bg-info transition-all duration-500" style={{ width: `${pct}%` }} />
+        </div>
+      )}
     </div>
   );
 }
@@ -492,21 +837,23 @@ function FloatingSidebarToggle({
 /**
  * Persistent slim navigation rail (md+). Replaces the old floating toggle pill:
  * docked to the left edge with the logo (home), a dedicated panel-toggle button,
- * the journey steps as icon markers (teal = done, gold = current, gray = upcoming),
+ * the journey steps as numbered markers (teal = done, purple = current, gray = upcoming),
  * and the user avatar. The toggle and avatar expand the full sidebar panel.
  */
 function SidebarRail({
   activeIdx,
+  laterStepsLocked,
   onSelect,
   onExpand,
 }: {
   activeIdx: number;
+  laterStepsLocked: boolean;
   onSelect: (i: number) => void;
   onExpand: () => void;
 }) {
   const { user } = useUser();
   return (
-    <aside className="fixed inset-y-0 left-0 z-30 hidden w-14 flex-col items-center border-r border-border bg-card/95 backdrop-blur md:flex">
+    <aside className="fixed inset-y-0 left-0 z-30 hidden w-[65px] flex-col items-center border-r border-border bg-card/95 backdrop-blur md:flex">
       <Link
         to="/"
         aria-label="Scholar-E home"
@@ -529,28 +876,34 @@ function SidebarRail({
         <TooltipContent side="right">Expand sidebar</TooltipContent>
       </Tooltip>
 
-      <div className="mt-3 flex flex-1 flex-col items-center gap-1.5 overflow-y-auto py-1">
+      <div className="mt-3 flex flex-1 flex-col items-center gap-1.5 overflow-hidden py-1">
+        <span className="mb-1 text-[9px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+          Steps
+        </span>
         {journeySteps.map((s, idx) => {
           const isActive = idx === activeIdx;
           const isDone = idx < activeIdx;
-          const Icon = stepIcon(s.slug);
+          const isLocked = laterStepsLocked && idx > 0;
           return (
             <Tooltip key={s.id}>
               <TooltipTrigger asChild>
                 <button
                   type="button"
-                  onClick={() => onSelect(idx)}
-                  aria-label={s.title}
+                  onClick={() => { if (!isLocked) onSelect(idx); }}
+                  aria-label={isLocked ? `Step ${idx + 1}: ${s.title}. Complete your profile to unlock this step.` : `Step ${idx + 1}: ${s.title}`}
+                  aria-disabled={isLocked || undefined}
                   aria-current={isActive ? "step" : undefined}
-                  className={`relative grid size-9 shrink-0 place-items-center rounded-lg transition-colors ${
+                  className={`relative grid size-9 shrink-0 place-items-center rounded-full transition-colors ${
                     isActive
-                      ? "bg-gold text-gold-foreground"
+                      ? "bg-info text-white"
+                      : isLocked
+                        ? "cursor-not-allowed text-muted-foreground opacity-45"
                       : isDone
                         ? "bg-success/20 text-success hover:bg-success/30"
                         : "text-muted-foreground hover:bg-accent hover:text-foreground"
                   }`}
                 >
-                  <Icon className="size-5" strokeWidth={2} />
+                  <span className="text-sm font-bold tabular-nums">{idx + 1}</span>
                   {isDone && (
                     <span className="absolute -bottom-0.5 -right-0.5 grid size-3.5 place-items-center rounded-full bg-success text-white ring-2 ring-card">
                       <Check className="size-2.5" strokeWidth={3.5} />
@@ -559,7 +912,7 @@ function SidebarRail({
                 </button>
               </TooltipTrigger>
               <TooltipContent side="right">
-                {s.group} · {s.title}
+                {isLocked ? "Complete your profile to unlock this step." : `${idx + 1} — ${s.title}`}
               </TooltipContent>
             </Tooltip>
           );
@@ -597,7 +950,7 @@ function Nav({
   hideNext?: boolean;
 }) {
   return (
-    <div className="mt-12 flex items-center justify-between border-t border-border pt-6">
+    <div className="flex min-h-16 items-center justify-between">
       <button
         onClick={onPrev}
         disabled={stepIdx === 0}
@@ -630,6 +983,8 @@ function StepBody({
   goToProfile,
   goToRequirements,
   profileError,
+  startProfilePrompt,
+  onProfileSetupComplete,
 }: {
   slug: string;
   goNext: () => void;
@@ -637,9 +992,11 @@ function StepBody({
   goToProfile: () => void;
   goToRequirements: () => void;
   profileError: string;
+  startProfilePrompt: boolean;
+  onProfileSetupComplete: () => void;
 }) {
   switch (slug) {
-    case "profile": return <StepProfile error={profileError} onComplete={goNext} />;
+    case "profile": return <StepProfile error={profileError} onComplete={onProfileSetupComplete} startWithResumePrompt={startProfilePrompt} />;
     case "discovery": return <StepDiscovery onUpdateProfile={goToProfile} onUseSource={goToRequirements} />;
     case "opportunities": return <StepOpportunities onAnalyze={goNext} />;
     case "requirements": return <StepRequirementsAndFit />;
@@ -1038,7 +1395,15 @@ const PROFILE_ENTRY_CLASS = "rounded-lg border border-border/60 bg-white/60 p-4"
 
 /* ---------------- Step 2: Profile ---------------- */
 
-function StepProfile({ error, onComplete }: { error: string; onComplete: () => void }) {
+function StepProfile({
+  error,
+  onComplete,
+  startWithResumePrompt,
+}: {
+  error: string;
+  onComplete: () => void;
+  startWithResumePrompt: boolean;
+}) {
   const { user, updateProfile } = useUser();
   const level = user?.educationLevel;
   const [showExtended, setShowExtended] = useState(false);
@@ -1047,17 +1412,13 @@ function StepProfile({ error, onComplete }: { error: string; onComplete: () => v
   const [profileStartMode, setProfileStartMode] = useState<"resume" | "manual" | null>(
     user?.optional?.resumeFileName ? "resume" : user?.educationLevel ? "manual" : null,
   );
-  const hasExistingAcademicProfile = !!(
-    user?.educationLevel ||
-    user?.educationHistory?.some((entry) => entry.educationLevel?.trim()) ||
-    user?.optional?.resumeFileName
-  );
-  const [showAcademicOnboarding, setShowAcademicOnboarding] = useState(
-    !user?.academicOnboardingCompleted && !hasExistingAcademicProfile,
-  );
   const [showStartDialog, setShowStartDialog] = useState(
-    !user?.academicOnboardingCompleted && !hasExistingAcademicProfile ? false :
-      !user?.educationLevel && !user?.optional?.resumeFileName,
+    startWithResumePrompt || !!(
+      !user?.profileStartChoiceCompleted &&
+      !user?.profileSetupCompleted &&
+      !user?.optional?.resumeFileName &&
+      (user?.academicOnboardingCompleted || !user?.educationLevel)
+    ),
   );
   const [profileSetupStep, setProfileSetupStep] = useState(0);
   const [highestProfileSetupStep, setHighestProfileSetupStep] = useState(0);
@@ -1321,6 +1682,7 @@ function StepProfile({ error, onComplete }: { error: string; onComplete: () => v
           ...parsedGraduate,
         },
         educationHistory: nextEducationHistory.length ? nextEducationHistory : user?.educationHistory,
+        profileStartChoiceCompleted: true,
         researchExperience: mergedResearchExperience,
         workExperience: mergedWorkExperience,
         optional: {
@@ -1362,7 +1724,7 @@ function StepProfile({ error, onComplete }: { error: string; onComplete: () => v
   const showRequiredErrors = !!error;
   const aboutYouComplete = isRequiredAboutComplete(user);
   const hasEducationLevel = educationHistory.some((entry) => entry.educationLevel?.trim()) || !!user?.educationLevel;
-  const shouldShowProfileSetup = !showAcademicOnboarding && !showStartDialog && !user?.profileSetupCompleted;
+  const shouldShowProfileSetup = !showStartDialog && !user?.profileSetupCompleted;
   const showSetupErrors = showRequiredErrors || showProfileSetupValidation;
   const importedFromResumeBadge = resumeImportedProfileSteps.includes(profileSetupStep) ? (
     <span className="inline-flex rounded-full bg-info/10 px-2 py-0.5 text-[11px] font-medium text-info">
@@ -1605,7 +1967,10 @@ function StepProfile({ error, onComplete }: { error: string; onComplete: () => v
       return;
     }
     if (profileSetupStep === profileSetupSteps.length - 1) {
-      updateProfile({ profileSetupCompleted: true });
+      updateProfile({
+        profileSetupCompleted: true,
+        journeyTutorialPending: true,
+      });
       onComplete();
       return;
     }
@@ -1617,37 +1982,46 @@ function StepProfile({ error, onComplete }: { error: string; onComplete: () => v
 
   return (
     <div className="mx-auto max-w-7xl">
-      {user && (
-        <AcademicOnboarding
-          open={showAcademicOnboarding}
-          user={user}
-          updateProfile={updateProfile}
-          onComplete={() => {
-            setShowAcademicOnboarding(false);
-            setShowStartDialog(true);
-          }}
-        />
-      )}
-      <Dialog open={showStartDialog} onOpenChange={setShowStartDialog}>
+      <Dialog open={showStartDialog}>
         <DialogContent
-          className="max-w-md"
+          className="top-[45%] w-[calc(100%-1.5rem)] max-w-xl gap-0 border-0 bg-transparent p-0 shadow-none motion-reduce:animate-none [&>button]:hidden"
+          overlayClassName="bg-[radial-gradient(circle_at_50%_24%,rgba(109,93,246,0.08),transparent_34%),linear-gradient(180deg,#f9faff_0%,#f3f5fb_100%)] data-[state=open]:animate-none data-[state=closed]:animate-none"
+          onEscapeKeyDown={(event) => event.preventDefault()}
           onPointerDownOutside={(event) => event.preventDefault()}
         >
-          <DialogHeader>
-            <DialogTitle className="font-display text-2xl">Start your profile</DialogTitle>
-            <DialogDescription>
-              Upload your resume to automatically fill in many of your profile details. You can
-              review and edit everything before continuing.
-            </DialogDescription>
+          <DialogHeader className="pb-7 text-center sm:text-center">
+            <div className="mb-3 flex items-center justify-center gap-2">
+              <img src={scholarELogoUrl} alt="" className="size-8 rounded-full object-cover" />
+              <span className="font-display text-sm font-semibold tracking-tight text-foreground">Scholar-E</span>
+            </div>
+            {user?.academicOnboardingCompleted && (
+              <div className="mb-3 flex items-center justify-center gap-1.5 text-sm font-medium text-success motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-200">
+                <Check className="size-4" aria-hidden="true" />
+                <span>Education details saved</span>
+              </div>
+            )}
+            <div
+              className="motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-300"
+              style={{ animationDelay: "75ms", animationFillMode: "both" }}
+            >
+              <DialogTitle className="font-display text-2xl font-bold tracking-tight sm:text-3xl">Start your profile</DialogTitle>
+              <DialogDescription className="mt-1.5 text-base font-medium leading-6 text-foreground/75 sm:text-lg">
+                Upload your resume to automatically fill in many of your profile details. You can
+                review and edit everything before continuing.
+              </DialogDescription>
+            </div>
           </DialogHeader>
 
-          <div className="grid gap-3 pt-2">
+          <div
+            className="grid gap-2 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-300"
+            style={{ animationDelay: "75ms", animationFillMode: "both" }}
+          >
             <button
               type="button"
               onClick={() => startResumeInputRef.current?.click()}
               disabled={!!resumeStatus}
               aria-busy={!!resumeStatus && !resumeError}
-              className={`flex w-full items-center gap-3 rounded-lg border border-border bg-primary px-4 py-3 text-left text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-90 ${resumeStatus && !resumeError ? "agent-loading" : ""}`}
+              className={`flex min-h-12 w-full items-center gap-3 rounded-xl border border-border bg-card px-4 py-3 text-left text-sm font-medium text-foreground shadow-sm transition-colors hover:bg-accent disabled:opacity-90 ${resumeStatus && !resumeError ? "agent-loading" : ""}`}
             >
               {resumeStatus && !resumeError ? (
                 <Spinner className="size-5" />
@@ -1660,6 +2034,7 @@ function StepProfile({ error, onComplete }: { error: string; onComplete: () => v
               type="button"
               onClick={() => {
                 setProfileStartMode("manual");
+                updateProfile({ profileStartChoiceCompleted: true });
                 setResumeError("");
                 setResumeImportedProfileSteps([]);
                 setProfileSetupStep(0);
@@ -1668,7 +2043,7 @@ function StepProfile({ error, onComplete }: { error: string; onComplete: () => v
                 setShowStartDialog(false);
               }}
               disabled={!!resumeStatus}
-              className="flex w-full items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-left text-sm font-medium hover:bg-accent"
+              className="flex min-h-12 w-full items-center gap-3 rounded-xl border border-border bg-card px-4 py-3 text-left text-sm font-medium shadow-sm transition-colors hover:bg-accent"
             >
               <PencilLine className="size-5 shrink-0" />
               <span>Apply Manually</span>
@@ -1677,7 +2052,7 @@ function StepProfile({ error, onComplete }: { error: string; onComplete: () => v
 
           {(resumeStatus || resumeError) && (
             <div
-              className={`rounded-lg border px-3 py-2 text-xs ${
+              className={`mt-3 rounded-lg border px-3 py-2 text-xs ${
                 resumeError
                   ? "border-destructive/30 bg-destructive/10 text-destructive"
                   : "border-success/30 bg-success/10 text-success"
@@ -1808,6 +2183,8 @@ function GuidedProfileSetup({
               type="button"
               onClick={() => onStepSelect(index)}
               disabled={index > highestStep}
+              aria-current={index === currentStep ? "step" : undefined}
+              aria-label={`${item.title}, ${index === currentStep ? "current" : index < highestStep ? "completed" : "upcoming"}`}
               className={`min-w-36 rounded-full border px-3 py-1.5 text-left text-xs font-medium ${
                 index === currentStep
                   ? "border-primary bg-primary text-primary-foreground"
@@ -1816,7 +2193,7 @@ function GuidedProfileSetup({
                     : "border-border bg-muted/50 text-muted-foreground opacity-60"
               }`}
             >
-              {index + 1}. {item.title}
+              {index < highestStep && index !== currentStep ? "✓" : index + 1}. {item.title}
             </button>
           ))}
         </div>
@@ -1828,13 +2205,14 @@ function GuidedProfileSetup({
             {steps.map((item, index) => {
               const isActive = index === currentStep;
               const isReachable = index <= highestStep;
-              const isComplete = index < currentStep || item.complete;
+              const isComplete = index < highestStep && !isActive;
               return (
                 <button
                   key={item.title}
                   type="button"
                   onClick={() => onStepSelect(index)}
                   disabled={!isReachable}
+                  aria-label={`${item.title}, ${isActive ? "current" : isComplete ? "completed" : "upcoming"}, ${item.required ? "required" : "optional"}`}
                   className={`mb-1 flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-sm transition-colors ${
                     isActive
                       ? "bg-primary text-primary-foreground"
@@ -1845,7 +2223,11 @@ function GuidedProfileSetup({
                   aria-current={isActive ? "step" : undefined}
                 >
                   <span className={`grid size-6 shrink-0 place-items-center rounded-full text-[11px] ${
-                    isComplete ? "bg-success/20 text-success" : "bg-secondary text-secondary-foreground"
+                    isActive
+                      ? "bg-primary-foreground text-primary"
+                      : isComplete
+                        ? "bg-success/20 text-success"
+                        : "bg-secondary text-secondary-foreground"
                   }`}>
                     {isComplete ? "✓" : index + 1}
                   </span>
