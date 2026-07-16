@@ -4948,10 +4948,13 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     return "coach";
   }, [promptConfirmed, hasOutline, wordCount, coachResult, user?.lastAnalysis]);
 
-  // Landing: open the prompt popup once per prompt-blob change unless an outline
-  // already exists for the currently selected prompt.
+  // Landing: after profile hydration, open the prompt popup unless this visit
+  // already confirmed a writing focus. Re-open when the prompt blob changes.
   useEffect(() => {
-    if (user?.personalizedOutline?.generatedForKey === outlineKey && essayPrompt.trim()) {
+    if (!user) return;
+    if (promptConfirmed) return;
+    // Resume silently only when the stored outline was generated for this exact focus.
+    if (user.personalizedOutline?.generatedForKey === outlineKey) {
       setPromptConfirmed(true);
       setPromptPickerOpen(false);
       return;
@@ -4959,7 +4962,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     setPendingPromptIndex(Math.min(selectedPromptIndex, Math.max(0, availablePrompts.length - 1)));
     setPromptPickerOpen(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rawPromptBlob]);
+  }, [user?.email, rawPromptBlob, outlineKey]);
 
   async function runOutlineGeneration(promptOverride?: string) {
     if (!user || outlineLoading) return;
@@ -5765,9 +5768,21 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
             </button>
           </div>
           {!promptConfirmed && (
-            <p className="text-xs font-medium text-info">
-              Confirm a prompt (or continue without one) in the popup to unlock outline and coaching.
-            </p>
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-info/30 bg-info/10 px-3 py-2.5">
+              <p className="text-[12px] font-medium text-foreground">
+                Step 1 of 5 — confirm your essay prompt (or continue without one) to unlock outline and coaching.
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  setPendingPromptIndex(selectedPromptIndex);
+                  setPromptPickerOpen(true);
+                }}
+                className="shrink-0 rounded-lg bg-info px-3 py-1.5 text-[12px] font-semibold text-white hover:opacity-90"
+              >
+                Open prompt picker
+              </button>
+            </div>
           )}
           {promptConfirmed && !essayPrompt.trim() && (
             <p className="text-xs text-muted-foreground">
