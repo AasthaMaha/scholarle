@@ -180,3 +180,32 @@ def test_coach_guardrails_require_fact_traceability():
     assert "EVIDENCE LOCK" in COACH_GUARDRAILS
     assert "FACT TRACEABILITY" in COACH_GUARDRAILS
     assert "ACTION QUALITY" in COACH_GUARDRAILS
+    assert "ADAPTIVE COACHING" in COACH_GUARDRAILS
+
+
+def test_resolve_writing_brief_is_prompt_driven():
+    from prompt_adaptation import resolve_writing_brief
+
+    brief = resolve_writing_brief(
+        essay_prompt="1. Describe your leadership.\n2. Explain a challenge you overcame.",
+        clean_scholarship_record={"name": "Demo Scholarship"},
+    )
+    assert brief["mode"] == "prompt_driven"
+    assert brief["has_formal_prompt"] is True
+    assert len(brief["prompt_asks"]) >= 2
+
+
+def test_resolve_writing_brief_scholarship_guided_without_prompt():
+    from prompt_adaptation import resolve_writing_brief
+
+    brief = resolve_writing_brief(
+        essay_prompt="",
+        clean_scholarship_record={
+            "name": "Mission Fund",
+            "description": "Supports community health leaders.",
+            "selectionCriteria": ["Service", "Leadership potential"],
+        },
+    )
+    assert brief["mode"] == "scholarship_guided"
+    assert brief["has_formal_prompt"] is False
+    assert "Mission Fund" in brief["writing_brief"]

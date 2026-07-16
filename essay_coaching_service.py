@@ -22,6 +22,7 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 from llm.client import llm
+from prompt_adaptation import format_brief_for_prompt, resolve_writing_brief
 from templates.essay_coach import (
     EDIT_RISK_TIERS,
     REWRITE_ACTIONS,
@@ -601,12 +602,35 @@ def run_essay_workspace_coach(
     warnings: list[str] = []
     if not clean_scholarship_record:
         warnings.append("No cleaned scholarship record found, so scholarship-specific coaching is limited.")
-    if not essay_prompt:
-        warnings.append("No essay prompt found, so prompt-alignment coaching is limited.")
     if not student_profile:
         warnings.append("No student profile found, so profile-grounding feedback is limited.")
 
+    writing_brief = resolve_writing_brief(
+        essay_prompt=essay_prompt,
+        clean_scholarship_record=clean_scholarship_record,
+        allow_scholarship_fallback=True,
+    )
+    package["writing_brief"] = {
+        "mode": writing_brief.get("mode"),
+        "has_formal_prompt": writing_brief.get("has_formal_prompt"),
+        "prompt_asks": writing_brief.get("prompt_asks") or [],
+    }
+    if writing_brief.get("mode") == "scholarship_guided":
+        warnings.append(
+            "No formal essay prompt was provided, so coaching adapts to the scholarship mission and selection criteria."
+        )
+    elif writing_brief.get("mode") == "empty":
+        warnings.append(
+            "No essay prompt or scholarship writing focus was found. Add a prompt for stronger adaptive coaching."
+        )
+
     scholarship_context = _scholarship_context(clean_scholarship_record)
+    # Specialists receive the adaptive brief + original prompt text so they can
+    # dynamically tailor alignment/structure/tone to this exact writing task.
+    essay_prompt_for_agents = (
+        f"{format_brief_for_prompt(writing_brief)}\n\n"
+        f"SELECTED ESSAY PROMPT TEXT:\n{(essay_prompt or '').strip() or '(none — use scholarship-guided brief)'}"
+    )
     profile_text = _profile_text(student_profile)
     outline_text = _outline_text(personalized_outline)
     word_count = len(essay_draft.split())
@@ -614,7 +638,9 @@ def run_essay_workspace_coach(
     # Final readiness check is a standalone, holistic pass (no specialist battery).
     if mode == "final_check":
         try:
-            final = _run_final_check(essay_draft, essay_prompt, scholarship_context, profile_text, word_count, word_limit)
+            final = _run_final_check(
+                essay_draft, essay_prompt_for_agents, scholarship_context, profile_text, word_count, word_limit
+            )
         except Exception as exc:  # noqa: BLE001
             package["status"] = "error"
             package["warnings"] = warnings + [f"final check failed: {exc}"]
@@ -655,14 +681,14 @@ def run_essay_workspace_coach(
     }
     runners = {
         "sentence": lambda: _run_sentence_corrector(
-            essay_draft, essay_prompt, scholarship_context, user_notes or "", support_level
+            essay_draft, essay_prompt_for_agents, scholarship_context, user_notes or "", support_level
         ),
-        "alignment": lambda: _run_prompt_alignment(essay_draft, essay_prompt, scholarship_context),
+        "alignment": lambda: _run_prompt_alignment(essay_draft, essay_prompt_for_agents, scholarship_context),
         "grounding": lambda: _run_profile_grounding(essay_draft, profile_text, scholarship_context),
-        "structure": lambda: _run_structure_flow(essay_draft, essay_prompt, outline_text),
+        "structure": lambda: _run_structure_flow(essay_draft, essay_prompt_for_agents, outline_text),
         "specificity": lambda: _run_specificity(essay_draft, profile_text, scholarship_context),
         "tone": lambda: _run_tone_authenticity(essay_draft, profile_text, scholarship_context),
-        "reviewer": lambda: _run_reviewer(essay_draft, essay_prompt, scholarship_context),
+        "reviewer": lambda: _run_reviewer(essay_draft, essay_prompt_for_agents, scholarship_context),
         "coverage": lambda: _run_outline_coverage(essay_draft, outline_points, scholarship_context),
     }
 

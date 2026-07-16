@@ -19,6 +19,7 @@ from fastapi import HTTPException, UploadFile
 from config import settings
 from essay_coaching_service import run_essay_workspace_coach, run_selection_rewrite
 from essay_mechanics import apply_deterministic_mechanics
+from prompt_adaptation import format_brief_for_prompt, resolve_writing_brief
 from graph.builder import build_application_graph
 from graph.fit_builder import build_fit_analysis_graph
 from graph.opportunity_builder import build_opportunity_extraction_graph
@@ -530,13 +531,15 @@ def generate_personalized_outline(request: OutlineGenerateRequest) -> dict:
         return _outline_fallback(request, "AI outline generation is unavailable because OPENAI_API_KEY is missing.")
 
     scholarship = request.clean_scholarship_record or {}
-    essay_prompt = (
-        request.essay_prompt.strip()
-        or str(scholarship.get("essayPrompts") or "").strip()
-        or str(scholarship.get("otherRequiredMaterials") or "").strip()
-        or str(scholarship.get("requirementsPreview") or "").strip()
+    # Prefer the explicitly selected/edited prompt; do not silently swap in
+    # materials text unless the student left the prompt empty on purpose.
+    essay_prompt = (request.essay_prompt or "").strip()
+    writing_brief = resolve_writing_brief(
+        essay_prompt=essay_prompt,
+        clean_scholarship_record=scholarship,
+        allow_scholarship_fallback=True,
     )
-    if not essay_prompt and not scholarship:
+    if writing_brief.get("mode") == "empty" and not scholarship:
         return _outline_fallback(request)
 
     model = llm._get_client().with_structured_output(OutlineGenerateResponse)
@@ -546,10 +549,15 @@ def generate_personalized_outline(request: OutlineGenerateRequest) -> dict:
                 (
                     "system",
                     "You are an AI scholarship essay planning team coaching a student. Create a personalized, "
-                    "read-only essay outline for a student applying to a specific scholarship. Use only the provided "
-                    "student profile, cleaned scholarship requirements, essay prompt, selection criteria, and word limit. "
+                    "read-only essay outline that is ADAPTIVE to the writing brief for this specific opportunity. "
+                    "Use only the provided student profile, cleaned scholarship requirements, essay prompt / writing "
+                    "brief, selection criteria, and word limit. "
                     "Do not invent student experiences or scholarship requirements. Do not write the full essay. Do not "
                     "make the outline generic. "
+                    "If WRITING MODE is prompt_driven: every section must map to one or more asks in the selected essay prompt. "
+                    "If WRITING MODE is scholarship_guided: there is no formal prompt — structure the outline around the "
+                    "scholarship mission, selection criteria, and materials, and say so in coaching notes. "
+                    "Section names should reflect the actual asks (not generic 'Paragraph 1'). "
                     "VOICE: Address the student directly in the second person ('you', 'your'). Never write in the first "
                     "person from the student's point of view — do not use 'I', 'me', 'my', or 'we'. For example, write "
                     "'Open with your experience tutoring…' or 'Use your research on…', never 'Open with my experience' or "
@@ -559,12 +567,14 @@ def generate_personalized_outline(request: OutlineGenerateRequest) -> dict:
                 (
                     "human",
                     "Generate the final personalized outline through these internal steps: identify relevant profile evidence, "
-                    "analyze essay requirements, choose an essay strategy, draft a structured outline, then review coverage. "
-                    "Keep confirmed requirements separate from suggestions. Use meaningful section names, not generic paragraph labels. "
+                    "analyze the writing brief / prompt asks, choose an essay strategy adapted to those asks, draft a structured "
+                    "outline where each section covers specific asks, then review coverage against the asks. "
+                    "Keep confirmed requirements separate from suggestions. Use meaningful section names tied to the brief. "
                     "Write ALL guidance addressed to the student in the second person ('you', 'your') — never first person ('I', 'my', 'me', 'we').\n\n"
+                    f"{format_brief_for_prompt(writing_brief)}\n\n"
                     f"Scholarship name:\n{request.scholarship_name or scholarship.get('name', '')}\n\n"
                     f"Clean scholarship record:\n{json.dumps(scholarship, indent=2, default=str)}\n\n"
-                    f"Essay prompt or writing requirement:\n{essay_prompt}\n\n"
+                    f"Selected essay prompt text (may be empty if scholarship-guided):\n{essay_prompt or '(none provided)'}\n\n"
                     f"Essay type:\n{request.essay_type}\n\n"
                     f"Word limit:\n{request.word_limit or 'Not stated'}\n\n"
                     f"Student profile:\n{json.dumps(request.student_profile or {}, indent=2, default=str)}\n\n"
@@ -578,6 +588,11 @@ def generate_personalized_outline(request: OutlineGenerateRequest) -> dict:
         fallback["status"] = "error"
         fallback["message"] = str(exc)
         fallback["fallback_outline"] = fallback.get("outline")
+        fallback["writing_brief"] = {
+            "mode": writing_brief.get("mode"),
+            "has_formal_prompt": writing_brief.get("has_formal_prompt"),
+            "prompt_asks": writing_brief.get("prompt_asks") or [],
+        }
         return fallback
 
     data["status"] = data.get("status") or "success"
@@ -586,13 +601,25 @@ def generate_personalized_outline(request: OutlineGenerateRequest) -> dict:
         return _outline_fallback(request, "The generated outline was incomplete, so Scholar-E created a safe fallback guide.")
 
     warnings = list(data.get("warnings") or [])
+    if writing_brief.get("mode") == "scholarship_guided":
+        warnings.append(
+            "No formal essay prompt was provided, so this outline adapts to the scholarship mission and selection criteria. "
+            "Add an official prompt anytime to regenerate a prompt-specific outline."
+        )
+    elif writing_brief.get("mode") == "empty":
+        warnings.append("Add an essay prompt or more scholarship details to personalize this outline further.")
     if not request.word_limit:
         warnings.append("No word limit was found. Adjust section lengths after confirming the official limit.")
     if not request.student_profile:
         warnings.append("Add your student profile to make this outline more personalized.")
     if not request.clean_scholarship_record:
-        warnings.append("Scholarship requirements are limited, so this outline is based mainly on the essay prompt and profile.")
+        warnings.append("Scholarship requirements are limited, so this outline is based mainly on the writing brief and profile.")
     data["warnings"] = list(dict.fromkeys(warnings))
+    data["writing_brief"] = {
+        "mode": writing_brief.get("mode"),
+        "has_formal_prompt": writing_brief.get("has_formal_prompt"),
+        "prompt_asks": writing_brief.get("prompt_asks") or [],
+    }
     return data
 
 

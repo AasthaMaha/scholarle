@@ -4941,12 +4941,12 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   }, [essayPrompt, user]);
 
   const workspaceStage: WorkspaceStage = useMemo(() => {
-    if (!promptConfirmed || !essayPrompt.trim()) return "prompt";
+    if (!promptConfirmed) return "prompt";
     if (!hasOutline) return "outline";
     if (wordCount < 30) return "draft";
     if (coachResult || user?.lastAnalysis) return "revise";
     return "coach";
-  }, [promptConfirmed, essayPrompt, hasOutline, wordCount, coachResult, user?.lastAnalysis]);
+  }, [promptConfirmed, hasOutline, wordCount, coachResult, user?.lastAnalysis]);
 
   // Landing: open the prompt popup once per prompt-blob change unless an outline
   // already exists for the currently selected prompt.
@@ -4964,9 +4964,13 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   async function runOutlineGeneration(promptOverride?: string) {
     if (!user || outlineLoading) return;
     const promptForOutline = (promptOverride ?? essayPrompt).trim();
-    if (!promptForOutline) return;
+    // Empty prompt is allowed: backend adapts to scholarship-guided mode.
     setOutlineLoading(true);
-    setOutlineStatus("Building your personalized outline from the selected prompt and your profile...");
+    setOutlineStatus(
+      promptForOutline
+        ? "Building an outline adapted to your selected essay prompt…"
+        : "Building a scholarship-guided outline (no formal prompt)…",
+    );
     setPanelOpen(true);
     setActiveTab("outline");
     const scholarship = user.activeScholarship ?? {};
@@ -4999,11 +5003,11 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     }
   }
 
-  async function confirmEssayPrompt(index?: number) {
+  async function confirmEssayPrompt(index?: number, options?: { allowEmpty?: boolean }) {
     const nextIndex = typeof index === "number" ? index : pendingPromptIndex;
     const nextPrompt = (availablePrompts[nextIndex] || rawPromptBlob).trim();
-    if (!nextPrompt) {
-      setOutlineStatus("Add an essay prompt before continuing.");
+    if (!nextPrompt && !options?.allowEmpty) {
+      setOutlineStatus("Add an essay prompt, or continue without a formal prompt.");
       return;
     }
     setSelectedPromptIndex(nextIndex);
@@ -5012,8 +5016,27 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     setPromptPickerOpen(false);
     setPanelOpen(true);
     setActiveTab("outline");
-    setOutlineStatus("Prompt confirmed — generating your outline…");
+    setOutlineStatus(
+      nextPrompt
+        ? "Prompt confirmed — generating an outline adapted to this prompt…"
+        : "No formal prompt — generating a scholarship-guided outline…",
+    );
     await runOutlineGeneration(nextPrompt);
+  }
+
+  async function continueWithoutFormalPrompt() {
+    // Clear any stale pasted materials masquerading as a prompt so agents use
+    // scholarship-guided adaptation instead.
+    if (!user) return;
+    if (rawPromptBlob.trim()) {
+      updateProfile({
+        activeScholarship: { ...(user.activeScholarship ?? {}), essayPrompts: "" },
+        personalizedOutline: undefined,
+      });
+    }
+    setSelectedPromptIndex(0);
+    setPendingPromptIndex(0);
+    await confirmEssayPrompt(0, { allowEmpty: true });
   }
 
   // Lightweight autosave indicator — the working draft is continuously synced to
@@ -5221,8 +5244,8 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
 
   async function runCoachingSession() {
     if (coachLoading || isEvaluating || !user) return;
-    if (!promptConfirmed || !essayPrompt.trim()) {
-      setCoachSummary("Confirm the essay prompt first, then run coaching.");
+    if (!promptConfirmed) {
+      setCoachSummary("Confirm your writing focus first (prompt or scholarship-guided), then run coaching.");
       setPromptPickerOpen(true);
       setActiveTab("outline");
       setPanelOpen(true);
@@ -5557,7 +5580,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
             <button
               type="button"
               onClick={() => void runCoachingSession()}
-              disabled={wordCount < 30 || !promptConfirmed || !essayPrompt.trim() || coachLoading || isEvaluating}
+              disabled={wordCount < 30 || !promptConfirmed || coachLoading || isEvaluating}
               aria-busy={coachLoading || isEvaluating}
               className={`ml-0.5 inline-flex items-center gap-1.5 rounded-lg bg-info px-3 py-2 text-[13px] font-medium text-white transition-opacity duration-150 hover:opacity-90 disabled:opacity-60 ${coachLoading || isEvaluating ? "agent-loading" : ""}`}
             >
@@ -5606,13 +5629,17 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
           if (!promptConfirmed) event.preventDefault();
         }}>
           <DialogHeader className="space-y-2 border-b border-border px-5 py-4 text-left">
-            <DialogTitle className="text-[18px]">Which essay are you writing?</DialogTitle>
+            <DialogTitle className="text-[18px]">
+              {availablePrompts.length > 0 ? "Which essay are you writing?" : "Set your writing focus"}
+            </DialogTitle>
             <DialogDescription className="text-[13px] leading-relaxed">
-              Confirm the prompt first. Your outline and coaching session are built only for the prompt you choose.
+              {availablePrompts.length > 0
+                ? "Outline and coaching adapt to the prompt you confirm. You can also edit the prompt if it looks wrong."
+                : "Some scholarships do not publish a formal essay prompt. Add one if you have it, or continue with a scholarship-guided outline."}
             </DialogDescription>
           </DialogHeader>
           <div className="max-h-[55vh] space-y-3 overflow-y-auto px-5 py-4">
-            {availablePrompts.length > 0 ? (
+            {availablePrompts.length > 0 && (
               availablePrompts.map((prompt, index) => {
                 const active = index === pendingPromptIndex;
                 return (
@@ -5637,35 +5664,49 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
                   </button>
                 );
               })
-            ) : (
-              <div className="space-y-2">
-                <label htmlFor="landing-essay-prompt" className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-                  Paste your essay prompt
-                </label>
-                <textarea
-                  id="landing-essay-prompt"
-                  value={rawPromptBlob}
-                  onChange={(event) => updateEssayPrompt(event.target.value)}
-                  rows={5}
-                  placeholder="Paste the scholarship essay prompt here…"
-                  className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-info focus:ring-2 focus:ring-info/10"
-                />
-              </div>
             )}
+
+            <div className="space-y-2 rounded-xl border border-dashed border-border bg-background p-3">
+              <label htmlFor="landing-essay-prompt" className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                {availablePrompts.length > 0 ? "Edit or correct the prompt" : "Add an essay prompt (optional)"}
+              </label>
+              <textarea
+                id="landing-essay-prompt"
+                value={rawPromptBlob}
+                onChange={(event) => updateEssayPrompt(event.target.value)}
+                rows={4}
+                placeholder={
+                  availablePrompts.length > 0
+                    ? "Correct the prompt text if extraction missed something…"
+                    : "Paste an official prompt if you have one. Leave blank to continue without a formal prompt."
+                }
+                className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-info focus:ring-2 focus:ring-info/10"
+              />
+              <p className="text-[11px] leading-relaxed text-muted-foreground">
+                Outline and coaching agents adapt dynamically to whatever prompt text you confirm here.
+              </p>
+            </div>
           </div>
-          <DialogFooter className="border-t border-border px-5 py-4 sm:justify-between">
-            <p className="text-[12px] text-muted-foreground">
-              Next: generate an outline for this prompt, then draft, then coach.
-            </p>
+          <DialogFooter className="flex-col gap-2 border-t border-border px-5 py-4 sm:flex-col sm:space-x-0">
             <button
               type="button"
               onClick={() => void confirmEssayPrompt()}
               disabled={!(availablePrompts[pendingPromptIndex] || rawPromptBlob).trim()}
-              className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
+              className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
             >
               <Sparkles className="size-4" />
               Use this prompt & build outline
             </button>
+            <button
+              type="button"
+              onClick={() => void continueWithoutFormalPrompt()}
+              className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-border bg-background px-4 py-2.5 text-sm font-semibold text-foreground transition-colors hover:bg-accent"
+            >
+              Continue without a formal prompt
+            </button>
+            <p className="text-center text-[12px] text-muted-foreground">
+              Without a prompt, outline and coaching adapt to the scholarship mission and selection criteria.
+            </p>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -5715,7 +5756,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
             <button
               type="button"
               onClick={() => void runOutlineGeneration()}
-              disabled={outlineLoading || !promptConfirmed || !essayPrompt.trim()}
+              disabled={outlineLoading || !promptConfirmed}
               aria-busy={outlineLoading}
               className={`inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-lg bg-primary px-5 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${outlineLoading ? "agent-loading" : ""}`}
             >
@@ -5724,7 +5765,14 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
             </button>
           </div>
           {!promptConfirmed && (
-            <p className="text-xs font-medium text-info">Confirm your essay prompt in the popup to unlock outline and coaching.</p>
+            <p className="text-xs font-medium text-info">
+              Confirm a prompt (or continue without one) in the popup to unlock outline and coaching.
+            </p>
+          )}
+          {promptConfirmed && !essayPrompt.trim() && (
+            <p className="text-xs text-muted-foreground">
+              Scholarship-guided mode: outline and coaching adapt to mission/criteria. Add a prompt anytime to regenerate.
+            </p>
           )}
           {outlineStatus && <p className="text-xs text-muted-foreground">{outlineStatus}</p>}
         </div>
@@ -5837,8 +5885,8 @@ function WorkspaceStageGuide({
   onChoosePrompt?: () => void;
 }) {
   const stages: Array<{ id: WorkspaceStage; label: string; hint: string }> = [
-    { id: "prompt", label: "1. Prompt", hint: "Confirm which essay prompt you are answering" },
-    { id: "outline", label: "2. Outline", hint: "Build an outline for that exact prompt" },
+    { id: "prompt", label: "1. Prompt", hint: "Confirm a prompt — or continue without one if the scholarship has none" },
+    { id: "outline", label: "2. Outline", hint: "Build an outline adapted to your writing focus" },
     { id: "draft", label: "3. Draft", hint: "Write against the outline section by section" },
     { id: "coach", label: "4. Coach", hint: "Run one coaching session for fixes + scores" },
     { id: "revise", label: "5. Revise", hint: "Apply Coach suggestions, then re-run" },
