@@ -120,15 +120,47 @@ export function profileToText(user: UserProfile | null) {
   ]);
 }
 
-export function buildAnalyzePayload(user: UserProfile | null): AnalyzePayload {
+/** Split a scholarship prompt blob into choosable essay prompts. */
+export function splitEssayPrompts(raw: string): string[] {
+  const text = (raw || "").trim();
+  if (!text) return [];
+
+  const byLabel = text
+    .split(/(?=(?:^|\n)\s*(?:Prompt|Essay|Question)\s*\d+\s*[:.)])/i)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (byLabel.length > 1) return byLabel;
+
+  const byNumber = text
+    .split(/(?=(?:^|\n)\s*\d+[.)]\s+\S)/)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 20);
+  if (byNumber.length > 1) return byNumber;
+
+  const byBlank = text
+    .split(/\n\s*\n/)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 40);
+  if (byBlank.length > 1) return byBlank;
+
+  return [text];
+}
+
+export function buildAnalyzePayload(user: UserProfile | null, essayPromptOverride?: string): AnalyzePayload {
   const scholarship = user?.activeScholarship;
   const previousReadiness: Record<string, number> = {};
   Object.entries(user?.lastAnalysis?.readiness_index ?? {}).forEach(([key, value]) => {
     if (typeof value?.score === "number") previousReadiness[key] = value.score;
   });
 
+  const selectedPrompt = (essayPromptOverride
+    || scholarship?.essayPrompts
+    || scholarship?.otherRequiredMaterials
+    || scholarship?.requirementsPreview
+    || "").trim();
+
   const prompt = compact([
-      scholarship?.essayPrompts && `Essay prompt(s):\n${scholarship.essayPrompts}`,
+      selectedPrompt && `Selected essay prompt:\n${selectedPrompt}`,
       scholarship?.description && `Scholarship description:\n${scholarship.description}`,
       scholarship?.requirementsPreview && `Student-edited scholarship requirements preview:\n${scholarship.requirementsPreview}`,
       scholarship?.financialNeedRequirement && `Financial need requirement: ${scholarship.financialNeedRequirement}`,
@@ -325,9 +357,13 @@ function findWordLimit(text: string) {
   return match?.[0] ?? "";
 }
 
-export function buildOutlinePayload(user: UserProfile | null): OutlineGeneratePayload {
+export function buildOutlinePayload(user: UserProfile | null, essayPromptOverride?: string): OutlineGeneratePayload {
   const scholarship = user?.activeScholarship ?? {};
-  const essayPrompt = scholarship.essayPrompts || scholarship.otherRequiredMaterials || scholarship.requirementsPreview || "";
+  const essayPrompt = (essayPromptOverride
+    || scholarship.essayPrompts
+    || scholarship.otherRequiredMaterials
+    || scholarship.requirementsPreview
+    || "").trim();
   const { lastAnalysis, fitAnalysis, wikiDiscovery, savedWikiSources, activeScholarship, personalizedOutline, ...studentProfile } =
     user ?? { name: "", email: "" };
   void lastAnalysis;
@@ -483,9 +519,18 @@ export type FinalCheck = {
   submission_warning?: string;
 };
 
-export function buildEssayCoachPayload(user: UserProfile | null, mode: EssayCoachMode = "full", writingSupportLevel?: WritingSupportLevel): EssayCoachPayload {
+export function buildEssayCoachPayload(
+  user: UserProfile | null,
+  mode: EssayCoachMode = "full",
+  writingSupportLevel?: WritingSupportLevel,
+  essayPromptOverride?: string,
+): EssayCoachPayload {
   const scholarship = user?.activeScholarship ?? {};
-  const essayPrompt = scholarship.essayPrompts || scholarship.otherRequiredMaterials || scholarship.requirementsPreview || "";
+  const essayPrompt = (essayPromptOverride
+    || scholarship.essayPrompts
+    || scholarship.otherRequiredMaterials
+    || scholarship.requirementsPreview
+    || "").trim();
   const { lastAnalysis, fitAnalysis, wikiDiscovery, savedWikiSources, activeScholarship, personalizedOutline, drafts, ...studentProfile } =
     user ?? { name: "", email: "" };
   void lastAnalysis;

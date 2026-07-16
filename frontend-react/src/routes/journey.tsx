@@ -17,9 +17,10 @@ import {
   LineChart,
   ListChecks,
   Menu,
-  MessageSquare,
   PanelLeftClose,
   PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
   PencilLine,
   Power,
   ReceiptText,
@@ -36,6 +37,7 @@ import { EssayEditor, type EssayEditorHandle, type RewriteAction } from "@/compo
 import {
   analyzeText,
   anchorCoachSuggestions,
+  applySafeMechanics,
   applySuggestion,
   CATEGORY_META,
   isSafeQuickFix,
@@ -64,6 +66,7 @@ import {
   generatePersonalizedOutline,
   runEssayCoach,
   runSelectionRewrite,
+  splitEssayPrompts,
   type EssayCoachMode,
   type EssayCoachResult,
   type RevisionPriority,
@@ -4287,7 +4290,8 @@ function criteriaAlignmentTone(alignment?: string): "default" | "gold" | "succes
 
 /* ---------------- Step 5: Essay Workspace ---------------- */
 
-type WorkspaceTab = "outline" | "reader" | "evaluation" | "highlights";
+type WorkspaceTab = "outline" | "evaluation" | "highlights";
+type WorkspaceStage = "prompt" | "outline" | "draft" | "coach" | "revise";
 
 function normalizePdfDraftText(pages: string[]) {
   return pages
@@ -4403,9 +4407,15 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   const characterCount = draft.length;
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("outline");
   const [panelWidth, setPanelWidth] = useState(() => {
-    if (typeof window === "undefined") return 380;
+    if (typeof window === "undefined") return 420;
     const saved = Number(window.localStorage.getItem("scholar-e:essay-panel-width"));
-    return Number.isFinite(saved) && saved >= 300 ? saved : 380;
+    const minimum = Math.max(300, Math.round(window.innerWidth * 0.4));
+    return Number.isFinite(saved) && saved >= 300 ? saved : Math.min(Math.max(420, minimum), Math.round(window.innerWidth * 0.55));
+  });
+  const [panelOpen, setPanelOpen] = useState(() => {
+    if (typeof window === "undefined") return true;
+    const saved = window.localStorage.getItem("scholar-e:essay-panel-open");
+    return saved == null ? true : saved !== "0";
   });
   const [panelResizing, setPanelResizing] = useState(false);
   const [isEvaluating, setIsEvaluating] = useState(false);
@@ -4413,6 +4423,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   const [evaluationPhase, setEvaluationPhase] = useState<string>("");
   const [scoresReady, setScoresReady] = useState(false);
   const [fixesReady, setFixesReady] = useState(false);
+  const [mechanicsNote, setMechanicsNote] = useState<string | null>(null);
   const [, setPdfStatus] = useState<string | null>(null);
   const [, setBgStatus] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
@@ -4420,10 +4431,22 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   const [outlineLoading, setOutlineLoading] = useState(false);
   const [outlineStatus, setOutlineStatus] = useState<string | null>(null);
 
-  const essayPrompt = user?.activeScholarship?.essayPrompts
+  const rawPromptBlob = user?.activeScholarship?.essayPrompts
     || user?.activeScholarship?.otherRequiredMaterials
     || user?.activeScholarship?.requirementsPreview
     || "";
+  const availablePrompts = useMemo(() => splitEssayPrompts(rawPromptBlob), [rawPromptBlob]);
+  const [selectedPromptIndex, setSelectedPromptIndex] = useState(0);
+  const essayPrompt = availablePrompts[Math.min(selectedPromptIndex, Math.max(0, availablePrompts.length - 1))] || rawPromptBlob;
+  const hasMultiplePrompts = availablePrompts.length > 1;
+  const hasOutline = !!user?.personalizedOutline?.outline?.sections?.length;
+
+  useEffect(() => {
+    if (selectedPromptIndex >= availablePrompts.length) {
+      setSelectedPromptIndex(0);
+    }
+  }, [availablePrompts.length, selectedPromptIndex]);
+
   const outlineKey = useMemo(() => {
     const scholarship = user?.activeScholarship ?? {};
     return JSON.stringify({
@@ -4445,7 +4468,15 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     });
   }, [essayPrompt, user]);
 
-  const wordTarget = useMemo(() => parseWordTarget(buildOutlinePayload(user).word_limit), [user]);
+  const workspaceStage: WorkspaceStage = useMemo(() => {
+    if (!essayPrompt.trim()) return "prompt";
+    if (!hasOutline) return "outline";
+    if (wordCount < 30) return "draft";
+    if (coachResult || user?.lastAnalysis) return "revise";
+    return "coach";
+  }, [essayPrompt, hasOutline, wordCount, coachResult, user?.lastAnalysis]);
+
+  const wordTarget = useMemo(() => parseWordTarget(buildOutlinePayload(user, essayPrompt).word_limit), [user, essayPrompt]);
   const score = useMemo(() => {
     const latestScoredDraft = [...(user?.drafts ?? [])]
       .reverse()
@@ -4464,17 +4495,29 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
       activeScholarship: { ...(user.activeScholarship ?? {}), essayPrompts: value },
       personalizedOutline: undefined,
     });
+    setSelectedPromptIndex(0);
     setOutlineStatus(null);
+  }
+
+  function selectEssayPrompt(index: number) {
+    if (index === selectedPromptIndex) return;
+    setSelectedPromptIndex(index);
+    updateProfile({ personalizedOutline: undefined });
+    setOutlineStatus("Prompt changed — generate a new outline for this essay.");
+    setActiveTab("outline");
+    setPanelOpen(true);
   }
 
   async function runOutlineGeneration() {
     if (!user || outlineLoading || !essayPrompt.trim()) return;
     setOutlineLoading(true);
-    setOutlineStatus("Building your personalized outline from the prompt and your profile...");
+    setOutlineStatus("Building your personalized outline from the selected prompt and your profile...");
+    setPanelOpen(true);
+    setActiveTab("outline");
     try {
-      const result = await generatePersonalizedOutline(buildOutlinePayload(user));
+      const result = await generatePersonalizedOutline(buildOutlinePayload(user, essayPrompt));
       updateProfile({ personalizedOutline: { ...result, generatedForKey: outlineKey } });
-      setOutlineStatus(result.status === "error" ? "A fallback outline is ready." : "Personalized outline ready.");
+      setOutlineStatus(result.status === "error" ? "A fallback outline is ready." : "Personalized outline ready. Start drafting against it.");
       setActiveTab("outline");
     } catch (error) {
       setOutlineStatus(error instanceof Error ? error.message : "Could not generate the outline.");
@@ -4510,8 +4553,9 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   useEffect(() => {
     if (!panelResizing) return;
     const resize = (event: PointerEvent) => {
-      const maximum = Math.min(720, window.innerWidth * 0.6);
-      setPanelWidth(Math.max(300, Math.min(maximum, window.innerWidth - event.clientX)));
+      const minimum = Math.max(300, Math.round(window.innerWidth * 0.4));
+      const maximum = Math.round(window.innerWidth * 0.7);
+      setPanelWidth(Math.max(minimum, Math.min(maximum, window.innerWidth - event.clientX)));
     };
     const stop = () => setPanelResizing(false);
     const previousCursor = document.body.style.cursor;
@@ -4532,6 +4576,21 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     if (panelResizing) return;
     window.localStorage.setItem("scholar-e:essay-panel-width", String(Math.round(panelWidth)));
   }, [panelWidth, panelResizing]);
+
+  useEffect(() => {
+    window.localStorage.setItem("scholar-e:essay-panel-open", panelOpen ? "1" : "0");
+  }, [panelOpen]);
+
+  useEffect(() => {
+    const clamp = () => {
+      const minimum = Math.max(300, Math.round(window.innerWidth * 0.4));
+      const maximum = Math.round(window.innerWidth * 0.7);
+      setPanelWidth((width) => Math.max(minimum, Math.min(maximum, width)));
+    };
+    clamp();
+    window.addEventListener("resize", clamp);
+    return () => window.removeEventListener("resize", clamp);
+  }, []);
 
   const savedLabel = (() => {
     if (!savedAt) return "Not saved yet";
@@ -4608,7 +4667,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     if (wordCount < 20) {
       if (!silent) {
         setActiveTab("evaluation");
-        setCoachSummary('Write at least a short paragraph, then click "Evaluate."');
+        setCoachSummary('Write at least a short paragraph, then run a coaching session.');
       }
       return;
     }
@@ -4621,7 +4680,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
       setActiveTab(mode === "grammar_tone" ? "highlights" : "evaluation");
     }
     try {
-      const result = await runEssayCoach(buildEssayCoachPayload(user, mode, writingSupportLevel));
+      const result = await runEssayCoach(buildEssayCoachPayload(user, mode, writingSupportLevel, essayPrompt));
       const coveredIds = result.outline_coverage?.covered_point_ids;
       if (coveredIds) {
         // Intersect with known point ids so a hallucinated id can never tick a box.
@@ -4652,31 +4711,56 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     }
   }
 
-  async function runEvaluation() {
-    if (coachLoading || isEvaluating) return;
-    if (wordCount < 30) return;
+  async function runCoachingSession() {
+    if (coachLoading || isEvaluating || !user) return;
+    if (!essayPrompt.trim()) {
+      setCoachSummary("Choose or enter the essay prompt before coaching.");
+      setActiveTab("outline");
+      setPanelOpen(true);
+      return;
+    }
+    if (wordCount < 30) {
+      setCoachSummary("Write at least ~30 words, then run a coaching session.");
+      return;
+    }
+
     setIsEvaluating(true);
     setScoresReady(false);
     setFixesReady(false);
-    setEvaluationProgress(8);
-    setEvaluationPhase("Scoring your essay…");
+    setEvaluationProgress(6);
+    setEvaluationPhase("Cleaning spelling & mechanics…");
+    setMechanicsNote(null);
+    setPanelOpen(true);
     setActiveTab("evaluation");
-    setCoachSummary("Scholar-E is reading your draft…");
+    setCoachSummary("Scholar-E is preparing your coaching session…");
 
-    const payload = buildAnalyzePayload(user);
+    // Phase A — deterministic C0 mechanics applied before any LLM work.
+    const mechanics = applySafeMechanics(draft);
+    let workingUser = user;
+    if (mechanics.appliedCount > 0 && mechanics.text !== draft) {
+      updateProfile({ essayDraft: mechanics.text });
+      workingUser = { ...user, essayDraft: mechanics.text };
+      setMechanicsNote(`${mechanics.appliedCount} spelling/mechanics fix${mechanics.appliedCount === 1 ? "" : "es"} applied before coaching.`);
+      setEvaluationProgress(18);
+    } else {
+      setMechanicsNote(null);
+      setEvaluationProgress(14);
+    }
+
+    const payload = buildAnalyzePayload(workingUser, essayPrompt);
     payload.cv_text = payload.cv_text || "No student profile evidence was provided.";
     payload.scholarship_name = payload.scholarship_name || "Scholarship opportunity";
     payload.scholarship_type = payload.scholarship_type || "Scholarship";
     if (!payload.prompt) {
       setIsEvaluating(false);
       setEvaluationPhase("");
-      setCoachSummary("Add the scholarship essay prompt before evaluating.");
+      setCoachSummary("Add the scholarship essay prompt before coaching.");
       return;
     }
 
-    // Progressive Evaluate: stream scores into Evaluation as soon as analyze
-    // returns; fill Fixes/Reader when the workspace coach pack arrives. No
-    // grayscale lock — tabs stay usable as each product lands.
+    setEvaluationPhase("Scoring your essay and preparing fixes…");
+
+    // Phase B — parallel evaluate + coach pack. Progressive paint as each settles.
     let gotScores = false;
     let gotFixes = false;
 
@@ -4689,7 +4773,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
         if (brief) setCoachSummary(brief);
         setActiveTab("evaluation");
         setEvaluationProgress((progress) => Math.max(progress, gotFixes ? 96 : 62));
-        setEvaluationPhase(gotFixes ? "Finishing up…" : "Scores ready — preparing Fixes and Reader…");
+        setEvaluationPhase(gotFixes ? "Finishing up…" : "Scores ready — preparing Fixes…");
         return result;
       })
       .catch((error) => {
@@ -4698,13 +4782,13 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
         throw error;
       });
 
-    const fixesPromise = runEssayCoach(buildEssayCoachPayload(user, "workspace_refresh", "grammar_only"))
+    const fixesPromise = runEssayCoach(buildEssayCoachPayload(workingUser, "workspace_refresh", "grammar_only", essayPrompt))
       .then((result) => {
         gotFixes = true;
         setFixesReady(true);
         const coveredIds = result.outline_coverage?.covered_point_ids;
         if (coveredIds) {
-          const known = new Set(buildOutlinePoints(user?.personalizedOutline).map((p) => p.id));
+          const known = new Set(buildOutlinePoints(workingUser?.personalizedOutline).map((p) => p.id));
           setAutoCovered(new Set(coveredIds.filter((id) => known.has(id))));
         }
         setCoachRaw(result.sentence_suggestions ?? []);
@@ -4712,6 +4796,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
         setCoachResult(result);
         if (!gotScores) {
           setCoachSummary(result.coach_summary ?? "Fixes ready — still scoring…");
+          setActiveTab("highlights");
         }
         setCoachUpdatedAt(updatedAt);
         updateProfile({
@@ -4725,7 +4810,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
       })
       .catch((error) => {
         console.error("Scholar-E workspace refresh failed.", error);
-        setFixesReady(true); // unblock Fixes/Reader skeletons
+        setFixesReady(true);
         return null;
       });
 
@@ -4953,15 +5038,30 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
               <TooltipContent>Save draft</TooltipContent>
             </Tooltip>
 
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={() => setPanelOpen((open) => !open)}
+                  aria-label={panelOpen ? "Hide coaching panel" : "Show coaching panel"}
+                  aria-pressed={panelOpen}
+                  className="grid size-9 place-items-center rounded-lg text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground"
+                >
+                  {panelOpen ? <PanelRightClose className="size-4" /> : <PanelRightOpen className="size-4" />}
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>{panelOpen ? "Hide coaching panel" : "Show coaching panel"}</TooltipContent>
+            </Tooltip>
+
             <button
               type="button"
-              onClick={() => void runEvaluation()}
-              disabled={wordCount < 30 || coachLoading || isEvaluating}
+              onClick={() => void runCoachingSession()}
+              disabled={wordCount < 30 || !essayPrompt.trim() || coachLoading || isEvaluating}
               aria-busy={coachLoading || isEvaluating}
               className={`ml-0.5 inline-flex items-center gap-1.5 rounded-lg bg-info px-4 py-2 text-[13px] font-medium text-white transition-opacity duration-150 hover:opacity-90 disabled:opacity-40 ${coachLoading || isEvaluating ? "agent-loading" : ""}`}
             >
-              {coachLoading || isEvaluating ? <Spinner className="size-4" /> : <Gauge className="size-4" />}
-              {coachLoading || isEvaluating ? "Evaluating…" : "Evaluate"}
+              {coachLoading || isEvaluating ? <Spinner className="size-4" /> : <Wand2 className="size-4" />}
+              {coachLoading || isEvaluating ? "Coaching…" : "Run coaching session"}
             </button>
 
             <Tooltip>
@@ -4970,7 +5070,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
                   <ScoreRing score={score} />
                 </div>
               </TooltipTrigger>
-              <TooltipContent>{score == null ? "Run an evaluation to get your essay score" : `Essay score: ${score}/100`}</TooltipContent>
+              <TooltipContent>{score == null ? "Run a coaching session to get your essay score" : `Essay score: ${score}/100`}</TooltipContent>
             </Tooltip>
 
           </div>
@@ -4979,18 +5079,50 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
       </header>
 
       <section className="border-b border-border bg-card">
-        <div className="mx-auto max-w-[1440px] px-4 py-3 md:px-6">
+        <div className="mx-auto max-w-[1440px] space-y-3 px-4 py-3 md:px-6">
+          <WorkspaceStageGuide stage={workspaceStage} />
+
+          {hasMultiplePrompts && (
+            <div className="rounded-xl border border-info/20 bg-info/5 p-3">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-info">Choose the essay you are writing</div>
+              <p className="mt-1 text-[12px] text-muted-foreground">Outline and coaching always use the selected prompt.</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {availablePrompts.map((prompt, index) => {
+                  const active = index === selectedPromptIndex;
+                  const label = prompt.replace(/\s+/g, " ").slice(0, 72);
+                  return (
+                    <button
+                      key={`prompt-${index}`}
+                      type="button"
+                      onClick={() => selectEssayPrompt(index)}
+                      aria-pressed={active}
+                      className={`max-w-full rounded-lg border px-3 py-2 text-left text-[12px] leading-snug transition-colors ${
+                        active
+                          ? "border-info bg-background text-foreground shadow-sm"
+                          : "border-border bg-background/70 text-muted-foreground hover:border-info/40 hover:text-foreground"
+                      }`}
+                    >
+                      <span className="mb-0.5 block text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">Prompt {index + 1}</span>
+                      {label}{prompt.length > 72 ? "…" : ""}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           <div className="flex items-center gap-3">
             <label htmlFor="workspace-essay-prompt" className="shrink-0 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-              Essay prompt
+              {hasMultiplePrompts ? "Selected prompt" : "Essay prompt"}
             </label>
             <input
               id="workspace-essay-prompt"
               type="text"
-              value={essayPrompt}
+              value={hasMultiplePrompts ? essayPrompt : rawPromptBlob}
               onChange={(event) => updateEssayPrompt(event.target.value)}
+              readOnly={hasMultiplePrompts}
               placeholder="Paste or enter the scholarship essay prompt here."
-              className="h-10 min-w-0 flex-1 rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground/60 focus:border-info focus:ring-2 focus:ring-info/10"
+              className="h-10 min-w-0 flex-1 rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground/60 focus:border-info focus:ring-2 focus:ring-info/10 read-only:bg-muted/30"
             />
             <button
               type="button"
@@ -4999,18 +5131,19 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
               aria-busy={outlineLoading}
               className={`inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-lg bg-primary px-5 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${outlineLoading ? "agent-loading" : ""}`}
             >
-              {outlineLoading ? <Spinner className="size-4" /> : user?.personalizedOutline?.outline ? <RefreshCw className="size-4" /> : <Sparkles className="size-4" />}
-              {outlineLoading ? "Generating Outline…" : user?.personalizedOutline?.outline ? "Regenerate Outline" : "Generate Outline"}
+              {outlineLoading ? <Spinner className="size-4" /> : hasOutline ? <RefreshCw className="size-4" /> : <Sparkles className="size-4" />}
+              {outlineLoading ? "Generating Outline…" : hasOutline ? "Regenerate Outline" : "Generate Outline"}
             </button>
           </div>
-          {outlineStatus && <p className="mt-2 text-xs text-muted-foreground">{outlineStatus}</p>}
+          {outlineStatus && <p className="text-xs text-muted-foreground">{outlineStatus}</p>}
+          {mechanicsNote && <p className="text-xs text-success">{mechanicsNote}</p>}
         </div>
       </section>
 
       {/* Zone 2 (editor) + Zone 3 (sidebar) */}
       <div className="mx-auto flex max-w-[1440px] flex-col items-stretch lg:flex-row lg:items-start">
         <div className="flex min-h-[60vh] min-w-0 flex-1 flex-col lg:h-[calc(100vh-120px)] lg:min-h-0">
-          <div className="mx-auto flex min-h-0 w-full max-w-[760px] flex-1 flex-col">
+          <div className={`mx-auto flex min-h-0 w-full flex-1 flex-col transition-[max-width] duration-300 ${panelOpen ? "max-w-[760px]" : "max-w-[960px]"}`}>
             <EssayEditor
               ref={editorApiRef}
               value={draft}
@@ -5027,63 +5160,115 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
           </div>
         </div>
 
-        <div
-          style={{ "--essay-panel-width": `${panelWidth}px` } as React.CSSProperties}
-          className={`relative max-h-[1200px] w-full overflow-visible lg:w-[var(--essay-panel-width)] lg:shrink-0 ${
-            panelResizing ? "transition-none" : "transition-[width] duration-300 ease-out"
-          }`}
-        >
+        {panelOpen ? (
           <div
-            role="separator"
-            aria-label="Resize coaching sidebar"
-            aria-orientation="vertical"
-            aria-valuemin={300}
-            aria-valuemax={720}
-            aria-valuenow={Math.round(panelWidth)}
-            tabIndex={0}
-            onPointerDown={(event) => {
-              event.preventDefault();
-              setPanelResizing(true);
-            }}
-            onKeyDown={(event) => {
-              if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-              event.preventDefault();
-              const direction = event.key === "ArrowLeft" ? 1 : -1;
-              setPanelWidth((width) => Math.max(300, Math.min(720, width + direction * 24)));
-            }}
-            className={`absolute inset-y-0 left-0 z-30 hidden w-2 -translate-x-1/2 cursor-col-resize touch-none items-center justify-center outline-none lg:flex ${
-              panelResizing ? "bg-info/10" : "hover:bg-info/10 focus:bg-info/10"
+            style={{ "--essay-panel-width": `${panelWidth}px` } as React.CSSProperties}
+            className={`relative max-h-[1200px] w-full overflow-visible lg:w-[var(--essay-panel-width)] lg:min-w-[40vw] lg:shrink-0 ${
+              panelResizing ? "transition-none" : "transition-[width] duration-300 ease-out"
             }`}
           >
-            <span className={`h-12 w-1 rounded-full transition-colors ${panelResizing ? "bg-info" : "bg-border group-hover:bg-info"}`} />
+            <div
+              role="separator"
+              aria-label="Resize coaching sidebar"
+              aria-orientation="vertical"
+              aria-valuemin={300}
+              aria-valuemax={Math.round(typeof window !== "undefined" ? window.innerWidth * 0.7 : 1200)}
+              aria-valuenow={Math.round(panelWidth)}
+              tabIndex={0}
+              onPointerDown={(event) => {
+                event.preventDefault();
+                setPanelResizing(true);
+              }}
+              onKeyDown={(event) => {
+                if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+                event.preventDefault();
+                const direction = event.key === "ArrowLeft" ? 1 : -1;
+                const minimum = Math.max(300, Math.round(window.innerWidth * 0.4));
+                const maximum = Math.round(window.innerWidth * 0.7);
+                setPanelWidth((width) => Math.max(minimum, Math.min(maximum, width + direction * 24)));
+              }}
+              className={`absolute inset-y-0 left-0 z-30 hidden w-2 -translate-x-1/2 cursor-col-resize touch-none items-center justify-center outline-none lg:flex ${
+                panelResizing ? "bg-info/10" : "hover:bg-info/10 focus:bg-info/10"
+              }`}
+            >
+              <span className={`h-12 w-1 rounded-full transition-colors ${panelResizing ? "bg-info" : "bg-border group-hover:bg-info"}`} />
+            </div>
+            <div>
+              <EssayWorkspacePanel
+                activeTab={activeTab}
+                onTabChange={setActiveTab}
+                isEvaluating={isEvaluating}
+                evaluationProgress={evaluationProgress}
+                evaluationPhase={evaluationPhase}
+                scoresReady={scoresReady}
+                fixesReady={fixesReady}
+                suggestions={suggestions}
+                onAccept={acceptSuggestion}
+                onDismiss={dismissSuggestion}
+                onReveal={revealSuggestion}
+                onAcceptAllQuickFixes={acceptAllQuickFixes}
+                quickFixCount={quickFixSuggestions.length}
+                coachLoading={coachLoading}
+                coachSummary={coachSummary}
+                coachResult={coachResult}
+                coachUpdatedAt={coachUpdatedAt}
+                outlineLoading={outlineLoading}
+                outlineStatus={outlineStatus}
+                covered={coveredPoints}
+                onToggleCovered={toggleCovered}
+                onCollapse={() => setPanelOpen(false)}
+              />
+            </div>
           </div>
-          <div>
-            <EssayWorkspacePanel
-              activeTab={activeTab}
-              onTabChange={setActiveTab}
-              isEvaluating={isEvaluating}
-              evaluationProgress={evaluationProgress}
-              evaluationPhase={evaluationPhase}
-              scoresReady={scoresReady}
-              fixesReady={fixesReady}
-              suggestions={suggestions}
-              onAccept={acceptSuggestion}
-              onDismiss={dismissSuggestion}
-              onReveal={revealSuggestion}
-              onAcceptAllQuickFixes={acceptAllQuickFixes}
-              quickFixCount={quickFixSuggestions.length}
-              coachLoading={coachLoading}
-              coachSummary={coachSummary}
-              coachResult={coachResult}
-              coachUpdatedAt={coachUpdatedAt}
-              outlineLoading={outlineLoading}
-              outlineStatus={outlineStatus}
-              covered={coveredPoints}
-              onToggleCovered={toggleCovered}
-            />
-          </div>
-        </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setPanelOpen(true)}
+            className="hidden border-l border-border bg-card px-2 py-6 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground lg:flex lg:flex-col lg:items-center lg:gap-3"
+            aria-label="Open coaching panel"
+          >
+            <PanelRightOpen className="size-4" />
+            <span className="[writing-mode:vertical-rl] rotate-180">Coaching</span>
+          </button>
+        )}
       </div>
+    </div>
+  );
+}
+
+function WorkspaceStageGuide({ stage }: { stage: WorkspaceStage }) {
+  const stages: Array<{ id: WorkspaceStage; label: string; hint: string }> = [
+    { id: "prompt", label: "1. Prompt", hint: "Choose the essay prompt" },
+    { id: "outline", label: "2. Outline", hint: "Generate a personalized outline" },
+    { id: "draft", label: "3. Draft", hint: "Write against the outline" },
+    { id: "coach", label: "4. Coach", hint: "Run one coaching session" },
+    { id: "revise", label: "5. Revise", hint: "Apply fixes and re-run" },
+  ];
+  const activeIndex = stages.findIndex((item) => item.id === stage);
+  const active = stages[Math.max(0, activeIndex)];
+  return (
+    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-wrap gap-1.5">
+        {stages.map((item, index) => {
+          const done = index < activeIndex;
+          const current = index === activeIndex;
+          return (
+            <span
+              key={item.id}
+              className={`rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
+                current
+                  ? "bg-info text-white"
+                  : done
+                    ? "bg-success/15 text-success"
+                    : "bg-muted text-muted-foreground"
+              }`}
+            >
+              {item.label}
+            </span>
+          );
+        })}
+      </div>
+      <p className="text-[12px] text-muted-foreground">{active?.hint}</p>
     </div>
   );
 }
@@ -5110,6 +5295,7 @@ function EssayWorkspacePanel({
   outlineStatus,
   covered,
   onToggleCovered,
+  onCollapse,
 }: {
   activeTab: WorkspaceTab;
   onTabChange: (tab: WorkspaceTab) => void;
@@ -5132,6 +5318,7 @@ function EssayWorkspacePanel({
   outlineStatus: string | null;
   covered: Set<string>;
   onToggleCovered: (id: string) => void;
+  onCollapse?: () => void;
 }) {
   const { user } = useUser();
 
@@ -5139,7 +5326,6 @@ function EssayWorkspacePanel({
     { id: "outline", label: "Outline", icon: ListChecks },
     { id: "highlights", label: "Fixes", icon: Sparkles, count: suggestions.length },
     { id: "evaluation", label: "Evaluation", icon: Gauge },
-    { id: "reader", label: "Reader", icon: MessageSquare },
   ];
 
   return (
@@ -5173,6 +5359,16 @@ function EssayWorkspacePanel({
               );
             })}
           </div>
+          {onCollapse && (
+            <button
+              type="button"
+              onClick={onCollapse}
+              aria-label="Collapse coaching panel"
+              className="ml-1 hidden size-8 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground lg:grid"
+            >
+              <PanelRightClose className="size-4" />
+            </button>
+          )}
         </div>
         <div key={activeTab} className="min-h-0 flex-1 animate-in fade-in slide-in-from-bottom-1 overflow-y-auto p-4 duration-200">
           {activeTab === "outline" && (
@@ -5182,12 +5378,6 @@ function EssayWorkspacePanel({
               status={outlineStatus}
               covered={covered}
               onToggleCovered={onToggleCovered}
-            />
-          )}
-          {activeTab === "reader" && (
-            <ReaderPerspectiveTab
-              result={coachResult}
-              loading={(isEvaluating && !fixesReady) || (coachLoading && !fixesReady)}
             />
           )}
           {activeTab === "evaluation" && (
@@ -5219,17 +5409,17 @@ function EssayWorkspacePanel({
             <span className="min-w-0 leading-snug">
               {evaluationPhase
                 || (scoresReady && !fixesReady
-                  ? "Scores ready — preparing Fixes and Reader…"
+                  ? "Scores ready — preparing Fixes…"
                   : !scoresReady && fixesReady
                     ? "Fixes ready — still scoring…"
-                    : "Regenerating Fixes, Evaluation, and Reader…")}
+                    : "Running coaching session…")}
             </span>
             <span className="shrink-0 tabular-nums text-foreground">{evaluationProgress}%</span>
           </div>
           <div
             className="mt-2 h-1.5 overflow-hidden rounded-full bg-border"
             role="progressbar"
-            aria-label="Evaluation progress"
+            aria-label="Coaching session progress"
             aria-valuemin={0}
             aria-valuemax={100}
             aria-valuenow={evaluationProgress}
@@ -5584,44 +5774,6 @@ function DetailedFeedbackItem({ item }: { item: RevisionPriority }) {
   );
 }
 
-function ReaderPerspectiveTab({ result, loading }: { result: EssayCoachResult | null; loading: boolean }) {
-  const reviewer = result?.reviewer_simulation;
-  const hasFeedback = !!(
-    reviewer?.reviewer_reaction
-    || reviewer?.likely_strengths_seen_by_reviewer?.length
-    || reviewer?.likely_concerns_seen_by_reviewer?.length
-    || reviewer?.questions_reviewer_may_have?.length
-    || reviewer?.competitiveness_notes?.length
-  );
-
-  if (loading) return <CoachSkeleton />;
-
-  return (
-    <div className="space-y-3">
-      <div className="flex items-center gap-2 text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-        <MessageSquare className="size-3.5 text-info" />
-        Reader Perspective Feedback
-      </div>
-      {!hasFeedback && (
-        <div className="rounded-xl border border-dashed border-border bg-background p-4 text-[13px] leading-relaxed text-muted-foreground">
-          Click "Evaluate" to see how a scholarship reader may respond to your essay.
-        </div>
-      )}
-      {hasFeedback && reviewer && (
-        <>
-          {reviewer.reviewer_reaction && (
-            <p className="border-l-2 border-info/40 pl-2.5 text-[13px] italic leading-relaxed text-foreground/85">{reviewer.reviewer_reaction}</p>
-          )}
-          <CoachList label="Strengths a reader sees" items={reviewer.likely_strengths_seen_by_reviewer} tone="success" icon={Check} />
-          <CoachList label="Concerns a reader may have" items={reviewer.likely_concerns_seen_by_reviewer} tone="warning" maxItems={2} />
-          <CoachList label="Questions a reader may ask" items={reviewer.questions_reviewer_may_have} tone="muted" maxItems={2} />
-          <CoachList label="To strengthen the essay" items={reviewer.competitiveness_notes} tone="info" maxItems={2} />
-        </>
-      )}
-    </div>
-  );
-}
-
 function Sparkline({ points }: { points: number[] }) {
   const w = 320;
   const h = 40;
@@ -5768,13 +5920,39 @@ function WorkspaceEvaluationTab({
 
       {!coachLoading && !evaluating && (
         <p className="text-[12px] text-muted-foreground">
-          {analysis || coachResult ? 'Click "Evaluate" to regenerate.' : 'Click "Evaluate" to generate.'}
+          {analysis || coachResult ? "Run a coaching session again to refresh scores and fixes." : "Run a coaching session to score this draft and get guided fixes."}
         </p>
       )}
 
       {coachSummary && (
         <div className="rounded-xl border border-info/20 bg-info/5 p-3 text-[13px] leading-relaxed text-foreground/85">
           {coachSummary}
+        </div>
+      )}
+
+      {!!(coachResult?.profile_grounding?.unsupported_or_risky_claims?.length
+        || coachResult?.profile_grounding?.unused_relevant_profile_evidence?.length
+        || coachResult?.prompt_alignment?.missing_requirements?.length) && (
+        <div className="space-y-2 rounded-xl border border-border bg-background p-3">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Grounded next moves</div>
+          <CoachList
+            label="Prompt gaps"
+            items={coachResult?.prompt_alignment?.missing_requirements}
+            tone="warning"
+            maxItems={3}
+          />
+          <CoachList
+            label="Claims to verify"
+            items={coachResult?.profile_grounding?.unsupported_or_risky_claims}
+            tone="danger"
+            maxItems={3}
+          />
+          <CoachList
+            label="Unused profile evidence"
+            items={coachResult?.profile_grounding?.unused_relevant_profile_evidence}
+            tone="info"
+            maxItems={3}
+          />
         </div>
       )}
 
@@ -5860,8 +6038,8 @@ function WorkspaceEvaluationTab({
       {!evaluating && !criterionEntries.length && (
         <div className="rounded-xl border border-dashed border-border bg-background p-4 text-[13px] leading-relaxed text-muted-foreground">
           {scoredVersions.length > 0
-            ? 'This overall score is from an earlier evaluation. Click "Evaluate" to generate the new seven-criterion scores and detailed QA-reviewed feedback.'
-            : 'Click "Evaluate" to generate the tailored rubric, seven criterion scores, QA-reviewed feedback, and revision actions.'}
+            ? "This overall score is from an earlier session. Run coaching again for updated seven-criterion scores and grounded revision guidance."
+            : "Run a coaching session to generate seven essay-quality scores, grounded feedback, and revision actions."}
         </div>
       )}
     </div>
@@ -5952,8 +6130,15 @@ function WorkspaceHighlightsTab({
 }) {
   const { user } = useUser();
   const draft = user?.essayDraft ?? "";
-  // Keep Accept-all / Grammar list to safe mechanics only (same visual as original Grammar lane).
-  const grammarSuggestions = suggestions.filter(isSafeQuickFix);
+  // Accept-all stays C0-only; other lanes are one-by-one by risk tier.
+  const mustFix = suggestions.filter(isSafeQuickFix);
+  const shouldImprove = suggestions.filter((s) => {
+    if (isSafeQuickFix(s)) return false;
+    if (s.riskTier === "C1" || s.riskTier === "C3") return true;
+    if (!s.riskTier && (s.category === "clarity" || s.category === "engagement")) return true;
+    return false;
+  });
+  const optionalPolish = suggestions.filter((s) => !mustFix.includes(s) && !shouldImprove.includes(s));
   const wordCount = draft.trim() ? draft.trim().split(/\s+/).length : 0;
   const wordLimit = parseWordTarget(buildOutlinePayload(user).word_limit);
   const paragraphCount = draft.trim() ? draft.trim().split(/\n\s*\n/).filter(Boolean).length : 0;
@@ -6000,13 +6185,13 @@ function WorkspaceHighlightsTab({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <PanelLabel>Fixes</PanelLabel>
-          <div className="mt-1 text-[12px] font-semibold text-muted-foreground">Grammar and formatting review</div>
+          <div className="mt-1 text-[12px] font-semibold text-muted-foreground">Guided revision by impact</div>
         </div>
       </div>
 
       {!coachLoading && (
         <p className="text-[12px] text-muted-foreground">
-          {hasAssessment ? 'Click "Evaluate" to regenerate.' : 'Click "Evaluate" to generate.'}
+          {hasAssessment ? "Run a coaching session again to refresh fixes." : "Run a coaching session to generate guided fixes."}
         </p>
       )}
 
@@ -6018,30 +6203,44 @@ function WorkspaceHighlightsTab({
           title="Applies grammar, spelling, spacing, and capitalization fixes — stylistic rewrites stay for individual review"
         >
           <Check className="size-3.5 text-success" />
-          Accept {quickFixCount} quick fix{quickFixCount === 1 ? "" : "es"}
+          Accept {quickFixCount} safe mechanics fix{quickFixCount === 1 ? "" : "es"}
         </button>
       )}
 
       {coachLoading && <HighlightsSkeleton />}
 
-      <div className="space-y-2">
-        <div>
-          <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Grammar</div>
-          <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-            Spelling, punctuation, capitalization, verb tense, agreement, grammar, and sentence-level correctness.
-          </p>
-        </div>
+      <FixLane
+        title="Must fix"
+        description="Safe spelling and grammar mechanics."
+        empty={draft.trim() ? "No open mechanics fixes." : "Write your draft, then run a coaching session."}
+        suggestions={mustFix}
+        loading={coachLoading}
+        onAccept={onAccept}
+        onDismiss={onDismiss}
+        onReveal={onReveal}
+      />
 
-      {!coachLoading && !grammarSuggestions.length && (
-        <div className="rounded-xl border border-dashed border-border bg-background p-4 text-[13px] leading-relaxed text-muted-foreground">
-          {draft.trim() ? "No spelling, punctuation, capitalization, grammar, or sentence-level correctness fixes are open." : "Write your draft, then update the review to check grammar."}
-        </div>
-      )}
+      <FixLane
+        title="Should improve"
+        description="Clarity, flow, and structure edits — review one by one."
+        empty="No clarity or structure edits right now."
+        suggestions={shouldImprove}
+        loading={coachLoading}
+        onAccept={onAccept}
+        onDismiss={onDismiss}
+        onReveal={onReveal}
+      />
 
-        {grammarSuggestions.map((suggestion) => (
-          <SuggestionCard key={suggestion.id} s={suggestion} onAccept={onAccept} onDismiss={onDismiss} onReveal={onReveal} />
-        ))}
-      </div>
+      <FixLane
+        title="Optional polish"
+        description="Word choice and tone — never bulk-applied."
+        empty="No optional polish suggestions right now."
+        suggestions={optionalPolish}
+        loading={coachLoading}
+        onAccept={onAccept}
+        onDismiss={onDismiss}
+        onReveal={onReveal}
+      />
 
       <div className="space-y-2 border-t border-border pt-3">
         <div>
@@ -6062,6 +6261,43 @@ function WorkspaceHighlightsTab({
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+function FixLane({
+  title,
+  description,
+  empty,
+  suggestions,
+  loading,
+  onAccept,
+  onDismiss,
+  onReveal,
+}: {
+  title: string;
+  description: string;
+  empty: string;
+  suggestions: Suggestion[];
+  loading: boolean;
+  onAccept: (s: Suggestion) => void;
+  onDismiss: (s: Suggestion) => void;
+  onReveal: (s: Suggestion) => void;
+}) {
+  return (
+    <div className="space-y-2 border-t border-border pt-3 first:border-t-0 first:pt-0">
+      <div>
+        <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">{title}</div>
+        <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{description}</p>
+      </div>
+      {!loading && !suggestions.length && (
+        <div className="rounded-xl border border-dashed border-border bg-background p-3 text-[12px] leading-relaxed text-muted-foreground">
+          {empty}
+        </div>
+      )}
+      {suggestions.map((suggestion) => (
+        <SuggestionCard key={suggestion.id} s={suggestion} onAccept={onAccept} onDismiss={onDismiss} onReveal={onReveal} />
+      ))}
     </div>
   );
 }

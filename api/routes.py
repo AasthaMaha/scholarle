@@ -6,6 +6,7 @@ import io
 import json
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -17,6 +18,7 @@ from fastapi import HTTPException, UploadFile
 
 from config import settings
 from essay_coaching_service import run_essay_workspace_coach, run_selection_rewrite
+from essay_mechanics import apply_deterministic_mechanics
 from graph.builder import build_application_graph
 from graph.fit_builder import build_fit_analysis_graph
 from graph.opportunity_builder import build_opportunity_extraction_graph
@@ -205,6 +207,28 @@ class EssayCoachRequest(BaseModel):
     word_limit: str = Field(default="", max_length=120)
     outline_points: list[dict] = Field(default_factory=list)
     mode: str = Field(default="full", max_length=40)
+    writing_support_level: str = Field(default="grammar_only", max_length=40)
+
+
+class CoachingSessionRequest(BaseModel):
+    """One-button Step 4 session: mechanics → parallel evaluate + coach."""
+
+    user_id: str = Field(default="", max_length=100)
+    cv_text: str = Field(default="", max_length=50000)
+    essay_text: str = Field(..., min_length=1, max_length=20000)
+    scholarship_name: str = Field(default="", max_length=500)
+    scholarship_type: str = Field(default="", max_length=200)
+    prompt: str = Field(..., min_length=1, max_length=10000)
+    previous_readiness: Optional[Dict[str, int]] = None
+    draft_number: int = Field(default=1, ge=1, le=50)
+    include_section_coaching: bool = False
+    student_profile: dict = Field(default_factory=dict)
+    clean_scholarship_record: dict = Field(default_factory=dict)
+    essay_prompt: str = Field(default="", max_length=12000)
+    personalized_outline: dict = Field(default_factory=dict)
+    user_notes: str = Field(default="", max_length=5000)
+    word_limit: str = Field(default="", max_length=120)
+    outline_points: list[dict] = Field(default_factory=list)
     writing_support_level: str = Field(default="grammar_only", max_length=40)
 
 
@@ -651,6 +675,82 @@ def run_essay_coach(request: EssayCoachRequest) -> dict:
         mode=request.mode or "full",
         writing_support_level=request.writing_support_level or "grammar_only",
     )
+
+
+def run_workspace_coaching_session(request: CoachingSessionRequest) -> dict:
+    """Mechanics first, then parallel essay-quality evaluate + workspace coach."""
+    if not settings.openai_api_key:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Missing OPENAI_API_KEY. Add a .env file in the project root "
+                "with OPENAI_API_KEY=your_key, then restart the server."
+            ),
+        )
+
+    mechanics = apply_deterministic_mechanics(request.essay_text)
+    cleaned_draft = mechanics["draft"]
+    essay_prompt = (request.essay_prompt or request.prompt or "").strip()
+
+    analyze_request = AnalyzeRequest(
+        user_id=request.user_id,
+        cv_text=request.cv_text or "No student profile evidence was provided.",
+        essay_text=cleaned_draft,
+        scholarship_name=request.scholarship_name or "Scholarship opportunity",
+        scholarship_type=request.scholarship_type or "Scholarship",
+        prompt=request.prompt,
+        previous_readiness=request.previous_readiness,
+        draft_number=request.draft_number,
+        include_section_coaching=bool(request.include_section_coaching),
+    )
+
+    warnings: list[str] = []
+    evaluation: dict | None = None
+    coach_pack: dict | None = None
+
+    def _evaluate() -> dict:
+        return analyze_application(analyze_request)
+
+    def _coach() -> dict:
+        return run_essay_workspace_coach(
+            student_profile=request.student_profile,
+            clean_scholarship_record=request.clean_scholarship_record,
+            essay_prompt=essay_prompt,
+            essay_draft=cleaned_draft,
+            personalized_outline=request.personalized_outline,
+            user_notes=request.user_notes,
+            word_limit=request.word_limit,
+            outline_points=request.outline_points,
+            mode="workspace_refresh",
+            writing_support_level=request.writing_support_level or "grammar_only",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        evaluate_future = pool.submit(_evaluate)
+        coach_future = pool.submit(_coach)
+        try:
+            evaluation = evaluate_future.result()
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(f"evaluation failed: {exc}")
+        try:
+            coach_pack = coach_future.result()
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(f"coach pack failed: {exc}")
+
+    status = "success"
+    if evaluation is None and coach_pack is None:
+        status = "error"
+    elif evaluation is None or coach_pack is None:
+        status = "partial"
+
+    return {
+        "status": status,
+        "mechanics": mechanics,
+        "cleaned_draft": cleaned_draft,
+        "evaluation": evaluation,
+        "coach_pack": coach_pack,
+        "warnings": warnings,
+    }
 
 
 def rewrite_selection(request: RewriteRequest) -> dict:

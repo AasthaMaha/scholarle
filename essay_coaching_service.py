@@ -639,17 +639,18 @@ def run_essay_workspace_coach(
     support_level = _resolve_writing_support_level(mode, writing_support_level)
     package["writing_support_level"] = support_level
 
-    # workspace_refresh = Evaluate companion pack: safe grammar fixes + grounding
-    # + authenticity + reviewer, parallelized. Deep 7-criterion scores come from
-    # /api/analyze; this pack must not invent polish that lowers authenticity.
+    # workspace_refresh = coaching-session companion pack. Maximize template use
+    # (alignment, grounding, structure, specificity, tone, coverage) in parallel.
+    # Reader/reviewer simulation is intentionally OFF for workspace sessions.
+    # Deep 7-criterion scores still come from /api/analyze.
     enabled = {
         "sentence": mode in ("full", "workspace_refresh", "grammar_tone", "auto_check"),
-        "alignment": mode in ("full", "prompt_alignment"),
+        "alignment": mode in ("full", "prompt_alignment", "workspace_refresh"),
         "grounding": mode in ("full", "prompt_alignment", "workspace_refresh"),
-        "structure": mode in ("full", "structure"),
-        "specificity": mode in ("full", "structure"),
+        "structure": mode in ("full", "structure", "workspace_refresh"),
+        "specificity": mode in ("full", "structure", "workspace_refresh"),
         "tone": mode in ("full", "workspace_refresh"),
-        "reviewer": mode in ("full", "workspace_refresh", "reviewer"),
+        "reviewer": mode in ("full", "reviewer"),
         "coverage": mode in ("full", "auto_check", "workspace_refresh") and bool(outline_points),
     }
     runners = {

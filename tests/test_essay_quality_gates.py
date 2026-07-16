@@ -5,10 +5,11 @@ from essay_coaching_service import (
     _clean_sentence_suggestions,
     _resolve_writing_support_level,
 )
+from essay_mechanics import apply_deterministic_mechanics
 from nodes.critic import _programmatic_completeness
 from nodes.combine import _normalize_revision_actions, _rank_global_actions
 from nodes.routing import route_generators
-from templates.essay_coach import EDIT_RISK_TIERS
+from templates.essay_coach import COACH_GUARDRAILS, EDIT_RISK_TIERS
 
 
 class _Item:
@@ -157,3 +158,25 @@ def test_route_generators_skips_section_coaching_by_default():
     state["include_section_coaching"] = True
     targets = route_generators(state)
     assert "coach_sections" in targets
+
+
+def test_deterministic_mechanics_applies_spelling_and_spacing():
+    draft = "I recieve awards  becuase i lead."
+    result = apply_deterministic_mechanics(draft)
+    assert "received" in result["draft"] or "receive" in result["draft"]
+    assert "because" in result["draft"]
+    assert " I " in f" {result['draft']} " or result["draft"].startswith("I ")
+    assert result["applied_count"] >= 2
+
+
+def test_deterministic_mechanics_preserves_clean_draft():
+    draft = "I believe mentoring helped my classmates succeed."
+    result = apply_deterministic_mechanics(draft)
+    assert result["draft"] == draft
+    assert result["applied_count"] == 0
+
+
+def test_coach_guardrails_require_fact_traceability():
+    assert "EVIDENCE LOCK" in COACH_GUARDRAILS
+    assert "FACT TRACEABILITY" in COACH_GUARDRAILS
+    assert "ACTION QUALITY" in COACH_GUARDRAILS

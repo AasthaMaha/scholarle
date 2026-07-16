@@ -308,6 +308,17 @@ export function isSafeQuickFix(s: Suggestion): boolean {
   return false;
 }
 
+/** Apply all safe C0 mechanics before a coaching session. */
+export function applySafeMechanics(text: string): { text: string; appliedCount: number } {
+  const fixes = analyzeText(text).filter(isSafeQuickFix);
+  if (!fixes.length) return { text, appliedCount: 0 };
+  let next = text;
+  for (const suggestion of [...fixes].sort((a, b) => b.start - a.start)) {
+    next = applySuggestion(next, suggestion);
+  }
+  return { text: next, appliedCount: fixes.length };
+}
+
 /**
  * Anchor backend sentence suggestions to the current draft by locating each
  * `original_text` verbatim (LLM char offsets are unreliable). Suggestions whose

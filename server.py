@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.routes import (
     AnalyzeRequest,
+    CoachingSessionRequest,
     EssayCoachRequest,
     FitAnalyzeRequest,
     OpportunityExtractRequest,
@@ -25,6 +26,7 @@ from api.routes import (
     generate_personalized_outline,
     rewrite_selection,
     run_essay_coach,
+    run_workspace_coaching_session,
 )
 from persistence.database import initialize_database
 
@@ -123,6 +125,16 @@ def generate_outline(request: OutlineGenerateRequest):
 def essay_coach(request: EssayCoachRequest):
     try:
         return run_essay_coach(request)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/apply/coaching-session")
+def coaching_session(request: CoachingSessionRequest):
+    try:
+        return run_workspace_coaching_session(request)
     except HTTPException:
         raise
     except Exception as exc:
