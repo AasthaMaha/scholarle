@@ -672,6 +672,19 @@ This system is designed for full application evaluation, not live editing.
 
 Scholar-E currently has two coaching systems.
 
+The Essay Workspace's primary **Run coaching session** button starts both
+systems through one backend orchestration endpoint:
+
+```text
+POST /api/apply/coaching-session
+```
+
+That endpoint applies deterministic mechanics once, then runs the workspace
+coach and deep application graph concurrently. It returns the cleaned draft,
+both result packages, per-component status, and warnings in one response. A
+failure in one branch produces a partial result when the other branch succeeds.
+The individual endpoints below remain available for targeted reruns.
+
 ### Essay Workspace Coach
 
 ```text

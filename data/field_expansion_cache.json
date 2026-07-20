@@ -75,5 +75,26 @@
       "technology grants",
       "technology fellowships"
     ]
+  },
+  "cs": {
+    "canonical_label": "Computer Science",
+    "synonyms": [
+      "CS",
+      "Computing",
+      "Information Technology"
+    ],
+    "parent_disciplines": [
+      "Computer Science",
+      "Information Systems"
+    ],
+    "umbrella_terms": [
+      "STEM",
+      "Technology"
+    ],
+    "funder_vocabulary": [
+      "computer science scholarships",
+      "STEM funding opportunities",
+      "technology fellowships"
+    ]
   }
 }

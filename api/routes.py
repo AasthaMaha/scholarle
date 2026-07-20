@@ -714,8 +714,12 @@ def run_workspace_coaching_session(request: CoachingSessionRequest) -> dict:
             ),
         )
 
+    started_at = time.perf_counter()
     mechanics = apply_deterministic_mechanics(request.essay_text)
     cleaned_draft = mechanics["draft"]
+    draft_hash = hashlib.sha256(cleaned_draft.encode("utf-8")).hexdigest()
+    session_seed = f"{request.user_id}:{time.time_ns()}:{draft_hash}"
+    session_id = f"coach_{hashlib.sha256(session_seed.encode('utf-8')).hexdigest()[:16]}"
     essay_prompt = (request.essay_prompt or request.prompt or "").strip()
 
     analyze_request = AnalyzeRequest(
@@ -763,19 +767,39 @@ def run_workspace_coaching_session(request: CoachingSessionRequest) -> dict:
         except Exception as exc:  # noqa: BLE001
             warnings.append(f"coach pack failed: {exc}")
 
+    evaluation_ok = bool(evaluation) and str(evaluation.get("status", "")).lower() != "error"
+    coach_ok = bool(coach_pack) and str(coach_pack.get("status", "")).lower() != "error"
+
+    # A branch can return a structured error package without raising. Treat it
+    # as a failed component while preserving its useful explanation/warnings.
+    if coach_pack and not coach_ok:
+        warnings.extend(str(item) for item in coach_pack.get("warnings", []) if item)
+    if evaluation and not evaluation_ok:
+        detail = evaluation.get("message") or evaluation.get("feedback")
+        if detail:
+            warnings.append(f"evaluation failed: {detail}")
+
     status = "success"
-    if evaluation is None and coach_pack is None:
+    if not evaluation_ok and not coach_ok:
         status = "error"
-    elif evaluation is None or coach_pack is None:
+    elif not evaluation_ok or not coach_ok:
         status = "partial"
 
     return {
+        "session_id": session_id,
+        "draft_hash": draft_hash,
         "status": status,
         "mechanics": mechanics,
         "cleaned_draft": cleaned_draft,
         "evaluation": evaluation,
         "coach_pack": coach_pack,
-        "warnings": warnings,
+        "components": {
+            "mechanics": "success",
+            "evaluation": "success" if evaluation_ok else "error",
+            "coach": "success" if coach_ok else "error",
+        },
+        "warnings": list(dict.fromkeys(warnings)),
+        "duration_ms": round((time.perf_counter() - started_at) * 1000),
     }
 
 

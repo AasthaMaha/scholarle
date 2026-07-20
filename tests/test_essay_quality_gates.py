@@ -209,3 +209,79 @@ def test_resolve_writing_brief_scholarship_guided_without_prompt():
     assert brief["mode"] == "scholarship_guided"
     assert brief["has_formal_prompt"] is False
     assert "Mission Fund" in brief["writing_brief"]
+
+
+def _coaching_session_request():
+    from api.routes import CoachingSessionRequest
+
+    return CoachingSessionRequest(
+        user_id="student@example.com",
+        cv_text="Engineering student with tutoring and robotics experience.",
+        essay_text="I recieve support  becuase i mentor younger students in our robotics club.",
+        scholarship_name="Engineering Scholars Award",
+        scholarship_type="Scholarship",
+        prompt="Describe your leadership and community impact.",
+        student_profile={"careerGoal": "Mechanical engineer"},
+        clean_scholarship_record={"name": "Engineering Scholars Award"},
+        essay_prompt="Describe your leadership and community impact.",
+        outline_points=[{"id": "p-core", "label": "Leadership impact"}],
+    )
+
+
+def test_unified_coaching_session_runs_both_branches_on_cleaned_draft(monkeypatch):
+    from api import routes
+
+    seen = {}
+
+    def fake_analyze(request):
+        seen["evaluation_draft"] = request.essay_text
+        return {"readiness_index": {"alignment": {"score": 70}}}
+
+    def fake_coach(**kwargs):
+        seen["coach_draft"] = kwargs["essay_draft"]
+        return {"status": "success", "sentence_suggestions": [], "warnings": []}
+
+    monkeypatch.setattr(routes.settings, "openai_api_key", "test-key")
+    monkeypatch.setattr(routes, "analyze_application", fake_analyze)
+    monkeypatch.setattr(routes, "run_essay_workspace_coach", fake_coach)
+
+    result = routes.run_workspace_coaching_session(_coaching_session_request())
+
+    assert result["status"] == "success"
+    assert result["components"] == {
+        "mechanics": "success",
+        "evaluation": "success",
+        "coach": "success",
+    }
+    assert result["session_id"].startswith("coach_")
+    assert len(result["draft_hash"]) == 64
+    assert "receive" in result["cleaned_draft"]
+    assert seen["evaluation_draft"] == result["cleaned_draft"]
+    assert seen["coach_draft"] == result["cleaned_draft"]
+
+
+def test_unified_coaching_session_keeps_coach_when_evaluation_fails(monkeypatch):
+    from api import routes
+
+    def failed_analyze(_request):
+        raise RuntimeError("score provider timed out")
+
+    def fake_coach(**_kwargs):
+        return {
+            "status": "success",
+            "coach_summary": "Writing feedback is ready.",
+            "sentence_suggestions": [],
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(routes.settings, "openai_api_key", "test-key")
+    monkeypatch.setattr(routes, "analyze_application", failed_analyze)
+    monkeypatch.setattr(routes, "run_essay_workspace_coach", fake_coach)
+
+    result = routes.run_workspace_coaching_session(_coaching_session_request())
+
+    assert result["status"] == "partial"
+    assert result["components"]["coach"] == "success"
+    assert result["components"]["evaluation"] == "error"
+    assert result["coach_pack"]["coach_summary"] == "Writing feedback is ready."
+    assert any("score provider timed out" in warning for warning in result["warnings"])

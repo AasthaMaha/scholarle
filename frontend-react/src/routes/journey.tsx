@@ -38,7 +38,6 @@ import { EssayEditor, type EssayEditorHandle, type RewriteAction } from "@/compo
 import {
   analyzeText,
   anchorCoachSuggestions,
-  applySafeMechanics,
   applySuggestion,
   CATEGORY_META,
   CATEGORY_ORDER,
@@ -53,9 +52,8 @@ import { Spinner } from "@/components/Spinner";
 import { AcademicOnboarding } from "@/components/AcademicOnboarding";
 import {
   analyzeScholarshipFit,
-  analyzeApplication,
   autofillProfileFromResume,
-  buildAnalyzePayload,
+  buildCoachingSessionPayload,
   buildEssayCoachPayload,
   buildFitPayload,
   buildOutlinePayload,
@@ -68,6 +66,7 @@ import {
   generatePersonalizedOutline,
   runEssayCoach,
   runSelectionRewrite,
+  runWorkspaceCoachingSession,
   splitEssayPrompts,
   type EssayCoachMode,
   type EssayCoachResult,
@@ -5303,95 +5302,82 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     setSessionProgress(6);
     setSessionPhase("Cleaning spelling…");
     setMechanicsNote(null);
+    setAnalysisStatus(null);
     setCoachWarnings([]);
     setPanelOpen(true);
     setCoachSummary("Scholar-E is preparing your coaching session…");
 
-    // Phase A — deterministic C0 mechanics applied before any LLM work.
-    const mechanics = applySafeMechanics(draft);
-    let workingUser = user;
-    const workingDraft = mechanics.appliedCount > 0 && mechanics.text !== draft ? mechanics.text : draft;
-    if (mechanics.appliedCount > 0 && mechanics.text !== draft) {
-      updateProfile({ essayDraft: mechanics.text });
-      workingUser = { ...user, essayDraft: mechanics.text };
+    try {
+      setSessionPhase("Running coach suggestions and deep evaluation…");
+      setSessionProgress(28);
+
+      // One backend request owns mechanics, lightweight coaching, and deep
+      // evaluation. The server runs the two AI branches concurrently and can
+      // return a partial result when only one branch succeeds.
+      const session = await runWorkspaceCoachingSession(buildCoachingSessionPayload(user, essayPrompt));
+      const workingDraft = session.cleaned_draft || draft;
+      const appliedCount = session.mechanics?.applied_count ?? 0;
+
+      if (workingDraft !== draft) updateProfile({ essayDraft: workingDraft });
       setMechanicsNote(
-        `${mechanics.appliedCount} spelling/mechanics fix${mechanics.appliedCount === 1 ? "" : "es"} applied before coaching.`,
+        appliedCount > 0
+          ? `${appliedCount} spelling/mechanics fix${appliedCount === 1 ? "" : "es"} applied before coaching.`
+          : null,
       );
-      setSessionProgress(18);
-    } else {
-      setMechanicsNote(null);
-      setSessionProgress(14);
-    }
 
-    setSessionPhase("Running coach suggestions and scores…");
-    setSessionProgress((progress) => Math.max(progress, 28));
+      const coach = session.coach_pack ?? null;
+      const evaluation = session.evaluation ?? null;
+      const gotCoach = !!coach && coach.status !== "error" && session.components?.coach !== "error";
+      const gotScores = !!evaluation && session.components?.evaluation !== "error";
 
-    let gotCoach = false;
-    let gotScores = false;
-
-    const coachPromise = runEssayCoach(
-      buildEssayCoachPayload(workingUser, "full", "sentence_polish", essayPrompt),
-    )
-      .then((result) => {
-        gotCoach = true;
+      if (gotCoach && coach) {
         setCoachReady(true);
-        const coveredIds = result.outline_coverage?.covered_point_ids;
+        const coveredIds = coach.outline_coverage?.covered_point_ids;
         if (coveredIds) {
-          const known = new Set(buildOutlinePoints(workingUser?.personalizedOutline).map((p) => p.id));
+          const known = new Set(buildOutlinePoints(user.personalizedOutline).map((p) => p.id));
           setAutoCovered(new Set(coveredIds.filter((id) => known.has(id))));
         }
-        setCoachRaw(result.sentence_suggestions ?? []);
-        persistCoachResult(result, workingDraft);
-        if (!gotScores) {
-          setActiveTab("coach");
-          setSessionPhase("Coach suggestions ready…");
-        } else {
-          setSessionPhase("Coach suggestions ready…");
+        setCoachRaw(coach.sentence_suggestions ?? []);
+        persistCoachResult(coach, workingDraft);
+        if (coach.overall_scores && Object.keys(coach.overall_scores).length) {
+          upsertVersion(
+            {
+              coachScores: coach.overall_scores,
+              coachOverall: meanScore(coach.overall_scores) ?? undefined,
+              coachSummary: coach.coach_summary ?? undefined,
+            },
+            workingDraft,
+          );
         }
-        setSessionProgress((progress) => Math.max(progress, gotScores ? 96 : 58));
-        if (result.overall_scores && Object.keys(result.overall_scores).length) {
-          upsertVersion({
-            coachScores: result.overall_scores,
-            coachOverall: meanScore(result.overall_scores) ?? undefined,
-            coachSummary: result.coach_summary ?? undefined,
-          });
-        }
-        return result;
-      })
-      .catch((error) => {
-        console.error("Scholar-E coach session failed.", error);
-        setCoachSummary(error instanceof Error ? error.message : "The writing coach could not analyze your draft.");
-        setCoachWarnings([]);
-        throw error;
-      });
+      }
 
-    const scoresPromise = analyzeApplication(buildAnalyzePayload(workingUser, essayPrompt))
-      .then((result) => {
-        gotScores = true;
+      if (gotScores && evaluation) {
         setScoresReady(true);
-        updateProfile({ lastAnalysis: result });
-        if (!gotCoach) {
-          setActiveTab("evaluation");
-          setSessionPhase("Scores ready…");
-        } else {
-          setSessionPhase("Scores ready…");
-        }
-        setSessionProgress((progress) => Math.max(progress, gotCoach ? 96 : 62));
-        return result;
-      })
-      .catch((error) => {
-        console.error("Scholar-E scoring failed.", error);
-        setAnalysisStatus(error instanceof Error ? error.message : "Scoring failed. Please try again.");
-        throw error;
-      });
+        updateProfile({ lastAnalysis: evaluation });
+      }
 
-    try {
-      await Promise.allSettled([coachPromise, scoresPromise]);
+      const combinedWarnings = [...(session.warnings ?? []), ...(coach?.warnings ?? [])];
+      setCoachWarnings(Array.from(new Set(combinedWarnings)));
+
+      if (!gotCoach && !gotScores) {
+        throw new Error(combinedWarnings[0] || "The coaching session could not analyze your draft.");
+      }
+      if (!gotCoach) {
+        setCoachSummary("Deep evaluation finished, but writing suggestions are temporarily unavailable.");
+        setAnalysisStatus("Deep evaluation completed. Writing-coach feedback is unavailable for this run.");
+      } else if (!gotScores) {
+        setAnalysisStatus("Writing feedback completed. Deep evaluation is unavailable for this run.");
+      }
+
+      setSessionPhase(gotCoach && gotScores ? "Coach suggestions and scores ready…" : "Partial coaching results ready…");
       setSessionProgress(100);
-      if (gotCoach && !gotScores) setActiveTab("coach");
-      else if (gotScores && !gotCoach) setActiveTab("evaluation");
-      else if (gotCoach) setActiveTab("coach");
+      setActiveTab(gotCoach ? "coach" : "evaluation");
       await new Promise((resolve) => window.setTimeout(resolve, 200));
+    } catch (error) {
+      console.error("Scholar-E coaching session failed.", error);
+      const message = error instanceof Error ? error.message : "The coaching session could not analyze your draft.";
+      setCoachSummary(message);
+      setAnalysisStatus(message);
     } finally {
       setIsEvaluating(false);
       setCoachLoading(false);
@@ -5489,21 +5475,22 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   // Record/update a draft version snapshot. Dedupes on draft text so re-running
   // the coach without editing merges scores into the current version instead of
   // creating a duplicate.
-  function upsertVersion(patch: Partial<EssayDraft> = {}) {
-    const content = draft;
+  function upsertVersion(patch: Partial<EssayDraft> = {}, contentOverride?: string) {
+    const content = contentOverride ?? draft;
     if (!content.trim()) return;
+    const contentWordCount = content.trim().split(/\s+/).filter(Boolean).length;
     const prev = user?.drafts ?? [];
     const last = prev[prev.length - 1];
     if (last && last.content === content) {
       const merged = [...prev];
-      merged[merged.length - 1] = { ...last, ...patch, wordCount, savedAt: new Date().toISOString() };
+      merged[merged.length - 1] = { ...last, ...patch, wordCount: contentWordCount, savedAt: new Date().toISOString() };
       updateProfile({ drafts: merged });
     } else {
       const newVersion: EssayDraft = {
         id: crypto.randomUUID(),
         version: (last?.version ?? 0) + 1,
         content,
-        wordCount,
+        wordCount: contentWordCount,
         savedAt: new Date().toISOString(),
         ...patch,
       };

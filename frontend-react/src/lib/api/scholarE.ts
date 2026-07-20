@@ -575,6 +575,98 @@ export async function runEssayCoach(payload: EssayCoachPayload): Promise<EssayCo
   return data as EssayCoachResult;
 }
 
+export type CoachingSessionPayload = {
+  user_id: string;
+  cv_text: string;
+  essay_text: string;
+  scholarship_name: string;
+  scholarship_type: string;
+  prompt: string;
+  previous_readiness?: Record<string, number>;
+  draft_number: number;
+  include_section_coaching: boolean;
+  student_profile: Record<string, unknown>;
+  clean_scholarship_record: ActiveScholarship;
+  essay_prompt: string;
+  personalized_outline: Record<string, unknown>;
+  user_notes: string;
+  word_limit: string;
+  outline_points: Array<{ id: string; label: string }>;
+  writing_support_level: WritingSupportLevel;
+};
+
+export type CoachingSessionResult = {
+  session_id?: string;
+  draft_hash?: string;
+  status: "success" | "partial" | "error";
+  mechanics: {
+    draft: string;
+    applied_count: number;
+    applied_fixes?: Array<{ original: string; suggested: string; title: string }>;
+  };
+  cleaned_draft: string;
+  evaluation?: AnalysisResult | null;
+  coach_pack?: EssayCoachResult | null;
+  components?: {
+    mechanics?: "success" | "error";
+    coach?: "success" | "error";
+    evaluation?: "success" | "error";
+  };
+  warnings?: string[];
+};
+
+/** Build the single request used by the Essay Workspace's one-button session. */
+export function buildCoachingSessionPayload(
+  user: UserProfile | null,
+  essayPromptOverride?: string,
+): CoachingSessionPayload {
+  const evaluation = buildAnalyzePayload(user, essayPromptOverride);
+  const coach = buildEssayCoachPayload(user, "full", "sentence_polish", essayPromptOverride);
+
+  return {
+    user_id: user?.email ?? "",
+    cv_text: evaluation.cv_text,
+    essay_text: evaluation.essay_text,
+    scholarship_name: evaluation.scholarship_name,
+    scholarship_type: evaluation.scholarship_type,
+    // The backend model requires a non-empty deep-evaluation focus. When a
+    // scholarship has no formal prompt, make the intended fallback explicit.
+    prompt: evaluation.prompt || "No formal essay prompt was provided; evaluate against the scholarship context.",
+    previous_readiness: evaluation.previous_readiness,
+    draft_number: evaluation.draft_number ?? 1,
+    include_section_coaching: evaluation.include_section_coaching ?? false,
+    student_profile: coach.student_profile,
+    clean_scholarship_record: coach.clean_scholarship_record,
+    essay_prompt: coach.essay_prompt,
+    personalized_outline: coach.personalized_outline,
+    user_notes: coach.user_notes,
+    word_limit: coach.word_limit,
+    outline_points: coach.outline_points,
+    writing_support_level: "sentence_polish",
+  };
+}
+
+export async function runWorkspaceCoachingSession(
+  payload: CoachingSessionPayload,
+): Promise<CoachingSessionResult> {
+  const response = await fetch(`${API_BASE}/api/apply/coaching-session`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    const detail = data?.detail;
+    const validationMessage = Array.isArray(detail)
+      ? detail.map((issue) => `${issue?.loc?.join(".") ?? "request"}: ${issue?.msg ?? "invalid value"}`).join("; ")
+      : null;
+    throw new Error(typeof detail === "string" ? detail : validationMessage || "Scholar-E coaching session failed.");
+  }
+
+  return data as CoachingSessionResult;
+}
+
 export type OutlinePointGroup = "core" | "strategy" | "structure" | "keypoints";
 export type OutlinePoint = { id: string; label: string; detail?: string; group: OutlinePointGroup };
 
