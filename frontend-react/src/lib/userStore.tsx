@@ -73,8 +73,12 @@ export type EducationHistoryEntry = {
   isCurrent?: boolean;
   educationLevel?: string;
   institution?: string;
+  institutionId?: string;
+  institutionType?: "high_school" | "postsecondary" | "manual";
+  institutionLocation?: string;
   degreeProgram?: string;
   majorField?: string;
+  majorCipCode?: string;
   department?: string;
   gpa?: string;
   startDate?: string;
@@ -164,7 +168,6 @@ export type ActiveScholarship = {
   benefits?: string[];
   selectionCriteria?: string[];
   applicationProcess?: string[];
-  missingInformation?: string[];
   importantNotes?: string[];
   requirements?: Array<{ category?: string; requirement?: string; source?: string }>;
   requirementsPreview?: string;

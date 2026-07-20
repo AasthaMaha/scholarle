@@ -32,7 +32,6 @@ class ExtractedOpportunity(BaseModel):
     benefits: list[str] = Field(description='All explicitly stated funding, stipend, travel, housing, mentorship, networking, or other benefits.')
     selectionCriteria: list[str] = Field(description='All explicitly stated evaluation or selection criteria.')
     applicationProcess: list[str] = Field(description='Application steps, submission platform, forms, interview stages, or other process steps.')
-    missingInformation: list[str] = Field(description='Fields or sections not explicitly provided in the source text.')
     awardAmount: str = Field(description='Funding amount or award value, or "Not stated".')
     description: str = Field(description='Concise factual description, or "Not stated".')
     minimumGpa: str = Field(description='Minimum GPA requirement, or "Not stated".')
@@ -78,11 +77,9 @@ def extract_opportunity_fields(state):
                 "or fill missing fields. Do not output a malformed URL. Do not invent facts from "
                 "general knowledge or from the scholarship name alone. If only a name or sparse notes "
                 "are available and no reliable source text or complete source URL is provided, extract "
-                "only those facts, list all other needed fields in missingInformation, and explain that "
-                "the user should review/fill the fields manually. If the scholarship cannot be "
-                "confidently identified from the provided or discovered sources, say so in "
-                "missingInformation and do not create plausible eligibility rules, materials, deadlines, "
-                "or award terms. "
+                "only those facts and leave unavailable structured fields as Not stated. If the scholarship "
+                "cannot be confidently identified from the provided or discovered sources, do not create "
+                "plausible eligibility rules, materials, deadlines, or award terms. "
                 "For every important populated field, add fieldEvidence using the exact output field "
                 "name, exact SOURCE URL, a short verbatim excerpt, and confidence from 0 to 1. "
                 "Never cite USER-PROVIDED NOTES as source evidence. Prefer primary and "
@@ -96,7 +93,7 @@ def extract_opportunity_fields(state):
                 "human",
                 "Extract this opportunity using these sections: Scholarship Information, Timeline, "
                 "Eligibility Requirements, Required Application Materials, Benefits, Selection "
-                "Criteria, Application Process, and Missing Information.\n\n"
+                "Criteria, and Application Process.\n\n"
                 f"Scholarship name or query:\n{state.get('scholarship_name', '')}\n\n"
                 f"Scholarship URL/source:\n{state.get('scholarship_url', '')}\n\n"
                 f"Additional user notes:\n{state.get('additional_notes', '')}\n\n"
@@ -175,7 +172,6 @@ def _preview(data):
     benefits = _clean_list(data.get("benefits"))
     criteria = _clean_list(data.get("selectionCriteria"))
     process = _clean_list(data.get("applicationProcess"))
-    missing = _clean_list(data.get("missingInformation"))
 
     def bullets(items):
         return "\n".join(f"- {item}" for item in items)
@@ -206,9 +202,7 @@ def _preview(data):
         "# Selection Criteria\n"
         f"{bullets(criteria)}\n\n"
         "# Application Process\n"
-        f"{numbered(process)}\n\n"
-        "# Missing Information\n"
-        f"{bullets(missing)}"
+        f"{numbered(process)}"
     )
 
 
@@ -264,7 +258,6 @@ def clean_opportunity_fields(state):
         "benefits": _clean_list(data.get("benefits")),
         "selectionCriteria": _clean_list(data.get("selectionCriteria")),
         "applicationProcess": _clean_list(data.get("applicationProcess")),
-        "missingInformation": _clean_list(data.get("missingInformation")),
         "requirements": requirements,
         "requirementsPreview": preview_text,
         # Preserve labeled sources for deterministic grounding/provenance checks. The model's
@@ -433,32 +426,6 @@ def _filter_unverified_list(values, source_text, has_verified_source):
     return _clean_optional_list(cleaned)
 
 
-def _missing_labels_for_empty_fields(mapped):
-    checks = [
-        ("officialWebsite", "Official website"),
-        ("awardAmount", "Award amount"),
-        ("applicationOpens", "Application opening date/window"),
-        ("applicationDeadline", "Application deadline"),
-        ("notificationDate", "Notification date/window"),
-        ("programStart", "Program start date"),
-        ("programEnd", "Program end date"),
-        ("enrollmentLevel", "Enrollment level requirement"),
-        ("citizenshipRequirement", "Citizenship/residency requirement"),
-        ("eligibleMajors", "Eligible majors/fields"),
-        ("requiredApplicationMaterials", "Required application materials"),
-        ("applicationProcess", "Application process details"),
-    ]
-    missing = []
-    for key, label in checks:
-        value = mapped.get(key)
-        if isinstance(value, list):
-            if not _clean_optional_list(value):
-                missing.append(label)
-        elif not _blank_not_stated(value):
-            missing.append(label)
-    return missing
-
-
 def _without_duplicates_or_materials(values, material_values):
     material_keys = {_norm(value) for value in material_values}
     cleaned = []
@@ -505,7 +472,6 @@ def _final_sanitize(mapped):
     mapped["officialWebsite"] = _clean_url(mapped.get("officialWebsite"))
     mapped["url"] = _clean_url(mapped.get("url") or mapped.get("officialWebsite"))
 
-    missing = _clean_optional_list(mapped.get("missingInformation"))
     notes = [note for note in _clean_optional_list(mapped.get("importantNotes")) if not _is_tentative_value(note)]
     tentative_field_notes = []
     for field in [
@@ -586,9 +552,7 @@ def _final_sanitize(mapped):
         if mapped.get("currentStatus") in {"Open", "Rolling"}:
             mapped["currentStatus"] = "Open year-round"
 
-    missing = _clean_optional_list(missing + _missing_labels_for_empty_fields(mapped))
     mapped["importantNotes"] = _clean_optional_list(notes)
-    mapped["missingInformation"] = missing[:12]
     mapped["requirements"] = [
         {"category": "Eligibility", "requirement": item, "source": mapped["url"]}
         for item in mapped["eligibilityRequirements"]
@@ -840,7 +804,6 @@ def clean_scholarship_output(state):
         "benefits",
         "selectionCriteria",
         "applicationProcess",
-        "missingInformation",
         "importantNotes",
     ]:
         mapped[field] = _clean_optional_list(state.get(field))
@@ -868,6 +831,5 @@ def clean_scholarship_output(state):
     mapped["extractedAt"] = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     mapped["requirementsPreview"] = _clean_record_preview(mapped)
     return mapped
-
 
 

@@ -43,7 +43,6 @@ class OpportunityExtractionState(TypedDict, total=False):
     benefits: List[str]
     selectionCriteria: List[str]
     applicationProcess: List[str]
-    missingInformation: List[str]
     importantNotes: List[str]
     requirements: List[Dict[str, str]]
     requirementsPreview: str

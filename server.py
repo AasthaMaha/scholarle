@@ -4,7 +4,7 @@ FastAPI server for Scholar-E MVP.
 Exposes POST /api/analyze and auth routes for frontend-react.
 """
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.routes import (
@@ -29,6 +29,7 @@ from api.routes import (
     run_workspace_coaching_session,
 )
 from persistence.database import initialize_database
+from education_catalog import get_education_catalog
 
 app = FastAPI(title="Scholar-E", version="0.1.0")
 
@@ -49,6 +50,29 @@ def startup() -> None:
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/api/education/schools")
+def search_education_schools(
+    q: str = Query(min_length=2, max_length=120),
+    kind: str = Query(pattern="^(high_school|postsecondary)$"),
+    limit: int = Query(default=10, ge=1, le=10),
+):
+    try:
+        return {"results": get_education_catalog().search_institutions(q, kind, limit)}
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/api/education/majors")
+def search_education_majors(
+    q: str = Query(min_length=1, max_length=120),
+    limit: int = Query(default=10, ge=1, le=10),
+):
+    try:
+        return {"results": get_education_catalog().search_majors(q, limit)}
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.post("/api/analyze")

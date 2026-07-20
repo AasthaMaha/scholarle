@@ -1377,7 +1377,6 @@ function compactObject<T extends Record<string, unknown>>(value: T | undefined) 
 const EXTENDED_CONTEXT_GROUPS: { group: string; options: string[] }[] = [
   { group: "Financial Need", options: ["Pell Grant eligible", "FAFSA completed", "Low-income background"] },
   { group: "Student Background", options: ["First-generation college student", "Student with disability", "Foster care experience", "Student with dependents"] },
-  { group: "Citizenship / Residency Status", options: ["U.S. citizen", "Permanent resident", "International student", "DACA / undocumented student"] },
   { group: "Enrollment Status", options: ["Full-time student", "Part-time student"] },
   { group: "Military Affiliation", options: ["Veteran", "Military dependent"] },
 ];
@@ -1832,14 +1831,8 @@ function StepProfile({
           value={user?.raceEthnicity ?? ""}
           onChange={(v) => set("raceEthnicity", v)}
           options={raceOptions}
-          className="sm:col-span-2"
           invalid={showSetupErrors && !user?.raceEthnicity}
         />
-      </div>
-
-      <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2">
-        <GlossaryCheck label="First-generation college student" checked={!!user?.firstGen} onChange={(v) => set("firstGen", v)} />
-        <GlossaryCheck label="Pell Grant eligible" checked={!!user?.pellEligible} onChange={(v) => set("pellEligible", v)} />
       </div>
 
       <button
@@ -2168,7 +2161,7 @@ function GuidedProfileSetup({
       <div className="mb-6 rounded-2xl border border-border bg-card p-5 md:p-6">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <div className="text-xs uppercase tracking-widest text-muted-foreground">Create Profile</div>
+            <div className="text-xs uppercase tracking-widest text-muted-foreground">Student Profile</div>
             <h1 id="profile-setup-title" className="mt-2 font-display text-3xl font-semibold">
               Complete Your Profile
             </h1>
@@ -3719,6 +3712,9 @@ function WorkflowStep({
   description,
   complete,
   active,
+  locked = false,
+  lockedMessage,
+  headingId,
   isLast = false,
   children,
 }: {
@@ -3727,6 +3723,9 @@ function WorkflowStep({
   description?: string;
   complete?: boolean;
   active?: boolean;
+  locked?: boolean;
+  lockedMessage?: string;
+  headingId?: string;
   isLast?: boolean;
   children: React.ReactNode;
 }) {
@@ -3737,7 +3736,13 @@ function WorkflowStep({
       : "border-border bg-background text-muted-foreground";
 
   return (
-    <section className="relative grid gap-4 md:grid-cols-[76px_1fr]">
+    <section
+      className={`group relative grid gap-4 transition-opacity duration-300 motion-reduce:transition-none md:grid-cols-[76px_1fr] ${locked ? "opacity-55" : "opacity-100"}`}
+      aria-disabled={locked || undefined}
+      aria-labelledby={headingId}
+      aria-describedby={locked && lockedMessage ? `${headingId ?? `workflow-step-${number}`}-locked-message` : undefined}
+      tabIndex={locked ? 0 : undefined}
+    >
       <div className="relative hidden md:flex justify-center">
         <div className={`relative z-10 grid size-12 place-items-center rounded-full border-2 text-sm font-semibold ${markerClass}`}>
           {complete ? <Check className="size-5" strokeWidth={3} /> : number}
@@ -3756,12 +3761,18 @@ function WorkflowStep({
             <div className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Step {number}</div>
           </div>
           <div className="hidden text-sm font-semibold uppercase tracking-widest text-muted-foreground md:block">Step {number}</div>
-          <h3 className="mt-1 font-display text-2xl font-bold leading-tight text-foreground">{title}</h3>
+          <h3 id={headingId} tabIndex={headingId && !locked ? -1 : undefined} className="mt-1 scroll-mt-20 font-display text-2xl font-bold leading-tight text-foreground">{title}</h3>
           {description && <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">{description}</p>}
+          {locked && lockedMessage && (
+            <p id={`${headingId ?? `workflow-step-${number}`}-locked-message`} className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              <Lock className="size-3.5" aria-hidden="true" />
+              {lockedMessage}
+            </p>
+          )}
         </div>
-        <div className="overflow-hidden rounded-2xl border border-border/70 bg-white shadow-sm">
+        <div className={`overflow-hidden rounded-2xl border border-border/70 bg-white shadow-sm transition-colors duration-300 motion-reduce:transition-none ${locked ? "bg-muted/35 grayscale-[0.2]" : ""}`}>
           <div className={`h-1 ${active ? "bg-primary" : complete ? "bg-success" : "bg-border"}`} />
-          <div className="p-5 md:p-6">{children}</div>
+          <div inert={locked ? true : undefined} className={locked ? "pointer-events-none select-none p-5 md:p-6" : "p-5 md:p-6"}>{children}</div>
         </div>
       </div>
     </section>
@@ -4036,6 +4047,7 @@ function EditableScholarshipFields({
   analysisStatus,
   complete,
   active,
+  locked,
 }: {
   scholarship: ActiveScholarship;
   updateScholarship: (patch: ActiveScholarship) => void;
@@ -4044,6 +4056,7 @@ function EditableScholarshipFields({
   analysisStatus: string | null;
   complete?: boolean;
   active?: boolean;
+  locked?: boolean;
 }) {
   const docsValue = (scholarship.requiredDocumentTypes ?? []).join(", ");
   const hasExtractedDetails = !!scholarship.extractionCompletedAt;
@@ -4078,7 +4091,6 @@ function EditableScholarshipFields({
     listValue(scholarship.benefits),
     listValue(scholarship.selectionCriteria),
     listValue(scholarship.applicationProcess),
-    ...(scholarship.missingInformation?.length ? [listValue(scholarship.missingInformation)] : []),
   ];
   const extractedCount = extractedValues.filter((value) => !isReviewFieldMissing(value)).length;
   const needsReviewCount = extractedValues.length - extractedCount;
@@ -4100,6 +4112,9 @@ function EditableScholarshipFields({
         description="Review and edit anything the extractor found before analyzing fit."
         complete={complete}
         active={active}
+        locked={locked}
+        lockedMessage="Extract the scholarship requirements to unlock this step."
+        headingId="extracted-requirements-heading"
       >
         <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-white px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
@@ -4121,6 +4136,9 @@ function EditableScholarshipFields({
       description="Review and edit anything the extractor found before analyzing fit."
       complete={complete}
       active={active}
+      locked={locked}
+      lockedMessage="Extract the scholarship requirements to unlock this step."
+      headingId="extracted-requirements-heading"
     >
       <div className="mt-1 rounded-2xl border border-border/50 bg-white px-4 py-3 shadow-sm">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -4226,9 +4244,6 @@ function EditableScholarshipFields({
             <ReviewTextArea label="Benefits" value={listValue(scholarship.benefits)} onChange={(value) => updateScholarship({ benefits: parseList(value) })} rows={3} />
             <ReviewTextArea label="Selection criteria" value={listValue(scholarship.selectionCriteria)} onChange={(value) => updateScholarship({ selectionCriteria: parseList(value) })} rows={3} className="md:col-span-2" />
             <ReviewTextArea label="Application process" value={listValue(scholarship.applicationProcess)} onChange={(value) => updateScholarship({ applicationProcess: parseList(value) })} rows={3} className="md:col-span-3" />
-            {!!scholarship.missingInformation?.length && (
-              <ReviewTextArea label="Missing information" value={listValue(scholarship.missingInformation)} onChange={(value) => updateScholarship({ missingInformation: parseList(value) })} rows={3} className="md:col-span-3" />
-            )}
           </div>
         </ReviewSection>
       </div>
@@ -4260,10 +4275,26 @@ function StepRequirementsAndFit() {
   const [extracting, setExtracting] = useState(false);
   const [extractionStatus, setExtractionStatus] = useState<string | null>(null);
   const [extractionError, setExtractionError] = useState<string | null>(null);
+  const [workflowAnnouncement, setWorkflowAnnouncement] = useState("");
   const [rubricOpen, setRubricOpen] = useState(false);
   const sourceRevisionRef = useRef(0);
-  function updateScholarship(patch: ActiveScholarship) {
-    updateProfile({ activeScholarship: { ...scholarship, ...patch } });
+  function updateExtractedScholarship(patch: ActiveScholarship) {
+    updateProfile({
+      activeScholarship: { ...scholarship, ...patch },
+      fitAnalysis: undefined,
+      personalizedOutline: undefined,
+    });
+    setFitStatus(null);
+  }
+  function moveToWorkflowStep(headingId: string) {
+    window.setTimeout(() => {
+      const heading = document.getElementById(headingId);
+      heading?.scrollIntoView({
+        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+        block: "start",
+      });
+      heading?.focus({ preventScroll: true });
+    }, 100);
   }
   function replaceScholarshipSource(patch: ActiveScholarship) {
     sourceRevisionRef.current += 1;
@@ -4311,12 +4342,8 @@ function StepRequirementsAndFit() {
         personalizedOutline: undefined,
       });
       setExtractionStatus("Requirements extracted. Review and edit the fields below.");
-      window.setTimeout(() => {
-        document.getElementById("extracted-requirements-review")?.scrollIntoView({
-          behavior: "smooth",
-          block: "start",
-        });
-      }, 100);
+      setWorkflowAnnouncement("Extracted requirements are ready for review.");
+      moveToWorkflowStep("extracted-requirements-heading");
     } catch (err) {
       setExtractionError(err instanceof Error ? err.message : "Scholarship extraction failed.");
       setExtractionStatus(null);
@@ -4331,10 +4358,13 @@ function StepRequirementsAndFit() {
     }
     setFitAnalyzing(true);
     setFitStatus("Analyzing fit...");
+    updateProfile({ fitAnalysis: undefined });
     try {
       const result = await analyzeScholarshipFit(buildFitPayload(user));
       updateProfile({ fitAnalysis: result });
       setFitStatus("Fit analysis complete. Review the results below.");
+      setWorkflowAnnouncement("Profile fit analysis is ready for review.");
+      moveToWorkflowStep("profile-fit-analysis-heading");
     } catch (err) {
       setFitStatus(err instanceof Error ? err.message : "Scholarship fit analysis failed.");
     } finally {
@@ -4343,9 +4373,12 @@ function StepRequirementsAndFit() {
   }
   const fitAnalysis = user?.fitAnalysis;
   const hasExtractedDetails = !!scholarship.extractionCompletedAt;
+  const stepTwoLocked = !hasExtractedDetails || extracting;
+  const stepThreeLocked = !fitAnalysis || fitAnalyzing || extracting;
 
   return (
     <div className="space-y-8">
+      <p className="sr-only" aria-live="polite">{workflowAnnouncement}</p>
       <ScholarshipDetailsCard
         scholarship={scholarship}
         updateScholarship={replaceScholarshipSource}
@@ -4360,12 +4393,13 @@ function StepRequirementsAndFit() {
       <div id="extracted-requirements-review" className="scroll-mt-6">
         <EditableScholarshipFields
           scholarship={scholarship}
-          updateScholarship={updateScholarship}
+          updateScholarship={updateExtractedScholarship}
           onAnalyze={runFitAnalysis}
           analyzing={fitAnalyzing}
           analysisStatus={fitStatus}
           complete={!!fitAnalysis}
-          active={hasExtractedDetails && !fitAnalysis}
+          active={hasExtractedDetails && !fitAnalysis && !fitAnalyzing}
+          locked={stepTwoLocked}
         />
       </div>
 
@@ -4378,7 +4412,10 @@ function StepRequirementsAndFit() {
             : "Extract and review scholarship requirements, then use Accept and Analyze Fit."
         }
         complete={!!fitAnalysis}
-        active={hasExtractedDetails}
+        active={!!fitAnalysis && !fitAnalyzing}
+        locked={stepThreeLocked}
+        lockedMessage="Accept the extracted requirements and analyze your fit to unlock this step."
+        headingId="profile-fit-analysis-heading"
         isLast
       >
         <div className="space-y-6">

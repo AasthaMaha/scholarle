@@ -83,7 +83,7 @@ export type JourneyStep = {
 };
 
 export const journeySteps: JourneyStep[] = [
-  { id: 1, slug: "profile", title: "Create Profile", goal: "Get started", group: "Discover" },
+  { id: 1, slug: "profile", title: "Student Profile", goal: "Get started", group: "Discover" },
   { id: 2, slug: "discovery", title: "Scholarship Discovery", goal: "Find opportunities", group: "Discover" },
   { id: 3, slug: "requirements", title: "Analyze Requirements & Fit", goal: "Understand fit", group: "Analyze" },
   { id: 4, slug: "essay-workspace", title: "Essay Workspace", goal: "Draft and review", group: "Apply" },

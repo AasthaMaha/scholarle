@@ -2,6 +2,8 @@ import { ArrowLeft, ArrowRight, Check } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import scholarELogoUrl from "../../logo/logoPic.jpeg";
 
+import { EducationAutocomplete } from "@/components/EducationAutocomplete";
+import { searchMajors, searchSchools } from "@/lib/api/educationCatalog";
 import { type EducationHistoryEntry, type EducationLevel, type UserProfile } from "@/lib/userStore";
 
 const ACADEMIC_LEVELS = [
@@ -61,15 +63,7 @@ function promptFor(level: AcademicLevel, question: Question) {
       : "Which school do you currently attend?";
   }
   if (question === "major") {
-    if (level === "Associate Degree") return "What is your major or field of study?";
-    if (level === "Bachelor's Degree") return "What is your major?";
-    if (level === "Master's Degree")
-      return "What is your major, field of study, or graduate program?";
-    if (level === "Doctoral Degree") return "What is your field of study or doctoral program?";
-    if (level === "Professional Degree (JD, MD, DDS, etc.)")
-      return "What professional program are you pursuing?";
-    if (level === "Other") return "What program or field are you pursuing?";
-    return "What is your major or field of study?";
+    return "What is your major?";
   }
   return level === "Other"
     ? "When do you expect to complete it?"
@@ -152,6 +146,8 @@ export function AcademicOnboarding({
   const [level, setLevel] = useState<AcademicLevel | "">(initialLevel);
   const [step, setStep] = useState(0);
   const [leaving, setLeaving] = useState(false);
+  const [manualSchool, setManualSchool] = useState(false);
+  const [manualMajor, setManualMajor] = useState(false);
   const navigationLocked = useRef(false);
   const questionHeadingRef = useRef<HTMLHeadingElement | null>(null);
   const completionTimerRef = useRef<number | null>(null);
@@ -161,8 +157,12 @@ export function AcademicOnboarding({
     isCurrent: initialEntry?.isCurrent ?? true,
     educationLevel: initialLevel,
     institution: initialEntry?.institution ?? "",
+    institutionId: initialEntry?.institutionId ?? "",
+    institutionType: initialEntry?.institutionType,
+    institutionLocation: initialEntry?.institutionLocation ?? "",
     degreeProgram: initialEntry?.degreeProgram ?? "",
     majorField: initialEntry?.majorField ?? "",
+    majorCipCode: initialEntry?.majorCipCode ?? "",
     department: initialEntry?.department ?? "",
     gpa: initialEntry?.gpa ?? "",
     startDate: initialEntry?.startDate ?? "",
@@ -194,10 +194,15 @@ export function AcademicOnboarding({
     navigationLocked.current = true;
     const hadMajor = level !== "" && level !== "High School";
     const keepsMajor = nextLevel !== "High School";
+    const changesInstitutionKind = level !== "" && (level === "High School") !== (nextLevel === "High School");
     const nextEntry = {
       ...entry,
       educationLevel: nextLevel,
       majorField: hadMajor && !keepsMajor ? "" : entry.majorField,
+      majorCipCode: hadMajor && !keepsMajor ? "" : entry.majorCipCode,
+      institutionId: changesInstitutionKind ? "" : entry.institutionId,
+      institutionType: changesInstitutionKind ? undefined : entry.institutionType,
+      institutionLocation: changesInstitutionKind ? "" : entry.institutionLocation,
       degreeProgram: programForLevel(
         nextLevel,
         hadMajor && !keepsMajor ? "" : (entry.majorField ?? ""),
@@ -341,28 +346,104 @@ export function AcademicOnboarding({
             </div>
           )}
           {question === "school" && (
-            <input
-              autoFocus
-              value={entry.institution ?? ""}
-              onChange={(event) => updateEntry({ institution: event.target.value })}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") next();
-              }}
-              placeholder="School or institution name"
-              className="mt-5 w-full rounded-lg border border-border bg-background px-3 py-3 text-sm outline-none focus:ring-2 focus:ring-primary/40"
-            />
+            manualSchool ? (
+              <div className="mt-5">
+                <input
+                  autoFocus
+                  value={entry.institution ?? ""}
+                  onChange={(event) => updateEntry({ institution: event.target.value, institutionId: "", institutionType: "manual", institutionLocation: "" })}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") next();
+                  }}
+                  aria-label="Enter your school manually"
+                  placeholder="School or institution name"
+                  className="w-full rounded-lg border border-border bg-background px-3 py-3 text-sm outline-none focus:ring-2 focus:ring-primary/40"
+                />
+                <button type="button" onClick={() => setManualSchool(false)} className="mt-2 text-xs font-medium text-primary hover:underline">
+                  Search for my school instead
+                </button>
+              </div>
+            ) : (
+              <EducationAutocomplete
+                value={entry.institution ?? ""}
+                placeholder="Search by school name"
+                minimumCharacters={2}
+                ariaLabel="Search for your school"
+                noResultsText="No matching schools found."
+                fallbackOption={{ id: "manual-school", label: "I can’t find my school" }}
+                search={async (query, signal) =>
+                  (await searchSchools(query, level === "High School" ? "high_school" : "postsecondary", signal)).map((school) => ({
+                    id: school.id,
+                    label: school.name,
+                    secondary: school.location,
+                    institutionType: school.institutionType,
+                    location: school.location,
+                  }))
+                }
+                onSelect={(option, query) => {
+                  if (option.id === "manual-school") {
+                    const manualValue = query.trim() || entry.institution || "";
+                    setManualSchool(true);
+                    updateEntry({ institution: manualValue, institutionId: "", institutionType: "manual", institutionLocation: "" });
+                    return;
+                  }
+                  updateEntry({
+                    institution: option.label,
+                    institutionId: option.id,
+                    institutionType: option.institutionType,
+                    institutionLocation: option.location ?? "",
+                  });
+                }}
+              />
+            )
           )}
           {question === "major" && (
-            <input
-              autoFocus
-              value={entry.majorField ?? ""}
-              onChange={(event) => updateEntry({ majorField: event.target.value })}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") next();
-              }}
-              placeholder="Major, field, or program"
-              className="mt-5 w-full rounded-lg border border-border bg-background px-3 py-3 text-sm outline-none focus:ring-2 focus:ring-primary/40"
-            />
+            manualMajor ? (
+              <div className="mt-5">
+                <input
+                  autoFocus
+                  value={entry.majorField ?? ""}
+                  onChange={(event) => updateEntry({ majorField: event.target.value, majorCipCode: "" })}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") next();
+                  }}
+                  aria-label="Enter your major manually"
+                  placeholder="Major, field, or program"
+                  className="w-full rounded-lg border border-border bg-background px-3 py-3 text-sm outline-none focus:ring-2 focus:ring-primary/40"
+                />
+                <button type="button" onClick={() => setManualMajor(false)} className="mt-2 text-xs font-medium text-primary hover:underline">
+                  Search standardized majors instead
+                </button>
+              </div>
+            ) : (
+              <EducationAutocomplete
+                value={entry.majorField ?? ""}
+                placeholder="Search for your major"
+                ariaLabel="Search for your major"
+                pinnedOptions={[
+                  { id: "major-undecided", label: "Undecided" },
+                  { id: "major-other", label: "Other" },
+                ]}
+                noResultsText="No matching majors found."
+                search={async (query, signal) =>
+                  (await searchMajors(query, signal)).map((major) => ({
+                    id: `cip-${major.cipCode}`,
+                    label: major.name,
+                    cipCode: major.cipCode,
+                  }))
+                }
+                onSelect={(option, query) => {
+                  if (option.id === "major-other") {
+                    const typedValue = query.trim();
+                    const manualValue = typedValue && typedValue.toLowerCase() !== "other" ? typedValue : "";
+                    setManualMajor(true);
+                    updateEntry({ majorField: manualValue, majorCipCode: "" });
+                    return;
+                  }
+                  updateEntry({ majorField: option.label, majorCipCode: option.cipCode ?? "" });
+                }}
+              />
+            )
           )}
           {question === "graduation" && (
             <div className="relative z-10 mt-5 grid grid-cols-2 gap-3">

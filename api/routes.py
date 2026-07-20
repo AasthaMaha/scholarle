@@ -112,7 +112,6 @@ class OpportunityExtractResponse(BaseModel):
     benefits: list[str] = Field(default_factory=list)
     selectionCriteria: list[str] = Field(default_factory=list)
     applicationProcess: list[str] = Field(default_factory=list)
-    missingInformation: list[str] = Field(default_factory=list)
     importantNotes: list[str] = Field(default_factory=list)
     requirements: list[dict] = Field(default_factory=list)
     requirementsPreview: str = ""
