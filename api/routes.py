@@ -6,7 +6,6 @@ import io
 import json
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -44,6 +43,7 @@ from persistence.services import (
     run_agent_with_persistence,
 )
 from persistence.vector_service import VectorService
+from unified_coaching_service import run_unified_coaching_session
 from utils.opportunity_sources import resolve_opportunity_sources
 
 
@@ -704,7 +704,7 @@ def run_essay_coach(request: EssayCoachRequest) -> dict:
 
 
 def run_workspace_coaching_session(request: CoachingSessionRequest) -> dict:
-    """Mechanics first, then parallel essay-quality evaluate + workspace coach."""
+    """Mechanics first, then one shared specialist/evaluator coaching graph."""
     if not settings.openai_api_key:
         raise HTTPException(
             status_code=400,
@@ -722,50 +722,27 @@ def run_workspace_coaching_session(request: CoachingSessionRequest) -> dict:
     session_id = f"coach_{hashlib.sha256(session_seed.encode('utf-8')).hexdigest()[:16]}"
     essay_prompt = (request.essay_prompt or request.prompt or "").strip()
 
-    analyze_request = AnalyzeRequest(
-        user_id=request.user_id,
-        cv_text=request.cv_text or "No student profile evidence was provided.",
-        essay_text=cleaned_draft,
-        scholarship_name=request.scholarship_name or "Scholarship opportunity",
-        scholarship_type=request.scholarship_type or "Scholarship",
-        prompt=request.prompt,
+    merged = run_unified_coaching_session(
+        student_profile=request.student_profile,
+        clean_scholarship_record=request.clean_scholarship_record,
+        essay_prompt=essay_prompt,
+        essay_draft=cleaned_draft,
+        personalized_outline=request.personalized_outline,
+        user_notes=request.user_notes,
+        word_limit=request.word_limit,
+        outline_points=request.outline_points,
+        writing_support_level=request.writing_support_level or "sentence_polish",
+        profile_text=request.cv_text,
+        scholarship_name=request.scholarship_name,
+        scholarship_type=request.scholarship_type,
+        opportunity_prompt=request.prompt,
         previous_readiness=request.previous_readiness,
         draft_number=request.draft_number,
         include_section_coaching=bool(request.include_section_coaching),
     )
-
-    warnings: list[str] = []
-    evaluation: dict | None = None
-    coach_pack: dict | None = None
-
-    def _evaluate() -> dict:
-        return analyze_application(analyze_request)
-
-    def _coach() -> dict:
-        return run_essay_workspace_coach(
-            student_profile=request.student_profile,
-            clean_scholarship_record=request.clean_scholarship_record,
-            essay_prompt=essay_prompt,
-            essay_draft=cleaned_draft,
-            personalized_outline=request.personalized_outline,
-            user_notes=request.user_notes,
-            word_limit=request.word_limit,
-            outline_points=request.outline_points,
-            mode="full",
-            writing_support_level=request.writing_support_level or "sentence_polish",
-        )
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        evaluate_future = pool.submit(_evaluate)
-        coach_future = pool.submit(_coach)
-        try:
-            evaluation = evaluate_future.result()
-        except Exception as exc:  # noqa: BLE001
-            warnings.append(f"evaluation failed: {exc}")
-        try:
-            coach_pack = coach_future.result()
-        except Exception as exc:  # noqa: BLE001
-            warnings.append(f"coach pack failed: {exc}")
+    evaluation = merged.get("evaluation")
+    coach_pack = merged.get("coach_pack")
+    warnings = list(merged.get("warnings") or [])
 
     evaluation_ok = bool(evaluation) and str(evaluation.get("status", "")).lower() != "error"
     coach_ok = bool(coach_pack) and str(coach_pack.get("status", "")).lower() != "error"
@@ -798,6 +775,7 @@ def run_workspace_coaching_session(request: CoachingSessionRequest) -> dict:
             "evaluation": "success" if evaluation_ok else "error",
             "coach": "success" if coach_ok else "error",
         },
+        "agents": merged.get("agent_status", {}),
         "warnings": list(dict.fromkeys(warnings)),
         "duration_ms": round((time.perf_counter() - started_at) * 1000),
     }

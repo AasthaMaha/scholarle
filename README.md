@@ -668,22 +668,31 @@ This system is designed for full application evaluation, not live editing.
 
 ---
 
-## 13. Two Coaching Systems
+## 13. Unified Coaching Session and Targeted Tools
 
-Scholar-E currently has two coaching systems.
-
-The Essay Workspace's primary **Run coaching session** button starts both
-systems through one backend orchestration endpoint:
+The Essay Workspace's primary **Run coaching session** button runs one merged
+agent graph through:
 
 ```text
 POST /api/apply/coaching-session
 ```
 
-That endpoint applies deterministic mechanics once, then runs the workspace
-coach and deep application graph concurrently. It returns the cleaned draft,
-both result packages, per-component status, and warnings in one response. A
-failure in one branch produces a partial result when the other branch succeeds.
-The individual endpoints below remain available for targeted reruns.
+The endpoint applies deterministic mechanics once, builds one shared grounded
+context, and fans out the sentence, alignment, grounding, structure,
+specificity, tone, strategy, eligibility, discovery, narrative, and outline
+coverage specialists. Their reports feed one reviewer stage, one rubric-based
+Evaluator/Revision Planner, and one bounded QA Critic loop. The shared result is
+projected into the existing Coach and Evaluation response packages so the four
+workspace tabs keep a stable frontend contract.
+
+Implementation:
+
+```text
+unified_coaching_service.py
+```
+
+The individual endpoints below remain available as targeted tools for cheap
+auto-checks, coach-only reruns, deep-evaluation reruns, and final checks.
 
 ### Essay Workspace Coach
 

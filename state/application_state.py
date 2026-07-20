@@ -32,6 +32,9 @@ class ApplicationState(TypedDict, total=False):
     discovery_report: Dict[str, Any]
     narrative_report: Dict[str, Any]
     reviewer_report: Dict[str, Any]
+    # Shared lightweight specialist evidence consumed by the single evaluator
+    # in unified coaching sessions. The legacy deep graph leaves this empty.
+    specialist_reports: Dict[str, Any]
 
     # Eligibility / requirements comparison matrix (consumer-facing)
     eligibility_matrix: Dict[str, Any]

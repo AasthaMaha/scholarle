@@ -612,7 +612,9 @@ export type CoachingSessionResult = {
     coach?: "success" | "error";
     evaluation?: "success" | "error";
   };
+  agents?: Record<string, "success" | "error" | "fallback">;
   warnings?: string[];
+  duration_ms?: number;
 };
 
 /** Build the single request used by the Essay Workspace's one-button session. */

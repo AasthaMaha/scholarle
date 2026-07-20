@@ -198,6 +198,7 @@ def run_combiner(
     reviewers: dict,
     critique: dict | None = None,
     sticky_rubric: dict | None = None,
+    specialist_reports: dict | None = None,
 ) -> dict:
     """Manager + Evaluator stage of the scholarship-essay evaluation.
 
@@ -218,6 +219,16 @@ identified, and make sure every score is justified by the submitted text.
 """
 
     rubric = sticky_rubric if isinstance(sticky_rubric, dict) and sticky_rubric else {}
+    specialist_block = ""
+    if specialist_reports:
+        specialist_block = f"""
+UNIFIED SPECIALIST EVIDENCE:
+{json.dumps(specialist_reports, indent=2, default=str)[:18000]}
+
+Use these specialist reports as evidence leads, not as independent final grades.
+Verify every observation against the submitted essay/profile before scoring.
+Do not repeat the same revision under multiple criteria.
+"""
     if not rubric:
         manager_prompt = f"""
 You are the Manager Agent for a scholarship essay evaluation system.
@@ -285,6 +296,7 @@ NARRATIVE AGENT:
 
 REVIEWER SIMULATION AGENT:
 {json.dumps(reviewers, indent=2)}
+{specialist_block}
 {critique_block}
 {_grounding_rules()}
 

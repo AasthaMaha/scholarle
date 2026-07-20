@@ -142,6 +142,7 @@ def combine_coaching(state):
         reviewers,
         critique=critique,
         sticky_rubric=prior_rubric or None,
+        specialist_reports=state.get("specialist_reports") or None,
     )
 
     raw_readiness = synthesis.get("readiness_index", {})
