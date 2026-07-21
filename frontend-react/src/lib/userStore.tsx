@@ -138,6 +138,16 @@ export type EssayDraft = {
   readinessOverall?: number;
 };
 
+export type EssayPromptEntry = {
+  id: string;
+  promptNumber: number;
+  promptText: string;
+  minimumWords: number | null;
+  maximumWords: number | null;
+  minimumWordsReviewed?: boolean;
+  maximumWordsReviewed?: boolean;
+};
+
 export type ActiveScholarship = {
   name?: string;
   organization?: string;
@@ -163,6 +173,13 @@ export type ActiveScholarship = {
   requiredDocumentTypes?: string[];
   otherRequiredMaterials?: string;
   essayPrompts?: string;
+  essayPromptEntries?: EssayPromptEntry[];
+  allEssayPromptEntries?: EssayPromptEntry[];
+  selectedEssayPromptIds?: string[];
+  selectedEssayPromptEntries?: EssayPromptEntry[];
+  selectedEssayPrompts?: string;
+  noEssayPromptSelected?: boolean;
+  noEssayPromptConflictConfirmed?: boolean;
   eligibilityRequirements?: string[];
   requiredApplicationMaterials?: string[];
   benefits?: string[];
@@ -490,6 +507,8 @@ export type UserProfile = {
   essayTitle?: string;
   essayDraft?: string;
   essayDraftHtml?: string;
+  essayDraftsByPromptId?: Record<string, string>;
+  essayDraftHtmlByPromptId?: Record<string, string>;
   // last journey step index, so the student resumes where they left off
   lastStep?: number;
   // scholarship currently being analyzed

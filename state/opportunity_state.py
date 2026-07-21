@@ -38,6 +38,10 @@ class OpportunityExtractionState(TypedDict, total=False):
     requiredDocumentTypes: List[str]
     otherRequiredMaterials: str
     essayPrompts: str
+    essayPromptEntries: List[Dict[str, Any]]
+    selectedEssayPromptIds: List[str]
+    noEssayPromptSelected: bool
+    noEssayPromptConflictConfirmed: bool
     eligibilityRequirements: List[str]
     requiredApplicationMaterials: List[str]
     benefits: List[str]

@@ -1,20 +1,21 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import scholarELogoUrl from "../../logo/logoPic.jpeg";
 import {
   AlertCircle,
   ArrowLeft,
   ArrowRight,
-  CalendarDays,
+  BriefcaseBusiness,
   Check,
   ChevronLeft,
   ChevronRight,
   ChevronDown,
   ClipboardList,
-  Compass,
   Copy,
   FileUp,
+  FlaskConical,
   Gauge,
+  GraduationCap,
   Lightbulb,
   LineChart,
   ListChecks,
@@ -24,10 +25,8 @@ import {
   PanelLeftOpen,
   PencilLine,
   Power,
-  ReceiptText,
   RefreshCw,
   Save,
-  ShieldCheck,
   Sparkles,
   Target,
   UserRound,
@@ -60,14 +59,15 @@ import {
   buildOutlinePoints,
   buildWikiPayload,
   discoverScholarshipWiki,
-  getScholarshipDiscoveryBootstrap,
   buildRewritePayload,
   extractScholarshipOpportunity,
   generatePersonalizedOutline,
   runEssayCoach,
   runSelectionRewrite,
   runWorkspaceCoachingSession,
-  splitEssayPrompts,
+  normalizeEssayPromptEntries,
+  normalizeSelectedEssayPromptEntries,
+  serializeEssayPromptEntries,
   type EssayCoachResult,
   type RevisionPriority,
 } from "@/lib/api/scholarE";
@@ -83,6 +83,7 @@ import {
   type AnalysisScore,
   type EssayDraft,
   type ActiveScholarship,
+  type EssayPromptEntry,
   type WikiDiscoveryResult,
   type ApplicationReadinessMatrix,
   type FitAnalysisResult,
@@ -378,13 +379,23 @@ function isProfileComplete(user: UserProfile | null) {
   );
 }
 
+function getRequiredAboutCompletion(user: UserProfile | null) {
+  const requiredFields = [
+    !!user?.gender?.trim(),
+    !!user?.location?.trim(),
+    !!user?.citizenshipStatus?.trim(),
+    !!user?.raceEthnicity,
+  ];
+
+  return {
+    completed: requiredFields.filter(Boolean).length,
+    total: requiredFields.length,
+  };
+}
+
 function isRequiredAboutComplete(user: UserProfile | null) {
-  return !!(
-    user?.gender?.trim() &&
-    user.location?.trim() &&
-    user.citizenshipStatus?.trim() &&
-    user.raceEthnicity
-  );
+  const completion = getRequiredAboutCompletion(user);
+  return completion.completed === completion.total;
 }
 
 function Sidebar({
@@ -1333,7 +1344,7 @@ const SCHOLARSHIP_TYPE_OPTIONS = [
 ];
 
 const PROFILE_SECTION_CLASS = "!rounded-none !border-0 !bg-transparent !p-0 !shadow-none";
-const PROFILE_ENTRY_CLASS = "rounded-lg border border-border/60 bg-white/60 p-4";
+const PROFILE_ENTRY_CLASS = "rounded-md border border-border/70 bg-card p-4";
 
 /* ---------------- Step 2: Profile ---------------- */
 
@@ -1434,11 +1445,12 @@ function StepProfile({
     });
   }
   function addEducationEntry() {
+    const id = newId("edu");
     updateProfile({
       educationHistory: [
         ...educationHistory,
         {
-          id: newId("edu"),
+          id,
           source: "manual",
           isCurrent: false,
           educationLevel: "",
@@ -1452,6 +1464,7 @@ function StepProfile({
         },
       ],
     });
+    return id;
   }
   function removeEducationEntry(id: string) {
     const next = educationHistory.filter((entry) => entry.id !== id);
@@ -1466,11 +1479,12 @@ function StepProfile({
     });
   }
   function addResearchEntry() {
+    const id = newId("research");
     updateProfile({
       researchExperience: [
         ...researchExperience,
         {
-          id: newId("research"),
+          id,
           researchAreas: "",
           researchProjects: "",
           publications: "",
@@ -1482,6 +1496,7 @@ function StepProfile({
       ],
     });
     setResearchOpen(true);
+    return id;
   }
   function removeResearchEntry(id: string) {
     updateProfile({ researchExperience: researchExperience.filter((entry) => entry.id !== id) });
@@ -1492,11 +1507,12 @@ function StepProfile({
     });
   }
   function addWorkEntry() {
+    const id = newId("work");
     updateProfile({
       workExperience: [
         ...workExperience,
         {
-          id: newId("work"),
+          id,
           roleTitle: "",
           organization: "",
           experienceType: "",
@@ -1507,6 +1523,7 @@ function StepProfile({
         },
       ],
     });
+    return id;
   }
   function removeWorkEntry(id: string) {
     updateProfile({ workExperience: workExperience.filter((entry) => entry.id !== id) });
@@ -1664,7 +1681,8 @@ function StepProfile({
     "B-International Student or Other Visa Status (F-1, J-1, H-4, TN, DACA, TPS, etc.)",
   ];
   const showRequiredErrors = !!error;
-  const aboutYouComplete = isRequiredAboutComplete(user);
+  const aboutYouCompletion = getRequiredAboutCompletion(user);
+  const aboutYouComplete = aboutYouCompletion.completed === aboutYouCompletion.total;
   const hasEducationLevel = educationHistory.some((entry) => entry.educationLevel?.trim()) || !!user?.educationLevel;
   const shouldShowProfileSetup = !showStartDialog && !user?.profileSetupCompleted;
   const showSetupErrors = showRequiredErrors || showProfileSetupValidation;
@@ -1678,18 +1696,28 @@ function StepProfile({
     profileSetupHeadingRef.current?.focus();
   }, [shouldShowProfileSetup, profileSetupStep]);
 
-  const uploadedDocsList = docs.length > 0 && (
-    <div className="mt-4 divide-y divide-border">
-      {docs.map((d) => (
-        <div key={d.name} className="py-3 flex items-center gap-4">
-          <div className="size-10 rounded-lg bg-success/15 text-success grid place-items-center"><Check className="size-5" strokeWidth={2.5} /></div>
-          <div className="flex-1 min-w-0">
-            <div className="text-sm font-medium truncate">{d.name}</div>
+  const uploadedDocsList = (
+    <div className="mt-4 divide-y divide-border/70 border-y border-border/70">
+      {docs.length === 0 ? (
+        <p className="py-3 text-sm text-muted-foreground">
+          No documents uploaded yet. You can add them now or return later.
+        </p>
+      ) : docs.map((d) => (
+        <div key={`${d.kind}-${d.name}`} className="flex items-center gap-3 py-3">
+          <div className="grid size-8 shrink-0 place-items-center rounded-md bg-success/10 text-success">
+            <FileUp className="size-4" aria-hidden="true" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <div className="truncate text-sm font-medium text-foreground">{d.name}</div>
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-success">Uploaded</span>
+            </div>
             <div className="text-xs text-muted-foreground">{d.kind}</div>
           </div>
           <button
+            type="button"
             onClick={() => removeDoc(d.name)}
-            className="text-xs text-muted-foreground hover:text-destructive"
+            className="rounded px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
           >
             Remove
           </button>
@@ -1699,16 +1727,12 @@ function StepProfile({
   );
   const uploadMaterialsCard = (
     <Card className={PROFILE_SECTION_CLASS}>
-      <SectionLabel>Upload Materials (Optional)</SectionLabel>
-      <p className="text-xs text-muted-foreground mt-1">
-        Add supporting documents you may reuse across applications.
-      </p>
       {uploadedDocsList}
-      <div className="mt-4 grid sm:grid-cols-3 gap-3">
+      <div className="mt-4 grid gap-3 sm:grid-cols-3">
         {["Transcript", "Letter of Recommendation", "Other documents"].map((k) => (
-          <label key={k} className="rounded-lg border border-dashed border-border p-3 text-sm cursor-pointer hover:bg-accent">
-            <div className="text-xs uppercase tracking-widest text-muted-foreground">Upload</div>
-            <div className="font-medium mt-1">{k}</div>
+          <label key={k} className="cursor-pointer rounded-md border border-dashed border-border p-3 text-sm transition-colors hover:border-primary/40 hover:bg-accent/40 focus-within:ring-2 focus-within:ring-primary/20">
+            <div className="font-medium text-foreground">{k}</div>
+            <div className="mt-0.5 text-xs text-muted-foreground">Not uploaded</div>
             <input
               type="file"
               accept=".pdf,.doc,.docx,.png,.jpg"
@@ -1716,7 +1740,7 @@ function StepProfile({
                 const f = e.target.files?.[0];
                 if (f) addDoc(k, f);
               }}
-              className="mt-2 text-xs"
+              className="mt-2 w-full text-xs text-muted-foreground file:mr-2 file:rounded file:border-0 file:bg-secondary file:px-2 file:py-1 file:text-xs file:font-medium file:text-foreground"
             />
           </label>
         ))}
@@ -1725,16 +1749,7 @@ function StepProfile({
   );
   const profileSummaryCard = (
     <Card className={PROFILE_SECTION_CLASS}>
-      <div className="flex items-center gap-3">
-        <div className="size-10 rounded-xl bg-primary text-primary-foreground grid place-items-center font-display text-base">
-          {toInitials(user?.name)}
-        </div>
-        <div>
-          <div className="font-display text-xl font-semibold">{user?.name}</div>
-          <div className="text-sm text-muted-foreground">{user?.email}</div>
-        </div>
-      </div>
-      <div className="mt-4 grid sm:grid-cols-2 gap-3">
+      <div className="grid gap-3 sm:grid-cols-2">
         <Input label="Full name" value={user?.name ?? ""} onChange={(v) => set("name", v)} placeholder="Maya Rodriguez" />
         <Input label="Email" value={user?.email ?? ""} onChange={(v) => set("email", v)} placeholder="you@school.edu" type="email" />
       </div>
@@ -1742,14 +1757,14 @@ function StepProfile({
   );
   const aboutYouCard = (
     <Card className={PROFILE_SECTION_CLASS}>
-      <SectionLabel>About you *</SectionLabel>
-      <div className="grid sm:grid-cols-2 gap-3 mt-3">
+      <div className="grid gap-3 sm:grid-cols-2">
         <Select
           label="Gender"
           value={user?.gender ?? ""}
           onChange={(v) => set("gender", v)}
           options={genderOptions}
           invalid={showSetupErrors && !user?.gender?.trim()}
+          errorMessage="Select a gender."
         />
         <Input
           label="Location"
@@ -1757,6 +1772,7 @@ function StepProfile({
           onChange={(v) => set("location", v)}
           placeholder="City, State"
           invalid={showSetupErrors && !user?.location?.trim()}
+          errorMessage="Enter your location."
         />
         <Select
           label="Citizenship / Residency Status"
@@ -1764,6 +1780,7 @@ function StepProfile({
           onChange={(v) => set("citizenshipStatus", v)}
           options={citizenshipOptions}
           invalid={showSetupErrors && !user?.citizenshipStatus?.trim()}
+          errorMessage="Select a citizenship or residency status."
         />
         <Select
           label="Please select your Race / Ethnicity"
@@ -1771,22 +1788,24 @@ function StepProfile({
           onChange={(v) => set("raceEthnicity", v)}
           options={raceOptions}
           invalid={showSetupErrors && !user?.raceEthnicity}
+          errorMessage="Select a race or ethnicity option."
         />
       </div>
 
       <button
         type="button"
         onClick={() => setShowExtended((s) => !s)}
-        className="mt-4 text-xs underline text-muted-foreground hover:text-foreground"
+        aria-expanded={showExtended}
+        className="mt-4 rounded px-1 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
       >
         {showExtended ? "− Hide" : "+ Add more personalized context"}
       </button>
 
       {showExtended && (
-        <div className="mt-4 space-y-4">
+        <div className="mt-3 space-y-4 border-l-2 border-primary/15 pl-3 animate-in fade-in duration-150 motion-reduce:animate-none">
           {EXTENDED_CONTEXT_GROUPS.map((grp) => (
             <div key={grp.group}>
-              <div className="text-[11px] uppercase tracking-widest text-gold">{grp.group}</div>
+              <div className="text-[11px] font-medium uppercase tracking-widest text-primary/80">{grp.group}</div>
               <div className="mt-2 grid sm:grid-cols-2 gap-2">
                 {grp.options.map((opt) => (
                   <GlossaryCheck
@@ -1830,19 +1849,42 @@ function StepProfile({
       />
     </>
   );
+  const hasOptionalContext = [
+    user?.optional?.volunteering,
+    user?.optional?.societyInvolvement,
+    user?.optional?.leadership,
+    user?.optional?.sports,
+    user?.optional?.articlesPublished,
+    user?.optional?.projects,
+  ].some((value) => !!value?.trim());
   const optionalContextCard = (
     <Card className={`${PROFILE_SECTION_CLASS}`}>
       <SectionLabel>Optional context</SectionLabel>
       <p className="text-xs text-muted-foreground mt-1">
         All optional — add whatever helps scholarships see who you are.
       </p>
-      <div className="mt-3 grid gap-3 md:grid-cols-2">
-        <Textarea label="Volunteering" value={user?.optional?.volunteering ?? ""} onChange={(v) => setOptional({ volunteering: v })} placeholder="Describe any volunteer work, community service, or nonprofit involvement you’d like Scholar-E to consider." />
-        <Textarea label="Society / club involvement" value={user?.optional?.societyInvolvement ?? ""} onChange={(v) => setOptional({ societyInvolvement: v })} placeholder="Clubs, organizations, roles…" />
-        <Textarea label="Leadership experience" value={user?.optional?.leadership ?? ""} onChange={(v) => setOptional({ leadership: v })} placeholder="Captain, president, lead organizer, founder…" />
-        <Textarea label="Sports" value={user?.optional?.sports ?? ""} onChange={(v) => setOptional({ sports: v })} placeholder="Teams, varsity/club, captaincy…" />
-        <Textarea label="Articles published" value={user?.optional?.articlesPublished ?? ""} onChange={(v) => setOptional({ articlesPublished: v })} placeholder="Titles, outlets, links…" />
-        <Textarea label="Projects" value={user?.optional?.projects ?? ""} onChange={(v) => setOptional({ projects: v })} placeholder="Personal, school, or research projects…" />
+      {!hasOptionalContext && (
+        <p className="mt-3 border-y border-border/60 py-2.5 text-sm text-muted-foreground">
+          No activities added yet. Add details in any category that is relevant to you.
+        </p>
+      )}
+      <div className="mt-3 grid gap-x-5 gap-y-4 md:grid-cols-2">
+        <section aria-labelledby="community-activity-heading" className="space-y-3">
+          <h3 id="community-activity-heading" className="text-xs font-semibold uppercase tracking-wide text-foreground/70">
+            Community &amp; leadership
+          </h3>
+          <Textarea label="Volunteering" value={user?.optional?.volunteering ?? ""} onChange={(v) => setOptional({ volunteering: v })} placeholder="Describe any volunteer work, community service, or nonprofit involvement you’d like Scholar-E to consider." />
+          <Textarea label="Society / club involvement" value={user?.optional?.societyInvolvement ?? ""} onChange={(v) => setOptional({ societyInvolvement: v })} placeholder="Clubs, organizations, roles…" />
+          <Textarea label="Leadership experience" value={user?.optional?.leadership ?? ""} onChange={(v) => setOptional({ leadership: v })} placeholder="Captain, president, lead organizer, founder…" />
+        </section>
+        <section aria-labelledby="achievement-activity-heading" className="space-y-3 md:border-l md:border-border/60 md:pl-5">
+          <h3 id="achievement-activity-heading" className="text-xs font-semibold uppercase tracking-wide text-foreground/70">
+            Achievements &amp; interests
+          </h3>
+          <Textarea label="Sports" value={user?.optional?.sports ?? ""} onChange={(v) => setOptional({ sports: v })} placeholder="Teams, varsity/club, captaincy…" />
+          <Textarea label="Articles published" value={user?.optional?.articlesPublished ?? ""} onChange={(v) => setOptional({ articlesPublished: v })} placeholder="Titles, outlets, links…" />
+          <Textarea label="Projects" value={user?.optional?.projects ?? ""} onChange={(v) => setOptional({ projects: v })} placeholder="Personal, school, or research projects…" />
+        </section>
       </div>
     </Card>
   );
@@ -1852,8 +1894,10 @@ function StepProfile({
       helper: "Complete these required details so Scholar-E can personalize your profile and improve opportunity matching.",
       required: true,
       complete: aboutYouComplete,
+      requiredCompleted: aboutYouCompletion.completed,
+      requiredTotal: aboutYouCompletion.total,
       content: (
-        <div className="space-y-6">
+        <div className="space-y-4">
           {profileSummaryCard}
           {aboutYouCard}
         </div>
@@ -1864,6 +1908,8 @@ function StepProfile({
       helper: "Review your education information to ensure it is complete and accurate.",
       required: true,
       complete: hasEducationLevel,
+      requiredCompleted: hasEducationLevel ? 1 : 0,
+      requiredTotal: 1,
       content: educationCard,
     },
     {
@@ -1871,7 +1917,7 @@ function StepProfile({
       helper: "Review your experiences and add or update anything that best represents your background.",
       required: false,
       complete: true,
-      content: <div className="space-y-6">{experienceSection}</div>,
+      content: <div className="space-y-4">{experienceSection}</div>,
     },
     {
       title: "Skills & Activities",
@@ -2059,6 +2105,8 @@ type GuidedProfileSetupStep = {
   helper: string;
   required: boolean;
   complete: boolean;
+  requiredCompleted?: number;
+  requiredTotal?: number;
   content: React.ReactNode;
 };
 
@@ -2089,6 +2137,14 @@ function GuidedProfileSetup({
 }) {
   const step = steps[currentStep] ?? steps[0];
   const isFinalStep = currentStep === steps.length - 1;
+  const overallProgress = ((currentStep + 1) / steps.length) * 100;
+  const requiredCompleted = Math.min(step.requiredCompleted ?? 0, step.requiredTotal ?? 0);
+  const requiredTotal = step.requiredTotal ?? 0;
+  const requiredProgressText = requiredTotal > 0
+    ? requiredCompleted === requiredTotal
+      ? "Required information complete"
+      : `${requiredCompleted} of ${requiredTotal} required fields completed`
+    : null;
   const continueLabel = isFinalStep
     ? "Finish Profile Setup"
     : currentOptional
@@ -2097,22 +2153,32 @@ function GuidedProfileSetup({
 
   return (
     <section className="mx-auto max-w-6xl" aria-labelledby="profile-setup-title">
-      <div className="mb-6 rounded-2xl border border-border bg-card p-5 md:p-6">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <div className="text-xs uppercase tracking-widest text-muted-foreground">Student Profile</div>
-            <h1 id="profile-setup-title" className="mt-2 font-display text-3xl font-semibold">
-              Complete Your Profile
-            </h1>
-            <p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted-foreground">
-              Review the information below. Some details may already be filled from your resume. You can edit everything now or later.
-            </p>
-          </div>
-          <div className="rounded-full bg-secondary px-3 py-1.5 text-xs font-medium text-secondary-foreground">
+      <header className="mb-3 border-b border-border/60 pb-3">
+        <div className="flex items-center justify-between gap-4">
+          <h1 id="profile-setup-title" className="font-display text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
+            Complete Your Profile
+          </h1>
+          <div className="shrink-0 whitespace-nowrap text-xs font-medium text-muted-foreground">
             Step {currentStep + 1} of {steps.length}
           </div>
         </div>
-        <div className="mt-5 flex gap-2 overflow-x-auto pb-1 md:hidden" aria-label="Profile setup progress">
+        <p className="mt-1 text-sm leading-5 text-muted-foreground">
+          Review and complete your information before continuing.
+        </p>
+        <div
+          className="mt-2 h-1 overflow-hidden rounded-full bg-secondary"
+          role="progressbar"
+          aria-label="Overall profile setup progress"
+          aria-valuemin={1}
+          aria-valuemax={steps.length}
+          aria-valuenow={currentStep + 1}
+        >
+          <div
+            className="h-full rounded-full bg-primary transition-[width] duration-200 motion-reduce:transition-none"
+            style={{ width: `${overallProgress}%` }}
+          />
+        </div>
+        <div className="mt-3 grid grid-cols-5 gap-1 md:hidden" aria-label="Profile setup progress">
           {steps.map((item, index) => (
             <button
               key={item.title}
@@ -2121,23 +2187,24 @@ function GuidedProfileSetup({
               disabled={index > highestStep}
               aria-current={index === currentStep ? "step" : undefined}
               aria-label={`${item.title}, ${index === currentStep ? "current" : index < highestStep ? "completed" : "upcoming"}`}
-              className={`min-w-36 rounded-full border px-3 py-1.5 text-left text-xs font-medium ${
+              className={`min-w-0 border-b-2 px-1 py-1.5 text-center text-xs font-medium transition-colors ${
                 index === currentStep
-                  ? "border-primary bg-primary text-primary-foreground"
+                  ? "border-primary text-primary"
                   : index <= highestStep
-                    ? "border-border bg-background text-foreground"
-                    : "border-border bg-muted/50 text-muted-foreground opacity-60"
+                    ? "border-transparent text-foreground"
+                    : "border-transparent text-muted-foreground opacity-50"
               }`}
             >
-              {index < highestStep && index !== currentStep ? "✓" : index + 1}. {item.title}
+              <span className="block">{index < highestStep && index !== currentStep ? "✓" : index + 1}</span>
+              <span className="mt-0.5 hidden truncate text-[10px] font-normal sm:block">{item.title}</span>
             </button>
           ))}
         </div>
-      </div>
+      </header>
 
-      <div className="grid gap-6 md:grid-cols-[240px_minmax(0,1fr)]">
+      <div className="grid gap-4 md:grid-cols-[192px_minmax(0,1fr)] lg:grid-cols-[200px_minmax(0,1fr)]">
         <aside className="hidden md:block">
-          <nav className="sticky top-24 rounded-2xl border border-border bg-card p-3" aria-label="Profile setup steps">
+          <nav className="sticky top-20 space-y-px border-r border-border/60 pr-3" aria-label="Profile setup steps">
             {steps.map((item, index) => {
               const isActive = index === currentStep;
               const isReachable = index <= highestStep;
@@ -2149,27 +2216,27 @@ function GuidedProfileSetup({
                   onClick={() => onStepSelect(index)}
                   disabled={!isReachable}
                   aria-label={`${item.title}, ${isActive ? "current" : isComplete ? "completed" : "upcoming"}, ${item.required ? "required" : "optional"}`}
-                  className={`mb-1 flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-sm transition-colors ${
+                  className={`flex w-full items-center gap-2 border-l-2 px-2 py-1.5 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 ${
                     isActive
-                      ? "bg-primary text-primary-foreground"
+                      ? "border-primary bg-primary/[0.035] text-foreground"
                       : isReachable
-                        ? "hover:bg-accent"
-                        : "cursor-not-allowed text-muted-foreground opacity-60"
+                        ? "border-transparent text-foreground/80 hover:bg-accent/45 hover:text-foreground"
+                        : "cursor-not-allowed border-transparent text-muted-foreground opacity-60"
                   }`}
                   aria-current={isActive ? "step" : undefined}
                 >
-                  <span className={`grid size-6 shrink-0 place-items-center rounded-full text-[11px] ${
+                  <span className={`grid size-5 shrink-0 place-items-center rounded-full text-[10px] font-semibold ${
                     isActive
-                      ? "bg-primary-foreground text-primary"
+                      ? "bg-primary text-primary-foreground"
                       : isComplete
                         ? "bg-success/20 text-success"
                         : "bg-secondary text-secondary-foreground"
                   }`}>
                     {isComplete ? "✓" : index + 1}
                   </span>
-                  <span>
-                    <span className="block font-medium">{item.title}</span>
-                    <span className="block text-[11px] opacity-75">{item.required ? "Required" : "Optional"}</span>
+                  <span className="min-w-0">
+                    <span className="block truncate text-[13px] font-medium leading-4">{item.title}</span>
+                    <span className="block text-[10px] leading-4 text-muted-foreground">{item.required ? "Required" : "Optional"}</span>
                   </span>
                 </button>
               );
@@ -2177,27 +2244,37 @@ function GuidedProfileSetup({
           </nav>
         </aside>
 
-        <div className="min-w-0 rounded-2xl border border-border bg-card p-5 md:p-6">
+        <div className="min-w-0 border-t border-border/60 bg-card px-4 py-3 md:border-t-0 md:px-5 md:py-2">
           <div className="sr-only" aria-live="polite">
             Step {currentStep + 1} of {steps.length}: {step.title}
           </div>
-          <div className="mb-5 border-b border-border pb-4">
+          <div className="mb-3">
             <div className="flex flex-wrap items-center gap-2">
               <h2
                 ref={headingRef}
                 tabIndex={-1}
-                className="font-display text-2xl font-semibold outline-none"
+                className="text-xl font-semibold tracking-tight outline-none"
               >
                 {step.title}
               </h2>
-              <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
-                step.required ? "bg-warning/20 text-foreground" : "bg-secondary text-secondary-foreground"
-              }`}>
-                {step.required ? "Required" : "Optional"}
+              <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                {step.required ? "Required information" : "Optional"}
               </span>
               {importedBadge}
             </div>
-            <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{step.helper}</p>
+            <p className="mt-1 text-sm leading-5 text-muted-foreground">{step.helper}</p>
+            {requiredProgressText && (
+              <p
+                className={`mt-1.5 flex items-center gap-1.5 text-xs font-medium ${
+                  currentComplete ? "text-success" : "text-muted-foreground"
+                }`}
+                role="status"
+                aria-live="polite"
+              >
+                {currentComplete && <Check className="size-3.5" aria-hidden="true" />}
+                {requiredProgressText}
+              </p>
+            )}
             {showValidation && !currentComplete && (
               <p className="mt-3 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm font-medium text-destructive">
                 Complete the required fields in this step before continuing.
@@ -2205,16 +2282,19 @@ function GuidedProfileSetup({
             )}
           </div>
 
-          <div className="animate-in fade-in slide-in-from-bottom-1 duration-200 motion-reduce:animate-none">
+          <div
+            key={step.title}
+            className="animate-in fade-in slide-in-from-bottom-1 duration-150 motion-reduce:animate-none"
+          >
             {step.content}
           </div>
 
-          <div className="mt-8 flex flex-col-reverse gap-3 border-t border-border pt-5 sm:flex-row sm:items-center sm:justify-between">
+          <div className="mt-5 flex flex-col-reverse gap-3 border-t border-border/50 pt-3 sm:flex-row sm:items-center sm:justify-between">
             <button
               type="button"
               onClick={onBack}
               disabled={currentStep === 0}
-              className="rounded-full border border-border px-5 py-2 text-sm font-medium hover:bg-accent disabled:opacity-40"
+              className="min-h-9 rounded-md border border-transparent px-4 py-2 text-sm font-medium text-muted-foreground transition-colors hover:border-border hover:bg-accent/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 disabled:cursor-not-allowed disabled:opacity-40"
             >
               Back
             </button>
@@ -2222,7 +2302,7 @@ function GuidedProfileSetup({
               type="button"
               onClick={onContinue}
               disabled={!currentComplete && !currentOptional}
-              className="rounded-full bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+              className="min-h-9 rounded-md border border-primary bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-[background-color,border-color,box-shadow,opacity] duration-150 hover:bg-primary/90 hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:border-border disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100 disabled:shadow-none"
             >
               {continueLabel}
             </button>
@@ -2238,21 +2318,28 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   return <div className="text-xs uppercase tracking-widest text-muted-foreground">{children}</div>;
 }
 function Input({
-  label, value, onChange, placeholder, className = "", type = "text", invalid = false,
-}: { label: string; value: string; onChange: (v: string) => void; placeholder?: string; className?: string; type?: string; invalid?: boolean }) {
+  label, value, onChange, placeholder, className = "", type = "text", invalid = false, errorMessage,
+}: { label: string; value: string; onChange: (v: string) => void; placeholder?: string; className?: string; type?: string; invalid?: boolean; errorMessage?: string }) {
+  const errorId = useId();
   return (
     <label className={`block ${className}`}>
-      <span className="text-xs font-medium text-muted-foreground">{label}</span>
+      <span className="text-xs font-medium text-foreground/75">{label}</span>
       <input
         type={type}
         value={value}
         placeholder={placeholder}
         onChange={(e) => onChange(e.target.value)}
-        aria-invalid={invalid}
-        className={`mt-1 w-full rounded-lg border bg-background px-3 py-2 text-sm ${
-          invalid ? "border-destructive ring-2 ring-destructive/20" : "border-border"
+        aria-invalid={invalid || undefined}
+        aria-describedby={invalid ? errorId : undefined}
+        className={`mt-1 w-full rounded-md border bg-card px-3 py-1.5 text-sm text-foreground outline-none transition-[border-color,box-shadow,background-color] placeholder:text-muted-foreground/60 focus:border-primary/70 focus:ring-2 focus:ring-primary/15 ${
+          invalid ? "border-destructive ring-2 ring-destructive/15" : "border-border"
         }`}
       />
+      {invalid && (
+        <span id={errorId} className="mt-1 block text-xs font-medium text-destructive">
+          {errorMessage ?? `${label} is required.`}
+        </span>
+      )}
     </label>
   );
 }
@@ -2261,34 +2348,41 @@ function Textarea({
 }: { label: string; value: string; onChange: (v: string) => void; placeholder?: string; rows?: number; className?: string }) {
   return (
     <label className={`block ${className}`}>
-      <span className="text-xs font-medium text-muted-foreground">{label}</span>
+      <span className="text-xs font-medium text-foreground/75">{label}</span>
       <textarea
         value={value}
         rows={rows}
         placeholder={placeholder}
         onChange={(e) => onChange(e.target.value)}
-        className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm leading-relaxed"
+        className="mt-1 w-full rounded-md border border-border bg-card px-3 py-1.5 text-sm leading-relaxed text-foreground outline-none transition-[border-color,box-shadow,background-color] placeholder:text-muted-foreground/60 focus:border-primary/70 focus:ring-2 focus:ring-primary/15"
       />
     </label>
   );
 }
 function Select({
-  label, value, onChange, options, className = "", invalid = false,
-}: { label: string; value: string; onChange: (v: string) => void; options: string[]; className?: string; invalid?: boolean }) {
+  label, value, onChange, options, className = "", invalid = false, errorMessage,
+}: { label: string; value: string; onChange: (v: string) => void; options: string[]; className?: string; invalid?: boolean; errorMessage?: string }) {
+  const errorId = useId();
   return (
     <label className={`block ${className}`}>
-      <span className="text-xs font-medium text-muted-foreground">{label}</span>
+      <span className="text-xs font-medium text-foreground/75">{label}</span>
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        aria-invalid={invalid}
-        className={`mt-1 w-full rounded-lg border bg-background px-3 py-2 text-sm ${
-          invalid ? "border-destructive ring-2 ring-destructive/20" : "border-border"
+        aria-invalid={invalid || undefined}
+        aria-describedby={invalid ? errorId : undefined}
+        className={`mt-1 w-full rounded-md border bg-card px-3 py-1.5 text-sm text-foreground outline-none transition-[border-color,box-shadow,background-color] focus:border-primary/70 focus:ring-2 focus:ring-primary/15 ${
+          invalid ? "border-destructive ring-2 ring-destructive/15" : "border-border"
         }`}
       >
         <option value="">Select…</option>
         {options.map((o) => <option key={o} value={o}>{o}</option>)}
       </select>
+      {invalid && (
+        <span id={errorId} className="mt-1 block text-xs font-medium text-destructive">
+          {errorMessage ?? `${label} is required.`}
+        </span>
+      )}
     </label>
   );
 }
@@ -2679,6 +2773,117 @@ function inferMajorField(value?: string) {
   return "";
 }
 
+function compactSummary(value?: string, maxLength = 140) {
+  const text = value?.replace(/\s+/g, " ").trim() ?? "";
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength).trimEnd()}…`;
+}
+
+function EditableProfileRecord({
+  title,
+  subtitle,
+  details,
+  preview,
+  status,
+  icon,
+  expanded,
+  collapseDisabled = false,
+  onEdit,
+  onCollapse,
+  onRemove,
+  children,
+}: {
+  title: string;
+  subtitle?: string;
+  details?: string[];
+  preview?: string;
+  status?: React.ReactNode;
+  icon: React.ReactNode;
+  expanded: boolean;
+  collapseDisabled?: boolean;
+  onEdit: () => void;
+  onCollapse: () => void;
+  onRemove: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <article className={PROFILE_ENTRY_CLASS}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-start gap-2.5">
+          <span className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-md bg-primary/[0.07] text-primary" aria-hidden="true">
+            {icon}
+          </span>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <h3 className="truncate text-sm font-semibold text-foreground">{title}</h3>
+              {status}
+            </div>
+            {subtitle && <p className="mt-0.5 text-xs text-muted-foreground">{subtitle}</p>}
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
+          {expanded ? (
+            <button
+              type="button"
+              onClick={onCollapse}
+              disabled={collapseDisabled}
+              aria-expanded="true"
+              title={collapseDisabled ? "Complete the required fields before closing this record." : undefined}
+              className="rounded px-2 py-1 text-xs font-medium text-primary transition-colors hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 disabled:cursor-not-allowed disabled:text-muted-foreground disabled:hover:bg-transparent"
+            >
+              Done
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={onEdit}
+              aria-expanded="false"
+              className="rounded px-2 py-1 text-xs font-medium text-primary transition-colors hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
+            >
+              Edit
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onRemove}
+            className="rounded px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
+          >
+            Remove
+          </button>
+        </div>
+      </div>
+
+      {expanded ? (
+        <div className="mt-4 border-t border-border/60 pt-4 animate-in fade-in slide-in-from-top-1 duration-150 motion-reduce:animate-none">
+          {children}
+        </div>
+      ) : (
+        <div className="mt-3 pl-9">
+          {!!details?.length && (
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-foreground/75">
+              {details.map((detail) => <span key={detail}>{detail}</span>)}
+            </div>
+          )}
+          {preview && <p className="mt-1.5 text-xs leading-5 text-muted-foreground">{preview}</p>}
+        </div>
+      )}
+    </article>
+  );
+}
+
+function initialExpandedEducationIds(
+  entries: EducationHistoryEntry[],
+  showMissingEducationLevel: boolean,
+) {
+  if (entries.length <= 3) return new Set(entries.map((entry) => entry.id));
+
+  return new Set(
+    entries
+      .filter((entry) => entry.isCurrent || (showMissingEducationLevel && !entry.educationLevel?.trim()))
+      .map((entry) => entry.id),
+  );
+}
+
 function EducationHistorySection({
   entries,
   onAdd,
@@ -2687,11 +2892,57 @@ function EducationHistorySection({
   showMissingEducationLevel = false,
 }: {
   entries: EducationHistoryEntry[];
-  onAdd: () => void;
+  onAdd: () => string;
   onRemove: (id: string) => void;
   onChange: (id: string, patch: Partial<EducationHistoryEntry>) => void;
   showMissingEducationLevel?: boolean;
 }) {
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(
+    () => initialExpandedEducationIds(entries, showMissingEducationLevel),
+  );
+  const knownEducationIdsRef = useRef(new Set(entries.map((entry) => entry.id)));
+
+  useEffect(() => {
+    const existingIds = new Set(entries.map((entry) => entry.id));
+    const newlySeenEntries = entries.filter((entry) => !knownEducationIdsRef.current.has(entry.id));
+    knownEducationIdsRef.current = existingIds;
+
+    setExpandedIds((current) => {
+      const next = new Set([...current].filter((id) => existingIds.has(id)));
+
+      newlySeenEntries.forEach((entry) => {
+        if (entries.length <= 3 || entry.isCurrent) next.add(entry.id);
+      });
+
+      if (showMissingEducationLevel) {
+        entries.forEach((entry) => {
+          if (!entry.educationLevel?.trim()) next.add(entry.id);
+        });
+      }
+
+      if (next.size === current.size && [...next].every((id) => current.has(id))) return current;
+      return next;
+    });
+  }, [entries, showMissingEducationLevel]);
+
+  function editEntry(id: string) {
+    setExpandedIds((current) => new Set(current).add(id));
+  }
+
+  function collapseEntry(entry: EducationHistoryEntry) {
+    if (showMissingEducationLevel && !entry.educationLevel?.trim()) return;
+    setExpandedIds((current) => {
+      const next = new Set(current);
+      next.delete(entry.id);
+      return next;
+    });
+  }
+
+  function addEntry() {
+    const id = onAdd();
+    setExpandedIds((current) => new Set(current).add(id));
+  }
+
   return (
     <Card className={PROFILE_SECTION_CLASS}>
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -2701,7 +2952,7 @@ function EducationHistorySection({
             Review every school or program parsed from your resume in one place.
           </p>
         </div>
-        <button type="button" onClick={onAdd} className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent">
+        <button type="button" onClick={addEntry} className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:border-primary/30 hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30">
           + Add education
         </button>
       </div>
@@ -2718,41 +2969,126 @@ function EducationHistorySection({
             No education entries yet. Add an education entry or upload a resume to autofill this section.
           </div>
         )}
-        {entries.map((entry, index) => (
-          <div key={entry.id} className={PROFILE_ENTRY_CLASS}>
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <div className="text-sm font-medium">Education {index + 1}</div>
-              <button type="button" onClick={() => onRemove(entry.id)} className="text-xs text-muted-foreground hover:text-destructive">
-                Remove
-              </button>
-            </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Select
-                label="Education level"
-                value={entry.educationLevel ?? ""}
-                onChange={(value) => onChange(entry.id, { educationLevel: value })}
-                options={[
-                  "High School",
-                  "Associate Degree",
-                  "Bachelor's Degree",
-                  "Master's Degree",
-                  "Doctoral Degree",
-                  "Professional Degree (JD, MD, DDS, etc.)",
-                  "Other",
-                ]}
-                invalid={showMissingEducationLevel && !entry.educationLevel?.trim()}
-              />
-              <Input label="Institution" value={entry.institution ?? ""} onChange={(value) => onChange(entry.id, { institution: value })} />
-              <Input label="Major / field" value={entry.majorField ?? ""} onChange={(value) => onChange(entry.id, { majorField: value })} />
-              <Input label="GPA" value={entry.gpa ?? ""} onChange={(value) => onChange(entry.id, { gpa: value })} placeholder="3.85" />
-              <Input label="Start date" value={entry.startDate ?? ""} onChange={(value) => onChange(entry.id, { startDate: value })} placeholder="August 2022" />
-              <Input label="End date / expected graduation" value={entry.endDate ?? ""} onChange={(value) => onChange(entry.id, { endDate: value })} placeholder="May 2026" />
-            </div>
-          </div>
-        ))}
+        {entries.map((entry, index) => {
+          const expanded = expandedIds.has(entry.id);
+          const title = entry.institution?.trim()
+            || entry.degreeProgram?.trim()
+            || entry.educationLevel?.trim()
+            || `Education ${index + 1}`;
+          const subtitle = [entry.educationLevel, entry.majorField].filter(Boolean).join(" · ");
+          const dates = entry.isCurrent
+            ? entry.endDate?.trim() ? `Expected ${entry.endDate}` : "Current education"
+            : [entry.startDate, entry.endDate].filter(Boolean).join(" – ");
+          const details = [dates, entry.gpa?.trim() ? `GPA ${entry.gpa}` : ""].filter(Boolean);
+
+          return (
+            <EditableProfileRecord
+              key={entry.id}
+              title={title}
+              subtitle={subtitle}
+              details={details}
+              status={entry.isCurrent ? (
+                <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-primary">
+                  <Check className="size-3" aria-hidden="true" /> Current
+                </span>
+              ) : undefined}
+              icon={<GraduationCap className="size-4" />}
+              expanded={expanded}
+              collapseDisabled={showMissingEducationLevel && !entry.educationLevel?.trim()}
+              onEdit={() => editEntry(entry.id)}
+              onCollapse={() => collapseEntry(entry)}
+              onRemove={() => onRemove(entry.id)}
+            >
+              <div className="space-y-4">
+                <fieldset>
+                  <legend className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-foreground/60">Program</legend>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <Select
+                      label="Education level"
+                      value={entry.educationLevel ?? ""}
+                      onChange={(value) => onChange(entry.id, { educationLevel: value })}
+                      options={[
+                        "High School",
+                        "Associate Degree",
+                        "Bachelor's Degree",
+                        "Master's Degree",
+                        "Doctoral Degree",
+                        "Professional Degree (JD, MD, DDS, etc.)",
+                        "Other",
+                      ]}
+                      invalid={showMissingEducationLevel && !entry.educationLevel?.trim()}
+                      errorMessage="Select an education level."
+                    />
+                    <Input label="Institution" value={entry.institution ?? ""} onChange={(value) => onChange(entry.id, { institution: value })} />
+                  </div>
+                </fieldset>
+                <fieldset>
+                  <legend className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-foreground/60">Academic details</legend>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <Input label="Major / field" value={entry.majorField ?? ""} onChange={(value) => onChange(entry.id, { majorField: value })} />
+                    <Input label="GPA" value={entry.gpa ?? ""} onChange={(value) => onChange(entry.id, { gpa: value })} placeholder="3.85" />
+                  </div>
+                </fieldset>
+                <fieldset>
+                  <legend className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-foreground/60">Dates</legend>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <Input label="Start date" value={entry.startDate ?? ""} onChange={(value) => onChange(entry.id, { startDate: value })} placeholder="August 2022" />
+                    <Input label="End date / expected graduation" value={entry.endDate ?? ""} onChange={(value) => onChange(entry.id, { endDate: value })} placeholder="May 2026" />
+                  </div>
+                </fieldset>
+              </div>
+            </EditableProfileRecord>
+          );
+        })}
       </div>
     </Card>
   );
+}
+
+function initialExpandedExperienceIds(entries: Array<{ id: string }>) {
+  const initiallyVisible = entries.length <= 3 ? entries : entries.slice(0, 1);
+  return new Set(initiallyVisible.map((entry) => entry.id));
+}
+
+function useExpandedExperienceIds(entries: Array<{ id: string }>) {
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(
+    () => initialExpandedExperienceIds(entries),
+  );
+  const knownIdsRef = useRef(new Set(entries.map((entry) => entry.id)));
+
+  useEffect(() => {
+    const previousKnownCount = knownIdsRef.current.size;
+    const existingIds = new Set(entries.map((entry) => entry.id));
+    const newlySeenEntries = entries.filter((entry) => !knownIdsRef.current.has(entry.id));
+    knownIdsRef.current = existingIds;
+
+    setExpandedIds((current) => {
+      const next = new Set([...current].filter((id) => existingIds.has(id)));
+
+      if (entries.length <= 3) {
+        newlySeenEntries.forEach((entry) => next.add(entry.id));
+      } else if (previousKnownCount === 0 && next.size === 0 && entries[0]) {
+        next.add(entries[0].id);
+      }
+
+      if (next.size === current.size && [...next].every((id) => current.has(id))) return current;
+      return next;
+    });
+  }, [entries]);
+
+  function expand(id: string) {
+    setExpandedIds((current) => new Set(current).add(id));
+  }
+
+  function collapse(id: string) {
+    setExpandedIds((current) => {
+      const next = new Set(current);
+      next.delete(id);
+      return next;
+    });
+  }
+
+  return { expandedIds, expand, collapse };
 }
 
 function ResearchExperienceSection({
@@ -2766,10 +3102,12 @@ function ResearchExperienceSection({
   entries: ResearchExperienceEntry[];
   isOpen: boolean;
   onToggle: () => void;
-  onAdd: () => void;
+  onAdd: () => string;
   onRemove: (id: string) => void;
   onChange: (id: string, patch: Partial<ResearchExperienceEntry>) => void;
 }) {
+  const { expandedIds, expand, collapse } = useExpandedExperienceIds(entries);
+
   return (
     <Card className={PROFILE_SECTION_CLASS}>
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -2780,10 +3118,10 @@ function ResearchExperienceSection({
           </p>
         </button>
         <div className="flex gap-2">
-          <button type="button" onClick={onToggle} className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent">
+          <button type="button" onClick={onToggle} aria-expanded={isOpen} className="rounded-md border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30">
             {isOpen ? "Collapse" : "Expand"}
           </button>
-          <button type="button" onClick={onAdd} className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent">
+          <button type="button" onClick={() => expand(onAdd())} className="rounded-md border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:border-primary/30 hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30">
             + Add research
           </button>
         </div>
@@ -2796,25 +3134,36 @@ function ResearchExperienceSection({
               Optional for high school and undergraduate profiles. Add research details if they strengthen your scholarship fit.
             </div>
           )}
-          {entries.map((entry, index) => (
-            <div key={entry.id} className={PROFILE_ENTRY_CLASS}>
-              <div className="mb-3 flex items-center justify-between gap-3">
-                <div className="text-sm font-medium">Academic / Research Entry {index + 1}</div>
-                <button type="button" onClick={() => onRemove(entry.id)} className="text-xs text-muted-foreground hover:text-destructive">
-                  Remove
-                </button>
-              </div>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <Textarea label="Research areas / concentration" value={entry.researchAreas ?? ""} onChange={(value) => onChange(entry.id, { researchAreas: value })} />
-                <Textarea label="Research projects" value={entry.researchProjects ?? ""} onChange={(value) => onChange(entry.id, { researchProjects: value })} />
-                <Textarea label="Publications" value={entry.publications ?? ""} onChange={(value) => onChange(entry.id, { publications: value })} />
-                <Textarea label="Conferences / presentations / posters" value={entry.conferences ?? ""} onChange={(value) => onChange(entry.id, { conferences: value })} />
-                <Input label="Thesis / dissertation status" value={entry.thesisStatus ?? ""} onChange={(value) => onChange(entry.id, { thesisStatus: value })} />
-                <Input label="Assistantship / fellowship status" value={entry.assistantshipStatus ?? ""} onChange={(value) => onChange(entry.id, { assistantshipStatus: value })} />
-                <Input label="Advisor / lab / department" value={entry.advisorLabDepartment ?? ""} onChange={(value) => onChange(entry.id, { advisorLabDepartment: value })} className="sm:col-span-2" />
-              </div>
-            </div>
-          ))}
+          {entries.map((entry, index) => {
+            const title = compactSummary(entry.researchAreas, 70)
+              || compactSummary(entry.researchProjects, 70)
+              || `Research entry ${index + 1}`;
+            const subtitle = [entry.advisorLabDepartment, entry.thesisStatus].filter(Boolean).join(" · ");
+            const preview = compactSummary(entry.researchProjects || entry.publications);
+            return (
+              <EditableProfileRecord
+                key={entry.id}
+                title={title}
+                subtitle={subtitle}
+                preview={preview}
+                icon={<FlaskConical className="size-4" />}
+                expanded={expandedIds.has(entry.id)}
+                onEdit={() => expand(entry.id)}
+                onCollapse={() => collapse(entry.id)}
+                onRemove={() => onRemove(entry.id)}
+              >
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Textarea label="Research areas / concentration" value={entry.researchAreas ?? ""} onChange={(value) => onChange(entry.id, { researchAreas: value })} />
+                  <Textarea label="Research projects" value={entry.researchProjects ?? ""} onChange={(value) => onChange(entry.id, { researchProjects: value })} />
+                  <Textarea label="Publications" value={entry.publications ?? ""} onChange={(value) => onChange(entry.id, { publications: value })} />
+                  <Textarea label="Conferences / presentations / posters" value={entry.conferences ?? ""} onChange={(value) => onChange(entry.id, { conferences: value })} />
+                  <Input label="Thesis / dissertation status" value={entry.thesisStatus ?? ""} onChange={(value) => onChange(entry.id, { thesisStatus: value })} />
+                  <Input label="Assistantship / fellowship status" value={entry.assistantshipStatus ?? ""} onChange={(value) => onChange(entry.id, { assistantshipStatus: value })} />
+                  <Input label="Advisor / lab / department" value={entry.advisorLabDepartment ?? ""} onChange={(value) => onChange(entry.id, { advisorLabDepartment: value })} className="sm:col-span-2" />
+                </div>
+              </EditableProfileRecord>
+            );
+          })}
         </div>
       )}
     </Card>
@@ -2828,10 +3177,12 @@ function WorkExperienceSection({
   onChange,
 }: {
   entries: WorkExperienceEntry[];
-  onAdd: () => void;
+  onAdd: () => string;
   onRemove: (id: string) => void;
   onChange: (id: string, patch: Partial<WorkExperienceEntry>) => void;
 }) {
+  const { expandedIds, expand, collapse } = useExpandedExperienceIds(entries);
+
   return (
     <Card className={PROFILE_SECTION_CLASS}>
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -2841,7 +3192,7 @@ function WorkExperienceSection({
             Work, internships, research assistantships, teaching assistantships, and leadership experience.
           </p>
         </div>
-        <button type="button" onClick={onAdd} className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent">
+        <button type="button" onClick={() => expand(onAdd())} className="rounded-md border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:border-primary/30 hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30">
           + Add experience
         </button>
       </div>
@@ -2849,33 +3200,43 @@ function WorkExperienceSection({
       <div className="mt-4 space-y-3">
         {entries.length === 0 && (
           <div className="rounded-lg border border-dashed border-border p-3 text-sm text-muted-foreground">
-            No experience entries yet. Add roles manually, or upload a resume to extract experience from it.
+            No experience added yet. Add work, internship, research, or project experience when relevant.
           </div>
         )}
-        {entries.map((entry, index) => (
-          <div key={entry.id} className={PROFILE_ENTRY_CLASS}>
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <div className="text-sm font-medium">Experience {index + 1}</div>
-              <button type="button" onClick={() => onRemove(entry.id)} className="text-xs text-muted-foreground hover:text-destructive">
-                Remove
-              </button>
-            </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Input label="Role / title" value={entry.roleTitle ?? ""} onChange={(value) => onChange(entry.id, { roleTitle: value })} />
-              <Input label="Organization / company" value={entry.organization ?? ""} onChange={(value) => onChange(entry.id, { organization: value })} />
-              <Select
-                label="Experience type"
-                value={entry.experienceType ?? ""}
-                onChange={(value) => onChange(entry.id, { experienceType: value })}
-                options={["Work", "Internship", "Research Assistant", "Teaching Assistant", "Leadership", "Other"]}
-              />
-              <Input label="Start date" value={entry.startDate ?? ""} onChange={(value) => onChange(entry.id, { startDate: value })} />
-              <Input label="End date" value={entry.endDate ?? ""} onChange={(value) => onChange(entry.id, { endDate: value })} />
-              <Input label="Skills / technologies" value={entry.skillsTechnologies ?? ""} onChange={(value) => onChange(entry.id, { skillsTechnologies: value })} />
-              <Textarea label="Description / responsibilities" value={entry.description ?? ""} onChange={(value) => onChange(entry.id, { description: value })} className="sm:col-span-2" />
-            </div>
-          </div>
-        ))}
+        {entries.map((entry, index) => {
+          const title = entry.roleTitle?.trim() || entry.organization?.trim() || `Experience ${index + 1}`;
+          const subtitle = [entry.organization, entry.experienceType].filter((value) => value && value !== title).join(" · ");
+          const dates = [entry.startDate, entry.endDate].filter(Boolean).join(" – ");
+          return (
+            <EditableProfileRecord
+              key={entry.id}
+              title={title}
+              subtitle={subtitle}
+              details={[dates, entry.skillsTechnologies?.trim() || ""].filter(Boolean)}
+              preview={compactSummary(entry.description)}
+              icon={<BriefcaseBusiness className="size-4" />}
+              expanded={expandedIds.has(entry.id)}
+              onEdit={() => expand(entry.id)}
+              onCollapse={() => collapse(entry.id)}
+              onRemove={() => onRemove(entry.id)}
+            >
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Input label="Role / title" value={entry.roleTitle ?? ""} onChange={(value) => onChange(entry.id, { roleTitle: value })} />
+                <Input label="Organization / company" value={entry.organization ?? ""} onChange={(value) => onChange(entry.id, { organization: value })} />
+                <Select
+                  label="Experience type"
+                  value={entry.experienceType ?? ""}
+                  onChange={(value) => onChange(entry.id, { experienceType: value })}
+                  options={["Work", "Internship", "Research Assistant", "Teaching Assistant", "Leadership", "Other"]}
+                />
+                <Input label="Start date" value={entry.startDate ?? ""} onChange={(value) => onChange(entry.id, { startDate: value })} />
+                <Input label="End date" value={entry.endDate ?? ""} onChange={(value) => onChange(entry.id, { endDate: value })} />
+                <Input label="Skills / technologies" value={entry.skillsTechnologies ?? ""} onChange={(value) => onChange(entry.id, { skillsTechnologies: value })} />
+                <Textarea label="Description / responsibilities" value={entry.description ?? ""} onChange={(value) => onChange(entry.id, { description: value })} className="sm:col-span-2" />
+              </div>
+            </EditableProfileRecord>
+          );
+        })}
       </div>
     </Card>
   );
@@ -2990,70 +3351,47 @@ function StepDiscovery({
 }) {
   const { user, updateProfile } = useUser();
   const wiki = user?.wikiDiscovery;
-  const [loading, setLoading] = useState(false);
-  // Always land on the search setup; earlier results stay one click away.
-  const [showResults, setShowResults] = useState(false);
-  const [status, setStatus] = useState<string | null>(null);
-  const [focus, setFocus] = useState(user?.discoveryFocus ?? "");
-  const [intentOptions, setIntentOptions] = useState(user?.discoveryIntentOptions ?? []);
-  const [platformDefaults, setPlatformDefaults] = useState(user?.discoveryPlatformDefaults ?? []);
-  const [bootstrapSummary, setBootstrapSummary] = useState<Record<string, string>>({});
-  const [bootstrapLoading, setBootstrapLoading] = useState(!user?.discoveryIntentOptions?.length);
-  const [bootstrapError, setBootstrapError] = useState("");
-  const [selectedIntentIds, setSelectedIntentIds] = useState<string[]>(
-    () => user?.discoveryIntents?.map((intent) => intent.id) ?? [],
+  const [loading, setLoading] = useState(!wiki);
+  const [showResults, setShowResults] = useState(!!wiki);
+  const [status, setStatus] = useState<string | null>(
+    wiki ? null : "Reviewing your verified profile...",
   );
+  const [searchError, setSearchError] = useState("");
+  const discoveryRequestStartedRef = useRef(false);
   const [bringValue, setBringValue] = useState("");
+  const [bringError, setBringError] = useState("");
   const [platformContext, setPlatformContext] = useState("");
-  const [showBring, setShowBring] = useState(false);
 
   useEffect(() => {
-    let active = true;
-    const studentProfile = buildWikiPayload(user).student_profile;
-    getScholarshipDiscoveryBootstrap(studentProfile)
-      .then((result) => {
-        if (!active) return;
-        setIntentOptions(result.intent_options ?? []);
-        setPlatformDefaults(result.platform_defaults ?? []);
-        setBootstrapSummary(result.profile_summary ?? {});
-        setBootstrapError("");
-        updateProfile({
-          discoveryIntentOptions: result.intent_options ?? [],
-          discoveryPlatformDefaults: result.platform_defaults ?? [],
-        });
-      })
-      .catch(() => {
-        if (!active) return;
-        setBootstrapError("We couldn’t prepare profile suggestions. You can still describe what you want below.");
-      })
-      .finally(() => {
-        if (active) setBootstrapLoading(false);
-      });
-    return () => { active = false; };
-    // Step 2 remounts after profile updates; bootstrap once per visit.
+    if (wiki || discoveryRequestStartedRef.current) return;
+    discoveryRequestStartedRef.current = true;
+    void refreshWiki();
+    // Discovery starts once when this page opens without cached results.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function refreshWiki() {
     setLoading(true);
+    setShowResults(false);
+    setSearchError("");
     setStatus("Looking for scholarships related to your profile...");
     const progressTimer = window.setTimeout(
       () => setStatus("Checking trusted sources and organizing useful places to search..."),
       5000,
     );
     try {
-      const discoveryFocus = focus.trim();
-      const selectedIntents = intentOptions.filter((intent) => selectedIntentIds.includes(intent.id));
       const result = await discoverScholarshipWiki({
         ...buildWikiPayload(user),
-        selected_intents: selectedIntents,
-        free_text_intent: discoveryFocus,
+        selected_intents: [],
+        free_text_intent: "",
       });
-      updateProfile({ wikiDiscovery: result, discoveryFocus, discoveryIntents: selectedIntents });
+      updateProfile({ wikiDiscovery: result, discoveryFocus: "", discoveryIntents: [] });
       setStatus(result.result_note || "Your discovery results are ready.");
       setShowResults(true);
     } catch (err) {
-      setStatus(err instanceof Error ? err.message : "We couldn't complete this search. Please try again.");
+      const message = err instanceof Error ? err.message : "We couldn't complete this search. Please try again.";
+      setStatus(message);
+      setSearchError(message);
       setShowResults(false);
     } finally {
       window.clearTimeout(progressTimer);
@@ -3126,7 +3464,7 @@ function StepDiscovery({
   function continueWithOwnOpportunity() {
     const raw = bringValue.trim();
     if (!raw) {
-      setStatus("Paste a scholarship link, name, or the details you found first.");
+      setBringError("Paste a scholarship URL, description, or listing details first.");
       return;
     }
     const platformOnly = platformSources.some(
@@ -3134,9 +3472,10 @@ function StepDiscovery({
     );
     if (platformOnly) {
       setPlatformContext(raw);
-      setStatus(`${raw} is a search platform. Paste a particular scholarship name, listing, or link from it.`);
+      setBringError(`${raw} is a search platform. Paste a particular scholarship name, listing, or link from it.`);
       return;
     }
+    setBringError("");
     const url = raw.match(/https?:\/\/[^\s]+/i)?.[0]?.replace(/[),.;]+$/, "") ?? "";
     const withoutUrl = raw.replace(url, "").replace(/^\s*(found on [^:]+:)?\s*/i, "").trim();
     const name = withoutUrl.length <= 180 ? withoutUrl : withoutUrl.split(/\r?\n|[.!?]/)[0].slice(0, 180);
@@ -3158,164 +3497,44 @@ function StepDiscovery({
   const dismissedUrls = new Set(user?.dismissedDiscoveryUrls ?? []);
   const directSources = (wiki?.specific_opportunities ?? []).filter((source) => !dismissedUrls.has(source.url ?? "")).slice(0, 3);
   const apiPlatforms = (wiki?.top_free_platforms ?? []).filter((source) => source.name && source.url);
-  const platformSources = [...apiPlatforms, ...platformDefaults]
+  const platformSources = [...apiPlatforms, ...(user?.discoveryPlatformDefaults ?? [])]
     .filter((source, index, sources) => sources.findIndex((candidate) => candidate.url === source.url) === index)
     .slice(0, 3);
   const savedIds = new Set((user?.savedWikiSources ?? []).map((item) => item.id));
-  const presentSummary = (value?: string) => value && value !== "unknown"
-    ? value.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase())
-    : "";
-  const preSearchProfileChips = [
-    presentSummary(bootstrapSummary.education_level),
-    presentSummary(bootstrapSummary.field_of_study),
-    presentSummary(bootstrapSummary.student_type),
-  ].filter(Boolean);
-  const resultIntentLabels = (wiki?.selected_intents ?? user?.discoveryIntents ?? [])
-    .map((intent) => intent.label)
-    .filter(Boolean);
-
-  function toggleDiscoveryIntent(intentId: string) {
-    setSelectedIntentIds((current) => current.includes(intentId)
-      ? current.filter((id) => id !== intentId)
-      : [...current, intentId]);
-  }
-
   const resultsVisible = showResults && hasWiki;
 
   return (
     <div className={resultsVisible && !loading ? "space-y-7 pb-3" : "flex min-h-[calc(100vh-190px)] items-center justify-center py-6"}>
       {!resultsVisible && !loading && (
-        <section className="w-full max-w-6xl overflow-hidden rounded-[2rem] border border-white/80 bg-white/90 p-10 shadow-[0_28px_90px_-45px_rgba(38,56,95,0.5)] backdrop-blur-xl">
-          <header className="flex items-start justify-between border-b border-border/70 pb-7">
-            <div className="max-w-3xl">
-              <div className="flex items-center gap-3">
-                <span className="grid size-11 place-items-center rounded-2xl bg-primary text-primary-foreground shadow-lg shadow-primary/20"><Compass className="size-5" /></span>
-                <div className="text-xs font-semibold uppercase tracking-[0.22em] text-primary">Scholarship discovery</div>
-              </div>
-              <h2 className="mt-5 font-display text-[42px] font-extrabold leading-[1.05] tracking-tight">Build a search around what matters to you</h2>
-              <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">Follow the three steps below. We’ll combine your verified profile, the priorities you choose, and any detail you add into one grounded search.</p>
-            </div>
-            <div className="flex items-center gap-3">
-              {hasWiki && (
-                <button onClick={() => setShowResults(true)} className="rounded-full border border-border bg-white px-4 py-2 text-xs font-semibold text-muted-foreground hover:border-primary/30 hover:text-primary">View last results</button>
-              )}
-              <button onClick={onUpdateProfile} className="rounded-full border border-border bg-white px-4 py-2 text-xs font-semibold text-muted-foreground hover:border-primary/30 hover:text-primary">Edit profile</button>
-            </div>
-          </header>
-          {status && !loading && (
-            <p role="status" aria-live="polite" className="mt-4 text-sm text-muted-foreground">{status}</p>
-          )}
-
-          <div className="mt-8 grid grid-cols-[240px_minmax(0,1fr)] gap-10">
-            <aside className="rounded-2xl border border-[#dfe3f3] bg-[#f3f5fb] p-5">
-              <div className="text-xs font-semibold uppercase tracking-[0.16em] text-[#53608d]">Your search path</div>
-              <ol className="mt-5 space-y-5">
-                {[
-                  ["1", "Confirm context", "We use your saved profile."],
-                  ["2", "Choose priorities", "Select what matters today."],
-                  ["3", "Add details & search", "Optional notes make it sharper."],
-                ].map(([number, title, detail], index) => (
-                  <li key={number} className="flex gap-3">
-                    <span className={`grid size-7 shrink-0 place-items-center rounded-full text-xs font-bold ${index === 0 ? "bg-success text-white" : "bg-white text-[#53608d] ring-1 ring-[#d7dced]"}`}>{index === 0 ? <Check className="size-3.5" /> : number}</span>
-                    <div><div className="text-sm font-semibold">{title}</div><p className="mt-0.5 text-xs leading-5 text-muted-foreground">{detail}</p></div>
-                  </li>
-                ))}
-              </ol>
-              <div className="mt-6 border-t border-[#dce1f0] pt-5">
-                <div className="text-xs font-semibold text-foreground">Profile context</div>
-                <div className="mt-3 flex flex-wrap gap-1.5">
-                  {preSearchProfileChips.length
-                    ? preSearchProfileChips.map((value) => <Pill key={value}>{value}</Pill>)
-                    : <span className="text-xs leading-5 text-muted-foreground">Add your education and field to receive stronger suggestions.</span>}
-                </div>
-              </div>
-            </aside>
-
-            <div className="min-w-0">
-              <section aria-labelledby="discovery-priorities-heading">
-                <div className="flex items-start gap-3">
-                  <span className="grid size-8 shrink-0 place-items-center rounded-full bg-primary text-sm font-bold text-primary-foreground">2</span>
-                  <div>
-                    <h3 id="discovery-priorities-heading" className="font-display text-2xl font-bold">Choose your priorities</h3>
-                    <p className="mt-1 text-sm text-muted-foreground">These suggestions come from your profile. Select any that match what you want now.</p>
-                  </div>
-                </div>
-                {bootstrapLoading ? (
-                  <div className="mt-5 grid grid-cols-2 gap-3">{[0, 1, 2, 3].map((item) => <Skeleton key={item} className="h-14 rounded-xl" />)}</div>
-                ) : intentOptions.length ? (
-                  <div className="mt-5 grid grid-cols-2 gap-3">
-                    {intentOptions.map((intent) => {
-                      const selected = selectedIntentIds.includes(intent.id);
-                      return (
-                        <button key={intent.id} type="button" aria-pressed={selected} onClick={() => toggleDiscoveryIntent(intent.id)} className={`flex min-h-14 items-center gap-3 rounded-xl border px-4 py-3 text-left text-sm font-medium transition ${selected ? "border-primary bg-primary/8 text-primary shadow-sm ring-2 ring-primary/10" : "border-border/80 bg-white text-foreground hover:border-primary/40 hover:bg-primary/[0.03]"}`}>
-                          <span className={`grid size-5 shrink-0 place-items-center rounded-full border ${selected ? "border-primary bg-primary text-primary-foreground" : "border-border bg-background"}`}>{selected && <Check className="size-3" />}</span>
-                          {intent.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <p className="mt-4 rounded-xl bg-muted/50 p-3 text-sm text-muted-foreground">No profile priorities are available yet. Use the detail box below or update your profile.</p>
-                )}
-                {bootstrapError && <p className="mt-3 text-xs text-amber-700">{bootstrapError}</p>}
-              </section>
-
-              <section aria-labelledby="discovery-details-heading" className="mt-8 border-t border-border/70 pt-7">
-                <div className="flex items-start gap-3">
-                  <span className="grid size-8 shrink-0 place-items-center rounded-full bg-primary text-sm font-bold text-primary-foreground">3</span>
-                  <div>
-                    <h3 id="discovery-details-heading" className="font-display text-2xl font-bold">Add any detail, then search</h3>
-                    <p className="mt-1 text-sm text-muted-foreground">Optional. Mention a topic, funding need, location, or something you want excluded.</p>
-                  </div>
-                </div>
-                <div className="mt-5 rounded-2xl border border-border/80 bg-white p-2 shadow-sm ring-primary/15 focus-within:ring-4">
-                  <label htmlFor="discovery-focus" className="sr-only">Additional scholarship search details</label>
-                  <textarea id="discovery-focus" rows={3} value={focus} onChange={(event) => setFocus(event.target.value)} placeholder="For example: Battery-materials research funding without a service commitment" className="w-full resize-none border-0 bg-transparent px-3 py-2 text-base leading-6 outline-none placeholder:text-muted-foreground" />
-                  <div className="border-t border-border/70 px-3 pt-3">
-                    <p className="text-xs text-muted-foreground">We’ll search curated sources and the live web together.</p>
-                  </div>
-                </div>
-              </section>
-
-              <div className="mt-6 flex items-center justify-between gap-6 rounded-2xl border border-primary/15 bg-primary/[0.035] px-5 py-4">
-                <div>
-                  <p className="text-sm font-semibold text-foreground">Ready to discover scholarships?</p>
-                  <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                    We’ll combine your profile, selected priorities, and the details you added above.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={refreshWiki}
-                  disabled={loading || bootstrapLoading}
-                  className="inline-flex shrink-0 items-center gap-2 rounded-xl bg-primary px-5 py-3 text-sm font-semibold text-primary-foreground shadow-sm transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  Find scholarships
-                  <ArrowRight className="h-4 w-4" />
-                </button>
-              </div>
-
-              <div className="mt-5 border-t border-border/60 pt-5 text-center">
-                {!showBring ? (
-                  <button onClick={() => setShowBring(true)} className="text-sm font-medium text-muted-foreground hover:text-primary">Already found a scholarship? Bring it here instead</button>
-                ) : (
-                  <div className="flex gap-2 rounded-2xl border border-border/70 bg-white/75 p-3 text-left">
-                    <input value={bringValue} onChange={(event) => setBringValue(event.target.value)} placeholder="Paste a scholarship link, name, or details" className="min-w-0 flex-1 rounded-xl border border-input bg-white px-4 py-3 text-sm outline-none focus:ring-4 focus:ring-primary/15" />
-                    <button onClick={continueWithOwnOpportunity} className="rounded-xl border border-primary bg-primary px-5 py-3 text-sm font-semibold text-primary-foreground">Continue to Step 3</button>
-                  </div>
-                )}
-              </div>
-            </div>
+        <section className="w-full max-w-3xl rounded-3xl border border-border/70 bg-card p-7 text-center shadow-sm">
+          <h2 className="font-display text-2xl font-bold">We couldn’t load scholarship results</h2>
+          <p role="alert" className="mx-auto mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
+            {searchError || "Scholar-E couldn’t complete this search. Try again or review the profile information being used."}
+          </p>
+          <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
+            <button
+              type="button"
+              onClick={refreshWiki}
+              className="rounded-xl bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 focus-visible:ring-offset-2"
+            >
+              Retry search
+            </button>
+            <button
+              type="button"
+              onClick={onUpdateProfile}
+              className="rounded-xl border border-border px-5 py-2.5 text-sm font-semibold text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
+            >
+              Edit profile
+            </button>
           </div>
         </section>
       )}
-
       {loading && (
         <section className="w-full max-w-5xl space-y-5 rounded-[2rem] border border-white/80 bg-white/80 p-8 shadow-xl backdrop-blur-xl">
           <div className="flex items-center gap-3">
             <Spinner className="size-5 text-primary" />
             <div>
-              <h2 className="font-display text-2xl font-bold">Building your discovery shortlist</h2>
+              <h2 className="font-display text-2xl font-bold">Finding scholarships using your verified profile</h2>
               <p role="status" aria-live="polite" className="mt-1 text-sm text-muted-foreground">{status}</p>
             </div>
           </div>
@@ -3331,35 +3550,72 @@ function StepDiscovery({
       {resultsVisible && !loading && (
         <>
           <section className="rounded-3xl border border-white/80 bg-white/80 px-7 py-5 shadow-sm backdrop-blur-xl">
-            <div className="flex items-center justify-between gap-4">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-success">
                   <span className="grid size-6 place-items-center rounded-full bg-success/10"><Check className="size-3.5" /></span>
                   Discovery complete
                 </div>
-                <h2 className="mt-2 font-display text-3xl font-bold">Your scholarship shortlist</h2>
+                <h2 className="mt-2 font-display text-3xl font-bold">Scholarship Discovery</h2>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  Grounded in your student profile{resultIntentLabels.length ? ` · ${resultIntentLabels.join(" · ")}` : ""}
+                  Continue with a scholarship you found, or review the suggestions below.
                 </p>
-                {(wiki?.free_text_intent || user?.discoveryFocus) && (
-                  <p className="mt-1 line-clamp-1 text-xs text-muted-foreground">Also requested: {wiki?.free_text_intent || user?.discoveryFocus}</p>
-                )}
               </div>
-              <div className="flex shrink-0 items-center gap-2 self-start">
+              <div className="flex shrink-0 flex-wrap items-center gap-2 self-start">
                 <button onClick={onUpdateProfile} className="rounded-full border border-border bg-white px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent">
                   Profile used for this search
                 </button>
-                <button onClick={() => setShowResults(false)} className="inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/5 px-3 py-1.5 text-xs font-semibold text-primary hover:bg-primary/10">
-                  New search
+                <button onClick={refreshWiki} className="inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/5 px-3 py-1.5 text-xs font-semibold text-primary hover:bg-primary/10">
+                  Refresh results
                 </button>
               </div>
+            </div>
+          </section>
+
+          <section className="rounded-2xl border border-primary/25 bg-primary/[0.035] p-5 shadow-sm sm:p-6" aria-labelledby="analyze-scholarship-heading">
+            <div className="max-w-3xl">
+              <div className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">Continue to Step 3</div>
+              <h3 id="analyze-scholarship-heading" className="mt-2 font-display text-2xl font-bold">Paste a Scholarship to Analyze</h3>
+              <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                Paste a scholarship URL, scholarship description, or listing details. Scholar-E will extract the requirements and compare them with your verified profile.
+              </p>
+            </div>
+            {platformContext && (
+              <p className="mt-4 text-xs font-medium text-primary">Found something on {platformContext}? Paste the specific scholarship below.</p>
+            )}
+            <div className="mt-4 flex flex-col gap-3 lg:flex-row lg:items-end">
+              <div className="min-w-0 flex-1">
+                <label htmlFor="bring-opportunity" className="text-xs font-semibold text-foreground/75">Scholarship URL or details</label>
+                <textarea
+                  id="bring-opportunity"
+                  rows={3}
+                  value={bringValue}
+                  onChange={(event) => {
+                    setBringValue(event.target.value);
+                    if (bringError) setBringError("");
+                  }}
+                  aria-invalid={!!bringError || undefined}
+                  aria-describedby={bringError ? "bring-opportunity-help bring-opportunity-error" : "bring-opportunity-help"}
+                  placeholder="Paste a scholarship link, description, eligibility details, or application listing"
+                  className="mt-1 w-full resize-y rounded-xl border border-input bg-white px-4 py-3 text-sm leading-6 outline-none transition-[border-color,box-shadow] placeholder:text-muted-foreground/60 focus:border-primary/60 focus:ring-4 focus:ring-primary/15"
+                />
+                <p id="bring-opportunity-help" className="mt-1 text-xs text-muted-foreground">A URL is easiest, but copied listing text works too.</p>
+                {bringError && <p id="bring-opportunity-error" role="alert" className="mt-1 text-xs font-medium text-destructive">{bringError}</p>}
+              </div>
+              <button
+                type="button"
+                onClick={continueWithOwnOpportunity}
+                className="inline-flex min-h-11 w-full shrink-0 items-center justify-center gap-2 rounded-xl bg-primary px-6 py-3 text-sm font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 focus-visible:ring-offset-2 lg:w-auto"
+              >
+                Analyze Scholarship <ArrowRight className="size-4" />
+              </button>
             </div>
           </section>
 
           <section>
             <div className="mb-4 flex items-end justify-between gap-3">
               <div>
-                <div className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">Scholarships to explore</div>
+                <div className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">Recommended scholarships</div>
                 <p className="mt-1 text-sm text-muted-foreground">Discovery suggestions only—eligibility is checked in the next step.</p>
               </div>
             </div>
@@ -3385,11 +3641,11 @@ function StepDiscovery({
 
           <section className="rounded-3xl border border-[#d9def3] bg-[#eef1fb]/90 p-6 shadow-sm">
             <div>
-              <div className="text-xs font-semibold uppercase tracking-[0.18em] text-[#4a5685]">Continue searching elsewhere</div>
-              <h3 className="mt-2 font-display text-2xl font-bold">Places selected for your profile</h3>
-              <p className="mt-1 text-sm text-muted-foreground">Open a platform, find a scholarship, then paste it into the return bar below.</p>
+              <div className="text-xs font-semibold uppercase tracking-[0.18em] text-[#4a5685]">Need help finding an opportunity?</div>
+              <h3 className="mt-2 font-display text-2xl font-bold">Trusted scholarship platforms</h3>
+              <p className="mt-1 text-sm text-muted-foreground">Open a trusted platform, find a scholarship, then paste its link or details into the analyzer above.</p>
             </div>
-            <div className="mt-4 grid grid-cols-3 gap-3">
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {platformSources.map((source) => (
                 <button key={`platform-${source.url || source.name}`} onClick={() => openPlatform(source)} className="group min-h-32 rounded-2xl border border-white/90 bg-white p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
                   <div className="flex items-start justify-between gap-3">
@@ -3403,19 +3659,6 @@ function StepDiscovery({
             </div>
           </section>
 
-          <section className="sticky bottom-4 z-20 rounded-2xl border border-primary/20 bg-white/95 p-3 shadow-[0_18px_45px_-18px_rgba(38,56,95,0.45)] backdrop-blur-xl">
-            {platformContext && <p className="mb-2 px-1 text-xs font-medium text-primary">Found something on {platformContext}?</p>}
-            <div className="flex items-center gap-2">
-              <div className="min-w-0 flex-1">
-                {!platformContext && <div className="px-1 text-xs font-semibold text-foreground">Found a scholarship here or somewhere else?</div>}
-                <label htmlFor="bring-opportunity" className="sr-only">Scholarship link, name, or details</label>
-                <input id="bring-opportunity" value={bringValue} onChange={(event) => setBringValue(event.target.value)} placeholder="Paste a link, scholarship name, or listing details" className="mt-1 w-full rounded-xl border border-input bg-white px-4 py-3 text-sm outline-none focus:ring-4 focus:ring-primary/15" />
-              </div>
-              <button onClick={continueWithOwnOpportunity} className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-xl bg-primary px-5 py-3 text-sm font-semibold text-primary-foreground hover:opacity-90">
-                Continue to Step 3 <ArrowRight className="size-4" />
-              </button>
-            </div>
-          </section>
         </>
       )}
     </div>
@@ -3481,9 +3724,9 @@ function DiscoverySourceCard({
           )}
         </div>
       </div>
-      <div className="mt-5 flex flex-col gap-4 rounded-2xl border border-primary/15 bg-gradient-to-r from-primary/[0.07] via-primary/[0.035] to-transparent p-4 sm:flex-row sm:items-center sm:justify-between">
+      <div className="mt-5 flex flex-col gap-4 rounded-2xl border border-border/70 bg-secondary/35 p-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex min-w-0 items-start gap-3">
-          <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground shadow-sm">
+          <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary">
             <Sparkles className="size-4.5" />
           </span>
           <div>
@@ -3496,9 +3739,9 @@ function DiscoverySourceCard({
         <button
           type="button"
           onClick={onExplore}
-          className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-xl bg-primary px-5 py-3 text-sm font-semibold text-primary-foreground shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
+          className="inline-flex min-h-10 shrink-0 items-center justify-center gap-2 rounded-xl border border-primary/30 bg-white px-4 py-2.5 text-sm font-semibold text-primary transition-colors hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
         >
-          Select &amp; continue to Step 3 <ArrowRight className="size-4" />
+          Use this scholarship <ArrowRight className="size-4" />
         </button>
       </div>
     </article>
@@ -3786,194 +4029,186 @@ function ScholarshipDetailsCard({
   );
 }
 
-const REVIEW_MISSING_TEXT = "Not found — add manually";
-
 function isReviewFieldMissing(value?: string) {
   const text = String(value ?? "").trim();
   return !text || /^(not found|n\/a|none|unknown|unclear)$/i.test(text);
 }
 
-function reviewFieldTone(value?: string) {
-  return isReviewFieldMissing(value) ? "warning" : "success";
+type ReviewedWordCount = { value: number | null; reviewed: boolean; valid: boolean };
+
+function parseReviewedWordCount(value: string): ReviewedWordCount {
+  const normalized = value.trim().toLocaleUpperCase();
+  if (!normalized) return { value: null, reviewed: false, valid: false };
+  if (["N/A", "NA", "—", "-"].includes(normalized)) return { value: null, reviewed: true, valid: true };
+  if (!/^\d+$/.test(normalized)) return { value: null, reviewed: false, valid: false };
+  const numeric = Number(normalized);
+  return { value: numeric, reviewed: true, valid: Number.isSafeInteger(numeric) && numeric >= 0 };
 }
 
-function ReviewSection({
-  title,
-  icon,
-  children,
-  defaultExpanded = true,
+function wordCountDraft(value: number | null, reviewed?: boolean) {
+  if (!reviewed) return "";
+  return value === null ? "N/A" : String(value);
+}
+
+function PromptReviewRow({
+  entry,
+  index,
+  selected,
+  onToggle,
+  onSave,
+  onRemove,
 }: {
-  title: string;
-  icon?: React.ReactNode;
-  children: React.ReactNode;
-  defaultExpanded?: boolean;
+  entry: EssayPromptEntry;
+  index: number;
+  selected: boolean;
+  onToggle: () => void;
+  onSave: (patch: Partial<EssayPromptEntry>) => void;
+  onRemove: () => void;
 }) {
-  const [expanded, setExpanded] = useState(defaultExpanded);
+  const validationId = useId();
+  const [editing, setEditing] = useState(() => !entry.promptText.trim());
+  const [promptText, setPromptText] = useState(entry.promptText);
+  const [minimumWords, setMinimumWords] = useState(() => wordCountDraft(entry.minimumWords, entry.minimumWordsReviewed));
+  const [maximumWords, setMaximumWords] = useState(() => wordCountDraft(entry.maximumWords, entry.maximumWordsReviewed));
+
+  useEffect(() => {
+    if (editing) return;
+    setPromptText(entry.promptText);
+    setMinimumWords(wordCountDraft(entry.minimumWords, entry.minimumWordsReviewed));
+    setMaximumWords(wordCountDraft(entry.maximumWords, entry.maximumWordsReviewed));
+  }, [editing, entry]);
+
+  const parsedMinimum = parseReviewedWordCount(minimumWords);
+  const parsedMaximum = parseReviewedWordCount(maximumWords);
+  const rangeInvalid = parsedMinimum.valid
+    && parsedMaximum.valid
+    && parsedMinimum.value !== null
+    && parsedMaximum.value !== null
+    && parsedMinimum.value > parsedMaximum.value;
+  const canSave = !!promptText.trim() && parsedMinimum.valid && parsedMaximum.valid && !rangeInvalid;
+  const minimumDisplay = entry.minimumWordsReviewed === true ? entry.minimumWords ?? "N/A" : "Needs review";
+  const maximumDisplay = entry.maximumWordsReviewed === true ? entry.maximumWords ?? "N/A" : "Needs review";
+
+  function cancelEditing() {
+    setPromptText(entry.promptText);
+    setMinimumWords(wordCountDraft(entry.minimumWords, entry.minimumWordsReviewed));
+    setMaximumWords(wordCountDraft(entry.maximumWords, entry.maximumWordsReviewed));
+    setEditing(false);
+  }
+
+  function saveEditing() {
+    if (!canSave) return;
+    onSave({
+      promptText: promptText.trim(),
+      minimumWords: parsedMinimum.value,
+      maximumWords: parsedMaximum.value,
+      minimumWordsReviewed: parsedMinimum.reviewed,
+      maximumWordsReviewed: parsedMaximum.reviewed,
+    });
+    setEditing(false);
+  }
 
   return (
-    <section className="rounded-2xl border border-border/55 bg-white/95 p-4 shadow-sm transition-shadow hover:shadow-md">
-      <button
-        type="button"
-        onClick={() => setExpanded((current) => !current)}
-        className="flex w-full items-center justify-between gap-3 border-b border-border/30 pb-2 text-left"
-      >
-        <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm font-semibold uppercase tracking-widest text-foreground">
-          {icon && <span className="grid size-7 shrink-0 place-items-center rounded-full bg-primary/5 text-primary">{icon}</span>}
-          <span>{title}</span>
-        </span>
-        <ChevronDown className={`size-4 text-muted-foreground transition-transform ${expanded ? "rotate-180" : ""}`} aria-hidden="true" />
-      </button>
-      {expanded && <div className="pt-3">{children}</div>}
-    </section>
+    <article className={`border-t px-1 py-4 transition-colors ${selected ? "border-primary/35 bg-primary/[0.025]" : "border-border/60"}`}>
+      <div className="flex items-start gap-3">
+        <label className="mt-0.5 inline-flex min-h-8 min-w-8 cursor-pointer items-start justify-center pt-1" aria-label={`Select Prompt ${index + 1}`}>
+          <input type="checkbox" checked={selected} onChange={onToggle} className="size-4 rounded border-border text-primary focus:ring-2 focus:ring-primary/25" />
+        </label>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h4 className="text-xs font-semibold uppercase tracking-[0.1em] text-foreground">Prompt {index + 1}</h4>
+            {!editing && (
+              <button type="button" onClick={() => setEditing(true)} className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:underline">
+                <PencilLine className="size-3.5" aria-hidden="true" />
+                Edit
+              </button>
+            )}
+          </div>
+
+          {editing ? (
+            <div className="mt-3 space-y-3">
+              <SnapshotEditField label="Prompt text" value={promptText} onChange={setPromptText} multiline />
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="block">
+                  <span className="mb-1 block text-[11px] font-semibold text-foreground/75">Minimum words</span>
+                  <input value={minimumWords} onChange={(event) => setMinimumWords(event.target.value)} inputMode="numeric" placeholder="Enter a number or N/A" aria-invalid={!parsedMinimum.valid || rangeInvalid} aria-describedby={!parsedMinimum.valid || rangeInvalid ? validationId : undefined} className="h-9 w-full rounded-lg border border-border bg-background px-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/10" />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-[11px] font-semibold text-foreground/75">Maximum words</span>
+                  <input value={maximumWords} onChange={(event) => setMaximumWords(event.target.value)} inputMode="numeric" placeholder="Enter a number or N/A" aria-invalid={!parsedMaximum.valid || rangeInvalid} aria-describedby={!parsedMaximum.valid || rangeInvalid ? validationId : undefined} className="h-9 w-full rounded-lg border border-border bg-background px-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/10" />
+                </label>
+              </div>
+              {(!parsedMinimum.valid || !parsedMaximum.valid || rangeInvalid || !promptText.trim()) && (
+                <p id={validationId} role="alert" className="text-xs text-warning">
+                  {!promptText.trim() ? "Enter prompt text." : rangeInvalid ? "Minimum words cannot be greater than maximum words." : "Enter a nonnegative number or N/A for both word-count fields."}
+                </p>
+              )}
+              <div className="flex flex-wrap items-center gap-3">
+                <button type="button" onClick={saveEditing} disabled={!canSave} className="rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground disabled:cursor-not-allowed disabled:opacity-40">Save</button>
+                <button type="button" onClick={cancelEditing} className="text-xs font-semibold text-muted-foreground hover:text-foreground">Cancel</button>
+                <button type="button" onClick={onRemove} className="ml-auto text-xs font-medium text-muted-foreground hover:text-destructive">Remove prompt</button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-foreground">{entry.promptText || "Prompt text needs review."}</p>
+              <dl className="mt-2 flex flex-col gap-1 text-xs sm:flex-row sm:gap-x-6">
+                <div className="flex gap-1"><dt className="text-muted-foreground">Minimum words:</dt><dd className={`font-semibold ${entry.minimumWordsReviewed === true ? "text-foreground" : "text-warning"}`}>{minimumDisplay}</dd></div>
+                <div className="flex gap-1"><dt className="text-muted-foreground">Maximum words:</dt><dd className={`font-semibold ${entry.maximumWordsReviewed === true ? "text-foreground" : "text-warning"}`}>{maximumDisplay}</dd></div>
+              </dl>
+            </>
+          )}
+        </div>
+      </div>
+    </article>
   );
 }
 
-function ReviewField({
+function SnapshotValue({ label, value, className = "" }: { label: string; value?: string; className?: string }) {
+  if (isReviewFieldMissing(value)) return null;
+  return (
+    <div className={`min-w-0 ${className}`}>
+      <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="mt-1 text-sm font-medium leading-5 text-foreground">{value}</div>
+    </div>
+  );
+}
+
+function SnapshotEditField({
   label,
   value,
   onChange,
+  multiline = false,
   placeholder,
   className = "",
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
+  multiline?: boolean;
   placeholder?: string;
   className?: string;
 }) {
-  const tone = reviewFieldTone(value);
-  const [editing, setEditing] = useState(false);
-  const displayValue = tone === "warning" ? "Not found" : value;
-
-  if (!editing) {
-    return (
-      <div className={`min-w-0 ${className}`}>
-        <div className="mb-0.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-          {tone === "warning" && <AlertCircle className="size-3 text-warning/70" aria-hidden="true" />}
-          {label}
-        </div>
-        <button
-          type="button"
-          onClick={() => setEditing(true)}
-          className={`group flex min-h-8 w-full min-w-0 items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left transition-colors ${
-            tone === "success" ? "text-foreground hover:bg-muted/35" : "bg-warning/[0.035] text-muted-foreground hover:bg-warning/[0.06]"
-          }`}
-        >
-          <span className={`min-w-0 truncate ${tone === "success" ? "text-[15px] font-medium" : "text-sm"}`}>{displayValue}</span>
-          {tone === "warning" ? (
-            <span className="shrink-0 rounded-full border border-primary/10 bg-white px-2 py-0.5 text-[10px] font-semibold text-primary shadow-sm transition-colors group-hover:bg-primary/5">
-              Add manually
-            </span>
-          ) : (
-            <PencilLine className="size-3 shrink-0 text-muted-foreground/0 transition-colors group-hover:text-muted-foreground/60" aria-hidden="true" />
-          )}
-        </button>
-      </div>
-    );
-  }
-
   return (
-    <label className={`block ${className}`}>
-      <span className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground">
-        <span className={`size-1.5 rounded-full ${tone === "success" ? "bg-success" : "bg-warning/70"}`} />
-        {label}
-      </span>
-      <input
-        type="text"
-        value={value}
-        placeholder={placeholder ?? (tone === "warning" ? REVIEW_MISSING_TEXT : undefined)}
-        onChange={(event) => onChange(event.target.value)}
-        onBlur={() => setEditing(false)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" || event.key === "Escape") event.currentTarget.blur();
-        }}
-        autoFocus
-        className={`h-8 w-full rounded-lg border px-2.5 text-sm transition-colors ${
-          tone === "success" ? "border-border/80 bg-white" : "border-warning/15 bg-warning/[0.025] placeholder:text-muted-foreground/40"
-        }`}
-      />
-    </label>
-  );
-}
-
-function ReviewTextArea({
-  label,
-  value,
-  onChange,
-  rows = 3,
-  className = "",
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  rows?: number;
-  className?: string;
-}) {
-  const tone = reviewFieldTone(value);
-  const [editing, setEditing] = useState(false);
-  const [expanded, setExpanded] = useState(false);
-  const shouldClamp = value.length > 160 || value.split("\n").length > 3;
-  const displayValue = tone === "warning" ? "Not found" : value;
-
-  if (!editing) {
-    return (
-      <div className={`min-w-0 ${className}`}>
-        <div className="mb-0.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-          {tone === "warning" && <AlertCircle className="size-3 text-warning/70" aria-hidden="true" />}
-          {label}
-        </div>
-        <div className={`rounded-lg px-2 py-1.5 transition-colors ${tone === "success" ? "text-foreground hover:bg-muted/30" : "bg-warning/[0.035] text-muted-foreground"}`}>
-          <button type="button" onClick={() => setEditing(true)} className="block w-full text-left">
-            <span className={`whitespace-pre-wrap text-sm leading-snug ${tone === "success" && shouldClamp && !expanded ? "line-clamp-3" : ""}`}>
-              {displayValue}
-            </span>
-          </button>
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            {tone === "warning" ? (
-              <>
-                <span className="inline-flex items-center gap-1 rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold text-muted-foreground shadow-sm">
-                  <AlertCircle className="size-3 text-warning/70" aria-hidden="true" />
-                  Not found
-                </span>
-                <button type="button" onClick={() => setEditing(true)} className="text-xs font-medium text-primary hover:underline">
-                  Add manually
-                </button>
-              </>
-            ) : (
-              <>
-                {shouldClamp && (
-                  <button type="button" onClick={() => setExpanded((current) => !current)} className="text-xs font-medium text-primary hover:underline">
-                    {expanded ? "Show less" : "Show more"}
-                  </button>
-                )}
-                <button type="button" onClick={() => setEditing(true)} className="text-xs font-medium text-muted-foreground hover:text-primary">
-                  Edit
-                </button>
-              </>
-            )}
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <label className={`block ${className}`}>
-      <span className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground">
-        <span className={`size-1.5 rounded-full ${tone === "success" ? "bg-success" : "bg-warning/70"}`} />
-        {label}
-      </span>
-      <textarea
-        value={value}
-        rows={rows}
-        placeholder={tone === "warning" ? REVIEW_MISSING_TEXT : undefined}
-        onChange={(event) => onChange(event.target.value)}
-        onBlur={() => setEditing(false)}
-        autoFocus
-        className={`w-full rounded-lg border px-2.5 py-1.5 text-sm leading-snug transition-colors ${
-          tone === "success" ? "border-border/80 bg-white" : "border-warning/15 bg-warning/[0.025] placeholder:text-muted-foreground/40"
-        }`}
-      />
+    <label className={`block min-w-0 ${className}`}>
+      <span className="mb-1 block text-[11px] font-semibold text-foreground/75">{label}</span>
+      {multiline ? (
+        <textarea
+          value={value}
+          rows={3}
+          placeholder={placeholder}
+          onChange={(event) => onChange(event.target.value)}
+          className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground/55 focus:border-primary focus:ring-2 focus:ring-primary/10"
+        />
+      ) : (
+        <input
+          type="text"
+          value={value}
+          placeholder={placeholder}
+          onChange={(event) => onChange(event.target.value)}
+          className="h-9 w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground/55 focus:border-primary focus:ring-2 focus:ring-primary/10"
+        />
+      )}
     </label>
   );
 }
@@ -4000,48 +4235,102 @@ function EditableScholarshipFields({
   const docsValue = (scholarship.requiredDocumentTypes ?? []).join(", ");
   const hasExtractedDetails = !!scholarship.extractionCompletedAt;
   const listValue = (items?: string[]) => (items ?? []).join("\n");
-  const parseList = (value: string) => value.split("\n").filter((item) => item.length > 0);
-  const extractedValues = [
+  const parseList = (value: string) => value.split("\n").map((item) => item.trim()).filter(Boolean);
+  const requiredMaterialsValue = listValue(scholarship.requiredApplicationMaterials);
+  const [editingSnapshot, setEditingSnapshot] = useState(false);
+  const [pendingNoEssayConfirmation, setPendingNoEssayConfirmation] = useState(false);
+  const promptEntries = normalizeEssayPromptEntries(scholarship);
+  const promptTextKeys = new Set(promptEntries.map((entry) => entry.promptText.trim().toLocaleLowerCase()).filter(Boolean));
+  const materialCandidates = [
+    ...(scholarship.requiredDocumentTypes ?? []),
+    ...(scholarship.requiredApplicationMaterials ?? []),
+    scholarship.otherRequiredMaterials ?? "",
+  ].flatMap((item) => String(item).split(/\n|,|;/));
+  const requiredMaterials = Array.from(new Set(materialCandidates.flatMap((item) => {
+    const value = item.trim();
+    if (!value || promptTextKeys.has(value.toLocaleLowerCase())) return [];
+    const recognized: string[] = [];
+    if (/\b(?:essay|personal statement|short[- ]answer)\b/i.test(value)) recognized.push("Essay");
+    if (/\bresume|curriculum vitae|\bcv\b/i.test(value)) recognized.push("Resume");
+    if (/\btranscript/i.test(value)) recognized.push("Transcript");
+    if (/\brecommendation|reference letter/i.test(value)) recognized.push("Recommendation letter");
+    return recognized.length > 0 ? recognized : [value];
+  })));
+  const essayRequiredByMaterials = requiredMaterials.some((item) => /\bessay|personal statement|short[- ]answer\b/i.test(item));
+  const validPromptIds = new Set(promptEntries.map((entry) => entry.id));
+  const noEssayPromptSelected = !!scholarship.noEssayPromptSelected;
+  const selectedPromptIds = noEssayPromptSelected
+    ? []
+    : (scholarship.selectedEssayPromptIds ?? []).filter((id) => validPromptIds.has(id));
+  const selectedPromptIdSet = new Set(selectedPromptIds);
+  const selectedPromptEntries = promptEntries.filter((entry) => selectedPromptIdSet.has(entry.id));
+  const promptEntryIsValid = (entry: EssayPromptEntry) => {
+    const rangeValid = entry.minimumWords === null || entry.maximumWords === null || entry.minimumWords <= entry.maximumWords;
+    return !!entry.promptText.trim() && entry.minimumWordsReviewed === true && entry.maximumWordsReviewed === true && rangeValid;
+  };
+  const promptDecisionMade = noEssayPromptSelected || selectedPromptEntries.length > 0;
+  const noEssayDecisionValid = noEssayPromptSelected
+    && (!essayRequiredByMaterials || !!scholarship.noEssayPromptConflictConfirmed);
+  const selectedPromptDecisionValid = selectedPromptEntries.length > 0 && selectedPromptEntries.every(promptEntryIsValid);
+  const promptDecisionValid = noEssayDecisionValid || selectedPromptDecisionValid;
+  const essentialValues = [
     scholarship.name,
     scholarship.organization,
-    scholarship.type,
-    scholarship.country,
-    scholarship.officialWebsite ?? scholarship.url,
     scholarship.awardAmount,
-    scholarship.applicationOpens,
     scholarship.applicationDeadline,
-    scholarship.notificationDate,
-    scholarship.programStart,
-    scholarship.programEnd,
-    scholarship.currentStatus,
-    scholarship.description,
-    scholarship.minimumGpa,
+    scholarship.officialWebsite ?? scholarship.url,
     scholarship.enrollmentLevel,
-    scholarship.citizenshipRequirement,
-    scholarship.financialNeedRequirement,
-    scholarship.locationRequirement,
-    scholarship.eligibleMajors,
-    scholarship.otherEligibilityRules,
-    docsValue,
-    scholarship.otherRequiredMaterials,
-    scholarship.essayPrompts,
-    listValue(scholarship.eligibilityRequirements),
-    listValue(scholarship.requiredApplicationMaterials),
-    listValue(scholarship.benefits),
-    listValue(scholarship.selectionCriteria),
-    listValue(scholarship.applicationProcess),
+    requiredMaterials.join(", "),
   ];
-  const extractedCount = extractedValues.filter((value) => !isReviewFieldMissing(value)).length;
-  const needsReviewCount = extractedValues.length - extractedCount;
+  const hasMissingEssentialDetails = essentialValues.some((value) => isReviewFieldMissing(value));
   const sourceUrl = scholarship.officialWebsite || scholarship.url;
-  const sourceDomain = (() => {
-    if (!sourceUrl) return "";
-    try {
-      return new URL(sourceUrl.startsWith("http") ? sourceUrl : `https://${sourceUrl}`).hostname.replace(/^www\./, "");
-    } catch {
-      return sourceUrl;
+
+  function updatePromptEntries(entries: EssayPromptEntry[]) {
+    const normalized = entries.map((entry, index) => ({ ...entry, promptNumber: index + 1 }));
+    const remainingIds = new Set(normalized.map((entry) => entry.id));
+    updateScholarship({
+      essayPromptEntries: normalized,
+      essayPrompts: serializeEssayPromptEntries(normalized),
+      selectedEssayPromptIds: selectedPromptIds.filter((id) => remainingIds.has(id)),
+    });
+  }
+
+  function updatePrompt(promptId: string, patch: Partial<EssayPromptEntry>) {
+    updatePromptEntries(promptEntries.map((entry) => entry.id === promptId ? { ...entry, ...patch } : entry));
+  }
+
+  function togglePrompt(promptId: string) {
+    const next = new Set(selectedPromptIds);
+    if (next.has(promptId)) next.delete(promptId);
+    else next.add(promptId);
+    setPendingNoEssayConfirmation(false);
+    updateScholarship({
+      selectedEssayPromptIds: promptEntries.filter((entry) => next.has(entry.id)).map((entry) => entry.id),
+      noEssayPromptSelected: false,
+      noEssayPromptConflictConfirmed: false,
+    });
+  }
+
+  function chooseNoEssayPrompt() {
+    if (noEssayPromptSelected) {
+      updateScholarship({ noEssayPromptSelected: false, noEssayPromptConflictConfirmed: false });
+      return;
     }
-  })();
+    if (essayRequiredByMaterials) {
+      setPendingNoEssayConfirmation(true);
+      return;
+    }
+    updateScholarship({ selectedEssayPromptIds: [], noEssayPromptSelected: true, noEssayPromptConflictConfirmed: false });
+  }
+
+  function confirmNoEssayPrompt() {
+    setPendingNoEssayConfirmation(false);
+    updateScholarship({
+      selectedEssayPromptIds: [],
+      noEssayPromptSelected: true,
+      noEssayPromptConflictConfirmed: true,
+    });
+  }
 
   if (!hasExtractedDetails) {
     return (
@@ -4079,125 +4368,139 @@ function EditableScholarshipFields({
       lockedMessage="Extract the scholarship requirements to unlock this step."
       headingId="extracted-requirements-heading"
     >
-      <div className="mt-1 rounded-2xl border border-border/50 bg-white px-4 py-3 shadow-sm">
-        <div className="flex flex-wrap items-center justify-between gap-3">
+      <section className="mt-2" aria-labelledby="scholarship-snapshot-heading">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 pb-3">
           <div>
-            <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-              <span className="size-2.5 rounded-full bg-success" />
-              Extraction Complete
-            </div>
-            <p className="mt-1 text-xs text-muted-foreground">{extractedCount} of {extractedValues.length} fields extracted successfully.</p>
-            <p className="mt-0.5 text-xs text-muted-foreground">{needsReviewCount} fields require review or manual entry.</p>
-            {typeof scholarship.completenessScore === "number" && (
-              <p className="mt-0.5 text-xs font-medium text-foreground">
-                Important-field completeness: {scholarship.completenessScore}%
-              </p>
-            )}
+            <h3 id="scholarship-snapshot-heading" className="text-base font-semibold text-foreground">Scholarship Snapshot</h3>
+            <p className="mt-1 text-xs text-muted-foreground">Review the extracted details before analyzing your fit.</p>
           </div>
-          {sourceUrl && (
-            <a
-              href={sourceUrl.startsWith("http") ? sourceUrl : `https://${sourceUrl}`}
-              target="_blank"
-              rel="noreferrer"
-              className="max-w-full truncate rounded-full bg-muted/45 px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            >
-              Source: {sourceDomain}
-            </a>
+          <button
+            type="button"
+            onClick={() => setEditingSnapshot((current) => !current)}
+            className="inline-flex items-center gap-1.5 text-xs font-semibold text-primary transition-colors hover:text-primary/75 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25"
+          >
+            <PencilLine className="size-3.5" aria-hidden="true" />
+            {editingSnapshot ? "Done editing" : "Edit extracted information"}
+          </button>
+        </div>
+
+        {hasMissingEssentialDetails && !editingSnapshot && (
+          <div className="mt-4 flex flex-col gap-2 border-l-2 border-warning/50 bg-warning/[0.035] px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-sm text-foreground">Some important details need review.</p>
+            <button type="button" onClick={() => setEditingSnapshot(true)} className="w-fit text-xs font-semibold text-primary hover:underline">Review missing details</button>
+          </div>
+        )}
+
+        <div className="py-5">
+          {editingSnapshot ? (
+            <div className="space-y-4" aria-label="Edit scholarship snapshot">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <SnapshotEditField label="Scholarship name" value={scholarship.name ?? ""} onChange={(name) => updateScholarship({ name })} />
+                <SnapshotEditField label="Sponsoring organization" value={scholarship.organization ?? ""} onChange={(organization) => updateScholarship({ organization })} />
+                <SnapshotEditField label="Award amount" value={scholarship.awardAmount ?? ""} onChange={(awardAmount) => updateScholarship({ awardAmount })} />
+                <SnapshotEditField label="Application deadline" value={scholarship.applicationDeadline ?? ""} onChange={(applicationDeadline) => updateScholarship({ applicationDeadline })} />
+                <SnapshotEditField label="Education level" value={scholarship.enrollmentLevel ?? ""} onChange={(enrollmentLevel) => updateScholarship({ enrollmentLevel })} />
+                <SnapshotEditField label="Official scholarship page" value={sourceUrl ?? ""} onChange={(officialWebsite) => updateScholarship({ officialWebsite, url: officialWebsite })} />
+                <SnapshotEditField label="Required document types" value={docsValue} placeholder="Essay, resume, transcript..." onChange={(value) => updateScholarship({ requiredDocumentTypes: value.split(",").map((item) => item.trim()).filter(Boolean) })} />
+                <SnapshotEditField label="Other required materials" value={scholarship.otherRequiredMaterials ?? ""} onChange={(otherRequiredMaterials) => updateScholarship({ otherRequiredMaterials })} />
+                <SnapshotEditField label="Required materials list" value={requiredMaterialsValue} onChange={(value) => updateScholarship({ requiredApplicationMaterials: parseList(value) })} multiline className="sm:col-span-2" />
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {(!isReviewFieldMissing(scholarship.name) || !isReviewFieldMissing(scholarship.organization)) && (
+                <div>
+                  {!isReviewFieldMissing(scholarship.name) && <h4 className="text-lg font-semibold leading-6 text-foreground">{scholarship.name}</h4>}
+                  {!isReviewFieldMissing(scholarship.organization) && <p className="mt-0.5 text-sm text-muted-foreground">{scholarship.organization}</p>}
+                </div>
+              )}
+              <div className="grid gap-x-6 gap-y-3 sm:grid-cols-2 lg:grid-cols-3">
+                <SnapshotValue label="Award" value={scholarship.awardAmount} />
+                <SnapshotValue label="Deadline" value={scholarship.applicationDeadline} />
+                <SnapshotValue label="Education" value={scholarship.enrollmentLevel} />
+              </div>
+              {sourceUrl && <a href={sourceUrl.startsWith("http") ? sourceUrl : `https://${sourceUrl}`} target="_blank" rel="noreferrer" className="inline-flex text-sm font-semibold text-primary hover:underline">View official scholarship page</a>}
+            </div>
           )}
         </div>
-        {!!scholarship.criticalFieldsMissing?.length && (
-          <div className="mt-3 rounded-xl border border-warning/20 bg-warning/[0.035] px-3 py-2 text-xs text-muted-foreground">
-            <span className="font-semibold text-foreground">Important fields still missing:</span>{" "}
-            {scholarship.criticalFieldsMissing.join(", ")}.
-          </div>
-        )}
-        {!![...(scholarship.extractionWarnings ?? []), ...(scholarship.validationWarnings ?? [])].length && (
-          <div className="mt-2 space-y-1 text-xs text-muted-foreground">
-            {[...(scholarship.extractionWarnings ?? []), ...(scholarship.validationWarnings ?? [])]
-              .slice(0, 4)
-              .map((warning) => <p key={warning}>• {warning}</p>)}
-          </div>
-        )}
-      </div>
 
-      <div className="mt-5 space-y-5">
-        <ReviewSection title="Overview" icon={<ClipboardList className="size-3.5" aria-hidden="true" />}>
-          <div className="grid gap-x-2.5 gap-y-2 md:grid-cols-3">
-            <ReviewField label="Scholarship name" value={scholarship.name ?? ""} onChange={(name) => updateScholarship({ name })} />
-            <ReviewField label="Sponsoring organization" value={scholarship.organization ?? ""} onChange={(organization) => updateScholarship({ organization })} />
-            <ReviewField label="Scholarship type" value={scholarship.type ?? ""} onChange={(type) => updateScholarship({ type })} />
-            <ReviewField label="Country / region" value={scholarship.country ?? ""} onChange={(country) => updateScholarship({ country })} />
-            <ReviewField label="Award amount" value={scholarship.awardAmount ?? ""} onChange={(awardAmount) => updateScholarship({ awardAmount })} />
-            <ReviewField label="Official website" value={scholarship.officialWebsite ?? scholarship.url ?? ""} onChange={(officialWebsite) => updateScholarship({ officialWebsite, url: officialWebsite })} />
-            <ReviewTextArea label="Scholarship description" value={scholarship.description ?? ""} onChange={(description) => updateScholarship({ description })} rows={2} className="md:col-span-3" />
-          </div>
-        </ReviewSection>
+        <div className="border-t border-border/60 py-5">
+          <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-foreground/75">Required materials</h3>
+          {requiredMaterials.length > 0 ? (
+            <ul className="mt-2 grid gap-1.5 text-sm text-foreground sm:grid-cols-2">
+              {requiredMaterials.map((material) => <li key={material} className="flex items-start gap-2"><span className="mt-2 size-1 rounded-full bg-primary/70" />{material}</li>)}
+            </ul>
+          ) : <p className="mt-2 text-sm text-muted-foreground">No required materials were identified.</p>}
+        </div>
 
-        <ReviewSection title="Timeline" icon={<CalendarDays className="size-3.5" aria-hidden="true" />} defaultExpanded={false}>
-          <div className="grid gap-x-2.5 gap-y-2 md:grid-cols-3">
-            <ReviewField label="Application opens" value={scholarship.applicationOpens ?? ""} onChange={(applicationOpens) => updateScholarship({ applicationOpens })} />
-            <ReviewField label="Application deadline" value={scholarship.applicationDeadline ?? ""} onChange={(applicationDeadline) => updateScholarship({ applicationDeadline })} />
-            <ReviewField label="Notification date" value={scholarship.notificationDate ?? ""} onChange={(notificationDate) => updateScholarship({ notificationDate })} />
-            <ReviewField label="Program start" value={scholarship.programStart ?? ""} onChange={(programStart) => updateScholarship({ programStart })} />
-            <ReviewField label="Program end" value={scholarship.programEnd ?? ""} onChange={(programEnd) => updateScholarship({ programEnd })} />
-            <ReviewField label="Current status" value={scholarship.currentStatus ?? ""} onChange={(currentStatus) => updateScholarship({ currentStatus })} />
-          </div>
-        </ReviewSection>
+        <section aria-labelledby="essay-requirements-heading" className="border-l-2 border-primary/45 bg-primary/[0.025] px-3 py-4 sm:px-4">
+          <h3 id="essay-requirements-heading" className="text-base font-semibold text-foreground">Essay requirements</h3>
+          <p className="mt-1 max-w-3xl text-sm leading-5 text-muted-foreground">Review each selected prompt and its word limits. Enter N/A when the scholarship does not provide a minimum or maximum.</p>
 
-        <ReviewSection title="Eligibility" icon={<ShieldCheck className="size-3.5" aria-hidden="true" />} defaultExpanded={false}>
-          <div className="grid gap-x-2.5 gap-y-2 md:grid-cols-3">
-            <ReviewField label="Minimum GPA" value={scholarship.minimumGpa ?? ""} onChange={(minimumGpa) => updateScholarship({ minimumGpa })} />
-            <ReviewField label="Enrollment level" value={scholarship.enrollmentLevel ?? ""} onChange={(enrollmentLevel) => updateScholarship({ enrollmentLevel })} />
-            <ReviewField label="Citizenship / residency requirement" value={scholarship.citizenshipRequirement ?? ""} onChange={(citizenshipRequirement) => updateScholarship({ citizenshipRequirement })} />
-            <ReviewField label="Financial need requirement" value={scholarship.financialNeedRequirement ?? ""} onChange={(financialNeedRequirement) => updateScholarship({ financialNeedRequirement })} />
-            <ReviewField label="Location / residency requirement" value={scholarship.locationRequirement ?? ""} onChange={(locationRequirement) => updateScholarship({ locationRequirement })} />
-            <ReviewField label="Eligible majors / fields" value={scholarship.eligibleMajors ?? ""} onChange={(eligibleMajors) => updateScholarship({ eligibleMajors })} />
-            <ReviewTextArea label="Other eligibility rules" value={scholarship.otherEligibilityRules ?? ""} onChange={(otherEligibilityRules) => updateScholarship({ otherEligibilityRules })} rows={2} className="md:col-span-3" />
-            <ReviewTextArea label="Eligibility requirements" value={listValue(scholarship.eligibilityRequirements)} onChange={(value) => updateScholarship({ eligibilityRequirements: parseList(value) })} rows={3} className="md:col-span-3" />
+          <div className="mt-3">
+            {promptEntries.map((entry, index) => (
+              <PromptReviewRow
+                key={entry.id}
+                entry={entry}
+                index={index}
+                selected={selectedPromptIdSet.has(entry.id)}
+                onToggle={() => togglePrompt(entry.id)}
+                onSave={(patch) => updatePrompt(entry.id, patch)}
+                onRemove={() => updatePromptEntries(promptEntries.filter((candidate) => candidate.id !== entry.id))}
+              />
+            ))}
+            {promptEntries.length === 0 && <p className="border-t border-border/60 py-4 text-sm text-muted-foreground">No essay prompt was extracted. Add one or explicitly choose No essay prompt.</p>}
           </div>
-        </ReviewSection>
 
-        <ReviewSection title="Materials & prompts" icon={<FileUp className="size-3.5" aria-hidden="true" />} defaultExpanded={false}>
-          <div className="grid gap-x-2.5 gap-y-2 md:grid-cols-3">
-            <ReviewField
-              label="Required document types"
-              value={docsValue}
-              onChange={(value) =>
-                updateScholarship({
-                  requiredDocumentTypes: value
-                    .split(",")
-                    .map((item) => item.replace(/^\s+/, ""))
-                    .filter(Boolean),
-                })
-              }
-              placeholder="Essay, transcript, recommendation letter..."
-            />
-            <ReviewTextArea label="Other required materials" value={scholarship.otherRequiredMaterials ?? ""} onChange={(otherRequiredMaterials) => updateScholarship({ otherRequiredMaterials })} rows={2} className="md:col-span-2" />
-            <ReviewTextArea label="Essay prompts" value={scholarship.essayPrompts ?? ""} onChange={(essayPrompts) => updateScholarship({ essayPrompts })} rows={3} className="md:col-span-3" />
-            <ReviewTextArea label="Required application materials" value={listValue(scholarship.requiredApplicationMaterials)} onChange={(value) => updateScholarship({ requiredApplicationMaterials: parseList(value) })} rows={3} className="md:col-span-3" />
-          </div>
-        </ReviewSection>
+          <button
+            type="button"
+            onClick={() => updatePromptEntries([...promptEntries, { id: `prompt-${Date.now()}`, promptNumber: promptEntries.length + 1, promptText: "", minimumWords: null, maximumWords: null, minimumWordsReviewed: false, maximumWordsReviewed: false }])}
+            className="mt-2 text-xs font-semibold text-primary hover:underline"
+          >
+            + Add prompt
+          </button>
 
-        <ReviewSection title="Additional details" icon={<ReceiptText className="size-3.5" aria-hidden="true" />} defaultExpanded={false}>
-          <div className="grid gap-x-2.5 gap-y-2 md:grid-cols-3">
-            <ReviewTextArea label="Benefits" value={listValue(scholarship.benefits)} onChange={(value) => updateScholarship({ benefits: parseList(value) })} rows={3} />
-            <ReviewTextArea label="Selection criteria" value={listValue(scholarship.selectionCriteria)} onChange={(value) => updateScholarship({ selectionCriteria: parseList(value) })} rows={3} className="md:col-span-2" />
-            <ReviewTextArea label="Application process" value={listValue(scholarship.applicationProcess)} onChange={(value) => updateScholarship({ applicationProcess: parseList(value) })} rows={3} className="md:col-span-3" />
+          <div className="mt-4 border-t border-border/60 pt-4">
+            <label className="flex cursor-pointer items-start gap-3">
+              <input type="checkbox" checked={noEssayPromptSelected} onChange={chooseNoEssayPrompt} className="mt-0.5 size-4 rounded border-border text-primary focus:ring-2 focus:ring-primary/25" />
+              <span>
+                <span className="block text-sm font-semibold text-foreground">No essay prompt</span>
+                <span className="mt-0.5 block text-xs leading-5 text-muted-foreground">Choose this only if the scholarship does not require an essay or written response.</span>
+              </span>
+            </label>
+            {(pendingNoEssayConfirmation || (noEssayPromptSelected && essayRequiredByMaterials && !scholarship.noEssayPromptConflictConfirmed)) && (
+              <div className="mt-3 border-l-2 border-warning/60 bg-warning/[0.04] px-3 py-2.5">
+                <p className="text-sm text-foreground">This scholarship appears to require an essay. Confirm that no prompt applies.</p>
+                <div className="mt-2 flex gap-3">
+                  <button type="button" onClick={confirmNoEssayPrompt} className="text-xs font-semibold text-primary hover:underline">Confirm no essay prompt</button>
+                  <button type="button" onClick={() => setPendingNoEssayConfirmation(false)} className="text-xs font-semibold text-muted-foreground hover:text-foreground">Cancel</button>
+                </div>
+              </div>
+            )}
           </div>
-        </ReviewSection>
-      </div>
+        </section>
+      </section>
 
       <div className="mt-7 flex flex-col items-end gap-2">
         <button
           type="button"
           onClick={onAnalyze}
-          disabled={analyzing}
+          disabled={analyzing || !promptDecisionValid}
           aria-busy={analyzing}
-          className={`inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-90 ${analyzing ? "agent-loading" : ""}`}
+          className={`inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45 ${analyzing ? "agent-loading" : ""}`}
         >
           {analyzing && <Spinner className="size-4" />}
           {analyzing ? "Analyzing fit…" : "Accept and Analyze Fit"}
         </button>
+        <p role="status" aria-live="polite" className={`text-right text-xs font-medium ${promptDecisionValid ? "text-success" : "text-warning"}`}>
+          {promptDecisionValid
+            ? "Prompt requirements reviewed."
+            : !promptDecisionMade
+              ? "Select a prompt and review its word limits to continue."
+              : noEssayPromptSelected
+                ? "Confirm that no essay prompt applies to continue."
+                : "Review the selected prompt text and enter a number or N/A for both word limits."}
+        </p>
         {analysisStatus && <p className="mt-2 text-right text-xs text-muted-foreground">{analysisStatus}</p>}
       </div>
     </WorkflowStep>
@@ -4791,10 +5094,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   const [autoCovered, setAutoCovered] = useState<Set<string>>(() => new Set());
   const [manualChecked, setManualChecked] = useState<Set<string>>(() => new Set());
   const [manualUnchecked, setManualUnchecked] = useState<Set<string>>(() => new Set());
-  const draft = user?.essayDraft ?? "";
   const essayTitle = user?.essayTitle ?? "";
-  const wordCount = draft.trim() ? draft.trim().split(/\s+/).filter(Boolean).length : 0;
-  const characterCount = draft.length;
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("outline");
   const [panelOpen, setPanelOpen] = useState(true);
   const [panelWidth, setPanelWidth] = useState(() => {
@@ -4823,15 +5123,31 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   const [promptPickerOpen, setPromptPickerOpen] = useState(false);
   const [pendingPromptIndex, setPendingPromptIndex] = useState(0);
 
-  const rawPromptBlob =
+  const legacyPromptBlob =
     user?.activeScholarship?.essayPrompts
     || user?.activeScholarship?.otherRequiredMaterials
     || user?.activeScholarship?.requirementsPreview
     || "";
-  const availablePrompts = useMemo(() => splitEssayPrompts(rawPromptBlob), [rawPromptBlob]);
+  const hasPromptDecisionState = Array.isArray(user?.activeScholarship?.selectedEssayPromptIds)
+    || typeof user?.activeScholarship?.noEssayPromptSelected === "boolean";
+  const availablePromptEntries = useMemo(() => {
+    const selected = normalizeSelectedEssayPromptEntries(user?.activeScholarship);
+    if (selected.length > 0 || hasPromptDecisionState) return selected;
+    return normalizeEssayPromptEntries({ essayPrompts: legacyPromptBlob });
+  }, [hasPromptDecisionState, legacyPromptBlob, user?.activeScholarship]);
+  const availablePrompts = useMemo(() => availablePromptEntries.map((entry) => entry.promptText), [availablePromptEntries]);
+  const promptDataKey = useMemo(() => JSON.stringify(availablePromptEntries), [availablePromptEntries]);
   const [selectedPromptIndex, setSelectedPromptIndex] = useState(0);
+  const activePromptEntry = availablePromptEntries[Math.min(selectedPromptIndex, Math.max(0, availablePromptEntries.length - 1))];
+  const activePromptId = activePromptEntry?.id ?? "no-essay-prompt";
   const essayPrompt =
-    availablePrompts[Math.min(selectedPromptIndex, Math.max(0, availablePrompts.length - 1))] || rawPromptBlob;
+    activePromptEntry?.promptText || (hasPromptDecisionState ? "" : legacyPromptBlob);
+  const draft = user?.essayDraftsByPromptId?.[activePromptId]
+    ?? (selectedPromptIndex === 0 && activePromptId !== "no-essay-prompt" ? user?.essayDraft ?? "" : "");
+  const draftHtml = user?.essayDraftHtmlByPromptId?.[activePromptId]
+    ?? (selectedPromptIndex === 0 && activePromptId !== "no-essay-prompt" ? user?.essayDraftHtml ?? "" : "");
+  const wordCount = draft.trim() ? draft.trim().split(/\s+/).filter(Boolean).length : 0;
+  const characterCount = draft.length;
   const hasMultiplePrompts = availablePrompts.length > 1;
   const hasOutline = !!user?.personalizedOutline?.outline?.sections?.length;
 
@@ -4852,14 +5168,21 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     return mergeSuggestions(coach, auto).filter((s) => !dismissed.has(s.id));
   }, [draft, coachRaw, dismissed]);
 
-  function updateEssayPrompt(value: string) {
+  function updateEssayPrompt(value: string, index = hasMultiplePrompts ? pendingPromptIndex : selectedPromptIndex) {
     if (!user) return;
+    const allEntries = normalizeEssayPromptEntries(user.activeScholarship);
+    const selectedEntry = availablePromptEntries[Math.min(index, Math.max(0, availablePromptEntries.length - 1))];
+    const nextEntries = selectedEntry
+      ? allEntries.map((entry) => entry.id === selectedEntry.id ? { ...entry, promptText: value } : entry)
+      : [...allEntries, { id: `prompt-${Date.now()}`, promptNumber: allEntries.length + 1, promptText: value, minimumWords: null, maximumWords: null, minimumWordsReviewed: false, maximumWordsReviewed: false }];
     updateProfile({
-      activeScholarship: { ...(user.activeScholarship ?? {}), essayPrompts: value },
+      activeScholarship: {
+        ...(user.activeScholarship ?? {}),
+        essayPromptEntries: nextEntries,
+        essayPrompts: serializeEssayPromptEntries(nextEntries),
+      },
       personalizedOutline: undefined,
     });
-    setSelectedPromptIndex(0);
-    setPendingPromptIndex(0);
     setPromptConfirmed(false);
     setPromptPickerOpen(true);
     setOutlineStatus(null);
@@ -4870,11 +5193,28 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     setSelectedPromptIndex(index);
     setPendingPromptIndex(index);
     setPromptConfirmed(false);
-    updateProfile({ personalizedOutline: undefined });
+    const nextPromptId = availablePromptEntries[index]?.id ?? "no-essay-prompt";
+    const nextDraft = user?.essayDraftsByPromptId?.[nextPromptId] ?? "";
+    const nextDraftHtml = user?.essayDraftHtmlByPromptId?.[nextPromptId] ?? "";
+    updateProfile({ essayDraft: nextDraft, essayDraftHtml: nextDraftHtml, personalizedOutline: undefined });
     setOutlineStatus("Prompt changed — confirm the new prompt to build its outline.");
     setActiveTab("outline");
     setPanelOpen(true);
     setPromptPickerOpen(true);
+  }
+
+  function updateActiveDraft(value: string) {
+    updateProfile({
+      essayDraft: value,
+      essayDraftsByPromptId: { ...(user?.essayDraftsByPromptId ?? {}), [activePromptId]: value },
+    });
+  }
+
+  function updateActiveDraftHtml(value: string) {
+    updateProfile({
+      essayDraftHtml: value,
+      essayDraftHtmlByPromptId: { ...(user?.essayDraftHtmlByPromptId ?? {}), [activePromptId]: value },
+    });
   }
 
   const outlineKey = useMemo(() => {
@@ -4911,6 +5251,11 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   useEffect(() => {
     if (!user) return;
     if (promptConfirmed) return;
+    if (user.activeScholarship?.noEssayPromptSelected) {
+      setPromptConfirmed(true);
+      setPromptPickerOpen(false);
+      return;
+    }
     // Resume silently only when the stored outline was generated for this exact focus.
     if (user.personalizedOutline?.generatedForKey === outlineKey) {
       setPromptConfirmed(true);
@@ -4920,7 +5265,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     setPendingPromptIndex(Math.min(selectedPromptIndex, Math.max(0, availablePrompts.length - 1)));
     setPromptPickerOpen(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.email, rawPromptBlob, outlineKey]);
+  }, [user?.email, promptDataKey, outlineKey]);
 
   async function runOutlineGeneration(promptOverride?: string) {
     if (!user || outlineLoading) return;
@@ -4966,13 +5311,18 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
 
   async function confirmEssayPrompt(index?: number, options?: { allowEmpty?: boolean }) {
     const nextIndex = typeof index === "number" ? index : pendingPromptIndex;
-    const nextPrompt = (availablePrompts[nextIndex] || rawPromptBlob).trim();
+    const nextPrompt = (availablePrompts[nextIndex] || legacyPromptBlob).trim();
     if (!nextPrompt && !options?.allowEmpty) {
       setOutlineStatus("Add an essay prompt, or continue without a formal prompt.");
       return;
     }
     setSelectedPromptIndex(nextIndex);
     setPendingPromptIndex(nextIndex);
+    const nextPromptId = availablePromptEntries[nextIndex]?.id ?? "no-essay-prompt";
+    updateProfile({
+      essayDraft: user?.essayDraftsByPromptId?.[nextPromptId] ?? "",
+      essayDraftHtml: user?.essayDraftHtmlByPromptId?.[nextPromptId] ?? "",
+    });
     setPromptConfirmed(true);
     setPromptPickerOpen(false);
     setPanelOpen(true);
@@ -4986,15 +5336,17 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   }
 
   async function continueWithoutFormalPrompt() {
-    // Clear any stale pasted materials masquerading as a prompt so agents use
-    // scholarship-guided adaptation instead.
     if (!user) return;
-    if (rawPromptBlob.trim()) {
-      updateProfile({
-        activeScholarship: { ...(user.activeScholarship ?? {}), essayPrompts: "" },
-        personalizedOutline: undefined,
-      });
-    }
+    updateProfile({
+      activeScholarship: {
+        ...(user.activeScholarship ?? {}),
+        selectedEssayPromptIds: [],
+        noEssayPromptSelected: true,
+      },
+      essayDraft: user.essayDraftsByPromptId?.["no-essay-prompt"] ?? "",
+      essayDraftHtml: user.essayDraftHtmlByPromptId?.["no-essay-prompt"] ?? "",
+      personalizedOutline: undefined,
+    });
     setSelectedPromptIndex(0);
     setPendingPromptIndex(0);
     await confirmEssayPrompt(0, { allowEmpty: true });
@@ -5086,7 +5438,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     for (const s of [...quickFixSuggestions].sort((a, b) => b.start - a.start)) {
       text = applySuggestion(text, s);
     }
-    updateProfile({ essayDraft: text });
+    updateActiveDraft(text);
   }
 
   const coveredPoints = useMemo(() => {
@@ -5206,7 +5558,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
       const workingDraft = session.cleaned_draft || draft;
       const appliedCount = session.mechanics?.applied_count ?? 0;
 
-      if (workingDraft !== draft) updateProfile({ essayDraft: workingDraft });
+      if (workingDraft !== draft) updateActiveDraft(workingDraft);
       setMechanicsNote(
         appliedCount > 0
           ? `${appliedCount} spelling/mechanics fix${appliedCount === 1 ? "" : "es"} applied before coaching.`
@@ -5305,7 +5657,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   }
 
   async function requestRewrite(action: RewriteAction, text: string, surrounding: string) {
-    const res = await runSelectionRewrite(buildRewritePayload(user, action, text, surrounding));
+    const res = await runSelectionRewrite(buildRewritePayload(user, action, text, surrounding, essayPrompt));
     if (res.status === "error" || !res.rewritten_text) {
       throw new Error(res.note || "The rewrite could not be generated.");
     }
@@ -5352,7 +5704,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
         const tc = await page.getTextContent();
         pages.push(tc.items.map((i) => i.str ?? "").join(" "));
       }
-      updateProfile({ essayDraft: normalizePdfDraftText(pages) });
+      updateActiveDraft(normalizePdfDraftText(pages));
       setPdfStatus(`Imported ${pdf.numPages} pages from ${file.name}.`);
       triggerAutoCheck();
     } catch (e) {
@@ -5393,7 +5745,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   }
 
   function loadExampleEssay() {
-    updateProfile({ essayDraft: exampleEssayDraft });
+    updateActiveDraft(exampleEssayDraft);
     setSavedAt(Date.now());
     triggerAutoCheck();
   }
@@ -5587,8 +5939,8 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
               </label>
               <textarea
                 id="landing-essay-prompt"
-                value={rawPromptBlob}
-                onChange={(event) => updateEssayPrompt(event.target.value)}
+                value={availablePrompts[pendingPromptIndex] ?? ""}
+                onChange={(event) => updateEssayPrompt(event.target.value, pendingPromptIndex)}
                 rows={4}
                 placeholder={
                   availablePrompts.length > 0
@@ -5606,7 +5958,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
             <button
               type="button"
               onClick={() => void confirmEssayPrompt()}
-              disabled={!(availablePrompts[pendingPromptIndex] || rawPromptBlob).trim()}
+              disabled={!(availablePrompts[pendingPromptIndex] || legacyPromptBlob).trim()}
               className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
             >
               <Sparkles className="size-4" />
@@ -5662,8 +6014,8 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
             <input
               id="workspace-essay-prompt"
               type="text"
-              value={hasMultiplePrompts ? essayPrompt : rawPromptBlob}
-              onChange={(event) => updateEssayPrompt(event.target.value)}
+              value={essayPrompt}
+              onChange={(event) => updateEssayPrompt(event.target.value, selectedPromptIndex)}
               readOnly={hasMultiplePrompts}
               placeholder="Paste or enter the scholarship essay prompt here."
               className="h-10 min-w-0 flex-1 rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground/60 focus:border-info focus:ring-2 focus:ring-info/10 read-only:bg-muted/30"
@@ -5712,9 +6064,9 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
             <EssayEditor
               ref={editorApiRef}
               value={draft}
-              onChange={(v) => updateProfile({ essayDraft: v })}
-              richValue={user?.essayDraftHtml}
-              onRichChange={(v) => updateProfile({ essayDraftHtml: v })}
+              onChange={updateActiveDraft}
+              richValue={draftHtml}
+              onRichChange={updateActiveDraftHtml}
               suggestions={suggestions}
               onDismiss={dismissSuggestion}
               onOpenHighlights={openHighlights}

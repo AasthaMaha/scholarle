@@ -40,7 +40,10 @@ FIT_ANALYSIS_INSTRUCTIONS = (
     "- Separately score stated selection criteria as Strong, Moderate, Weak, or Unclear.\n"
     "- Separate eligibility from competitiveness.\n"
     "- application_materials_check is optional for later use; leave it empty or minimal. "
-    "Do not treat materials readiness as part of profile fit."
+    "Do not treat materials readiness as part of profile fit.\n"
+    "- When selectedEssayPromptEntries is present, treat only those prompts as active for this "
+    "application. allEssayPromptEntries is reference data only. When noEssayPromptSelected is true, "
+    "do not create essay-prompt readiness requirements."
 )
 
 

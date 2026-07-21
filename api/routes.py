@@ -80,6 +80,16 @@ class OpportunityExtractRequest(BaseModel):
     additional_notes: str = Field(default="", max_length=12000)
 
 
+class EssayPromptResponse(BaseModel):
+    id: str = ""
+    promptNumber: int = Field(default=1, ge=1)
+    promptText: str = ""
+    minimumWords: Optional[int] = Field(default=None, ge=0)
+    maximumWords: Optional[int] = Field(default=None, ge=0)
+    minimumWordsReviewed: bool = False
+    maximumWordsReviewed: bool = False
+
+
 class OpportunityExtractResponse(BaseModel):
     name: str = ""
     organization: str = ""
@@ -105,6 +115,10 @@ class OpportunityExtractResponse(BaseModel):
     requiredDocumentTypes: list[str] = Field(default_factory=list)
     otherRequiredMaterials: str = ""
     essayPrompts: str = ""
+    essayPromptEntries: list[EssayPromptResponse] = Field(default_factory=list)
+    selectedEssayPromptIds: list[str] = Field(default_factory=list)
+    noEssayPromptSelected: bool = False
+    noEssayPromptConflictConfirmed: bool = False
     eligibilityRequirements: list[str] = Field(default_factory=list)
     requiredApplicationMaterials: list[str] = Field(default_factory=list)
     benefits: list[str] = Field(default_factory=list)

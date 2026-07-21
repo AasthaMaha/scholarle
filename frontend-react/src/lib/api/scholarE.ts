@@ -1,4 +1,4 @@
-import type { ActiveScholarship, AnalysisResult, DiscoveryIntent, FitAnalysisResult, PersonalizedOutlineResult, UserProfile, WikiDiscoveryResult } from "@/lib/userStore";
+import type { ActiveScholarship, AnalysisResult, DiscoveryIntent, EssayPromptEntry, FitAnalysisResult, PersonalizedOutlineResult, UserProfile, WikiDiscoveryResult } from "@/lib/userStore";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 
@@ -144,17 +144,140 @@ export function splitEssayPrompts(raw: string): string[] {
   return [text];
 }
 
+function nonnegativeWordCount(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = typeof value === "number" ? value : Number.parseInt(String(value), 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed) : null;
+}
+
+/** Extract only word limits explicitly present in text. A lone count is a maximum. */
+export function extractPromptWordLimits(text: string): Pick<EssayPromptEntry, "minimumWords" | "maximumWords"> {
+  const normalized = (text || "").replace(/,/g, " ").replace(/\s+/g, " ");
+  const exact = normalized.match(/\bexactly\s+(\d{1,5})\s*words?\b/i);
+  if (exact) {
+    const count = Number(exact[1]);
+    return { minimumWords: count, maximumWords: count };
+  }
+  const range = normalized.match(/\b(?:between\s+)?(\d{1,5})\s*(?:-|–|—|to|and)\s*(\d{1,5})\s*words?\b/i);
+  if (range) {
+    return { minimumWords: Number(range[1]), maximumWords: Number(range[2]) };
+  }
+
+  const minimum = normalized.match(/\b(?:minimum|min\.?|at least|no fewer than)\s*(?:of\s*)?(\d{1,5})\s*words?\b/i)?.[1];
+  const maximum = normalized.match(/\b(?:maximum|max\.?|up to|no more than|not more than)\s*(?:of\s*)?(\d{1,5})\s*words?\b/i)?.[1]
+    ?? normalized.match(/\b(\d{1,5})[- ]word\s+(?:maximum|limit)\b/i)?.[1]
+    ?? normalized.match(/\b(\d{1,5})\s*words?\s*(?:or less|maximum|max\.?)\b/i)?.[1];
+  if (minimum || maximum) {
+    return {
+      minimumWords: minimum ? Number(minimum) : null,
+      maximumWords: maximum ? Number(maximum) : null,
+    };
+  }
+
+  const loneCount = normalized.match(/\b(\d{1,5})\s*words?\b/i)?.[1];
+  return { minimumWords: null, maximumWords: loneCount ? Number(loneCount) : null };
+}
+
+/** Normalize new structured prompts and migrate legacy single-string prompt data on read. */
+export function normalizeEssayPromptEntries(scholarship?: ActiveScholarship | null): EssayPromptEntry[] {
+  const structured = Array.isArray(scholarship?.essayPromptEntries) ? scholarship.essayPromptEntries : [];
+  const source = structured.length > 0
+    ? structured
+    : splitEssayPrompts(scholarship?.essayPrompts ?? "").map((promptText, index) => ({
+        id: `prompt-${index + 1}`,
+        promptNumber: index + 1,
+      promptText,
+      minimumWords: null,
+      maximumWords: null,
+    }));
+
+  return source.map((entry, index) => {
+    const promptText = String(entry.promptText ?? "")
+      .trim()
+      .replace(/^(?:Prompt|Essay|Question)\s*\d+\s*[:.)]\s*/i, "");
+    const inferred = extractPromptWordLimits(promptText);
+    const hasExplicitLimit = /\b\d{1,5}\s*(?:-|–|—|to|and)?\s*\d{0,5}\s*words?\b/i.test(promptText);
+    const rawMinimum = nonnegativeWordCount(entry.minimumWords);
+    const rawMaximum = nonnegativeWordCount(entry.maximumWords);
+    const minimumReviewedWasStored = typeof entry.minimumWordsReviewed === "boolean";
+    const maximumReviewedWasStored = typeof entry.maximumWordsReviewed === "boolean";
+    const minimumWords = entry.minimumWordsReviewed === true
+      ? rawMinimum
+      : hasExplicitLimit ? inferred.minimumWords : rawMinimum;
+    const maximumWords = entry.maximumWordsReviewed === true
+      ? rawMaximum
+      : hasExplicitLimit ? inferred.maximumWords : rawMaximum;
+    return {
+      id: String(entry.id || `prompt-${index + 1}`),
+      promptNumber: Number.isFinite(entry.promptNumber) && entry.promptNumber > 0 ? entry.promptNumber : index + 1,
+      promptText,
+      minimumWords,
+      maximumWords,
+      minimumWordsReviewed: minimumReviewedWasStored ? entry.minimumWordsReviewed : minimumWords !== null,
+      maximumWordsReviewed: maximumReviewedWasStored ? entry.maximumWordsReviewed : maximumWords !== null,
+    };
+  });
+}
+
+/** Return only prompts chosen for this application; legacy records fall back to all prompts. */
+export function normalizeSelectedEssayPromptEntries(scholarship?: ActiveScholarship | null): EssayPromptEntry[] {
+  const entries = normalizeEssayPromptEntries(scholarship);
+  if (scholarship?.noEssayPromptSelected) return [];
+  if (!Array.isArray(scholarship?.selectedEssayPromptIds)) return entries;
+  const selectedIds = new Set(scholarship.selectedEssayPromptIds);
+  return entries.filter((entry) => selectedIds.has(entry.id));
+}
+
+export function serializeEssayPromptEntries(entries: EssayPromptEntry[]): string {
+  return entries
+    .filter((entry) => entry.promptText.trim())
+    .map((entry, index) => `Prompt ${index + 1}: ${entry.promptText.trim()}`)
+    .join("\n\n");
+}
+
+export function formatEssayPromptWordLimit(entry?: EssayPromptEntry): string {
+  if (!entry) return "";
+  if (entry.minimumWords !== null && entry.maximumWords !== null) return `${entry.minimumWords}-${entry.maximumWords} words`;
+  if (entry.minimumWords !== null) return `At least ${entry.minimumWords} words`;
+  if (entry.maximumWords !== null) return `Maximum ${entry.maximumWords} words`;
+  return "";
+}
+
+function promptEntryFor(scholarship: ActiveScholarship, promptOverride?: string) {
+  const entries = promptOverride ? normalizeEssayPromptEntries(scholarship) : normalizeSelectedEssayPromptEntries(scholarship);
+  const selected = (promptOverride || "").trim().toLocaleLowerCase();
+  return (selected ? entries.find((entry) => entry.promptText.trim().toLocaleLowerCase() === selected) : entries[0]) ?? undefined;
+}
+
+function scholarshipForEssayWorkflow(scholarship: ActiveScholarship): ActiveScholarship {
+  const selectedEssayPromptEntries = normalizeSelectedEssayPromptEntries(scholarship);
+  return {
+    ...scholarship,
+    essayPromptEntries: selectedEssayPromptEntries,
+    essayPrompts: serializeEssayPromptEntries(selectedEssayPromptEntries),
+    selectedEssayPromptEntries,
+    selectedEssayPrompts: serializeEssayPromptEntries(selectedEssayPromptEntries),
+  };
+}
+
+function hasEssayPromptDecision(scholarship?: ActiveScholarship | null) {
+  return Array.isArray(scholarship?.selectedEssayPromptIds)
+    || typeof scholarship?.noEssayPromptSelected === "boolean";
+}
+
 export function buildAnalyzePayload(user: UserProfile | null, essayPromptOverride?: string): AnalyzePayload {
   const scholarship = user?.activeScholarship;
+  const selectedEntry = scholarship ? promptEntryFor(scholarship, essayPromptOverride) : undefined;
   const previousReadiness: Record<string, number> = {};
   Object.entries(user?.lastAnalysis?.readiness_index ?? {}).forEach(([key, value]) => {
     if (typeof value?.score === "number") previousReadiness[key] = value.score;
   });
 
   const selectedPrompt = (essayPromptOverride
-    || scholarship?.essayPrompts
-    || scholarship?.otherRequiredMaterials
-    || scholarship?.requirementsPreview
+    || selectedEntry?.promptText
+    || (!hasEssayPromptDecision(scholarship) ? scholarship?.essayPrompts : "")
+    || (!hasEssayPromptDecision(scholarship) ? scholarship?.otherRequiredMaterials : "")
+    || (!hasEssayPromptDecision(scholarship) ? scholarship?.requirementsPreview : "")
     || "").trim();
 
   const prompt = compact([
@@ -247,9 +370,19 @@ export function buildFitPayload(user: UserProfile | null): FitAnalyzePayload {
   const { lastAnalysis, fitAnalysis, ...studentProfile } = user ?? { name: "", email: "" };
   void lastAnalysis;
   void fitAnalysis;
+  const scholarship = user?.activeScholarship ?? {};
+  const allEssayPromptEntries = normalizeEssayPromptEntries(scholarship);
+  const selectedEssayPromptEntries = normalizeSelectedEssayPromptEntries(scholarship);
 
   return {
-    scholarship_record: user?.activeScholarship ?? {},
+    scholarship_record: {
+      ...scholarship,
+      allEssayPromptEntries,
+      essayPromptEntries: selectedEssayPromptEntries,
+      essayPrompts: serializeEssayPromptEntries(selectedEssayPromptEntries),
+      selectedEssayPromptEntries,
+      selectedEssayPrompts: serializeEssayPromptEntries(selectedEssayPromptEntries),
+    },
     student_profile: {
       ...studentProfile,
       profile_text: profileToText(user),
@@ -350,16 +483,19 @@ export async function getScholarshipDiscoveryBootstrap(
 }
 
 function findWordLimit(text: string) {
-  const match = text.match(/(\d{2,5})\s*(?:-|to)?\s*(?:word|words)/i);
-  return match?.[0] ?? "";
+  const limits = extractPromptWordLimits(text);
+  return formatEssayPromptWordLimit({ id: "fallback", promptNumber: 1, promptText: text, ...limits });
 }
 
 export function buildOutlinePayload(user: UserProfile | null, essayPromptOverride?: string): OutlineGeneratePayload {
   const scholarship = user?.activeScholarship ?? {};
+  const workflowScholarship = scholarshipForEssayWorkflow(scholarship);
+  const selectedEntry = promptEntryFor(scholarship, essayPromptOverride);
   const essayPrompt = (essayPromptOverride
-    || scholarship.essayPrompts
-    || scholarship.otherRequiredMaterials
-    || scholarship.requirementsPreview
+    || selectedEntry?.promptText
+    || (!hasEssayPromptDecision(scholarship) ? scholarship.essayPrompts : "")
+    || (!hasEssayPromptDecision(scholarship) ? scholarship.otherRequiredMaterials : "")
+    || (!hasEssayPromptDecision(scholarship) ? scholarship.requirementsPreview : "")
     || "").trim();
   const { lastAnalysis, fitAnalysis, wikiDiscovery, savedWikiSources, activeScholarship, personalizedOutline, ...studentProfile } =
     user ?? { name: "", email: "" };
@@ -375,10 +511,13 @@ export function buildOutlinePayload(user: UserProfile | null, essayPromptOverrid
     // can exceed the backend's 200-character limit and cause a 422 response.
     opportunity_id: (scholarship.name || scholarship.url || "").slice(0, 200),
     scholarship_name: scholarship.name || "",
-    clean_scholarship_record: scholarship,
+    clean_scholarship_record: workflowScholarship,
     essay_prompt: essayPrompt,
     essay_type: scholarship.type || "Scholarship essay",
-    word_limit: findWordLimit([essayPrompt, scholarship.otherRequiredMaterials, scholarship.requirementsPreview].filter(Boolean).join("\n")),
+    word_limit: formatEssayPromptWordLimit(selectedEntry)
+      || findWordLimit((hasEssayPromptDecision(scholarship)
+        ? [essayPrompt]
+        : [essayPrompt, scholarship.otherRequiredMaterials, scholarship.requirementsPreview]).filter(Boolean).join("\n")),
     student_profile: {
       ...studentProfile,
       profile_text: profileToText(user),
@@ -616,10 +755,13 @@ export function buildEssayCoachPayload(
   essayPromptOverride?: string,
 ): EssayCoachPayload {
   const scholarship = user?.activeScholarship ?? {};
+  const workflowScholarship = scholarshipForEssayWorkflow(scholarship);
+  const selectedEntry = promptEntryFor(scholarship, essayPromptOverride);
   const essayPrompt = (essayPromptOverride
-    || scholarship.essayPrompts
-    || scholarship.otherRequiredMaterials
-    || scholarship.requirementsPreview
+    || selectedEntry?.promptText
+    || (!hasEssayPromptDecision(scholarship) ? scholarship.essayPrompts : "")
+    || (!hasEssayPromptDecision(scholarship) ? scholarship.otherRequiredMaterials : "")
+    || (!hasEssayPromptDecision(scholarship) ? scholarship.requirementsPreview : "")
     || "").trim();
   const { lastAnalysis, fitAnalysis, wikiDiscovery, savedWikiSources, activeScholarship, personalizedOutline, drafts, ...studentProfile } =
     user ?? { name: "", email: "" };
@@ -633,12 +775,15 @@ export function buildEssayCoachPayload(
 
   return {
     student_profile: { ...studentProfile, profile_text: profileToText(user) },
-    clean_scholarship_record: scholarship,
+    clean_scholarship_record: workflowScholarship,
     essay_prompt: essayPrompt,
     essay_draft: user?.essayDraft ?? "",
     personalized_outline: (user?.personalizedOutline as Record<string, unknown>) ?? {},
     user_notes: scholarship.additionalNotes || "",
-    word_limit: findWordLimit([essayPrompt, scholarship.otherRequiredMaterials, scholarship.requirementsPreview].filter(Boolean).join("\n")),
+    word_limit: formatEssayPromptWordLimit(selectedEntry)
+      || findWordLimit((hasEssayPromptDecision(scholarship)
+        ? [essayPrompt]
+        : [essayPrompt, scholarship.otherRequiredMaterials, scholarship.requirementsPreview]).filter(Boolean).join("\n")),
     outline_points: buildOutlinePoints(user?.personalizedOutline).map((p) => ({ id: p.id, label: p.label })),
     mode,
     writing_support_level:
@@ -809,9 +954,17 @@ export function buildRewritePayload(
   action: string,
   selectedText: string,
   surroundingText: string,
+  essayPromptOverride?: string,
 ): SelectionRewritePayload {
   const scholarship = user?.activeScholarship ?? {};
-  const essayPrompt = scholarship.essayPrompts || scholarship.otherRequiredMaterials || scholarship.requirementsPreview || "";
+  const workflowScholarship = scholarshipForEssayWorkflow(scholarship);
+  const selectedEntry = promptEntryFor(scholarship, essayPromptOverride);
+  const essayPrompt = essayPromptOverride
+    || selectedEntry?.promptText
+    || (!hasEssayPromptDecision(scholarship) ? scholarship.essayPrompts : "")
+    || (!hasEssayPromptDecision(scholarship) ? scholarship.otherRequiredMaterials : "")
+    || (!hasEssayPromptDecision(scholarship) ? scholarship.requirementsPreview : "")
+    || "";
   const { lastAnalysis, fitAnalysis, wikiDiscovery, savedWikiSources, activeScholarship, personalizedOutline, drafts, ...studentProfile } =
     user ?? { name: "", email: "" };
   void lastAnalysis;
@@ -826,7 +979,7 @@ export function buildRewritePayload(
     selected_text: selectedText,
     surrounding_text: surroundingText,
     essay_prompt: essayPrompt,
-    clean_scholarship_record: scholarship,
+    clean_scholarship_record: workflowScholarship,
     student_profile: { ...studentProfile, profile_text: profileToText(user) },
   };
 }
