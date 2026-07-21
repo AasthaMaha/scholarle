@@ -13,32 +13,33 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Optional
 
 from essay_coaching_service import (
-    _clean_sentence_suggestions,
     _compose_summary,
     _derive_writing_scores,
     _empty_package,
     _outline_text,
+    _prepare_sentence_suggestions,
     _profile_text,
+    _profile_grounding_view,
+    _prompt_alignment_view,
+    _run_alignment,
+    _run_clarity_concision,
+    _run_evidence_strength,
+    _run_grammar,
     _run_guardrail_critic,
+    _run_insight,
     _run_outline_coverage,
-    _run_profile_grounding,
-    _run_prompt_alignment,
-    _run_sentence_corrector,
-    _run_specificity,
-    _run_structure_flow,
+    _run_narrative_structure,
     _run_tone_authenticity,
     _scholarship_context,
+    _sentence_feedback_view,
+    _specificity_view,
+    _structure_flow_view,
 )
 from graph.builder import analyze_opportunity
 from nodes.assemble_package import assemble_package
-from nodes.coach_sections import coach_sections
 from nodes.coaching.agents import (
     build_context,
-    run_discovery_coach,
-    run_eligibility_matrix,
-    run_narrative_coach,
     run_reviewer_simulation_coach,
-    run_strategy_coach,
 )
 from nodes.combine import combine_coaching
 from nodes.critic import critic_review
@@ -116,7 +117,6 @@ def _evaluation_response(state: dict) -> dict:
         "eligibility_matrix": state.get("eligibility_matrix", {}),
         "essay_alignment_matrix": state.get("essay_alignment_matrix", {}),
         "feedback": state.get("feedback", ""),
-        "section_coaching": state.get("section_coaching", {}),
         "opportunity_analysis": state.get("opportunity_analysis", {}),
         "critique": state.get("critique", {}),
         "final_application_package": state.get("final_application_package", ""),
@@ -129,13 +129,21 @@ def _evaluation_response(state: dict) -> dict:
 def _fallback_priorities(results: dict[str, Any]) -> list[dict[str, str]]:
     candidates: list[str] = []
     alignment = results.get("alignment") or {}
-    structure = results.get("structure") or {}
-    specificity = results.get("specificity") or {}
+    narrative_structure = results.get("narrative_structure") or {}
+    evidence = results.get("evidence_strength") or {}
+    insight = results.get("insight") or {}
     tone = results.get("tone") or {}
+    grammar = results.get("grammar") or {}
+    clarity = results.get("clarity_concision") or {}
     candidates.extend(alignment.get("revision_tasks") or [])
-    candidates.extend(structure.get("revision_tasks") or [])
-    candidates.extend(specificity.get("places_to_add_detail") or [])
+    candidates.extend(narrative_structure.get("revision_tasks") or [])
+    candidates.extend(evidence.get("recommendations") or [])
+    candidates.extend(evidence.get("places_to_add_detail") or [])
+    candidates.extend(insight.get("revision_tasks") or [])
+    candidates.extend(insight.get("missing_meaning_or_reflection") or [])
     candidates.extend(tone.get("tone_improvement_suggestions") or [])
+    candidates.extend(grammar.get("revision_tasks") or [])
+    candidates.extend(clarity.get("revision_tasks") or [])
     return [
         {
             "priority": item,
@@ -158,7 +166,16 @@ def _coach_response(
     warnings: list[str],
 ) -> dict:
     package = _empty_package()
-    coach_specialists = {"sentence", "alignment", "grounding", "structure", "specificity", "tone", "coverage"}
+    coach_specialists = {
+        "grammar",
+        "clarity_concision",
+        "alignment",
+        "evidence_strength",
+        "narrative_structure",
+        "insight",
+        "tone",
+        "coverage",
+    }
     if not any(name in results and results[name] is not None for name in coach_specialists):
         package["status"] = "error"
         package["coach_summary"] = "The writing specialists could not analyze this draft."
@@ -171,12 +188,26 @@ def _coach_response(
     }
     package["writing_support_level"] = writing_support_level
     package["sentence_suggestions"] = sentence_suggestions
+    grammar_feedback = results.get("grammar") or {}
+    clarity_feedback = results.get("clarity_concision") or {}
+    package["grammar_feedback"] = _sentence_feedback_view(grammar_feedback)
+    package["clarity_concision_feedback"] = _sentence_feedback_view(clarity_feedback)
     package["guardrail"] = guardrail or {}
-    package["prompt_alignment"] = results.get("alignment") or {}
-    package["profile_grounding"] = results.get("grounding") or {}
-    package["structure_feedback"] = results.get("structure") or {}
-    package["paragraph_feedback"] = package["structure_feedback"].get("paragraph_feedback", [])
-    package["specificity_feedback"] = results.get("specificity") or {}
+    alignment = results.get("alignment") or {}
+    package["alignment"] = alignment
+    package["prompt_alignment"] = _prompt_alignment_view(alignment)
+    evidence_strength = results.get("evidence_strength") or {}
+    package["evidence_strength"] = evidence_strength
+    # Compatibility projections keep old clients and targeted-tool contracts
+    # working without running duplicate grounding or specificity agents.
+    package["profile_grounding"] = _profile_grounding_view(evidence_strength)
+    narrative_structure = results.get("narrative_structure") or {}
+    package["narrative_structure"] = narrative_structure
+    package["structure_feedback"] = _structure_flow_view(narrative_structure)
+    package["paragraph_feedback"] = narrative_structure.get("paragraph_feedback", [])
+    insight = results.get("insight") or {}
+    package["insight"] = insight
+    package["specificity_feedback"] = _specificity_view(evidence_strength)
     package["tone_feedback"] = results.get("tone") or {}
     package["outline_coverage"] = results.get("coverage") or {}
 
@@ -186,16 +217,18 @@ def _coach_response(
         for key, value in readiness.items()
         if key != "revision_progress" and isinstance(value, dict) and isinstance(value.get("score"), int)
     }
-    clarity, grammar = _derive_writing_scores(sentence_suggestions)
+    derived_clarity, derived_grammar = _derive_writing_scores(sentence_suggestions)
     package["overall_scores"] = formal_scores or {
-        "prompt_alignment": package["prompt_alignment"].get("alignment_score", 0),
-        "profile_grounding": package["profile_grounding"].get("grounding_score", 0),
-        "structure_flow": package["structure_feedback"].get("structure_score", 0),
-        "specificity": package["specificity_feedback"].get("specificity_score", 0),
+        "alignment": alignment.get("alignment_score", 0),
+        "evidence_strength": evidence_strength.get("evidence_strength_score", 0),
+        "narrative_structure_flow_coherence": narrative_structure.get("narrative_structure_score", 0),
+        "insight": insight.get("insight_score", 0),
         "authenticity": package["tone_feedback"].get("authenticity_score", 0),
-        "clarity": clarity,
+        "clarity_concision": clarity_feedback.get("clarity_concision_score", derived_clarity),
     }
-    package["overall_scores"]["grammar_mechanics"] = grammar
+    package["overall_scores"]["grammar_mechanics"] = grammar_feedback.get(
+        "grammar_score", derived_grammar
+    )
 
     ranked = (evaluation or {}).get("ranked_revision_actions") or _fallback_priorities(results)
     package["revision_priorities"] = ranked[:5]
@@ -236,7 +269,6 @@ def run_unified_coaching_session(
     opportunity_prompt: str = "",
     previous_readiness: Optional[dict] = None,
     draft_number: int = 1,
-    include_section_coaching: bool = False,
 ) -> dict:
     """Run one shared specialist graph and project it into both UI contracts."""
     essay_draft = (essay_draft or "").strip()
@@ -297,42 +329,33 @@ def run_unified_coaching_session(
     )
 
     jobs: dict[str, Runner] = {
-        "sentence": lambda: _run_sentence_corrector(
+        "grammar": lambda: _run_grammar(essay_draft, user_notes or ""),
+        "clarity_concision": lambda: _run_clarity_concision(
             essay_draft,
-            prompt_for_agents,
-            scholarship_context,
             user_notes or "",
             writing_support_level,
         ),
-        "alignment": lambda: _run_prompt_alignment(essay_draft, prompt_for_agents, scholarship_context),
-        "grounding": lambda: _run_profile_grounding(essay_draft, profile, scholarship_context),
-        "structure": lambda: _run_structure_flow(essay_draft, prompt_for_agents, outline_text),
-        "specificity": lambda: _run_specificity(essay_draft, profile, scholarship_context),
+        "alignment": lambda: _run_alignment(essay_draft, prompt_for_agents, profile, scholarship_context),
+        "evidence_strength": lambda: _run_evidence_strength(essay_draft, profile, scholarship_context),
+        "narrative_structure": lambda: _run_narrative_structure(
+            essay_draft,
+            prompt_for_agents,
+            outline_text,
+            profile,
+        ),
+        "insight": lambda: _run_insight(essay_draft, prompt_for_agents, profile, scholarship_context),
         "tone": lambda: _run_tone_authenticity(essay_draft, profile, scholarship_context),
-        "strategy": lambda: run_strategy_coach(shared_context),
-        "eligibility": lambda: run_eligibility_matrix(shared_context),
-        "narrative": lambda: run_narrative_coach(shared_context),
     }
-    if profile:
-        jobs["discovery"] = lambda: run_discovery_coach(shared_context)
     if outline_points:
         jobs["coverage"] = lambda: _run_outline_coverage(essay_draft, outline_points or [], scholarship_context)
-    if include_section_coaching:
-        jobs["section_coaching"] = lambda: coach_sections(
-            {
-                "retrieved_profile_chunks": [profile] if profile else [],
-                "student_draft": essay_draft,
-                "opportunity_text": opportunity_text,
-                "opportunity_analysis": opportunity_analysis,
-            }
-        ).get("section_coaching", {})
-
     results = _run_parallel(jobs, warnings, agent_status)
-    raw_sentence = results.get("sentence") or []
-    sentence_suggestions = _clean_sentence_suggestions(
+    grammar_feedback = results.get("grammar") or {}
+    clarity_feedback = results.get("clarity_concision") or {}
+    sentence_suggestions = _prepare_sentence_suggestions(
         essay_draft,
-        raw_sentence,
-        writing_support_level=writing_support_level,
+        grammar_feedback,
+        clarity_feedback,
+        writing_support_level,
     )
 
     state: dict[str, Any] = {
@@ -343,29 +366,35 @@ def run_unified_coaching_session(
         "retrieved_profile_chunks": [profile] if profile else [],
         "shared_context": shared_context,
         "submitted_summary": submitted_summary,
-        "strategy_report": results.get("strategy") or {},
-        "eligibility_report": results.get("eligibility") or {},
-        "discovery_report": results.get("discovery") or {},
-        "narrative_report": results.get("narrative") or {},
+        # The standalone Strategy specialist is merged into Alignment here.
+        "strategy_report": {},
+        # Eligibility/profile fit belongs to the earlier Fit Assessment page,
+        # not the Essay Workspace specialist wave.
+        "eligibility_report": {},
+        # The old discovery stage is intentionally empty in this graph; its
+        # responsibilities now live in the single Evidence Strength report.
+        "discovery_report": {},
+        # The standalone Narrative specialist is merged with Structure & Flow.
+        "narrative_report": {},
         "specialist_reports": {
-            "prompt_alignment": results.get("alignment") or {},
-            "profile_grounding": results.get("grounding") or {},
-            "structure_flow": results.get("structure") or {},
-            "specificity": results.get("specificity") or {},
+            "grammar": _sentence_feedback_view(grammar_feedback),
+            "clarity_concision": _sentence_feedback_view(clarity_feedback),
+            "alignment": results.get("alignment") or {},
+            "evidence_strength": results.get("evidence_strength") or {},
+            "narrative_structure_flow_coherence": results.get("narrative_structure") or {},
+            "insight": results.get("insight") or {},
             "tone_authenticity": results.get("tone") or {},
-            "section_coaching": results.get("section_coaching") or {},
         },
         "previous_readiness": previous_readiness or {},
         "draft_number": draft_number,
         "active_scholarship": record,
-        "section_coaching": results.get("section_coaching") or {},
         "critic_attempts": 0,
     }
 
     second_jobs: dict[str, Runner] = {
         "reviewer": lambda: run_reviewer_simulation_coach(
             shared_context,
-            results.get("strategy") or {},
+            results.get("alignment") or {},
         ),
         "alignment_matrix": lambda: build_essay_alignment_matrix(state),
     }

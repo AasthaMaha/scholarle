@@ -310,7 +310,6 @@ export type AnalysisResult = {
   eligibility_matrix?: EligibilityMatrix;
   essay_alignment_matrix?: EssayAlignmentMatrix;
   feedback?: string;
-  section_coaching?: Record<string, unknown>;
   opportunity_analysis?: Record<string, unknown>;
   critique?: {
     verdict?: string;

@@ -5311,9 +5311,9 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
       setSessionPhase("Running coach suggestions and deep evaluation…");
       setSessionProgress(28);
 
-      // One backend request owns mechanics, lightweight coaching, and deep
-      // evaluation. The server runs the two AI branches concurrently and can
-      // return a partial result when only one branch succeeds.
+      // One backend request owns mechanics and one shared coaching/evaluation
+      // graph. Specialists fan out in parallel, then one evaluator consumes
+      // their reports and projects both UI result packages.
       const session = await runWorkspaceCoachingSession(buildCoachingSessionPayload(user, essayPrompt));
       const workingDraft = session.cleaned_draft || draft;
       const appliedCount = session.mechanics?.applied_count ?? 0;
@@ -6778,10 +6778,18 @@ function WorkspaceCoachTab({
     obj && Object.values(obj).some((v) => (Array.isArray(v) ? v.length > 0 : typeof v === "number" ? v > 0 : !!v))
       ? obj
       : undefined;
-  const align = hasContent(result?.prompt_alignment);
-  const ground = hasContent(result?.profile_grounding);
-  const structure = hasContent(result?.structure_feedback);
-  const specificity = hasContent(result?.specificity_feedback);
+  const alignment = hasContent(result?.alignment);
+  const align = alignment ? undefined : hasContent(result?.prompt_alignment);
+  const evidence = hasContent(result?.evidence_strength);
+  // Older targeted responses still use the two legacy sections. A unified
+  // coaching session supplies Evidence Strength and suppresses both duplicates.
+  const ground = evidence ? undefined : hasContent(result?.profile_grounding);
+  const narrativeStructure = hasContent(result?.narrative_structure);
+  const insight = hasContent(result?.insight);
+  const structure = narrativeStructure ? undefined : hasContent(result?.structure_feedback);
+  const specificity = evidence ? undefined : hasContent(result?.specificity_feedback);
+  const grammar = hasContent(result?.grammar_feedback);
+  const clarityConcision = hasContent(result?.clarity_concision_feedback);
   const tone = hasContent(result?.tone_feedback);
   const finalCheck = hasContent(result?.final_check);
   const priorities = result?.revision_priorities ?? [];
@@ -6790,12 +6798,12 @@ function WorkspaceCoachTab({
   const quickFixes = result?.quick_fixes ?? [];
   const deeperTasks = result?.deeper_revision_tasks ?? [];
   const scoreEntries = Object.entries(result?.overall_scores ?? {});
-  const paragraphFeedback = structure?.paragraph_feedback ?? [];
+  const paragraphFeedback = narrativeStructure?.paragraph_feedback ?? structure?.paragraph_feedback ?? [];
   const visibleParagraphFeedback = showAllParagraphFeedback ? paragraphFeedback : paragraphFeedback.slice(0, 2);
   const hiddenParagraphFeedbackCount = Math.max(0, paragraphFeedback.length - 2);
   const hasData =
     !loading &&
-    !!(result && (align || ground || structure || specificity || tone || finalCheck || priorities.length || scoreEntries.length));
+    !!(result && (alignment || align || evidence || ground || narrativeStructure || insight || structure || specificity || tone || grammar || clarityConcision || finalCheck || priorities.length || scoreEntries.length));
 
   function toggleCoachSection(id: string) {
     setOpenCoachSections((prev) => {
@@ -6919,6 +6927,27 @@ function WorkspaceCoachTab({
         </div>
       )}
 
+      {alignment && (
+        <CoachAccordion id="alignment" title="Alignment (Prompt + Scholarship Values) Coach" score={alignment.alignment_score} open={openCoachSections.has("alignment")} onToggle={toggleCoachSection}>
+          {alignment.fit_summary && (
+            <div className="rounded-md bg-info/10 px-2.5 py-2 text-[12px] leading-relaxed text-foreground/85">
+              {alignment.fit_summary}
+            </div>
+          )}
+          <CoachList label="Prompt parts covered" items={alignment.covered_prompt_parts} tone="success" icon={Check} />
+          <CoachList label="Prompt parts weakly covered" items={alignment.weakly_covered_prompt_parts} tone="warning" />
+          <CoachList label="Prompt parts missing" items={alignment.missing_prompt_parts} tone="danger" />
+          <CoachList label="What this scholarship values" items={alignment.stated_scholarship_values} tone="muted" />
+          <CoachList label="What reviewers appear to evaluate" items={alignment.actual_evaluation_focus} tone="muted" />
+          <CoachList label="Scholarship values addressed" items={alignment.addressed_scholarship_values} tone="success" icon={Check} />
+          <CoachList label="Values missing or weak" items={alignment.weak_or_missing_scholarship_values} tone="warning" />
+          <CoachList label="Specific student-to-scholarship connections" items={alignment.student_fit_connections} tone="info" />
+          <CoachList label="Generic or unsupported fit claims" items={alignment.generic_or_unsupported_fit_claims} tone="danger" />
+          <CoachList label="Notes" items={alignment.comments} tone="muted" />
+          <CoachList label="Revision tasks" items={alignment.revision_tasks} tone="info" />
+        </CoachAccordion>
+      )}
+
       {align && (
         <CoachAccordion id="alignment" title="Prompt Alignment" score={align.alignment_score} open={openCoachSections.has("alignment")} onToggle={toggleCoachSection}>
           <CoachList label="Covered" items={align.covered_requirements} tone="success" icon={Check} />
@@ -6935,6 +6964,111 @@ function WorkspaceCoachTab({
           <CoachList label="Unsupported — verify or soften" items={ground.unsupported_or_risky_claims} tone="danger" />
           <CoachList label="Strong evidence you haven't used" items={ground.unused_relevant_profile_evidence} tone="info" />
           <CoachList label="Recommendations" items={ground.recommendations} tone="muted" />
+        </CoachAccordion>
+      )}
+
+      {evidence && (
+        <CoachAccordion id="evidence-strength" title="Evidence Strength Coach" score={evidence.evidence_strength_score} open={openCoachSections.has("evidence-strength")} onToggle={toggleCoachSection}>
+          <CoachList label="Supported by your draft or profile" items={evidence.supported_claims} tone="success" icon={Check} />
+          <CoachList label="Unsupported — verify or soften" items={evidence.unsupported_or_risky_claims} tone="danger" />
+          <CoachList label="Details that need verification" items={evidence.invented_or_unverifiable_details} tone="danger" />
+          <CoachList label="Vague statements" items={evidence.vague_statements} tone="warning" />
+          <CoachList label="Add concrete detail here" items={evidence.places_to_add_detail} tone="info" />
+          <CoachList label="Impact opportunities" items={evidence.impact_opportunities} tone="success" />
+          <CoachList label="Strong profile evidence you haven't used" items={evidence.unused_relevant_profile_evidence} tone="info" />
+          {evidence.recommended_experience_to_feature && (
+            <div className="rounded-md bg-info/10 px-2.5 py-2 text-[12px] leading-relaxed text-foreground/85">
+              <span className="font-semibold">Strongest experience to consider: </span>
+              {evidence.recommended_experience_to_feature}
+            </div>
+          )}
+          <CoachList label="Questions to answer with real details" items={evidence.recommended_questions} tone="muted" />
+          <CoachList label="Recommendations" items={evidence.recommendations} tone="muted" />
+        </CoachAccordion>
+      )}
+
+      {narrativeStructure && (
+        <CoachAccordion id="narrative-structure" title="Narrative Structure, Flow & Coherence Coach" score={narrativeStructure.narrative_structure_score} open={openCoachSections.has("narrative-structure")} onToggle={toggleCoachSection}>
+          {narrativeStructure.overall_narrative_assessment && (
+            <div className="rounded-md bg-info/10 px-2.5 py-2 text-[12px] leading-relaxed text-foreground/85">
+              {narrativeStructure.overall_narrative_assessment}
+            </div>
+          )}
+          {narrativeStructure.biggest_narrative_gap && (
+            <div className="rounded-md bg-warning/10 px-2.5 py-2 text-[12px] leading-relaxed text-foreground/85">
+              <span className="font-semibold">Biggest narrative gap: </span>
+              {narrativeStructure.biggest_narrative_gap}
+            </div>
+          )}
+          <div className="space-y-2 rounded-md border border-border/70 p-2.5">
+            <CoachScoreBar label="Structure & flow" score={narrativeStructure.structure_flow_score ?? 0} />
+            <CoachScoreBar label="Logical coherence" score={narrativeStructure.coherence_score ?? 0} />
+            <CoachScoreBar label="Narrative arc" score={narrativeStructure.narrative_arc_score ?? 0} />
+          </div>
+          {!!narrativeStructure.arc_progression?.length && (
+            <div className="space-y-1.5">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">Narrative progression</div>
+              {narrativeStructure.arc_progression.map((stage, i) => (
+                <div key={`${stage.stage ?? "stage"}-${i}`} className="rounded-md border border-border/70 p-2">
+                  <div className="text-[12px] font-semibold capitalize">
+                    {stage.stage || `Stage ${i + 1}`}
+                    {stage.status && <span className="ml-1 font-normal text-muted-foreground">· {stage.status}</span>}
+                  </div>
+                  {stage.evidence && <div className="mt-0.5 text-[12px] text-success">＋ {stage.evidence}</div>}
+                  {stage.issue && <div className="mt-0.5 text-[12px] text-warning">！ {stage.issue}</div>}
+                  {stage.suggestion && <div className="mt-0.5 text-[12px] leading-relaxed text-muted-foreground">{stage.suggestion}</div>}
+                </div>
+              ))}
+            </div>
+          )}
+          {!!paragraphFeedback.length && (
+            <div className="space-y-1.5">
+              {visibleParagraphFeedback.map((pf, i) => (
+                <div key={i} className="rounded-md border border-border/70 p-2">
+                  <div className="text-[12px] font-semibold">
+                    Paragraph {pf.paragraph_number || i + 1}
+                    {pf.priority ? <span className="ml-1 font-normal text-muted-foreground">· {pf.priority}</span> : null}
+                  </div>
+                  {pf.strength && <div className="mt-0.5 text-[12px] text-success">＋ {pf.strength}</div>}
+                  {pf.main_issue && <div className="mt-0.5 text-[12px] text-warning">！ {pf.main_issue}</div>}
+                  {pf.suggestion && <div className="mt-0.5 text-[12px] leading-relaxed text-muted-foreground">{pf.suggestion}</div>}
+                </div>
+              ))}
+              {hiddenParagraphFeedbackCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowAllParagraphFeedback((open) => !open)}
+                  className="inline-flex items-center rounded-md px-2 py-1 text-[12px] font-semibold text-info transition-colors hover:bg-info/10 hover:text-info"
+                  aria-expanded={showAllParagraphFeedback}
+                >
+                  {showAllParagraphFeedback ? "Show less ▲" : `Show ${hiddenParagraphFeedbackCount} more ▼`}
+                </button>
+              )}
+            </div>
+          )}
+          <CoachList label="Strong connections to preserve" items={narrativeStructure.logical_connections_to_preserve} tone="success" icon={Check} />
+          <CoachList label="Transition and flow issues" items={narrativeStructure.transition_and_flow_issues} tone="warning" />
+          <CoachList label="Coherence issues" items={narrativeStructure.coherence_issues} tone="warning" />
+          <CoachList label="Contradictions or timeline issues" items={narrativeStructure.contradictions_or_timeline_issues} tone="danger" />
+          <CoachList label="Missing reasoning" items={narrativeStructure.missing_reasoning} tone="danger" />
+          <CoachList label="Suggested reordering" items={narrativeStructure.recommended_reordering} tone="info" />
+          <CoachList label="Revision tasks" items={narrativeStructure.revision_tasks} tone="muted" />
+        </CoachAccordion>
+      )}
+
+      {insight && (
+        <CoachAccordion id="insight" title="Insight (Depth + Meaning + Reflection) Coach" score={insight.insight_score} open={openCoachSections.has("insight")} onToggle={toggleCoachSection}>
+          <CoachList label="Meaningful reflections already working" items={insight.meaningful_reflections} tone="success" icon={Check} />
+          <CoachList label="Surface-level or generic reflections" items={insight.surface_level_or_generic_reflections} tone="warning" />
+          <CoachList label="Lessons, realizations, or questions" items={insight.lessons_realizations_or_questions} tone="info" />
+          <CoachList label="Changes in mindset or behavior" items={insight.changes_in_mindset_or_behavior} tone="info" />
+          <CoachList label="Changes in values, goals, or responsibility" items={insight.changes_in_values_goals_or_responsibility} tone="info" />
+          <CoachList label="Why it mattered to the student" items={insight.significance_to_self} tone="success" />
+          <CoachList label="Why it mattered to others or a community" items={insight.significance_to_others_or_community} tone="success" />
+          <CoachList label="Connections to future direction" items={insight.future_direction_connections} tone="info" />
+          <CoachList label="Meaning or reflection still missing" items={insight.missing_meaning_or_reflection} tone="danger" />
+          <CoachList label="Questions to deepen the student's reflection" items={insight.recommended_reflection_questions} tone="muted" />
+          <CoachList label="Revision tasks" items={insight.revision_tasks} tone="muted" />
         </CoachAccordion>
       )}
 
@@ -6980,12 +7114,39 @@ function WorkspaceCoachTab({
         </CoachAccordion>
       )}
 
+      {clarityConcision && (
+        <CoachAccordion id="clarity-concision" title="Clarity & Concision Coach" score={clarityConcision.clarity_concision_score} open={openCoachSections.has("clarity-concision")} onToggle={toggleCoachSection}>
+          <CoachList label="Clear and direct wording to preserve" items={clarityConcision.clear_and_direct_sentences} tone="success" icon={Check} />
+          <CoachList label="Filler or repetition" items={clarityConcision.filler_or_repetition} tone="warning" />
+          <CoachList label="Wordiness" items={clarityConcision.wordiness} tone="warning" />
+          <CoachList label="Unclear phrasing" items={clarityConcision.unclear_phrasing} tone="danger" />
+          <CoachList label="Tangled sentence structure" items={clarityConcision.tangled_sentence_structure} tone="danger" />
+          <CoachList label="Revision tasks" items={clarityConcision.revision_tasks} tone="info" />
+        </CoachAccordion>
+      )}
+
       {tone && (
-        <CoachAccordion id="tone" title="Tone & Authenticity" score={tone.authenticity_score} open={openCoachSections.has("tone")} onToggle={toggleCoachSection}>
+        <CoachAccordion id="tone" title="Tone & Authenticity Coach" score={tone.authenticity_score} open={openCoachSections.has("tone")} onToggle={toggleCoachSection}>
+          <CoachList label="Tone quality notes" items={tone.tone_quality_notes} tone="info" />
           <CoachList label="Voice worth keeping" items={tone.voice_preservation_notes} tone="success" icon={Check} />
           <CoachList label="AI-like phrases" items={tone.ai_like_phrases} tone="danger" />
           <CoachList label="Generic phrases" items={tone.generic_phrases} tone="warning" />
+          <CoachList label="Overly polished or corporate phrases" items={tone.overly_polished_or_corporate_phrases} tone="warning" />
+          <CoachList label="Formulaic or performative phrases" items={tone.formulaic_or_performative_phrases} tone="warning" />
           <CoachList label="Tone suggestions" items={tone.tone_improvement_suggestions} tone="info" />
+        </CoachAccordion>
+      )}
+
+      {grammar && (
+        <CoachAccordion id="grammar" title="Grammar Coach" score={grammar.grammar_score} open={openCoachSections.has("grammar")} onToggle={toggleCoachSection}>
+          <CoachList label="Spelling" items={grammar.spelling_issues} tone="danger" />
+          <CoachList label="Punctuation" items={grammar.punctuation_issues} tone="warning" />
+          <CoachList label="Capitalization" items={grammar.capitalization_issues} tone="warning" />
+          <CoachList label="Verb tense" items={grammar.verb_tense_issues} tone="warning" />
+          <CoachList label="Agreement" items={grammar.agreement_issues} tone="warning" />
+          <CoachList label="Other grammar issues" items={grammar.other_grammar_issues} tone="danger" />
+          <CoachList label="Sentence-level correctness" items={grammar.sentence_level_correctness_issues} tone="danger" />
+          <CoachList label="Revision tasks" items={grammar.revision_tasks} tone="info" />
         </CoachAccordion>
       )}
     </div>
@@ -7600,7 +7761,7 @@ function StepScores() {
   const [open, setOpen] = useState<string | null>(null);
   const stages = [
     "Analyzer + Retriever agents",
-    "Strategy / discovery / narrative agents",
+    "Content / structure / voice / grammar coaches",
     "Reviewer simulation agent",
     "Combiner agent synthesis",
     "Critic agent quality check",
@@ -7762,14 +7923,40 @@ function StepHighlights() {
   const priorities = analysis?.revision_priorities ?? [];
   const reviewers = analysis?.reviewer_comments ?? [];
   const reports = analysis?.coaching_reports ?? {};
-  const sectionCoaching = analysis?.section_coaching ?? {};
   const draft = user?.essayDraft ?? "";
-  const [showSections, setShowSections] = useState(false);
   const [showPackage, setShowPackage] = useState(false);
 
   const strategy = reports.strategy as Record<string, string> | undefined;
+  const alignmentReport = reports.alignment as unknown as
+    | {
+        alignment_score?: number;
+        fit_summary?: string;
+        revision_tasks?: string[];
+      }
+    | undefined;
   const discovery = reports.discovery as Record<string, string> | undefined;
-  const narrative = reports.narrative as Record<string, string> | undefined;
+  const evidenceStrength = reports.evidence_strength as unknown as
+    | {
+        evidence_strength_score?: number;
+        recommended_experience_to_feature?: string;
+        recommendations?: string[];
+      }
+    | undefined;
+  const narrativeStructureReport = reports.narrative_structure_flow_coherence as unknown as
+    | {
+        narrative_structure_score?: number;
+        overall_narrative_assessment?: string;
+        biggest_narrative_gap?: string;
+      }
+    | undefined;
+  const insightReport = reports.insight as unknown as
+    | {
+        insight_score?: number;
+        missing_meaning_or_reflection?: string[];
+        revision_tasks?: string[];
+      }
+    | undefined;
+  const narrative = narrativeStructureReport ? undefined : reports.narrative as Record<string, string> | undefined;
 
   return (
     <div className="space-y-6">
@@ -7832,19 +8019,31 @@ function StepHighlights() {
     {!analysis && (
       <Card>
         <p className="text-sm text-muted-foreground">
-          Run the AI coach from step 8 first to receive strategy, narrative, and reviewer feedback.
+          Run the AI coach from step 8 first to receive alignment, narrative, and reviewer feedback.
         </p>
       </Card>
     )}
 
-    {!!analysis && (strategy || discovery || narrative) && (
-      <div className="grid md:grid-cols-3 gap-4">
+    {!!analysis && (alignmentReport || strategy || evidenceStrength || discovery || narrativeStructureReport || insightReport || narrative) && (
+      <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-4">
         {strategy && (
           <Card>
             <div className="text-xs uppercase tracking-widest text-muted-foreground">Opportunity strategy</div>
             <p className="mt-2 text-sm">{strategy.strategic_insight}</p>
             {strategy.reflection_vs_story_ratio && (
               <p className="mt-2 text-xs text-muted-foreground">{strategy.reflection_vs_story_ratio}</p>
+            )}
+          </Card>
+        )}
+        {alignmentReport && (
+          <Card>
+            <div className="text-xs uppercase tracking-widest text-muted-foreground">Alignment (Prompt + Scholarship Values) Coach</div>
+            {typeof alignmentReport.alignment_score === "number" && (
+              <p className="mt-2 text-sm font-semibold">{alignmentReport.alignment_score}/100</p>
+            )}
+            {alignmentReport.fit_summary && <p className="mt-2 text-sm">{alignmentReport.fit_summary}</p>}
+            {!!alignmentReport.revision_tasks?.[0] && (
+              <p className="mt-2 text-xs text-muted-foreground">Next: {alignmentReport.revision_tasks[0]}</p>
             )}
           </Card>
         )}
@@ -7859,6 +8058,50 @@ function StepHighlights() {
             )}
           </Card>
         )}
+        {evidenceStrength && (
+          <Card>
+            <div className="text-xs uppercase tracking-widest text-muted-foreground">Evidence Strength Coach</div>
+            {typeof evidenceStrength.evidence_strength_score === "number" && (
+              <p className="mt-2 text-sm font-semibold">{evidenceStrength.evidence_strength_score}/100</p>
+            )}
+            {evidenceStrength.recommended_experience_to_feature && (
+              <p className="mt-2 text-xs text-muted-foreground">
+                Strongest experience: {evidenceStrength.recommended_experience_to_feature}
+              </p>
+            )}
+            {!!evidenceStrength.recommendations?.[0] && (
+              <p className="mt-2 text-xs text-muted-foreground">Next: {evidenceStrength.recommendations[0]}</p>
+            )}
+          </Card>
+        )}
+        {narrativeStructureReport && (
+          <Card>
+            <div className="text-xs uppercase tracking-widest text-muted-foreground">Narrative Structure, Flow & Coherence Coach</div>
+            {typeof narrativeStructureReport.narrative_structure_score === "number" && (
+              <p className="mt-2 text-sm font-semibold">{narrativeStructureReport.narrative_structure_score}/100</p>
+            )}
+            {narrativeStructureReport.overall_narrative_assessment && (
+              <p className="mt-2 text-sm">{narrativeStructureReport.overall_narrative_assessment}</p>
+            )}
+            {narrativeStructureReport.biggest_narrative_gap && (
+              <p className="mt-2 text-xs text-muted-foreground">Gap: {narrativeStructureReport.biggest_narrative_gap}</p>
+            )}
+          </Card>
+        )}
+        {insightReport && (
+          <Card>
+            <div className="text-xs uppercase tracking-widest text-muted-foreground">Insight (Depth + Meaning + Reflection) Coach</div>
+            {typeof insightReport.insight_score === "number" && (
+              <p className="mt-2 text-sm font-semibold">{insightReport.insight_score}/100</p>
+            )}
+            {!!insightReport.missing_meaning_or_reflection?.[0] && (
+              <p className="mt-2 text-sm">Needs depth: {insightReport.missing_meaning_or_reflection[0]}</p>
+            )}
+            {!!insightReport.revision_tasks?.[0] && (
+              <p className="mt-2 text-xs text-muted-foreground">Next: {insightReport.revision_tasks[0]}</p>
+            )}
+          </Card>
+        )}
         {narrative && (
           <Card>
             <div className="text-xs uppercase tracking-widest text-muted-foreground">Narrative coach</div>
@@ -7869,28 +8112,6 @@ function StepHighlights() {
           </Card>
         )}
       </div>
-    )}
-
-    {Object.keys(sectionCoaching).length > 0 && (
-      <Card>
-        <button
-          type="button"
-          onClick={() => setShowSections((v) => !v)}
-          className="w-full text-left text-xs uppercase tracking-widest text-muted-foreground"
-        >
-          Section-by-section coaching {showSections ? "▲" : "▼"}
-        </button>
-        {showSections && (
-          <div className="mt-4 space-y-4">
-            {Object.entries(sectionCoaching).map(([name, feedback]) => (
-              <div key={name}>
-                <div className="text-sm font-medium">{name}</div>
-                <p className="mt-1 text-sm text-muted-foreground whitespace-pre-wrap">{String(feedback)}</p>
-              </div>
-            ))}
-          </div>
-        )}
-      </Card>
     )}
 
     {analysis?.final_application_package && (

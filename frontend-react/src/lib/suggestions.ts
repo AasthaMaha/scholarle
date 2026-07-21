@@ -25,7 +25,7 @@ export type Suggestion = {
   suggestionType?: string;
 };
 
-// Raw sentence suggestion returned by the backend Sentence Corrector.
+// Raw sentence suggestion returned by the backend Grammar or Clarity & Concision Coach.
 export type CoachSentenceSuggestion = {
   original_text: string;
   suggested_text: string;

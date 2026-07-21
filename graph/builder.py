@@ -8,7 +8,6 @@ from state.application_state import ApplicationState
 from llm.client import llm
 from utils.parsing import safe_json_parse
 from nodes.prepare import prepare_context
-from nodes.coach_sections import coach_sections
 from nodes.generation import (
     discovery_node,
     eligibility_node,
@@ -115,7 +114,6 @@ def build_application_graph(vector_service, user_id: str):
                                              eligibility     (always)
                                              discovery       (only if profile)
                                              narrative       (only if draft)
-                                             coach_sections  (only if draft)
                                           -> post_generation (join)
                                             --(draft?)--> reviewer -> combine
                                             \--(no draft)--------->  combine
@@ -135,7 +133,6 @@ def build_application_graph(vector_service, user_id: str):
     builder.add_node("eligibility_agent", eligibility_node)
     builder.add_node("discovery_agent", discovery_node)
     builder.add_node("narrative_agent", narrative_node)
-    builder.add_node("coach_sections", coach_sections)
     builder.add_node("post_generation", post_generation)
     builder.add_node("reviewer_agent", reviewer_node)
 
@@ -166,7 +163,6 @@ def build_application_graph(vector_service, user_id: str):
             "eligibility_agent": "eligibility_agent",
             "discovery_agent": "discovery_agent",
             "narrative_agent": "narrative_agent",
-            "coach_sections": "coach_sections",
         },
     )
 
@@ -175,7 +171,6 @@ def build_application_graph(vector_service, user_id: str):
     builder.add_edge("eligibility_agent", "post_generation")
     builder.add_edge("discovery_agent", "post_generation")
     builder.add_edge("narrative_agent", "post_generation")
-    builder.add_edge("coach_sections", "post_generation")
 
     # Branch 3: reviewer simulation only when there is a draft to review
     builder.add_conditional_edges(

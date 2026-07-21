@@ -476,14 +476,15 @@ auto_check
 
 It can run these specialists:
 
-- Sentence Corrector
-- Prompt Alignment Coach
-- Profile Grounding Coach
-- Structure & Flow Coach
-- Specificity Coach
+- Grammar Coach
+- Clarity & Concision Coach
+- Alignment (Prompt + Scholarship Values) Coach
+- Evidence Strength Coach
+- Narrative Structure, Flow & Coherence Coach
+- Insight (Depth + Meaning + Reflection) Coach
 - Tone & Authenticity Coach
 - Reviewer Simulation
-- Outline Coverage
+- Outline Coverage Coach
 - Guardrail Critic
 - Final Check
 - Combiner
@@ -497,11 +498,13 @@ The UI displays:
 - quick fixes
 - deeper revision tasks
 - scores
-- prompt alignment
-- profile grounding
-- structure and flow feedback
-- specificity and impact feedback
+- alignment across the prompt and scholarship values
+- evidence strength (profile grounding, specificity, and impact)
+- narrative structure, flow, coherence, and arc feedback
+- insight, meaning, learning, change, and reflection feedback
 - tone and authenticity feedback
+- clarity and concision feedback
+- grammar and sentence-level correctness feedback
 - reviewer simulation
 - final check status
 
@@ -634,7 +637,6 @@ That graph runs:
 - eligibility matrix coach
 - discovery coach
 - narrative coach
-- section coach
 - reviewer simulation
 - combiner
 - critic
@@ -645,7 +647,6 @@ Important files:
 
 ```text
 nodes/coaching/agents.py
-nodes/coach_sections.py
 nodes/combine.py
 nodes/critic.py
 nodes/assemble_package.py
@@ -660,7 +661,6 @@ The response includes:
 - coaching reports
 - eligibility matrix
 - essay alignment matrix
-- section-by-section coaching
 - final application package
 - revision priorities
 
@@ -678,12 +678,39 @@ POST /api/apply/coaching-session
 ```
 
 The endpoint applies deterministic mechanics once, builds one shared grounded
-context, and fans out the sentence, alignment, grounding, structure,
-specificity, tone, strategy, eligibility, discovery, narrative, and outline
-coverage specialists. Their reports feed one reviewer stage, one rubric-based
+context, and fans out these specialist groups:
+
+- **Content:** Alignment (Prompt + Scholarship Values) Coach, Evidence Strength
+  Coach, and Insight (Depth + Meaning + Reflection) Coach.
+- **Structure:** Narrative Structure, Flow & Coherence Coach.
+- **Voice:** Tone & Authenticity Coach and Clarity & Concision Coach.
+- **Grammar:** Grammar Coach.
+- **Conditional:** Outline Coverage Coach.
+
+Eligibility is intentionally handled
+by the earlier Fit Assessment page and is not recalculated by Essay Workspace.
+Alignment is one model call that
+replaces the former Prompt
+Alignment and Opportunity Strategy calls; it checks every prompt part and the
+essay's evidence-backed connection to the scholarship's stated values and
+priorities. Evidence Strength is one model call that replaces the
+former Profile Grounding, Specificity, and Experience Discovery calls; it checks
+claim support, usable profile experiences, concrete detail, and measurable
+impact together. Narrative Structure, Flow & Coherence is one model call that
+replaces the former Structure & Flow and Narrative calls; it checks paragraph
+organization, transitions, context-to-takeaway progression, logical continuity,
+timeline consistency, contradictions, and missing reasoning. The Insight (Depth
++ Meaning + Reflection) Coach is a separate model call that owns reflection depth, lessons,
+realizations, changes in mindset or behavior, personal/community significance,
+and future direction. Narrative Structure only judges whether reflection is
+present, positioned effectively, and logically connected. The specialist
+reports feed one reviewer stage, one rubric-based
 Evaluator/Revision Planner, and one bounded QA Critic loop. The shared result is
 projected into the existing Coach and Evaluation response packages so the four
 workspace tabs keep a stable frontend contract.
+
+The seven Content, Structure, Voice, and Grammar specialists run in parallel.
+Outline Coverage is conditional, making the first wave a maximum of 8 jobs.
 
 Implementation:
 
@@ -710,8 +737,8 @@ How do I improve this draft right now?
 Used for:
 
 - sentence fixes
-- prompt alignment
-- grounding checks
+- prompt and scholarship-values alignment
+- evidence-strength checks
 - structure feedback
 - tone feedback
 - reviewer-style feedback
@@ -828,7 +855,6 @@ Nodes:
 nodes/profile_extraction.py
 nodes/opportunity_extraction.py
 nodes/coaching/agents.py
-nodes/coach_sections.py
 nodes/combine.py
 nodes/critic.py
 nodes/assemble_package.py
@@ -994,20 +1020,21 @@ Main coordinator:
 run_essay_workspace_coach(...)
 ```
 
-| Specialist | Function |
-| --- | --- |
-| Sentence Corrector | Produces sentence-level clarity, grammar, flow, concision, and word choice suggestions. |
-| Prompt Alignment Coach | Checks whether the essay answers the scholarship prompt and requirements. |
-| Profile Grounding Coach | Checks whether claims are supported by the student profile. |
-| Structure & Flow Coach | Reviews paragraph order, flow, transitions, and structure. |
-| Specificity Coach | Finds vague claims and places to add concrete detail or impact. |
-| Tone & Authenticity Coach | Checks voice, authenticity, generic phrasing, and AI-like language. |
-| Reviewer Simulation | Simulates likely reviewer reaction, strengths, concerns, and questions. |
-| Outline Coverage Agent | Checks which personalized outline points are covered by the draft. |
-| Guardrail Critic | Removes unsafe sentence suggestions that risk adding unsupported claims. |
-| Final Check Agent | Checks whether the essay is ready for final review or submission. |
-| Revision Combiner | Synthesizes specialist outputs into priorities, quick fixes, deeper tasks, and summary. |
-| Selection Rewrite Agent | Rewrites, shortens, expands, or improves tone for selected text only. |
+| Group | Specialist | Function |
+| --- | --- | --- |
+| Content | Alignment (Prompt + Scholarship Values) Coach | Combines full prompt coverage with evidence-backed fit to the scholarship's stated values, selection priorities, and opportunity-specific goals. |
+| Content | Evidence Strength Coach | Combines profile grounding, experience discovery, specificity, and impact; flags unsupported or unverifiable details and surfaces stronger real profile evidence. |
+| Content | Insight (Depth + Meaning + Reflection) Coach | Evaluates reflection depth, lessons and realizations, personal change, significance to self or others, and grounded connections to future direction. |
+| Structure | Narrative Structure, Flow & Coherence Coach | Combines paragraph organization, transitions, narrative arc, logical continuity, timeline consistency, contradictions, and missing reasoning. |
+| Voice | Tone & Authenticity Coach | Protects the student's voice; evaluates sincerity, thoughtfulness, confidence, respect, and genuinely student-written language; flags generic, overly polished, corporate, formulaic, performative, and AI-like phrasing. |
+| Voice | Clarity & Concision Coach | Evaluates whether sentences are understandable, direct, and free of filler, repetition, wordiness, unclear phrasing, and tangled construction. |
+| Grammar | Grammar Coach | Evaluates spelling, punctuation, capitalization, verb tense, agreement, grammar, and sentence-level correctness. |
+| Downstream | Reviewer Simulation | Simulates likely reviewer reaction, strengths, concerns, and questions. |
+| Conditional | Outline Coverage Coach | Checks which personalized outline points are covered by the draft. |
+| Downstream | Guardrail Critic | Removes unsafe sentence suggestions that risk adding unsupported claims. |
+| Targeted | Final Check Agent | Checks whether the essay is ready for final review or submission. |
+| Downstream | Revision Combiner | Synthesizes specialist outputs into priorities, quick fixes, deeper tasks, and summary. |
+| Targeted | Selection Rewrite Agent | Rewrites, shortens, expands, or improves tone for selected text only. |
 
 Used by:
 
@@ -1040,7 +1067,6 @@ POST /api/analyze
 | `eligibility_agent` | Builds requirement-by-requirement eligibility comparison. |
 | `discovery_agent` | Finds useful student strengths from profile evidence. |
 | `narrative_agent` | Reviews essay story structure: beginning, middle, end, reflection. |
-| `coach_sections` | Gives section-by-section coaching using essay templates. |
 | `reviewer_agent` | Simulates reviewer reactions to the draft. |
 | `combine_coaching` | Combines all specialist outputs into readiness index, brief, feedback, and priorities. |
 | `critic_review` | Audits the combined coaching for grounding and hallucinations. |
@@ -1057,38 +1083,24 @@ nodes/coaching/agents.py
 
 | Function | Agent role |
 | --- | --- |
-| `run_strategy_coach` | Opportunity Strategy Coach |
-| `run_discovery_coach` | Experience Discovery Coach |
-| `run_eligibility_matrix` | Eligibility & Requirements Matrix Coach |
-| `run_narrative_coach` | Narrative Coach |
+| `run_strategy_coach` | Legacy targeted deep-evaluation Opportunity Strategy Coach (the unified session uses Alignment instead). |
+| `run_discovery_coach` | Legacy targeted deep-evaluation Experience Discovery Coach (the unified session uses Evidence Strength instead). |
+| `run_eligibility_matrix` | Legacy targeted deep-evaluation Eligibility Coach (not used by Essay Workspace). |
+| `run_narrative_coach` | Legacy targeted deep-evaluation Narrative Coach (the unified session uses Narrative Structure, Flow & Coherence instead). |
 | `run_reviewer_simulation_coach` | Reviewer Simulation Coach |
 | `run_combiner` | Combiner Coach |
 | `run_critic_review` | Critic / quality-control agent |
 
-### Section Coach
+### Retained Essay-Section Templates
 
-File:
+These template definitions are retained for possible future reuse but are not
+wired into either coaching graph or any API response:
 
 ```text
-nodes/coach_sections.py
-```
-
-Function:
-
-```python
-coach_sections(state)
-```
-
-It runs one batched LLM call over three templates:
-
-- Personal Statement
-- Leadership & Impact
-- Experience & Achievements
-
-It returns:
-
-```python
-section_coaching
+templates/base.py
+templates/personal_statement.py
+templates/leadership_impact.py
+templates/experience_achievements.py
 ```
 
 ### Python-Only Helper Coach

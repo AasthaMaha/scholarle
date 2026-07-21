@@ -84,6 +84,8 @@ def _weakest_dim(readiness: dict) -> str:
 def _build_eligibility_matrix(report: dict) -> dict:
     """Normalize the eligibility agent output and derive the violation/missing
     lists the UI uses to tell the student exactly where they need to fill in."""
+    if not report:
+        return {}
     rows = report.get("rows") or []
     normalized = []
     violations = []
@@ -134,6 +136,15 @@ def combine_coaching(state):
     # Sticky rubric across QA revise loops — avoid regenerating a moving target.
     prior_rubric = (state.get("coaching_reports") or {}).get("evaluation_rubric") or {}
 
+    specialist_reports = state.get("specialist_reports") or {}
+    grammar = specialist_reports.get("grammar") or {}
+    clarity_concision = specialist_reports.get("clarity_concision") or {}
+    alignment = specialist_reports.get("alignment") or {}
+    evidence_strength = specialist_reports.get("evidence_strength") or {}
+    narrative_structure = specialist_reports.get("narrative_structure_flow_coherence") or {}
+    insight = specialist_reports.get("insight") or {}
+    tone_authenticity = specialist_reports.get("tone_authenticity") or {}
+
     synthesis = run_combiner(
         context,
         strategy,
@@ -142,7 +153,7 @@ def combine_coaching(state):
         reviewers,
         critique=critique,
         sticky_rubric=prior_rubric or None,
-        specialist_reports=state.get("specialist_reports") or None,
+        specialist_reports=specialist_reports or None,
     )
 
     raw_readiness = synthesis.get("readiness_index", {})
@@ -204,9 +215,16 @@ def combine_coaching(state):
 
     coaching_reports = {
         "evaluation_rubric": evaluation_rubric,
-        "strategy": strategy,
-        "discovery": discovery,
-        "narrative": narrative,
+        "grammar": grammar,
+        "clarity_concision": clarity_concision,
+        "strategy": strategy if not alignment else {},
+        "alignment": alignment,
+        "discovery": discovery if not evidence_strength else {},
+        "evidence_strength": evidence_strength,
+        "narrative": narrative if not narrative_structure else {},
+        "narrative_structure_flow_coherence": narrative_structure,
+        "insight": insight,
+        "tone_authenticity": tone_authenticity,
         "reviewers": reviewers,
     }
 
@@ -219,8 +237,13 @@ def combine_coaching(state):
     priorities = [
         coaching_brief.get("recommended_action", ""),
         *[a.get("priority", "") for a in global_actions[:3]],
-        narrative.get("biggest_narrative_gap", ""),
-        discovery.get("recommended_experience_to_feature", ""),
+        narrative_structure.get("biggest_narrative_gap", "")
+        or narrative.get("biggest_narrative_gap", ""),
+        (insight.get("revision_tasks") or [""])[0],
+        (clarity_concision.get("revision_tasks") or [""])[0],
+        (grammar.get("revision_tasks") or [""])[0],
+        evidence_strength.get("recommended_experience_to_feature", "")
+        or discovery.get("recommended_experience_to_feature", ""),
     ]
 
     return {

@@ -6,8 +6,7 @@ given submission instead of always running every agent in a fixed line:
 
   - Empty/placeholder submissions short-circuit to a zero-LLM node.
   - The discovery agent runs only when there is real profile evidence.
-  - The narrative, section, and reviewer agents run only when there is a real
-    draft to read.
+  - The narrative and reviewer agents run only when there is a real draft to read.
 """
 
 from utils.input_validation import word_count
@@ -22,7 +21,6 @@ GENERATION_NODES = [
     "eligibility_agent",
     "discovery_agent",
     "narrative_agent",
-    "coach_sections",
 ]
 
 
@@ -62,9 +60,6 @@ def route_generators(state) -> list:
         targets.append("discovery_agent")
     if has_draft(state):
         targets.append("narrative_agent")
-        # Section coaching is valuable but off the Evaluate critical path by default.
-        if state.get("include_section_coaching"):
-            targets.append("coach_sections")
     return targets
 
 

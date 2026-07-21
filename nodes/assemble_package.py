@@ -127,6 +127,52 @@ def _format_coaching_reports(reports):
         return "_No coaching reports available._"
 
     sections = []
+    grammar = reports.get("grammar", {})
+    if grammar:
+        issues = [
+            *(grammar.get("spelling_issues") or []),
+            *(grammar.get("punctuation_issues") or []),
+            *(grammar.get("capitalization_issues") or []),
+            *(grammar.get("verb_tense_issues") or []),
+            *(grammar.get("agreement_issues") or []),
+            *(grammar.get("other_grammar_issues") or []),
+            *(grammar.get("sentence_level_correctness_issues") or []),
+        ]
+        tasks = grammar.get("revision_tasks") or []
+        sections.append(
+            "### Grammar Coach\n\n"
+            + (
+                f"**Score:** {grammar.get('grammar_score', 0)}/100\n\n"
+                if "grammar_score" in grammar
+                else ""
+            )
+            + ("**Correctness issues:**\n" + "\n".join(f"- {item}" for item in issues) + "\n\n" if issues else "")
+            + ("**Revision tasks:**\n" if tasks else "")
+            + ("\n".join(f"- {item}" for item in tasks) if tasks else "")
+        )
+
+    clarity = reports.get("clarity_concision", {})
+    if clarity:
+        issues = [
+            *(clarity.get("filler_or_repetition") or []),
+            *(clarity.get("wordiness") or []),
+            *(clarity.get("unclear_phrasing") or []),
+            *(clarity.get("tangled_sentence_structure") or []),
+        ]
+        tasks = clarity.get("revision_tasks") or []
+        sections.append(
+            "### Clarity & Concision Coach\n\n"
+            + (
+                f"**Score:** {clarity.get('clarity_concision_score', 0)}/100\n\n"
+                if "clarity_concision_score" in clarity
+                else ""
+            )
+            + ("**Clear wording to preserve:**\n" + "\n".join(f"- {item}" for item in (clarity.get("clear_and_direct_sentences") or [])) + "\n\n" if clarity.get("clear_and_direct_sentences") else "")
+            + ("**Clarity and concision issues:**\n" + "\n".join(f"- {item}" for item in issues) + "\n\n" if issues else "")
+            + ("**Revision tasks:**\n" if tasks else "")
+            + ("\n".join(f"- {item}" for item in tasks) if tasks else "")
+        )
+
     strategy = reports.get("strategy", {})
     if strategy:
         sections.append(
@@ -134,6 +180,21 @@ def _format_coaching_reports(reports):
             + strategy.get("strategic_insight", "")
             + "\n\n"
             + strategy.get("reflection_vs_story_ratio", "")
+        )
+
+    alignment = reports.get("alignment", {})
+    if alignment:
+        tasks = alignment.get("revision_tasks") or []
+        sections.append(
+            "### Alignment (Prompt + Scholarship Values) Coach\n\n"
+            + (
+                f"**Score:** {alignment.get('alignment_score', 0)}/100\n\n"
+                if "alignment_score" in alignment
+                else ""
+            )
+            + (alignment.get("fit_summary") or "")
+            + ("\n\n" if alignment.get("fit_summary") and tasks else "")
+            + ("\n".join(f"- {item}" for item in tasks) if tasks else "")
         )
 
     discovery = reports.get("discovery", {})
@@ -145,6 +206,26 @@ def _format_coaching_reports(reports):
             + discovery.get("recommended_experience_to_feature", "")
         )
 
+    evidence = reports.get("evidence_strength", {})
+    if evidence:
+        recommendations = evidence.get("recommendations") or []
+        sections.append(
+            "### Evidence Strength Coach\n\n"
+            + (
+                f"**Score:** {evidence.get('evidence_strength_score', 0)}/100\n\n"
+                if "evidence_strength_score" in evidence
+                else ""
+            )
+            + (
+                "**Recommended experience:** "
+                + evidence.get("recommended_experience_to_feature", "")
+                + "\n\n"
+                if evidence.get("recommended_experience_to_feature")
+                else ""
+            )
+            + ("\n".join(f"- {item}" for item in recommendations) if recommendations else "")
+        )
+
     narrative = reports.get("narrative", {})
     if narrative:
         sections.append(
@@ -152,6 +233,72 @@ def _format_coaching_reports(reports):
             + narrative.get("overall_narrative_coaching", "")
             + "\n\n**Biggest gap:** "
             + narrative.get("biggest_narrative_gap", "")
+        )
+
+    narrative_structure = reports.get("narrative_structure_flow_coherence", {})
+    if narrative_structure:
+        tasks = narrative_structure.get("revision_tasks") or []
+        sections.append(
+            "### Narrative Structure, Flow & Coherence Coach\n\n"
+            + (
+                f"**Score:** {narrative_structure.get('narrative_structure_score', 0)}/100\n\n"
+                if "narrative_structure_score" in narrative_structure
+                else ""
+            )
+            + (narrative_structure.get("overall_narrative_assessment") or "")
+            + (
+                "\n\n**Biggest gap:** " + narrative_structure.get("biggest_narrative_gap", "")
+                if narrative_structure.get("biggest_narrative_gap")
+                else ""
+            )
+            + ("\n\n" if tasks else "")
+            + ("\n".join(f"- {item}" for item in tasks) if tasks else "")
+        )
+
+    insight = reports.get("insight", {})
+    if insight:
+        tasks = insight.get("revision_tasks") or []
+        missing = insight.get("missing_meaning_or_reflection") or []
+        sections.append(
+            "### Insight (Depth + Meaning + Reflection) Coach\n\n"
+            + (
+                f"**Score:** {insight.get('insight_score', 0)}/100\n\n"
+                if "insight_score" in insight
+                else ""
+            )
+            + (
+                "**Where meaning is missing:**\n"
+                + "\n".join(f"- {item}" for item in missing)
+                + "\n\n"
+                if missing
+                else ""
+            )
+            + ("**Revision tasks:**\n" if tasks else "")
+            + ("\n".join(f"- {item}" for item in tasks) if tasks else "")
+        )
+
+    tone = reports.get("tone_authenticity", {})
+    if tone:
+        quality_notes = tone.get("tone_quality_notes") or []
+        suggestions = tone.get("tone_improvement_suggestions") or []
+        flags = [
+            *(tone.get("generic_phrases") or []),
+            *(tone.get("overly_polished_or_corporate_phrases") or []),
+            *(tone.get("formulaic_or_performative_phrases") or []),
+            *(tone.get("ai_like_phrases") or []),
+        ]
+        sections.append(
+            "### Tone & Authenticity Coach\n\n"
+            + (
+                f"**Authenticity score:** {tone.get('authenticity_score', 0)}/100  \n"
+                f"**Tone score:** {tone.get('tone_score', 0)}/100\n\n"
+                if "authenticity_score" in tone or "tone_score" in tone
+                else ""
+            )
+            + ("**Tone qualities:**\n" + "\n".join(f"- {item}" for item in quality_notes) + "\n\n" if quality_notes else "")
+            + ("**Language to reconsider:**\n" + "\n".join(f"- {item}" for item in flags) + "\n\n" if flags else "")
+            + ("**Suggestions:**\n" if suggestions else "")
+            + ("\n".join(f"- {item}" for item in suggestions) if suggestions else "")
         )
 
     return "\n\n".join(sections) if sections else "_No coaching reports available._"
@@ -167,15 +314,6 @@ def _format_growth(growth):
     for item in growth.get("improvements") or []:
         lines.append(f"- {item}")
     return "\n".join(lines)
-
-
-def _format_section_coaching(section_coaching):
-    if not section_coaching:
-        return "_No section coaching available._"
-    return "\n\n".join(
-        f"### {section_name}\n\n{feedback}"
-        for section_name, feedback in section_coaching.items()
-    )
 
 
 def _format_critique(critique):
@@ -241,10 +379,6 @@ def assemble_package(state):
 ## Retrieved Profile Evidence
 
 {evidence}
-
-## Section-by-Section Coaching
-
-{_format_section_coaching(state.get('section_coaching', {}))}
 
 ## Quality Check (Critic Agent)
 

@@ -169,14 +169,14 @@ Return ONLY valid JSON:
     return safe_json_parse(llm.generate(prompt))
 
 
-def run_reviewer_simulation_coach(context: str, strategy: dict) -> dict:
+def run_reviewer_simulation_coach(context: str, evaluation_context: dict) -> dict:
     prompt = f"""
 You are the Reviewer Simulation Coach. Four personas comment on the submitted draft.
 
 {context}
 
-STRATEGY CONTEXT:
-{json.dumps(strategy, indent=2)}
+STRATEGY OR ALIGNMENT CONTEXT:
+{json.dumps(evaluation_context, indent=2)}
 {_grounding_rules()}
 
 Return ONLY valid JSON:

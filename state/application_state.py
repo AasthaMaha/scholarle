@@ -6,7 +6,6 @@ class ApplicationState(TypedDict, total=False):
     opportunity_text: str
     previous_readiness: Dict[str, int]
     draft_number: int
-    include_section_coaching: bool
 
     # Opportunity analysis
     opportunity_analysis: Dict[str, Any]
@@ -26,7 +25,6 @@ class ApplicationState(TypedDict, total=False):
 
     # Raw outputs from the specialized generation agents (distinct keys so they
     # can run in parallel without clobbering each other)
-    section_coaching: Dict[str, str]
     strategy_report: Dict[str, Any]
     eligibility_report: Dict[str, Any]
     discovery_report: Dict[str, Any]

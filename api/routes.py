@@ -56,8 +56,6 @@ class AnalyzeRequest(BaseModel):
     prompt: str = Field(..., min_length=1, max_length=10000)
     previous_readiness: Optional[Dict[str, int]] = None
     draft_number: int = Field(default=1, ge=1, le=50)
-    # Fast Evaluate default: skip section essay coaching off the critical path.
-    include_section_coaching: bool = False
 
 
 class ProfileAutofillResponse(BaseModel):
@@ -221,7 +219,6 @@ class CoachingSessionRequest(BaseModel):
     prompt: str = Field(..., min_length=1, max_length=10000)
     previous_readiness: Optional[Dict[str, int]] = None
     draft_number: int = Field(default=1, ge=1, le=50)
-    include_section_coaching: bool = False
     student_profile: dict = Field(default_factory=dict)
     clean_scholarship_record: dict = Field(default_factory=dict)
     essay_prompt: str = Field(default="", max_length=12000)
@@ -394,7 +391,6 @@ def run_application_pipeline(
     profile_text: str,
     previous_readiness: Optional[Dict[str, int]] = None,
     draft_number: int = 1,
-    include_section_coaching: bool = False,
 ) -> dict:
     vector_service = _safe_vector_service()
     profile_docs = _text_to_chunks(profile_text, "uploaded_cv")
@@ -439,7 +435,6 @@ def run_application_pipeline(
             "student_draft": student_draft,
             "previous_readiness": previous_readiness or {},
             "draft_number": draft_number,
-            "include_section_coaching": include_section_coaching,
         }
     )
     feedback_text = build_feedback_memory_text(
@@ -656,7 +651,6 @@ def analyze_application(request: AnalyzeRequest) -> dict:
             profile_text=request.cv_text,
             previous_readiness=request.previous_readiness,
             draft_number=request.draft_number,
-            include_section_coaching=bool(request.include_section_coaching),
         ),
     )
 
@@ -669,7 +663,6 @@ def analyze_application(request: AnalyzeRequest) -> dict:
         "eligibility_matrix": result.get("eligibility_matrix", {}),
         "essay_alignment_matrix": result.get("essay_alignment_matrix", {}),
         "feedback": result.get("feedback", ""),
-        "section_coaching": result.get("section_coaching", {}),
         "opportunity_analysis": result.get("opportunity_analysis", {}),
         "critique": result.get("critique", {}),
         "final_application_package": result.get("final_application_package", ""),
@@ -738,7 +731,6 @@ def run_workspace_coaching_session(request: CoachingSessionRequest) -> dict:
         opportunity_prompt=request.prompt,
         previous_readiness=request.previous_readiness,
         draft_number=request.draft_number,
-        include_section_coaching=bool(request.include_section_coaching),
     )
     evaluation = merged.get("evaluation")
     coach_pack = merged.get("coach_pack")

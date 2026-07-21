@@ -49,9 +49,18 @@ def critic_review(state):
         "coaching_brief": coaching_brief,
         "reviewer_comments": state.get("reviewer_comments", []),
         "strategy": state.get("strategy_report", {}),
+        "grammar": (state.get("specialist_reports") or {}).get("grammar", {}),
+        "clarity_concision": (state.get("specialist_reports") or {}).get(
+            "clarity_concision", {}
+        ),
+        "alignment": (state.get("specialist_reports") or {}).get("alignment", {}),
         "eligibility_matrix": state.get("eligibility_matrix", {}),
         "discovery": state.get("discovery_report", {}),
         "narrative": state.get("narrative_report", {}),
+        "narrative_structure_flow_coherence": (state.get("specialist_reports") or {}).get(
+            "narrative_structure_flow_coherence", {}
+        ),
+        "insight": (state.get("specialist_reports") or {}).get("insight", {}),
         "tailored_rubric": (state.get("coaching_reports", {}) or {}).get(
             "evaluation_rubric", {}
         ),

@@ -10,8 +10,6 @@ export type AnalyzePayload = {
   prompt: string;
   previous_readiness?: Record<string, number>;
   draft_number?: number;
-  /** Off by default — keeps Evaluate on the critical scoring path. */
-  include_section_coaching?: boolean;
 };
 
 export type ResumeAutofillResult = {
@@ -187,7 +185,6 @@ export function buildAnalyzePayload(user: UserProfile | null, essayPromptOverrid
     prompt: prompt.slice(0, 10_000),
     previous_readiness: previousReadiness,
     draft_number: (user?.drafts?.length ?? 0) + 1,
-    include_section_coaching: false,
   };
 }
 
@@ -411,6 +408,22 @@ export type PromptAlignmentFeedback = {
   revision_tasks?: string[];
 };
 
+export type AlignmentFeedback = {
+  alignment_score?: number;
+  covered_prompt_parts?: string[];
+  weakly_covered_prompt_parts?: string[];
+  missing_prompt_parts?: string[];
+  stated_scholarship_values?: string[];
+  actual_evaluation_focus?: string[];
+  addressed_scholarship_values?: string[];
+  weak_or_missing_scholarship_values?: string[];
+  student_fit_connections?: string[];
+  generic_or_unsupported_fit_claims?: string[];
+  fit_summary?: string;
+  comments?: string[];
+  revision_tasks?: string[];
+};
+
 export type ProfileGroundingFeedback = {
   grounding_score?: number;
   supported_claims?: string[];
@@ -435,6 +448,47 @@ export type StructureFeedback = {
   revision_tasks?: string[];
 };
 
+export type NarrativeStageFeedback = {
+  stage?: string;
+  status?: "present" | "weak" | "missing" | string;
+  evidence?: string;
+  issue?: string;
+  suggestion?: string;
+};
+
+export type NarrativeStructureFeedback = {
+  narrative_structure_score?: number;
+  structure_flow_score?: number;
+  coherence_score?: number;
+  narrative_arc_score?: number;
+  arc_progression?: NarrativeStageFeedback[];
+  paragraph_feedback?: ParagraphFeedback[];
+  transition_and_flow_issues?: string[];
+  coherence_issues?: string[];
+  contradictions_or_timeline_issues?: string[];
+  missing_reasoning?: string[];
+  logical_connections_to_preserve?: string[];
+  recommended_reordering?: string[];
+  overall_narrative_assessment?: string;
+  biggest_narrative_gap?: string;
+  revision_tasks?: string[];
+};
+
+export type InsightFeedback = {
+  insight_score?: number;
+  meaningful_reflections?: string[];
+  surface_level_or_generic_reflections?: string[];
+  lessons_realizations_or_questions?: string[];
+  changes_in_mindset_or_behavior?: string[];
+  changes_in_values_goals_or_responsibility?: string[];
+  significance_to_self?: string[];
+  significance_to_others_or_community?: string[];
+  future_direction_connections?: string[];
+  missing_meaning_or_reflection?: string[];
+  recommended_reflection_questions?: string[];
+  revision_tasks?: string[];
+};
+
 export type SpecificityFeedback = {
   specificity_score?: number;
   vague_statements?: string[];
@@ -443,13 +497,52 @@ export type SpecificityFeedback = {
   recommended_questions?: string[];
 };
 
+export type EvidenceStrengthFeedback = {
+  evidence_strength_score?: number;
+  supported_claims?: string[];
+  unsupported_or_risky_claims?: string[];
+  invented_or_unverifiable_details?: string[];
+  unused_relevant_profile_evidence?: string[];
+  vague_statements?: string[];
+  places_to_add_detail?: string[];
+  impact_opportunities?: string[];
+  recommended_experience_to_feature?: string;
+  recommended_questions?: string[];
+  recommendations?: string[];
+};
+
 export type ToneFeedback = {
   authenticity_score?: number;
   tone_score?: number;
   ai_like_phrases?: string[];
   generic_phrases?: string[];
+  overly_polished_or_corporate_phrases?: string[];
+  formulaic_or_performative_phrases?: string[];
+  tone_quality_notes?: string[];
   voice_preservation_notes?: string[];
   tone_improvement_suggestions?: string[];
+};
+
+export type GrammarFeedback = {
+  grammar_score?: number;
+  spelling_issues?: string[];
+  punctuation_issues?: string[];
+  capitalization_issues?: string[];
+  verb_tense_issues?: string[];
+  agreement_issues?: string[];
+  other_grammar_issues?: string[];
+  sentence_level_correctness_issues?: string[];
+  revision_tasks?: string[];
+};
+
+export type ClarityConcisionFeedback = {
+  clarity_concision_score?: number;
+  clear_and_direct_sentences?: string[];
+  filler_or_repetition?: string[];
+  wordiness?: string[];
+  unclear_phrasing?: string[];
+  tangled_sentence_structure?: string[];
+  revision_tasks?: string[];
 };
 
 export type ReviewerSimulation = {
@@ -473,10 +566,16 @@ export type EssayCoachResult = {
   status: string;
   overall_scores?: Record<string, number>;
   sentence_suggestions?: EssayCoachSentenceSuggestion[];
+  grammar_feedback?: GrammarFeedback;
+  clarity_concision_feedback?: ClarityConcisionFeedback;
   paragraph_feedback?: ParagraphFeedback[];
   prompt_alignment?: PromptAlignmentFeedback;
+  alignment?: AlignmentFeedback;
   profile_grounding?: ProfileGroundingFeedback;
+  evidence_strength?: EvidenceStrengthFeedback;
   structure_feedback?: StructureFeedback;
+  narrative_structure?: NarrativeStructureFeedback;
+  insight?: InsightFeedback;
   specificity_feedback?: SpecificityFeedback;
   tone_feedback?: ToneFeedback;
   reviewer_simulation?: ReviewerSimulation;
@@ -584,7 +683,6 @@ export type CoachingSessionPayload = {
   prompt: string;
   previous_readiness?: Record<string, number>;
   draft_number: number;
-  include_section_coaching: boolean;
   student_profile: Record<string, unknown>;
   clean_scholarship_record: ActiveScholarship;
   essay_prompt: string;
@@ -636,7 +734,6 @@ export function buildCoachingSessionPayload(
     prompt: evaluation.prompt || "No formal essay prompt was provided; evaluate against the scholarship context.",
     previous_readiness: evaluation.previous_readiness,
     draft_number: evaluation.draft_number ?? 1,
-    include_section_coaching: evaluation.include_section_coaching ?? false,
     student_profile: coach.student_profile,
     clean_scholarship_record: coach.clean_scholarship_record,
     essay_prompt: coach.essay_prompt,
