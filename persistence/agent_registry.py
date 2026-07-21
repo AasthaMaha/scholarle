@@ -60,19 +60,6 @@ CURRENT_AGENT_DEFINITIONS = [
             "user_feedback_memory",
         ],
     },
-    {
-        "agent_name": "essay_alignment_matrix",
-        "display_name": "Essay Alignment Matrix Agent",
-        "description": "Checks whether the current essay draft answers the prompt, stated themes, criteria, and length guidance.",
-        "agent_type": "analysis",
-        "uses_rag": True,
-        "rag_sources": [
-            "user_profile_memory",
-            "user_opportunity_memory",
-            "user_application_memory",
-            "user_feedback_memory",
-        ],
-    },
 ]
 
 

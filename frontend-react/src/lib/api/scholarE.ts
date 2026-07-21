@@ -587,7 +587,6 @@ export type EssayCoachResult = {
   final_check?: FinalCheck;
   warnings?: string[];
   coach_summary?: string;
-  ready_for_final_review?: boolean;
   message?: string;
 };
 
@@ -612,7 +611,6 @@ export type GuardrailAudit = {
 };
 
 export type FinalCheck = {
-  ready_for_final_review?: boolean;
   remaining_blockers?: string[];
   final_polish_notes?: string[];
   submission_warning?: string;

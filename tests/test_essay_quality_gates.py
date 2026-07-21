@@ -546,12 +546,6 @@ def test_merged_graph_feeds_shared_specialists_to_single_evaluator(monkeypatch):
         "run_reviewer_simulation_coach",
         lambda *_args: {"scholarship_reviewer": {"comment": "Promising but incomplete."}},
     )
-    monkeypatch.setattr(
-        unified,
-        "build_essay_alignment_matrix",
-        lambda _state: {"overall_alignment_status": "Needs revision", "matrix": []},
-    )
-
     evaluator_inputs = []
 
     def fake_evaluator(state):

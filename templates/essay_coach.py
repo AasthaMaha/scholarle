@@ -440,7 +440,6 @@ Rules:
   address both the essay prompt and the scholarship mission rather than naming only one.
 - "quick_fixes": small, fast wins (grammar, wording).
 - "deeper_revision_tasks": bigger content/structure work.
-- "ready_for_evaluation": true only if there are no major blockers.
 - Do not overwhelm the student. Do not invent facts or requirements."""
     human = f"""SPECIALIST COACHING FINDINGS (JSON):
 {specialist_summary}
@@ -607,7 +606,6 @@ in the student's profile; are grammar and flow acceptable; are there unsupported
 claims; does it sound authentic; is it within the word limit?
 
 Rules:
-- "ready_for_final_review" is true ONLY if there are no major blockers.
 - Never say "ready to submit" — this is a review checkpoint, not a submission approval.
 - "remaining_blockers": the few things that must be fixed before final review.
 - "final_polish_notes": smaller polish items.

@@ -87,7 +87,6 @@ import {
   type ActiveScholarship,
   type WikiDiscoveryResult,
   type ApplicationReadinessMatrix,
-  type EssayAlignmentMatrix,
   type FitAnalysisResult,
   type PersonalizedOutlineResult,
 } from "@/lib/userStore";
@@ -1151,63 +1150,6 @@ function ApplicationReadinessMatrixCard({ matrix }: { matrix?: ApplicationReadin
         <div className="mt-4 rounded-lg border border-dashed border-border bg-secondary/30 p-4 text-sm text-muted-foreground">
           Run or rerun the scholarship fit analysis to populate this matrix.
         </div>
-      )}
-    </Card>
-  );
-}
-
-function EssayAlignmentMatrixCard({ matrix }: { matrix?: EssayAlignmentMatrix }) {
-  const rows = matrix?.matrix ?? [];
-  return (
-    <Card>
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <div className="text-xs uppercase tracking-widest text-muted-foreground">Essay Alignment Matrix</div>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Checks whether this essay version answers the prompt, themes, criteria, and length guidance.
-          </p>
-        </div>
-        <div className="text-right">
-          <Pill tone={matrixTone(matrix?.overall_alignment_status)}>{matrix?.overall_alignment_status ?? "Needs review"}</Pill>
-          <div className="mt-2 text-xs text-muted-foreground">
-            {matrix?.completion_percent ?? 0}% · {matrix?.word_count ?? 0} words · {matrix?.word_limit_status ?? "No limit provided"}
-          </div>
-        </div>
-      </div>
-      {rows.length ? (
-        <div className="mt-4 space-y-3">
-          {rows.slice(0, 8).map((row, index) => (
-          <div key={`${row.requirement}-${index}`} className="rounded-lg border border-border p-3 text-sm">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <div className="font-medium">{row.requirement}</div>
-                <div className="text-xs text-muted-foreground">{row.requirement_type}</div>
-              </div>
-              <div className="flex flex-wrap gap-1.5">
-                <Pill tone={matrixTone(row.status)}>{row.status || "Unclear"}</Pill>
-                <Pill tone={matrixTone(undefined, row.risk_level)}>{row.risk_level || "Medium"} risk</Pill>
-              </div>
-            </div>
-            {row.essay_evidence && <div className="mt-2 text-xs text-muted-foreground">{row.essay_evidence}</div>}
-            {row.revision_needed && <div className="mt-1 text-xs">{row.revision_needed}</div>}
-          </div>
-          ))}
-        </div>
-      ) : (
-        <div className="mt-4 rounded-lg border border-dashed border-border bg-secondary/30 p-4 text-sm text-muted-foreground">
-          Run or rerun the essay evaluation to populate this matrix.
-        </div>
-      )}
-      {!!matrix?.recommended_revision_tasks?.length && (
-        <div className="mt-5">
-          <div className="text-xs uppercase tracking-widest text-muted-foreground">Revision tasks</div>
-          <ul className="mt-3 list-disc space-y-1 pl-5 text-sm">
-            {matrix.recommended_revision_tasks.slice(0, 5).map((task) => <li key={task}>{task}</li>)}
-          </ul>
-        </div>
-      )}
-      {matrix?.final_submission_readiness && (
-        <p className="mt-4 text-sm text-muted-foreground">{matrix.final_submission_readiness}</p>
       )}
     </Card>
   );
@@ -6852,12 +6794,12 @@ function WorkspaceCoachTab({
       </button>
 
       {finalCheck && (
-        <div className={`space-y-2 rounded-xl border p-3 ${finalCheck.ready_for_final_review ? "border-success/30 bg-success/5" : "border-warning/30 bg-warning/5"}`}>
+        <div className="space-y-2 rounded-xl border border-border bg-background p-3">
           <div className="flex items-center gap-2">
-            <span className={`grid size-5 place-items-center rounded-full text-[11px] font-bold text-white ${finalCheck.ready_for_final_review ? "bg-success" : "bg-warning"}`}>
-              {finalCheck.ready_for_final_review ? <Check className="size-3.5" /> : "!"}
+            <span className="grid size-5 place-items-center rounded-full bg-info text-[11px] font-bold text-white">
+              <Check className="size-3.5" />
             </span>
-            <span className="text-[13px] font-semibold">{finalCheck.ready_for_final_review ? "Ready for final review" : "Not ready for final review"}</span>
+            <span className="text-[13px] font-semibold">Final check results</span>
           </div>
           {finalCheck.submission_warning && (
             <div className="rounded-md bg-destructive/10 px-2.5 py-1.5 text-[12px] font-medium text-destructive">{finalCheck.submission_warning}</div>
@@ -7276,13 +7218,12 @@ function WorkspaceEvaluationTab({ isEvaluating }: { isEvaluating: boolean }) {
               {analysis.coaching_brief.coach_message}
             </div>
           )}
-          <EssayAlignmentMatrixCard matrix={analysis?.essay_alignment_matrix} />
         </>
       )}
 
       {!evaluating && !entries.length && scoredVersions.length === 0 && (
         <div className="rounded-xl border border-dashed border-border bg-background p-4 text-[13px] leading-relaxed text-muted-foreground">
-          Run the coach to start tracking your draft scores, or run a deep evaluation for the readiness index, coach message, and alignment matrix.
+          Run the coach to start tracking your draft scores, or run a deep evaluation for the readiness index and coach message.
         </div>
       )}
     </div>
@@ -7379,9 +7320,8 @@ function WorkspaceHighlightsTab({
   const { user } = useUser();
   const analysis = user?.lastAnalysis;
   const priorities = analysis?.revision_priorities ?? [];
-  const strengths = analysis?.essay_alignment_matrix?.strengths ?? [];
   const counts = countByCategory(suggestions);
-  const hasBackend = priorities.length || strengths.length;
+  const hasBackend = priorities.length > 0;
 
   if (isEvaluating) return <HighlightsSkeleton />;
 
@@ -7506,13 +7446,6 @@ function WorkspaceHighlightsTab({
                   </li>
                 ))}
               </ol>
-            </div>
-          )}
-
-          {!!strengths.length && (
-            <div className="rounded-xl border border-success/20 bg-success/5 p-3">
-              <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-success">Working well</div>
-              <MiniList items={strengths} />
             </div>
           )}
         </div>
@@ -7907,8 +7840,6 @@ function StepScores() {
           ))}
         </ol>
       </Card>
-
-      <EssayAlignmentMatrixCard matrix={analysis.essay_alignment_matrix} />
       </>
       )}
     </div>

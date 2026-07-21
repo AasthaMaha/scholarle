@@ -280,6 +280,6 @@ def _collection_for_source_type(source_type: str) -> str:
         return "user_opportunity_memory"
     if source_type in {"essay", "essay_draft"}:
         return "user_application_memory"
-    if source_type in {"fit_analysis", "coaching_feedback", "essay_alignment"}:
+    if source_type in {"fit_analysis", "coaching_feedback"}:
         return "user_feedback_memory"
     return "user_profile_memory"

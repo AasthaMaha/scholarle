@@ -43,7 +43,6 @@ from nodes.coaching.agents import (
 )
 from nodes.combine import combine_coaching
 from nodes.critic import critic_review
-from nodes.essay_alignment import build_essay_alignment_matrix
 from prompt_adaptation import format_brief_for_prompt, resolve_writing_brief
 from utils.input_validation import summarize_submitted_input
 
@@ -115,7 +114,6 @@ def _evaluation_response(state: dict) -> dict:
         "reviewer_comments": state.get("reviewer_comments", []),
         "coaching_reports": state.get("coaching_reports", {}),
         "eligibility_matrix": state.get("eligibility_matrix", {}),
-        "essay_alignment_matrix": state.get("essay_alignment_matrix", {}),
         "feedback": state.get("feedback", ""),
         "opportunity_analysis": state.get("opportunity_analysis", {}),
         "critique": state.get("critique", {}),
@@ -246,8 +244,6 @@ def _coach_response(
         ((evaluation or {}).get("coaching_brief") or {}).get("coach_message")
         or _compose_summary(package)
     )
-    alignment_status = ((evaluation or {}).get("essay_alignment_matrix") or {}).get("overall_alignment_status")
-    package["ready_for_final_review"] = alignment_status in {"Ready", "Mostly ready"}
     package["warnings"] = list(dict.fromkeys(warnings))
     return package
 
@@ -396,7 +392,6 @@ def run_unified_coaching_session(
             shared_context,
             results.get("alignment") or {},
         ),
-        "alignment_matrix": lambda: build_essay_alignment_matrix(state),
     }
     if sentence_suggestions:
         second_jobs["guardrail"] = lambda: _run_guardrail_critic(
@@ -406,7 +401,6 @@ def run_unified_coaching_session(
         )
     second = _run_parallel(second_jobs, warnings, agent_status)
     state["reviewer_report"] = second.get("reviewer") or {}
-    state["essay_alignment_matrix"] = second.get("alignment_matrix") or {}
 
     guardrail = second.get("guardrail") or {}
     if guardrail:

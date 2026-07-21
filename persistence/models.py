@@ -260,32 +260,6 @@ class EssayCoachingFeedback(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
 
 
-class EssayAlignmentMatrix(Base, TimestampMixin):
-    __tablename__ = "essay_alignment_matrices"
-    __table_args__ = (Index("ix_essay_alignment_user_essay_current", "user_id", "essay_id", "is_current"),)
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(String(100), ForeignKey("users.id"), index=True, nullable=False)
-    opportunity_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("scholarship_opportunities.id"), index=True)
-    essay_id: Mapped[str] = mapped_column(String(36), ForeignKey("essays.id"), index=True, nullable=False)
-    essay_version_id: Mapped[str] = mapped_column(String(36), ForeignKey("essay_versions.id"), index=True, nullable=False)
-    clean_record_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("scholarship_clean_records.id"), index=True)
-    profile_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("student_profiles.id"), index=True)
-    agent_run_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("agent_runs.id"), index=True)
-    overall_alignment_status: Mapped[str] = mapped_column(String(120), default="", nullable=False)
-    completion_percent: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    word_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    word_limit_status: Mapped[str] = mapped_column(String(120), default="", nullable=False)
-    matrix_json: Mapped[list] = mapped_column(JSONData, default=list, nullable=False)
-    missing_or_weak_items_json: Mapped[list] = mapped_column(JSONData, default=list, nullable=False)
-    unsupported_claims_json: Mapped[list] = mapped_column(JSONData, default=list, nullable=False)
-    strengths_json: Mapped[list] = mapped_column(JSONData, default=list, nullable=False)
-    recommended_revision_tasks_json: Mapped[list] = mapped_column(JSONData, default=list, nullable=False)
-    final_submission_readiness: Mapped[str] = mapped_column(Text, default="", nullable=False)
-    version_number: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
-    is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-
-
 class AgentDefinition(Base, TimestampMixin):
     __tablename__ = "agent_definitions"
 

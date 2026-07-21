@@ -640,7 +640,6 @@ That graph runs:
 - reviewer simulation
 - combiner
 - critic
-- essay alignment matrix
 - final package assembler
 
 Important files:
@@ -660,7 +659,6 @@ The response includes:
 - reviewer comments
 - coaching reports
 - eligibility matrix
-- essay alignment matrix
 - final application package
 - revision priorities
 
@@ -763,7 +761,6 @@ Used for:
 - readiness scoring
 - full coaching brief
 - eligibility matrix
-- essay alignment matrix
 - reviewer simulation
 - final application package
 
@@ -893,7 +890,6 @@ persistence/agent_registry.py
 | `scholarship_information_cleaner` | cleaning | Normalizes extracted scholarship information for editable UI display. |
 | `scholarship_fit_analysis` | analysis | Compares the student profile against the cleaned scholarship record. |
 | `essay_application_coaching` | coaching | Runs the deep application coaching graph. |
-| `essay_alignment_matrix` | analysis | Checks whether the essay answers the prompt, themes, criteria, and length guidance. |
 
 ### Profile Agents
 
@@ -1070,7 +1066,6 @@ POST /api/analyze
 | `reviewer_agent` | Simulates reviewer reactions to the draft. |
 | `combine_coaching` | Combines all specialist outputs into readiness index, brief, feedback, and priorities. |
 | `critic_review` | Audits the combined coaching for grounding and hallucinations. |
-| `essay_alignment_matrix` | Checks whether the draft covers the prompt, requirements, criteria, evidence, and word guidance. |
 | `assemble_package` | Builds the final markdown coaching package. |
 
 ### Deep Coaching Functions

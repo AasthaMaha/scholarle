@@ -211,7 +211,6 @@ class CombinerOutput(BaseModel):
     top_revision_priorities: list[RevisionPriority] = Field(default_factory=list)
     quick_fixes: list[str] = Field(default_factory=list)
     deeper_revision_tasks: list[str] = Field(default_factory=list)
-    ready_for_evaluation: bool = False
 
 
 class GuardrailOutput(BaseModel):
@@ -222,7 +221,6 @@ class GuardrailOutput(BaseModel):
 
 
 class FinalCheckOutput(BaseModel):
-    ready_for_final_review: bool = False
     remaining_blockers: list[str] = Field(default_factory=list)
     final_polish_notes: list[str] = Field(default_factory=list)
     submission_warning: str = ""
@@ -263,7 +261,6 @@ def _empty_package(status: str = "success") -> dict:
         "deeper_revision_tasks": [],
         "warnings": [],
         "coach_summary": "",
-        "ready_for_final_review": False,
     }
 
 
@@ -923,13 +920,12 @@ def run_essay_workspace_coach(
         if limit and word_count > limit and not final.get("submission_warning"):
             final["submission_warning"] = f"Your essay is {word_count} words, over the {limit}-word limit."
         blockers = final.get("remaining_blockers") or []
+        polish_notes = final.get("final_polish_notes") or []
         package["final_check"] = final
-        package["ready_for_final_review"] = bool(final.get("ready_for_final_review")) and not (limit and word_count > limit)
         package["warnings"] = warnings
         package["coach_summary"] = (
-            "Your essay looks ready for a final review — no major blockers remain."
-            if package["ready_for_final_review"]
-            else f"Not ready for final review yet: {len(blockers)} blocker(s) to resolve first."
+            f"Final check completed: {len(blockers)} blocker(s) and "
+            f"{len(polish_notes)} polish note(s) found."
         )
         return package
 
@@ -1100,7 +1096,6 @@ def run_essay_workspace_coach(
         package["revision_priorities"] = combined.get("top_revision_priorities", [])
         package["quick_fixes"] = combined.get("quick_fixes", [])
         package["deeper_revision_tasks"] = combined.get("deeper_revision_tasks", [])
-        package["ready_for_final_review"] = bool(combined.get("ready_for_evaluation"))
         package["coach_summary"] = combined.get("coach_summary") or _compose_summary(package)
     else:
         package["coach_summary"] = _compose_summary(package)

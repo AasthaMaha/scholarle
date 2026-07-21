@@ -266,31 +266,6 @@ export type ApplicationReadinessMatrix = {
   summary?: string;
 };
 
-export type EssayAlignmentMatrix = {
-  essay_id?: string;
-  essay_version_id?: string;
-  opportunity_id?: string;
-  overall_alignment_status?: "Ready" | "Mostly ready" | "Needs revision" | "Major gaps" | "Insufficient information" | string;
-  completion_percent?: number;
-  word_count?: number;
-  word_limit_status?: "Within limit" | "Over limit" | "Underdeveloped" | "No limit provided" | string;
-  matrix?: Array<{
-    requirement?: string;
-    requirement_type?: string;
-    essay_evidence?: string;
-    essay_location?: string;
-    status?: "Met" | "Partially met" | "Missing" | "Unclear" | "Not applicable" | string;
-    risk_level?: "Low" | "Medium" | "High" | string;
-    revision_needed?: string;
-    notes?: string;
-  }>;
-  missing_or_weak_items?: string[];
-  unsupported_claims?: string[];
-  strengths?: string[];
-  recommended_revision_tasks?: string[];
-  final_submission_readiness?: string;
-};
-
 export type AnalysisResult = {
   coaching_brief?: {
     recommended_action?: string;
@@ -308,7 +283,6 @@ export type AnalysisResult = {
   reviewer_comments?: Array<{ persona?: string; comment?: string }>;
   coaching_reports?: Record<string, Record<string, string>>;
   eligibility_matrix?: EligibilityMatrix;
-  essay_alignment_matrix?: EssayAlignmentMatrix;
   feedback?: string;
   opportunity_analysis?: Record<string, unknown>;
   critique?: {

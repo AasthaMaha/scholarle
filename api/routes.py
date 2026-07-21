@@ -441,7 +441,6 @@ def run_application_pipeline(
         {
             "summary": result.get("feedback", ""),
             "strengths": result.get("revision_priorities", []),
-            "recommended_next_steps": result.get("essay_alignment_matrix", {}).get("recommended_revision_tasks", []),
         }
     )
     _upsert_memory(
@@ -661,7 +660,6 @@ def analyze_application(request: AnalyzeRequest) -> dict:
         "reviewer_comments": result.get("reviewer_comments", []),
         "coaching_reports": result.get("coaching_reports", {}),
         "eligibility_matrix": result.get("eligibility_matrix", {}),
-        "essay_alignment_matrix": result.get("essay_alignment_matrix", {}),
         "feedback": result.get("feedback", ""),
         "opportunity_analysis": result.get("opportunity_analysis", {}),
         "critique": result.get("critique", {}),
