@@ -227,20 +227,15 @@ export type EssayCriterionReview = {
   weight?: number;
   score?: number | null;
   level?: string;
-  assessment?: {
-    what_is_working?: string;
+  coach_feedback?: {
+    grounded_praise?: string;
     main_gap?: string;
-    essay_evidence?: string[];
-  };
-  reviewer_feedback?: {
-    likely_reaction?: string;
-    main_concern?: string;
   };
   priority_action?: {
     title?: string;
     location?: string;
     how_to_fix?: string;
-    why_this_addresses_the_reviewer?: string;
+    why_this_fixes_the_gap?: string;
     evidence_safety?: string;
     impact?: string;
     estimated_effort?: string;
@@ -265,7 +260,7 @@ export type EssayManagerPlan = {
 };
 
 export type EssayReviewResult = {
-  schema_version: 2;
+  schema_version: 3;
   status: "success" | "partial" | "error";
   overall_score?: number | null;
   criteria: Record<string, EssayCriterionReview>;
@@ -503,7 +498,7 @@ export type UserProfile = {
   lastStep?: number;
   // scholarship currently being analyzed
   activeScholarship?: ActiveScholarship;
-  // latest schema-v2 Essay Review, persisted across remounts
+  // latest schema-v3 Essay Review, persisted across remounts
   essayReviewResult?: EssayReviewResult;
   essayReviewUpdatedAt?: number;
   essayReviewDraftAtRun?: string;
@@ -590,7 +585,17 @@ function withoutLegacyEssayReviewData(user: UserProfile): UserProfile {
     return currentDraft;
   });
 
-  return drafts ? { ...current, drafts } : current;
+  const reviewSchema = (current.essayReviewResult as { schema_version?: number } | undefined)?.schema_version;
+  const currentReview = reviewSchema === 3
+    ? current
+    : {
+        ...current,
+        essayReviewResult: undefined,
+        essayReviewUpdatedAt: undefined,
+        essayReviewDraftAtRun: undefined,
+      };
+
+  return drafts ? { ...currentReview, drafts } : currentReview;
 }
 
 function readStore(): PersistShape {

@@ -315,7 +315,7 @@ def test_unified_coaching_session_runs_one_merged_graph_on_cleaned_draft(monkeyp
         seen["draft"] = kwargs["essay_draft"]
         return {
             "review": {
-                "schema_version": 2,
+                "schema_version": 3,
                 "status": "success",
                 "overall_score": 70,
                 "criteria": {},
@@ -333,7 +333,7 @@ def test_unified_coaching_session_runs_one_merged_graph_on_cleaned_draft(monkeyp
     result = routes.run_workspace_coaching_session(_coaching_session_request())
 
     assert result["status"] == "success"
-    assert result["review"]["schema_version"] == 2
+    assert result["review"]["schema_version"] == 3
     assert result["review"]["overall_score"] == 70
     assert result["outline_coverage"]["covered_point_ids"] == ["p-core"]
     assert "components" not in result
@@ -352,7 +352,7 @@ def test_unified_coaching_session_preserves_partial_review_and_warning(monkeypat
     def fake_unified(**_kwargs):
         return {
             "review": {
-                "schema_version": 2,
+                "schema_version": 3,
                 "status": "partial",
                 "overall_score": 62,
                 "criteria": {},
@@ -434,20 +434,15 @@ def test_manager_first_review_runs_seven_criterion_lanes_and_weights_once(monkey
             key,
             {
                 "score": scores[key],
-                "assessment": {
-                    "what_is_working": f"Working {key}",
+                "coach_feedback": {
+                    "grounded_praise": f"Grounded praise for {key}",
                     "main_gap": f"Gap {key}",
-                    "essay_evidence": ["I mentor younger robotics students each week."],
-                },
-                "reviewer_feedback": {
-                    "likely_reaction": f"Reviewer reaction for {key}",
-                    "main_concern": f"Reviewer concern for {key}",
                 },
                 "priority_action": {
                     "title": f"Fix {key}",
                     "location": "Paragraph 1",
                     "how_to_fix": f"Specific fix for {key}",
-                    "why_this_addresses_the_reviewer": f"Resolves concern for {key}",
+                    "why_this_fixes_the_gap": f"Directly fixes gap for {key}",
                     "evidence_safety": "Use only a real detail.",
                     "impact": "High",
                     "estimated_effort": "Moderate",
@@ -492,16 +487,17 @@ def test_manager_first_review_runs_seven_criterion_lanes_and_weights_once(monkey
     assert "I mentor younger robotics students" not in manager_contexts[0]
     assert len(criterion_calls) == 7
     assert {call[0] for call in criterion_calls} == set(READINESS_DIMENSIONS)
-    assert result["review"]["schema_version"] == 2
+    assert result["review"]["schema_version"] == 3
     assert result["review"]["overall_score"] == 75
     assert result["review"]["manager_plan"]["weight_total"] == 100
     assert len(result["review"]["criteria"]) == 7
     for key, criterion in result["review"]["criteria"].items():
         assert criterion["score"] == scores[key]
         assert criterion["weight"] == weights[key]
-        assert criterion["reviewer_feedback"]["main_concern"] == f"Reviewer concern for {key}"
+        assert criterion["coach_feedback"]["grounded_praise"] == f"Grounded praise for {key}"
+        assert criterion["coach_feedback"]["main_gap"] == f"Gap {key}"
         assert criterion["priority_action"]["how_to_fix"] == f"Specific fix for {key}"
-        assert "Resolves concern" in criterion["priority_action"]["why_this_addresses_the_reviewer"]
+        assert "Directly fixes gap" in criterion["priority_action"]["why_this_fixes_the_gap"]
     assert result["outline_coverage"]["covered_point_ids"] == ["p-core"]
     assert "evaluation" not in result
     assert "coach_pack" not in result

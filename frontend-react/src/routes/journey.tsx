@@ -4659,15 +4659,29 @@ const ESSAY_REVIEW_DIMENSIONS = [
   "grammar",
 ] as const;
 
-const EVALUATION_DIMENSION_LABELS: Record<string, string> = {
-  alignment: "Alignment",
-  evidence_strength: "Evidence Strength",
-  insight: "Insight",
-  narrative_structure_flow_coherence: "Narrative Structure, Flow & Coherence",
-  tone_authenticity: "Tone & Authenticity",
-  clarity_concision: "Clarity & Concision",
-  grammar: "Grammar",
-};
+type EssayReviewDimension = (typeof ESSAY_REVIEW_DIMENSIONS)[number];
+
+const ESSAY_REVIEW_SCORE_GROUPS: ReadonlyArray<{
+  label: string;
+  criteria: readonly EssayReviewDimension[];
+  columnClass: string;
+}> = [
+  {
+    label: "Content",
+    criteria: ["alignment", "evidence_strength", "insight"],
+    columnClass: "md:col-span-3",
+  },
+  {
+    label: "Structure",
+    criteria: ["narrative_structure_flow_coherence"],
+    columnClass: "md:col-span-1",
+  },
+  {
+    label: "Voice",
+    criteria: ["tone_authenticity", "clarity_concision"],
+    columnClass: "md:col-span-2",
+  },
+];
 
 function normalizePdfDraftText(pages: string[]) {
   return pages
@@ -4693,12 +4707,6 @@ function scoreColor(score: number): string {
 
 function labelize(key: string): string {
   return key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
-function levelWord(score: number): string {
-  if (score >= 80) return "Strong — competitive draft";
-  if (score >= 60) return "Developing — keep refining";
-  return "Needs work — focus on the priorities";
 }
 
 function relativeTimeLabel(timestamp: number | null, now: number): string {
@@ -4778,9 +4786,8 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   const [coachRaw, setCoachRaw] = useState<CoachSentenceSuggestion[]>([]);
   const [coachLoading, setCoachLoading] = useState(false);
   const [reviewResult, setReviewResult] = useState<EssayReviewResult | null>(
-    () => user?.essayReviewResult?.schema_version === 2 ? user.essayReviewResult : null,
+    () => user?.essayReviewResult?.schema_version === 3 ? user.essayReviewResult : null,
   );
-  const [reviewWarnings, setReviewWarnings] = useState<string[]>([]);
   const [reviewUpdatedAt, setReviewUpdatedAt] = useState<number | null>(() => user?.essayReviewUpdatedAt ?? null);
   const [reviewDraftAtRun, setReviewDraftAtRun] = useState<string>(() => user?.essayReviewDraftAtRun ?? "");
   // Outline coverage is layered: `autoCovered` comes from the AI coverage agent;
@@ -5002,13 +5009,13 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     return () => window.clearInterval(id);
   }, []);
 
-  // Restore only schema-v2 Essay Review data. Older coach/evaluation payloads
+  // Restore only schema-v3 Essay Review data. Older coach/evaluation payloads
   // are intentionally ignored and render as an empty Evaluate state.
   useEffect(() => {
     const restored = user?.essayReviewResult;
-    setReviewResult(restored?.schema_version === 2 ? restored : null);
-    setReviewUpdatedAt(restored?.schema_version === 2 ? user?.essayReviewUpdatedAt ?? null : null);
-    setReviewDraftAtRun(restored?.schema_version === 2 ? user?.essayReviewDraftAtRun ?? "" : "");
+    setReviewResult(restored?.schema_version === 3 ? restored : null);
+    setReviewUpdatedAt(restored?.schema_version === 3 ? user?.essayReviewUpdatedAt ?? null : null);
+    setReviewDraftAtRun(restored?.schema_version === 3 ? user?.essayReviewDraftAtRun ?? "" : "");
   }, [user?.email, user?.essayReviewResult, user?.essayReviewUpdatedAt, user?.essayReviewDraftAtRun]);
 
   useEffect(() => {
@@ -5176,7 +5183,6 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     setSessionPhase("Cleaning spelling…");
     setMechanicsNote(null);
     setAnalysisStatus(null);
-    setReviewWarnings([]);
     setPanelOpen(true);
 
     try {
@@ -5198,7 +5204,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
       );
 
       const review = session.review ?? null;
-      const gotReview = !!review && review.schema_version === 2 && review.status !== "error";
+      const gotReview = !!review && review.schema_version === 3 && review.status !== "error";
       const coveredIds = session.outline_coverage?.covered_point_ids;
       if (coveredIds) {
         const known = new Set(buildOutlinePoints(user.personalizedOutline).map((p) => p.id));
@@ -5206,7 +5212,6 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
       }
 
       const combinedWarnings = session.warnings ?? [];
-      setReviewWarnings(Array.from(new Set(combinedWarnings)));
 
       if (!gotReview) throw new Error(combinedWarnings[0] || "The coaching session could not review your draft.");
       persistEssayReview(review, workingDraft);
@@ -5719,7 +5724,6 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
               onAcceptAllQuickFixes={acceptAllQuickFixes}
               quickFixCount={quickFixSuggestions.length}
               coachLoading={coachLoading}
-              reviewWarnings={reviewWarnings}
               reviewResult={reviewResult}
               reviewUpdatedAt={reviewUpdatedAt}
               reviewDraftChanged={!!reviewUpdatedAt && draft !== reviewDraftAtRun}
@@ -5762,7 +5766,6 @@ function EssayWorkspacePanel({
   onAcceptAllQuickFixes,
   quickFixCount,
   coachLoading,
-  reviewWarnings,
   reviewResult,
   reviewUpdatedAt,
   reviewDraftChanged,
@@ -5787,7 +5790,6 @@ function EssayWorkspacePanel({
   onAcceptAllQuickFixes: () => void;
   quickFixCount: number;
   coachLoading: boolean;
-  reviewWarnings: string[];
   reviewResult: EssayReviewResult | null;
   reviewUpdatedAt: number | null;
   reviewDraftChanged: boolean;
@@ -5900,7 +5902,6 @@ function EssayWorkspacePanel({
           <WorkspaceEssayReviewTab
             review={reviewResult}
             loading={isEvaluating && !reviewReady}
-            warnings={reviewWarnings}
             updatedAt={reviewUpdatedAt}
             draftChanged={reviewDraftChanged}
             now={now}
@@ -6377,92 +6378,153 @@ function CoachList({ label, items, tone, icon: Icon }: { label: string; items?: 
   );
 }
 
-function CriterionReviewCard({ criterion }: { criterion: EssayCriterionReview }) {
-  const [open, setOpen] = useState(false);
+function CriterionScoreButton({
+  criterion,
+  selected,
+  onSelect,
+}: {
+  criterion: EssayCriterionReview;
+  selected: boolean;
+  onSelect: () => void;
+}) {
   const score = typeof criterion.score === "number" ? criterion.score : null;
-  const assessment = criterion.assessment;
-  const reviewer = criterion.reviewer_feedback;
-  const action = criterion.priority_action;
-  const evidence = assessment?.essay_evidence ?? [];
 
   return (
-    <div className="overflow-hidden rounded-xl border border-border bg-background">
-      <button
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        aria-expanded={open}
-        className="flex w-full items-center gap-3 bg-accent/30 px-3 py-3 text-left transition-colors hover:bg-accent/60"
+    <button
+      type="button"
+      onClick={onSelect}
+      aria-pressed={selected}
+      aria-controls="essay-review-criterion-detail"
+      className={`group h-full w-full min-w-0 rounded-lg border px-2 py-2.5 text-center transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info focus-visible:ring-offset-2 ${
+        selected
+          ? "border-info bg-info/10 shadow-sm"
+          : "border-transparent bg-muted/35 hover:border-info/30 hover:bg-info/5"
+      }`}
+    >
+      <span className={`flex min-h-9 items-center justify-center text-[11px] font-semibold leading-tight ${selected ? "text-info" : "text-foreground/85"}`}>
+        {criterion.label || labelize(criterion.criterion ?? "criterion")}
+      </span>
+      <span className="mt-1 block text-[10px] font-semibold tabular-nums text-muted-foreground">
+        {criterion.weight ?? 0}%
+      </span>
+      <span
+        className="mt-1.5 block text-[22px] font-bold leading-none tabular-nums"
+        style={score != null ? { color: scoreColor(score) } : undefined}
       >
+        {score ?? "—"}
+      </span>
+    </button>
+  );
+}
+
+function CriterionReviewDetails({ criterion }: { criterion: EssayCriterionReview }) {
+  const score = typeof criterion.score === "number" ? criterion.score : null;
+  const feedback = criterion.coach_feedback;
+  const action = criterion.priority_action;
+  const rubricBands = [
+    ["Excellent", criterion.rubric?.excellent],
+    ["Developing", criterion.rubric?.developing],
+    ["Weak", criterion.rubric?.weak],
+  ].filter((entry): entry is [string, string] => !!entry[1]);
+
+  return (
+    <section
+      id="essay-review-criterion-detail"
+      aria-live="polite"
+      className="overflow-hidden rounded-xl border border-border bg-background"
+    >
+      <div className="flex items-start gap-3 border-b border-border bg-accent/25 px-4 py-3.5">
         <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-semibold">{criterion.label || labelize(criterion.criterion ?? "criterion")}</div>
-          <div className="mt-0.5 text-[11px] text-muted-foreground">
-            Weight {criterion.weight ?? 0}% · {criterion.level || "Not scored"}
+          <div className="text-[15px] font-semibold">{criterion.label || labelize(criterion.criterion ?? "criterion")}</div>
+          <div className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground">
+            <span>{criterion.weight ?? 0}% ·</span>
+            {!!rubricBands.length ? (
+              <Tooltip delayDuration={150}>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    className="font-semibold text-foreground/80 underline decoration-dotted underline-offset-2 outline-none transition-colors hover:text-info focus-visible:text-info"
+                    aria-label={`Show the complete ${criterion.label || "criterion"} scoring rubric`}
+                  >
+                    {criterion.level || "Not scored"}
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent
+                  side="bottom"
+                  align="start"
+                  sideOffset={7}
+                  className="w-80 max-w-[calc(100vw-2rem)] p-3 text-left"
+                >
+                  <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-primary-foreground/70">Tailored scoring rubric</div>
+                  <div className="mt-2 space-y-2">
+                    {rubricBands.map(([label, description]) => (
+                      <div key={label} className="text-[11px] leading-relaxed text-primary-foreground/85">
+                        <span className="font-semibold text-primary-foreground">{label}: </span>{description}
+                      </div>
+                    ))}
+                  </div>
+                </TooltipContent>
+              </Tooltip>
+            ) : (
+              <span>{criterion.level || "Not scored"}</span>
+            )}
           </div>
+          {criterion.rubric?.description && (
+            <p className="mt-2 text-[12px] leading-relaxed text-muted-foreground">{criterion.rubric.description}</p>
+          )}
         </div>
-        <span className="text-[15px] font-semibold tabular-nums" style={score != null ? { color: scoreColor(score) } : undefined}>
+        <span className="shrink-0 text-[18px] font-bold tabular-nums" style={score != null ? { color: scoreColor(score) } : undefined}>
           {score != null ? `${score}/100` : "Unavailable"}
         </span>
-        <ChevronDown className={`size-4 shrink-0 text-muted-foreground transition-transform ${open ? "rotate-180" : ""}`} />
-      </button>
+      </div>
 
-      {open && (
-        <div className="space-y-3 border-t border-border p-3">
-          {criterion.rubric?.description && (
-            <div className="text-[12px] leading-relaxed text-muted-foreground">{criterion.rubric.description}</div>
-          )}
+      <div className="space-y-3 p-3">
+        {(feedback?.grounded_praise || feedback?.main_gap) && (
+          <section className="space-y-2 rounded-lg border border-info/20 bg-info/5 p-3">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-info">Scholarship Coach Feedback</div>
+            {feedback?.grounded_praise && (
+              <p className="text-[12px] leading-relaxed text-foreground/90">{feedback.grounded_praise}</p>
+            )}
+            {feedback?.main_gap && (
+              <p className="text-[12px] leading-relaxed"><span className="font-semibold">Main gap: </span>{feedback.main_gap}</p>
+            )}
+          </section>
+        )}
 
-          {(assessment?.what_is_working || assessment?.main_gap || evidence.length > 0) && (
-            <section className="space-y-2 rounded-lg border border-border/70 p-3">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Specialist assessment</div>
-              {assessment?.what_is_working && (
-                <div className="text-[12px] leading-relaxed"><span className="font-semibold text-success">Working: </span>{assessment.what_is_working}</div>
-              )}
-              {assessment?.main_gap && (
-                <div className="text-[12px] leading-relaxed"><span className="font-semibold text-warning">Main gap: </span>{assessment.main_gap}</div>
-              )}
-              {!!evidence.length && <CoachList label="Essay evidence" items={evidence} tone="muted" />}
-            </section>
-          )}
-
-          {(reviewer?.likely_reaction || reviewer?.main_concern) && (
-            <section className="space-y-2 rounded-lg border border-info/20 bg-info/5 p-3">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-info">Scholarship reviewer feedback</div>
-              {reviewer?.likely_reaction && <p className="text-[12px] leading-relaxed text-foreground/90">{reviewer.likely_reaction}</p>}
-              {reviewer?.main_concern && (
-                <p className="text-[12px] leading-relaxed"><span className="font-semibold">Main concern: </span>{reviewer.main_concern}</p>
-              )}
-            </section>
-          )}
-
-          {action && (
-            <section className="space-y-2 rounded-lg border border-success/20 bg-success/5 p-3">
+        {action && (
+          <section className="space-y-2 rounded-lg border border-success/20 bg-success/5 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-success">Priority revision action</div>
-              {action.title && <div className="text-[13px] font-semibold">{action.title}</div>}
-              {action.location && <p className="text-[12px] leading-relaxed"><span className="font-semibold">Where: </span>{action.location}</p>}
-              {action.how_to_fix && <p className="text-[12px] leading-relaxed"><span className="font-semibold">How to fix it: </span>{action.how_to_fix}</p>}
-              {action.why_this_addresses_the_reviewer && (
-                <p className="text-[12px] leading-relaxed text-muted-foreground"><span className="font-semibold text-foreground">Why this works: </span>{action.why_this_addresses_the_reviewer}</p>
+              {(action.impact || action.estimated_effort) && (
+                <div className="flex gap-1.5 text-[10px] font-semibold text-muted-foreground">
+                  {action.impact && <span className="rounded-full bg-background/80 px-2 py-0.5">{action.impact} impact</span>}
+                  {action.estimated_effort && <span className="rounded-full bg-background/80 px-2 py-0.5">{action.estimated_effort} effort</span>}
+                </div>
               )}
-              {action.evidence_safety && (
-                <p className="text-[11px] leading-relaxed text-muted-foreground">Evidence guardrail: {action.evidence_safety}</p>
-              )}
-            </section>
-          )}
-        </div>
-      )}
-    </div>
+            </div>
+            {action.title && <div className="text-[13px] font-semibold">{action.title}</div>}
+            {action.location && <p className="text-[12px] leading-relaxed"><span className="font-semibold">Where: </span>{action.location}</p>}
+            {action.how_to_fix && <p className="text-[12px] leading-relaxed"><span className="font-semibold">How to fix it: </span>{action.how_to_fix}</p>}
+            {action.why_this_fixes_the_gap && (
+              <p className="text-[12px] leading-relaxed text-muted-foreground"><span className="font-semibold text-foreground">Why this fixes the gap: </span>{action.why_this_fixes_the_gap}</p>
+            )}
+            {action.evidence_safety && (
+              <p className="text-[11px] leading-relaxed text-muted-foreground">Evidence guardrail: {action.evidence_safety}</p>
+            )}
+          </section>
+        )}
+      </div>
+    </section>
   );
 }
 
 function UnifiedEssayReview({
   review,
-  warnings,
   updatedAt,
   draftChanged,
   now,
 }: {
   review: EssayReviewResult;
-  warnings: string[];
   updatedAt: number | null;
   draftChanged: boolean;
   now: number;
@@ -6471,9 +6533,23 @@ function UnifiedEssayReview({
   const criteria = ESSAY_REVIEW_DIMENSIONS
     .map((key) => review.criteria?.[key])
     .filter((entry): entry is EssayCriterionReview => !!entry);
+  const criteriaByKey = ESSAY_REVIEW_DIMENSIONS.reduce<Partial<Record<EssayReviewDimension, EssayCriterionReview>>>((entries, key) => {
+    const criterion = review.criteria?.[key];
+    if (criterion) entries[key] = criterion;
+    return entries;
+  }, {});
+  const [selectedCriterionKey, setSelectedCriterionKey] = useState<EssayReviewDimension>(
+    () => ESSAY_REVIEW_DIMENSIONS.find((key) => !!review.criteria?.[key]) ?? "alignment",
+  );
+  useEffect(() => {
+    if (review.criteria?.[selectedCriterionKey]) return;
+    const firstAvailable = ESSAY_REVIEW_DIMENSIONS.find((key) => !!review.criteria?.[key]);
+    if (firstAvailable) setSelectedCriterionKey(firstAvailable);
+  }, [review, selectedCriterionKey]);
+  const selectedCriterion = criteriaByKey[selectedCriterionKey] ?? criteria[0];
+  const grammarCriterion = criteriaByKey.grammar;
   const score = typeof review.overall_score === "number" ? review.overall_score : null;
   const scoredVersions = (user?.drafts ?? []).filter((version) => typeof version.reviewOverall === "number");
-  const managerCriteria = review.manager_plan?.criteria ?? {};
 
   return (
     <div className="space-y-3">
@@ -6483,47 +6559,83 @@ function UnifiedEssayReview({
         {draftChanged && <div className="mt-1 text-[12px] font-medium text-warning">Essay changed since this review.</div>}
       </div>
 
-      <div className="flex items-center gap-3 rounded-xl border border-border bg-background p-3">
-        <ScoreRing score={score} size={58} stroke={4} />
-        <div className="min-w-0">
-          <div className="text-[13px] font-semibold">Overall essay score</div>
-          <div className="text-[12px] text-muted-foreground">
-            {score != null ? `${levelWord(score)} · weighted for this scholarship and prompt` : "A complete score is unavailable"}
-          </div>
-        </div>
-      </div>
+      <OverallEssayScoreCard score={score} versions={scoredVersions} />
 
-      {review.manager_plan?.manager_summary && (
-        <div className="rounded-xl border border-info/20 bg-info/5 p-3 text-[12px] leading-relaxed text-foreground/85">
-          {review.manager_plan.manager_summary}
+      <div className="overflow-hidden rounded-xl border border-border bg-border">
+        <div className="hidden grid-cols-6 gap-px md:grid">
+          {ESSAY_REVIEW_SCORE_GROUPS.map((group) => (
+            <h3 key={group.label} className={`bg-background px-3 py-3 text-center text-[18px] font-bold leading-tight text-foreground ${group.columnClass}`}>
+              {group.label}
+            </h3>
+          ))}
+          {ESSAY_REVIEW_SCORE_GROUPS.flatMap((group) => group.criteria).map((key) => {
+            const criterion = criteriaByKey[key];
+            if (!criterion) return null;
+            return (
+              <div key={key} className="min-w-0 bg-background p-1.5 pt-0">
+                <CriterionScoreButton
+                  criterion={criterion}
+                  selected={selectedCriterionKey === key}
+                  onSelect={() => setSelectedCriterionKey(key)}
+                />
+              </div>
+            );
+          })}
         </div>
-      )}
 
-      {Object.keys(managerCriteria).length > 0 && (
-        <div className="rounded-xl border border-border bg-background p-3">
-          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Tailored criterion weights</div>
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {Object.entries(managerCriteria).map(([key, value]) => (
-              <span key={key} title={value.weight_rationale} className="rounded-full bg-muted px-2 py-1 text-[11px] font-medium text-foreground/80">
-                {value.label || EVALUATION_DIMENSION_LABELS[key] || labelize(key)} {value.weight ?? 0}%
+        <div className="grid gap-px md:hidden">
+          {ESSAY_REVIEW_SCORE_GROUPS.map((group) => {
+            const groupCriteria = group.criteria
+              .map((key) => [key, criteriaByKey[key]] as const)
+              .filter((entry): entry is readonly [EssayReviewDimension, EssayCriterionReview] => !!entry[1]);
+            if (!groupCriteria.length) return null;
+            return (
+              <section key={group.label} className="min-w-0 bg-background p-3">
+                <h3 className="text-center text-[18px] font-bold leading-tight text-foreground">{group.label}</h3>
+                <div className={`mt-3 grid gap-1.5 ${groupCriteria.length === 3 ? "grid-cols-3" : groupCriteria.length === 2 ? "grid-cols-2" : "grid-cols-1"}`}>
+                  {groupCriteria.map(([key, criterion]) => (
+                    <CriterionScoreButton
+                      key={key}
+                      criterion={criterion}
+                      selected={selectedCriterionKey === key}
+                      onSelect={() => setSelectedCriterionKey(key)}
+                    />
+                  ))}
+                </div>
+              </section>
+            );
+          })}
+        </div>
+
+        {grammarCriterion && (
+          <section className="flex items-center gap-3 border-t border-border bg-background p-3">
+            <div className="min-w-0 flex-1">
+              <h3 className="text-[15px] font-bold text-foreground">Grammar</h3>
+              <p className="mt-0.5 text-[10px] leading-relaxed text-muted-foreground">Spelling, punctuation, usage, and sentence-level correctness</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setSelectedCriterionKey("grammar")}
+              aria-pressed={selectedCriterionKey === "grammar"}
+              aria-controls="essay-review-criterion-detail"
+              className={`flex min-w-28 items-center justify-center gap-2 rounded-lg border px-3 py-2 text-left transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info focus-visible:ring-offset-2 ${
+                selectedCriterionKey === "grammar"
+                  ? "border-info bg-info/10 shadow-sm"
+                  : "border-transparent bg-muted/35 hover:border-info/30 hover:bg-info/5"
+              }`}
+            >
+              <span className="flex flex-col items-center">
+                <span className="text-[10px] font-semibold tabular-nums text-muted-foreground">{grammarCriterion.weight ?? 0}%</span>
+                <span className="mt-1 text-[22px] font-bold leading-none tabular-nums" style={typeof grammarCriterion.score === "number" ? { color: scoreColor(grammarCriterion.score) } : undefined}>
+                  {typeof grammarCriterion.score === "number" ? grammarCriterion.score : "—"}
+                </span>
               </span>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {!!warnings.length && (
-        <div className="rounded-xl border border-warning/25 bg-warning/5 p-3">
-          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-warning">Review notes</div>
-          <MiniList items={warnings} />
-        </div>
-      )}
-
-      <div className="space-y-2">
-        {criteria.map((criterion) => <CriterionReviewCard key={criterion.criterion || criterion.label} criterion={criterion} />)}
+            </button>
+          </section>
+        )}
       </div>
 
-      {scoredVersions.length > 0 && <ProgressCard versions={scoredVersions} />}
+      {selectedCriterion && <CriterionReviewDetails criterion={selectedCriterion} />}
     </div>
   );
 }
@@ -6531,14 +6643,12 @@ function UnifiedEssayReview({
 function WorkspaceEssayReviewTab({
   review,
   loading,
-  warnings,
   updatedAt,
   draftChanged,
   now,
 }: {
   review: EssayReviewResult | null;
   loading: boolean;
-  warnings: string[];
   updatedAt: number | null;
   draftChanged: boolean;
   now: number;
@@ -6551,7 +6661,7 @@ function WorkspaceEssayReviewTab({
       </div>
     );
   }
-  if (!review || review.schema_version !== 2) {
+  if (!review || review.schema_version !== 3) {
     return (
       <PanelEmpty
         label="Essay Review"
@@ -6562,7 +6672,6 @@ function WorkspaceEssayReviewTab({
   return (
     <UnifiedEssayReview
       review={review}
-      warnings={warnings}
       updatedAt={updatedAt}
       draftChanged={draftChanged}
       now={now}
@@ -6587,15 +6696,14 @@ function Sparkline({ points }: { points: number[] }) {
   );
 }
 
-function ProgressCard({ versions }: { versions: EssayDraft[] }) {
+function OverallEssayScoreCard({ score, versions }: { score: number | null; versions: EssayDraft[] }) {
   const scored = versions.filter((v) => typeof v.reviewOverall === "number");
-  if (!scored.length) return null;
-  const latest = scored[scored.length - 1];
+  const latest = scored[scored.length - 1] ?? null;
   const prev = scored.length > 1 ? scored[scored.length - 2] : null;
-  const overall = latest.reviewOverall ?? 0;
-  const overallDelta = prev ? overall - (prev.reviewOverall ?? 0) : null;
+  const overall = score ?? latest?.reviewOverall ?? null;
+  const overallDelta = prev && overall != null ? overall - (prev.reviewOverall ?? 0) : null;
   const deltas =
-    prev?.reviewScores && latest.reviewScores
+    prev?.reviewScores && latest?.reviewScores
       ? Object.entries(latest.reviewScores)
           .map(([k, v]) => ({ key: k, delta: v - (prev.reviewScores?.[k] ?? v) }))
           .filter((x) => x.delta !== 0)
@@ -6604,24 +6712,26 @@ function ProgressCard({ versions }: { versions: EssayDraft[] }) {
   return (
     <div className="space-y-3 rounded-xl border border-border bg-background p-3">
       <div className="flex items-center gap-3">
-        <ScoreRing score={overall} size={52} stroke={4} />
+        <ScoreRing score={overall} size={58} stroke={4} />
         <div className="min-w-0 flex-1">
           <div className="text-[13px] font-semibold">Overall essay score</div>
-          <div className="text-[12px] text-muted-foreground">
-            {prev && overallDelta != null ? (
-              <>
-                Draft {prev.version} → {latest.version}:{" "}
-                <span className="font-semibold" style={{ color: overallDelta >= 0 ? "var(--success)" : "var(--destructive)" }}>
-                  {overallDelta >= 0 ? `▲ +${overallDelta}` : `▼ ${overallDelta}`}
-                </span>{" "}
-                · {scored.length} drafts
-              </>
-            ) : (
-              `Draft ${latest.version} · first scored draft`
-            )}
-          </div>
+          <div className="text-[12px] text-muted-foreground">Criteria weights tailored for this scholarship and essay prompt</div>
         </div>
       </div>
+
+      {latest && (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-2 text-[12px]">
+          <span className="text-muted-foreground">Draft {latest.version} · {latest.wordCount} words</span>
+          {prev && overallDelta != null ? (
+            <span className="font-semibold" style={{ color: overallDelta >= 0 ? "var(--success)" : "var(--destructive)" }}>
+              {overallDelta >= 0 ? `▲ +${overallDelta}` : `▼ ${overallDelta}`} since Draft {prev.version} · {scored.length} scored drafts
+            </span>
+          ) : (
+            <span className="text-muted-foreground">First scored draft</span>
+          )}
+        </div>
+      )}
+
       {scored.length > 1 && <Sparkline points={scored.map((v) => v.reviewOverall ?? 0)} />}
       {deltas.length > 0 && (
         <div className="flex flex-wrap gap-1">
@@ -6635,14 +6745,6 @@ function ProgressCard({ versions }: { versions: EssayDraft[] }) {
           ))}
         </div>
       )}
-      <div className="space-y-1 border-t border-border pt-2">
-        {[...scored].reverse().slice(0, 6).map((v) => (
-          <div key={v.id} className="flex items-center justify-between text-[12px]">
-            <span className="text-muted-foreground">Draft {v.version} · {v.wordCount} words</span>
-            <span className="font-semibold tabular-nums" style={{ color: scoreColor(v.reviewOverall ?? 0) }}>{v.reviewOverall}</span>
-          </div>
-        ))}
-      </div>
     </div>
   );
 }
@@ -6977,7 +7079,7 @@ function lowEssayReviewCriteria(review?: EssayReviewResult | null): string[] {
 
 function StepFinalCheck() {
   const { user } = useUser();
-  const review = user?.essayReviewResult?.schema_version === 2 ? user.essayReviewResult : null;
+  const review = user?.essayReviewResult?.schema_version === 3 ? user.essayReviewResult : null;
   const docs = user?.documents ?? [];
   const hasDoc = (kind: string) => docs.some((doc) => doc.kind.toLowerCase().includes(kind));
   const checklist = [
@@ -7072,7 +7174,7 @@ function StepTracker() {
   const columns = ["Interested", "Drafting", "Submitted", "Awarded"] as const;
   const { user } = useUser();
   const scholarship = user?.activeScholarship;
-  const review = user?.essayReviewResult?.schema_version === 2 ? user.essayReviewResult : null;
+  const review = user?.essayReviewResult?.schema_version === 3 ? user.essayReviewResult : null;
   const score = typeof review?.overall_score === "number" ? review.overall_score : 0;
   const activeColumn = review ? "Drafting" : scholarship?.name ? "Interested" : "Interested";
 

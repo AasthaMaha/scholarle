@@ -1,10 +1,10 @@
 """Manager-first, criterion-owned essay review for the Essay Workspace.
 
 The Manager owns only the scholarship-specific rubric and weights. Seven
-criterion agents then independently assess, simulate the relevant reviewer
-reaction, score, and recommend one aligned revision action. QA and Guardrail
-critics audit the resulting criterion packages; Python owns normalization and
-the weighted overall score.
+criterion agents then independently act as scholarship coaches: each gives
+grounded reviewer-perspective feedback, scores the criterion, and recommends
+one aligned revision action. QA and Guardrail critics audit the resulting
+criterion packages; Python owns normalization and the weighted overall score.
 """
 
 from __future__ import annotations
@@ -237,8 +237,7 @@ def normalize_criterion_review(
     criterion_plan: dict,
 ) -> dict:
     raw = _as_dict(raw)
-    assessment = _as_dict(raw.get("assessment"))
-    reviewer = _as_dict(raw.get("reviewer_feedback"))
+    feedback = _as_dict(raw.get("coach_feedback"))
     action = _as_dict(raw.get("priority_action"))
     score_value = raw.get("score")
     try:
@@ -249,8 +248,8 @@ def normalize_criterion_review(
         available = False
     score = clamp_score(numeric_score, hi=100) if available else None
 
-    main_gap = _as_text(assessment.get("main_gap"))
-    reviewer_concern = _as_text(reviewer.get("main_concern")) or main_gap
+    grounded_praise = _as_text(feedback.get("grounded_praise"))
+    main_gap = _as_text(feedback.get("main_gap"))
     how_to_fix = _as_text(action.get("how_to_fix"))
     title = _as_text(action.get("title")) or f"Strengthen {READINESS_LABELS[criterion]}"
     impact = _as_text(action.get("impact")).title()
@@ -275,22 +274,15 @@ def normalize_criterion_review(
             if score is not None
             else "Unavailable"
         ),
-        "assessment": {
-            "what_is_working": _as_text(assessment.get("what_is_working")),
+        "coach_feedback": {
+            "grounded_praise": grounded_praise,
             "main_gap": main_gap,
-            "essay_evidence": _as_text_list(assessment.get("essay_evidence")),
-        },
-        "reviewer_feedback": {
-            "likely_reaction": _as_text(reviewer.get("likely_reaction")),
-            "main_concern": reviewer_concern,
         },
         "priority_action": {
             "title": title,
             "location": _as_text(action.get("location")),
             "how_to_fix": how_to_fix,
-            "why_this_addresses_the_reviewer": _as_text(
-                action.get("why_this_addresses_the_reviewer")
-            ),
+            "why_this_fixes_the_gap": _as_text(action.get("why_this_fixes_the_gap")),
             "evidence_safety": _as_text(action.get("evidence_safety")),
             "impact": impact,
             "estimated_effort": effort,
@@ -324,18 +316,28 @@ PRIOR CRITERION OUTPUT:
 Correct only the identified problems while preserving grounded valid findings.
 """
     prompt = f"""
-You are the {READINESS_LABELS[criterion]} Coach. You are both the specialist for
-this one criterion and the simulation of how a scholarship reviewer reacts to
-this criterion. Complete the work in this exact order:
+You are the {READINESS_LABELS[criterion]} Scholarship Coach: an experienced
+scholarship reviewer speaking directly and constructively to the student. You
+are one combined role, not a separate specialist and reviewer simulation.
+Complete the work in this exact order:
 
-1. SPECIALIST ASSESSMENT: inspect only {READINESS_LABELS[criterion]} and identify
-   what works, the main gap, and concrete essay evidence.
-2. REVIEWER SIMULATION: explain how a scholarship reviewer is likely to react to
-   those exact findings. Reviewer question: {definition['reviewer_lens']}
-3. RUBRIC SCORE: only after steps 1 and 2, assign a 0-100 score using the Manager's
-   tailored rubric. The criterion weight must not change the raw score.
-4. PRIORITY ACTION: give exactly one specific action for this criterion. It must
-   directly resolve the reviewer concern and identify where and how to revise.
+1. SCHOLARSHIP COACH FEEDBACK:
+   - Start with grounded_praise. Give sincere, empathetic, confidence-building
+     praise tied to a specific real detail, passage, or genuine foundation in
+     the draft. Be restrained: never use generic or over-the-top enthusiasm.
+   - Then identify exactly one main_gap: the most consequential gap for this
+     criterion. Weave the exact draft passage, location, tight paraphrase, or
+     clearly described omission into the explanation, and explain why it matters
+     from a scholarship reviewer's perspective.
+   - Do not create a separate evidence list or reviewer-reaction section.
+   Reviewer question: {definition['reviewer_lens']}
+2. RUBRIC SCORE: only after the feedback, assign a 0-100 score using the
+   Manager's tailored rubric. The criterion weight must not change the raw score.
+3. PRIORITY ACTION: give exactly one specific action that directly fixes the one
+   main gap. Identify the exact revision location and the concrete change. Make
+   it as specific as the essay, profile, prompt, and scholarship information
+   allow. When a needed detail is absent, ask for the type of true detail the
+   student should add; never invent the detail.
 
 CRITERION FOCUS:
 {definition['focus']}
@@ -351,20 +353,15 @@ SHARED SUBMISSION CONTEXT:
 Return ONLY valid JSON:
 {{
   "score": 0,
-  "assessment": {{
-    "what_is_working": "specific grounded strength, or state that none is demonstrated",
-    "main_gap": "single most important criterion-specific gap",
-    "essay_evidence": ["short quote or tight paraphrase from the draft"]
-  }},
-  "reviewer_feedback": {{
-    "likely_reaction": "first-person or direct description of likely reviewer reaction",
-    "main_concern": "the deciding concern for this criterion"
+  "coach_feedback": {{
+    "grounded_praise": "specific, restrained, empathetic praise with draft evidence woven in",
+    "main_gap": "one criterion-specific gap with its exact evidence or omission woven in"
   }},
   "priority_action": {{
     "title": "short action-oriented title",
     "location": "paragraph, sentence, transition, passage, or clearly described omission",
-    "how_to_fix": "specific details on what the student should change",
-    "why_this_addresses_the_reviewer": "explicit connection to the reviewer concern",
+    "how_to_fix": "one precise change grounded across the draft, profile, prompt, and scholarship",
+    "why_this_fixes_the_gap": "explicit connection to the single main gap",
     "evidence_safety": "real-detail constraint when relevant",
     "impact": "High|Medium|Low",
     "estimated_effort": "Quick|Moderate|Deep"
@@ -391,10 +388,15 @@ CRITERION PACKAGES:
 {_grounding_rules()}
 
 For every criterion check this chain:
-essay evidence -> specialist assessment -> reviewer reaction -> score -> priority action.
-Confirm the score matches the tailored rubric, the raw score is independent of
-the weight, the reviewer concern belongs to the criterion, and the action directly
-addresses that concern. Also confirm all seven criteria are present and distinct.
+submitted evidence -> grounded praise plus one main gap -> score -> priority action.
+Confirm that the praise is specific, evidence-grounded, empathetic, restrained,
+and not overenthusiastic. Confirm that there is exactly one criterion-specific
+main gap, with its draft evidence, location, or omission woven into the feedback
+from the scholarship reviewer's perspective. Confirm the score matches the
+tailored rubric and is independent of the weight. Confirm the action is one
+precise, executable revision that directly fixes that same gap, uses the essay,
+profile, prompt, and scholarship context where relevant, and invents nothing.
+Also confirm all seven criteria are present and distinct.
 
 Return ONLY valid JSON:
 {{
@@ -418,7 +420,7 @@ Return ONLY valid JSON:
 def run_action_guardrail(shared_context: str, reviews: dict) -> dict:
     action_packages = {
         key: {
-            "reviewer_feedback": _as_dict(review).get("reviewer_feedback", {}),
+            "coach_feedback": _as_dict(review).get("coach_feedback", {}),
             "priority_action": _as_dict(review).get("priority_action", {}),
         }
         for key, review in reviews.items()
@@ -431,13 +433,13 @@ criterion's one priority action. Do not score the essay and do not rewrite it.
 SUBMISSION CONTEXT:
 {shared_context}
 
-REVIEWER CONCERNS AND PRIORITY ACTIONS:
+COACH GAPS AND PRIORITY ACTIONS:
 {json.dumps(action_packages, indent=2, default=str)}
 {_grounding_rules()}
 
 Reject an action if it invents or assumes facts, encourages exaggeration,
 replaces the student's voice, supplies missing personal reflection, is too vague
-to execute, or fails to address its criterion's reviewer concern.
+to execute, or fails to directly address its criterion's single main gap.
 
 Return ONLY valid JSON:
 {{

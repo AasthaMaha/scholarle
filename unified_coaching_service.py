@@ -125,19 +125,18 @@ def _programmatic_failed_criteria(reviews: dict) -> list[str]:
     failed = []
     for key in READINESS_DIMENSIONS:
         review = reviews.get(key) or {}
-        assessment = review.get("assessment") or {}
-        reviewer = review.get("reviewer_feedback") or {}
+        feedback = review.get("coach_feedback") or {}
         action = review.get("priority_action") or {}
         if not review.get("available"):
             failed.append(key)
             continue
         required = (
-            assessment.get("main_gap"),
-            reviewer.get("likely_reaction"),
-            reviewer.get("main_concern"),
+            feedback.get("grounded_praise"),
+            feedback.get("main_gap"),
             action.get("title"),
+            action.get("location"),
             action.get("how_to_fix"),
-            action.get("why_this_addresses_the_reviewer"),
+            action.get("why_this_fixes_the_gap"),
         )
         if not all(str(value or "").strip() for value in required):
             failed.append(key)
@@ -161,7 +160,7 @@ def _build_review_result(
         "approved": audit_ok,
     }
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "status": status,
         "overall_score": overall_score,
         "criteria": reviews,
@@ -332,8 +331,8 @@ def run_unified_coaching_session(
                 guidance = (
                     guidance + " " if guidance else ""
                 ) + (
-                    "Return every required field: a valid score, main gap, reviewer reaction, "
-                    "reviewer concern, and one specific aligned priority action."
+                    "Return every required field: a valid score, grounded praise, exactly one "
+                    "main gap, and one specific action that directly fixes that gap."
                 )
             retry_jobs[f"{key}_retry"] = (
                 lambda criterion=key, notes=guidance: run_criterion_review_agent(

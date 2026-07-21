@@ -5,7 +5,7 @@ The Essay Workspace uses one canonical evaluation path:
 - `POST /api/apply/coaching-session`
   - applies deterministic mechanics cleanup
   - runs the Manager-led seven-criterion Essay Review
-  - returns `review.schema_version === 2`
+  - returns `review.schema_version === 3`
 
 Background editor support is intentionally narrow:
 

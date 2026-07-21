@@ -462,7 +462,7 @@ Main service function:
 run_unified_coaching_session(...)
 ```
 
-The full review returns the schema-v2 Essay Review only: one weighted overall
+The full review returns the schema-v3 Essay Review only: one weighted overall
 score, seven criterion packages, Manager plan, QA/Guardrail audit, mechanics
 metadata, optional outline coverage, agent statuses, and warnings.
 
@@ -593,21 +593,23 @@ realizations, changes in mindset or behavior, personal/community significance,
 and future direction. Narrative Structure only judges whether reflection is
 present, positioned effectively, and logically connected.
 
-Each of the seven criterion agents completes the same ordered job inside one
-model call: specialist assessment, criterion-specific scholarship-reviewer
-simulation, rubric score, and exactly one specific revision action that answers
-the reviewer concern. There is no separate Evaluator Agent or global Reviewer
-Simulation Agent in the Page 4 session. The seven lanes run in parallel;
-conditional Outline Coverage may run beside them but is not scored.
+Each of the seven criterion agents is one Scholarship Coach that speaks from an
+experienced scholarship reviewer's perspective. Inside one model call, it first
+gives restrained, evidence-grounded praise followed by exactly one main gap,
+then assigns the tailored-rubric score and gives exactly one specific revision
+action that directly fixes that gap. Evidence is woven into the praise and gap,
+not returned as a separate list. There is no separate Specialist Assessment,
+Evaluator, or Reviewer Simulation agent in the Page 4 session. The seven lanes
+run in parallel; conditional Outline Coverage may run beside them but is not scored.
 
 After the criterion wave, QA Critic and Guardrail Critic run in parallel. QA
-checks the evidence → assessment → reviewer feedback → score → action chain.
+checks the evidence → coach feedback → score → action chain.
 Guardrail checks all seven actions for invented facts, voice replacement, unsafe
 assumptions, and vague instructions. Only failed criteria receive one bounded
 repair attempt. Python validates the result and calculates the sole overall
 score as the Manager-weighted average; an LLM never estimates that aggregate.
 
-The Page 4 endpoint has one canonical schema-v2 review contract. It returns the
+The Page 4 endpoint has one canonical schema-v3 review contract. It returns the
 overall score, seven criterion packages, Manager plan, and quality audit, plus
 mechanics metadata, optional outline coverage, agent statuses, and warnings.
 It does not return the former `evaluation`, `coach_pack`, or `components`
@@ -615,8 +617,8 @@ compatibility envelopes.
 
 Page 4 displays the overall score and all seven criterion packages together in
 one **Essay Review** tab. The former separate Evaluation tab is removed. Each
-criterion card shows its score, weight, specialist assessment, reviewer
-feedback, and one aligned how-to-fix action. Outline and editor Fixes remain
+criterion card shows its score, weight, unified Scholarship Coach feedback, and
+one aligned how-to-fix action. Outline and editor Fixes remain
 separate tools because they are not duplicate evaluation outputs.
 
 Primary implementation:
@@ -895,9 +897,9 @@ run_unified_coaching_session(...)
 | Voice | Tone & Authenticity Coach | Protects the student's voice; evaluates sincerity, thoughtfulness, confidence, respect, and genuinely student-written language; flags generic, overly polished, corporate, formulaic, performative, and AI-like phrasing. |
 | Voice | Clarity & Concision Coach | Evaluates whether sentences are understandable, direct, and free of filler, repetition, wordiness, unclear phrasing, and tangled construction. |
 | Grammar | Grammar Coach | Evaluates spelling, punctuation, capitalization, verb tense, agreement, grammar, and sentence-level correctness. |
-| Every criterion lane | Embedded Reviewer Simulation | After specialist assessment and before scoring, predicts the scholarship reviewer's reaction to that criterion; its concern must be answered by the criterion action. |
+| Every criterion lane | Scholarship Coach role | Combines criterion expertise with the scholarship reviewer's perspective, giving grounded praise, one main gap, a score, and one directly aligned action. |
 | Conditional | Outline Coverage Coach | Checks which personalized outline points are covered by the draft. |
-| Parallel quality control | QA Critic | Audits evidence, specialist assessment, reviewer feedback, rubric score, and action consistency across all seven criteria. |
+| Parallel quality control | QA Critic | Audits evidence grounding, unified coach feedback, rubric score, and action consistency across all seven criteria. |
 | Parallel quality control | Guardrail Critic | Rejects criterion actions that invent facts, replace the student's voice, make unsafe assumptions, or lack specific instructions. |
 | Deterministic finalizer | Backend code | Validates all fields and calculates one weighted overall score from the Manager's weights. |
 
@@ -956,6 +958,6 @@ nodes/coaching/readiness.py
 
 - Profile agents build the student profile.
 - Scholarship agents discover, extract, clean, and analyze opportunities.
-- Essay Workspace Evaluation agents score the draft with the Manager-led schema-v2 review.
+- Essay Workspace Evaluation agents score the draft with the Manager-led schema-v3 review.
 - Targeted editor tools support grammar checks, outline coverage, and selected-text rewrites.
 - Critic and guardrail agents protect against hallucinated or unsupported coaching.
