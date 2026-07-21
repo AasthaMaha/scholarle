@@ -5,7 +5,6 @@ from essay_editor_service import (
     _clean_sentence_suggestions,
     _resolve_writing_support_level,
 )
-from essay_mechanics import apply_deterministic_mechanics
 from nodes.coaching.readiness import READINESS_DIMENSIONS
 from nodes.coaching.criterion_review import (
     CRITERION_AUDIT_PLAYBOOKS,
@@ -205,22 +204,6 @@ def test_weighted_overall_score_is_deterministic():
     assert weighted_overall_score(reviews) == expected
 
 
-def test_deterministic_mechanics_applies_spelling_and_spacing():
-    draft = "I recieve awards  becuase i lead."
-    result = apply_deterministic_mechanics(draft)
-    assert "received" in result["draft"] or "receive" in result["draft"]
-    assert "because" in result["draft"]
-    assert " I " in f" {result['draft']} " or result["draft"].startswith("I ")
-    assert result["applied_count"] >= 2
-
-
-def test_deterministic_mechanics_preserves_clean_draft():
-    draft = "I believe mentoring helped my classmates succeed."
-    result = apply_deterministic_mechanics(draft)
-    assert result["draft"] == draft
-    assert result["applied_count"] == 0
-
-
 def test_coach_guardrails_require_fact_traceability():
     assert "EVIDENCE LOCK" in COACH_GUARDRAILS
     assert "FACT TRACEABILITY" in COACH_GUARDRAILS
@@ -320,7 +303,7 @@ def _coaching_session_request():
     )
 
 
-def test_unified_coaching_session_runs_one_merged_graph_on_cleaned_draft(monkeypatch):
+def test_unified_coaching_session_reviews_submitted_draft_without_rewriting(monkeypatch):
     from api import routes
 
     seen = {}
@@ -355,8 +338,9 @@ def test_unified_coaching_session_runs_one_merged_graph_on_cleaned_draft(monkeyp
     assert "coach_pack" not in result
     assert result["session_id"].startswith("coach_")
     assert len(result["draft_hash"]) == 64
-    assert "receive" in result["cleaned_draft"]
-    assert seen["draft"] == result["cleaned_draft"]
+    assert seen["draft"] == _coaching_session_request().essay_text
+    assert "mechanics" not in result
+    assert "cleaned_draft" not in result
     assert result["agents"]["manager"] == "success"
 
 

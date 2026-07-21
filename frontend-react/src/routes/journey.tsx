@@ -131,10 +131,9 @@ export const Route = createFileRoute("/journey")({
   component: Journey,
 });
 
-const SIDEBAR_MIN_WIDTH = 232;
-const SIDEBAR_MAX_WIDTH = 420;
-const SIDEBAR_DEFAULT_WIDTH = 288;
-const SIDEBAR_WIDTH_KEY = "scholar-e:sidebarWidth";
+// 248px is the narrowest expanded width that keeps the longest journey title
+// ("Analyze Requirements & Fit") on one line with its step marker and padding.
+const SIDEBAR_EXPANDED_WIDTH = 248;
 
 function needsAcademicOnboarding(user: UserProfile | null) {
   return !!(
@@ -151,8 +150,6 @@ function Journey() {
   const [stepIdx, setStepIdx] = useState(0);
   const [profileError, setProfileError] = useState("");
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  const [panelWidth, setPanelWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
-  const [sidebarDragging, setSidebarDragging] = useState(false);
   const [academicOnboardingActive, setAcademicOnboardingActive] = useState<boolean | null>(null);
   const [showResumePrompt, setShowResumePrompt] = useState(false);
   const guidedSidebarExpanded = useRef(false);
@@ -187,19 +184,6 @@ function Journey() {
     const frame = window.requestAnimationFrame(() => setShowResumePrompt(false));
     return () => window.cancelAnimationFrame(frame);
   }, [academicOnboardingActive, showResumePrompt]);
-
-  // Restore the user's chosen sidebar width (client-only; SSR-safe).
-  useEffect(() => {
-    const saved = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY));
-    if (saved >= SIDEBAR_MIN_WIDTH && saved <= SIDEBAR_MAX_WIDTH) setPanelWidth(saved);
-  }, []);
-  useEffect(() => {
-    try {
-      localStorage.setItem(SIDEBAR_WIDTH_KEY, String(panelWidth));
-    } catch {
-      /* ignore quota / privacy-mode errors */
-    }
-  }, [panelWidth]);
 
   // Resume the last step once the saved profile hydrates from storage.
   const restoredStep = useRef(false);
@@ -300,8 +284,8 @@ function Journey() {
   return (
     <TooltipProvider delayDuration={150}>
       <div
-        className="flex h-screen overflow-hidden"
-        style={{ ["--sw" as string]: `${panelWidth}px` } as React.CSSProperties}
+        className="flex h-[100dvh] overflow-hidden"
+        style={{ ["--sw" as string]: `${SIDEBAR_EXPANDED_WIDTH}px` } as React.CSSProperties}
       >
         <SidebarRail
           activeIdx={visibleStepIdx}
@@ -320,20 +304,20 @@ function Journey() {
             if (!window.matchMedia("(min-width: 768px)").matches) setIsSidebarOpen(false);
           }}
           onClearAll={handleClearAll}
-          onResize={(w) => setPanelWidth(Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, w)))}
-          onResizeActive={setSidebarDragging}
         />
         <div
-          className={`flex w-full min-w-0 flex-col ${
-            sidebarDragging ? "" : "transition-[padding] duration-300 ease-out"
-          } ${isSidebarOpen ? "md:pl-[var(--sw)]" : "md:pl-[65px]"}`}
+          className={`flex min-h-0 w-full min-w-0 flex-col transition-[padding] duration-300 ease-out ${
+            isSidebarOpen ? "md:pl-[var(--sw)]" : "md:pl-[65px]"
+          }`}
         >
           <TopBar step={step} stepIdx={visibleStepIdx} guidedProfileSetupActive={guidedProfileSetupActive} />
           <FloatingSidebarToggle
             isOpen={isSidebarOpen}
             onOpen={() => setIsSidebarOpen(true)}
           />
-          <main ref={journeyMainRef} tabIndex={-1} className={`min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto outline-none transition-colors duration-500 ${
+          <main ref={journeyMainRef} tabIndex={-1} className={`min-h-0 min-w-0 flex-1 overflow-x-hidden outline-none transition-colors duration-500 ${
+            step.slug === "essay-workspace" ? "overflow-y-hidden" : "overflow-y-auto"
+          } ${
             step.slug === "discovery"
               ? user?.wikiDiscovery
                 ? "bg-[radial-gradient(circle_at_85%_8%,rgba(109,93,246,0.10),transparent_28%),linear-gradient(180deg,#f4f6fb_0%,#ffffff_48%,#f4f2fb_100%)]"
@@ -343,7 +327,7 @@ function Journey() {
             <div
               className={`mx-auto ${
                 step.slug === "essay-workspace"
-                  ? "w-full max-w-none px-0 py-0"
+                  ? "h-full min-h-0 w-full max-w-none px-0 py-0"
                   : `px-6 md:px-10 ${
                       ["discovery", "requirements"].includes(step.slug)
                         ? "max-w-7xl py-6"
@@ -353,7 +337,7 @@ function Journey() {
                     }`
               }`}
             >
-              <div>
+              <div className={step.slug === "essay-workspace" ? "h-full min-h-0" : undefined}>
               <StepBody
                 slug={step.slug}
                 goNext={goNext}
@@ -368,8 +352,8 @@ function Journey() {
               </div>
             </div>
           </main>
-          {!guidedProfileSetupActive && <footer className="shrink-0 border-t border-border bg-background/95 px-6 backdrop-blur md:px-10">
-            <div className="mx-auto max-w-7xl">
+          {!guidedProfileSetupActive && <footer className="h-16 shrink-0 border-t border-border bg-background/95 px-6 backdrop-blur md:px-10">
+            <div className="mx-auto h-full max-w-7xl">
               <Nav
                 stepIdx={stepIdx}
                 onNext={goNext}
@@ -424,8 +408,6 @@ function Sidebar({
   onClose,
   onSelect,
   onClearAll,
-  onResize,
-  onResizeActive,
 }: {
   activeIdx: number;
   laterStepsLocked: boolean;
@@ -434,22 +416,7 @@ function Sidebar({
   onClose: () => void;
   onSelect: (i: number) => void;
   onClearAll: () => void;
-  onResize: (width: number) => void;
-  onResizeActive: (active: boolean) => void;
 }) {
-  function startResize(e: React.MouseEvent) {
-    e.preventDefault();
-    onResizeActive(true);
-    const onMove = (ev: MouseEvent) => onResize(ev.clientX);
-    const onUp = () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-      onResizeActive(false);
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-  }
-
   const groups = useMemo(() => {
     const map = new Map<string, typeof journeySteps>();
     journeySteps.forEach((s) => {
@@ -472,7 +439,7 @@ function Sidebar({
       />
       <aside
         data-journey-sidebar
-        className={`fixed inset-y-0 left-0 z-40 flex w-80 max-w-[85vw] shrink-0 flex-col border-r border-border bg-card/95 backdrop-blur transition-transform duration-300 ease-out md:w-[var(--sw)] md:max-w-none ${
+        className={`fixed inset-y-0 left-0 z-40 flex w-[var(--sw)] max-w-[85vw] shrink-0 flex-col border-r border-border bg-card/95 backdrop-blur transition-transform duration-300 ease-out md:max-w-none ${
           isOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
@@ -558,7 +525,7 @@ function Sidebar({
           <SidebarUser />
         </div>
 
-        <div className="border-t border-border px-6 py-3">
+        <div className="flex h-16 shrink-0 flex-col justify-center border-t border-border px-6">
           <button
             type="button"
             onClick={onClearAll}
@@ -567,18 +534,7 @@ function Sidebar({
             <RefreshCw className="size-3.5" />
             Reset all data
           </button>
-          <div className="mt-2 text-[11px] text-muted-foreground/60">A coach, not a ghostwriter.</div>
-        </div>
-
-        {/* Drag-to-resize handle (desktop). Widens/narrows the panel; width persists. */}
-        <div
-          onMouseDown={startResize}
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize sidebar"
-          className="group absolute inset-y-0 -right-1 hidden w-2 cursor-col-resize md:block"
-        >
-          <div className="mx-auto h-full w-px bg-transparent transition-colors group-hover:bg-info/60" />
+          <div className="mt-1 pl-px text-[11px] text-muted-foreground/60">A coach, not a ghostwriter.</div>
         </div>
       </aside>
     </>
@@ -1180,7 +1136,7 @@ function Nav({
   hideNext?: boolean;
 }) {
   return (
-    <div className="flex min-h-16 items-center justify-between">
+    <div className="flex h-full items-center justify-between">
       <button
         onClick={onPrev}
         disabled={stepIdx === 0}
@@ -5180,6 +5136,18 @@ function criteriaAlignmentTone(alignment?: string): "default" | "gold" | "succes
 
 type WorkspaceTab = "outline" | "coach" | "highlights";
 
+// At 500px the three tabs and six-column score grid remain fully readable
+// without taking more space from the essay than necessary.
+const ESSAY_REVIEW_PANEL_MIN_WIDTH = 500;
+
+function essayReviewPanelBounds(workspaceWidth: number) {
+  const maximum = Math.max(1, Math.floor(workspaceWidth / 2));
+  return {
+    minimum: Math.min(ESSAY_REVIEW_PANEL_MIN_WIDTH, maximum),
+    maximum,
+  };
+}
+
 const ESSAY_REVIEW_DIMENSIONS = [
   "alignment",
   "evidence_strength",
@@ -5214,11 +5182,192 @@ const ESSAY_REVIEW_SCORE_GROUPS: ReadonlyArray<{
   },
 ];
 
+type PdfTextItem = {
+  str?: string;
+  transform?: number[];
+  width?: number;
+  height?: number;
+  hasEOL?: boolean;
+};
+
+type PdfVisualLine = {
+  text: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  averageCharacterWidth: number;
+};
+
+function pdfItemPosition(item: PdfTextItem) {
+  const transform = item.transform;
+  if (!transform || transform.length < 6 || !Number.isFinite(transform[4]) || !Number.isFinite(transform[5])) {
+    return null;
+  }
+  return {
+    x: transform[4],
+    y: transform[5],
+    width: Number.isFinite(item.width) ? Math.max(0, item.width ?? 0) : 0,
+    height: Number.isFinite(item.height) ? Math.max(0, item.height ?? 0) : 0,
+  };
+}
+
+function median(values: number[], fallback: number) {
+  if (!values.length) return fallback;
+  const ordered = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(ordered.length / 2);
+  return ordered.length % 2 ? ordered[middle] : (ordered[middle - 1] + ordered[middle]) / 2;
+}
+
+function joinPdfLineFragments(items: PdfTextItem[]) {
+  const ordered = [...items].sort((a, b) => (pdfItemPosition(a)?.x ?? 0) - (pdfItemPosition(b)?.x ?? 0));
+  let text = "";
+  let previous: PdfTextItem | null = null;
+
+  for (const item of ordered) {
+    const fragment = item.str ?? "";
+    if (!fragment) continue;
+    if (previous && !/\s$/.test(text) && !/^\s/.test(fragment)) {
+      const previousPosition = pdfItemPosition(previous);
+      const position = pdfItemPosition(item);
+      if (!previousPosition || !position) {
+        text += " ";
+      } else {
+        const gap = position.x - (previousPosition.x + previousPosition.width);
+        const previousCharacters = Math.max(1, (previous.str ?? "").trim().length);
+        const currentCharacters = Math.max(1, fragment.trim().length);
+        const characterWidth =
+          ((previousPosition.width / previousCharacters) + (position.width / currentCharacters)) / 2;
+        // A near-zero visual gap means the PDF split one word into multiple text runs.
+        if (gap > Math.max(1, characterWidth * 0.2)) text += " ";
+      }
+    }
+    text += fragment;
+    previous = item;
+  }
+
+  return text.replace(/[ \t]+/g, " ").trim();
+}
+
+function isPdfPageMarker(text: string) {
+  const spacedPage = "p\\s*a\\s*g\\s*e";
+  return new RegExp(
+    `^(?:page\\s+\\d+|\\d+\\s*(?:\\||[-–—])\\s*(?:${spacedPage}|page)|(?:${spacedPage}|page)\\s+\\d+)$`,
+    "i",
+  ).test(text.trim());
+}
+
+function buildPdfVisualLines(items: PdfTextItem[]) {
+  const groups: PdfTextItem[][] = [];
+  let current: PdfTextItem[] = [];
+  let forceNewLine = false;
+
+  for (const item of items) {
+    const fragment = item.str ?? "";
+    if (!fragment) {
+      if (item.hasEOL) forceNewLine = true;
+      continue;
+    }
+
+    const previous = current[current.length - 1];
+    const previousPosition = previous ? pdfItemPosition(previous) : null;
+    const position = pdfItemPosition(item);
+    const lineTolerance = Math.max(
+      1.5,
+      Math.min(previousPosition?.height || 10, position?.height || 10) * 0.45,
+    );
+    const startsNewLine =
+      current.length > 0 &&
+      (forceNewLine ||
+        previous?.hasEOL ||
+        (!!previousPosition && !!position && Math.abs(position.y - previousPosition.y) > lineTolerance));
+
+    if (startsNewLine) {
+      groups.push(current);
+      current = [];
+    }
+    current.push(item);
+    forceNewLine = false;
+  }
+  if (current.length) groups.push(current);
+
+  return groups
+    .map((group): PdfVisualLine | null => {
+      const positioned = group
+        .map((item) => ({ item, position: pdfItemPosition(item) }))
+        .filter((entry) => entry.position !== null);
+      const text = joinPdfLineFragments(group);
+      if (!text || isPdfPageMarker(text)) return null;
+      if (!positioned.length) {
+        return { text, x: 0, y: 0, width: 0, height: 10, averageCharacterWidth: 5 };
+      }
+      const x = Math.min(...positioned.map(({ position }) => position!.x));
+      const right = Math.max(...positioned.map(({ position }) => position!.x + position!.width));
+      const width = Math.max(0, right - x);
+      return {
+        text,
+        x,
+        y: positioned[0].position!.y,
+        width,
+        height: Math.max(...positioned.map(({ position }) => position!.height || 0), 10),
+        averageCharacterWidth: width > 0 ? width / Math.max(1, text.replace(/\s/g, "").length) : 5,
+      };
+    })
+    .filter((line): line is PdfVisualLine => line !== null);
+}
+
+/** Reflow visual PDF lines into paragraphs while preserving genuine structure. */
+function reconstructPdfPageText(items: PdfTextItem[]) {
+  const lines = buildPdfVisualLines(items);
+  if (!lines.length) return "";
+
+  const typicalHeight = median(lines.map((line) => line.height).filter((height) => height > 0), 10);
+  const verticalSteps = lines
+    .slice(1)
+    .map((line, index) => Math.abs(lines[index].y - line.y))
+    .filter((step) => step > 1 && step < typicalHeight * 2.5);
+  const typicalStep = median(verticalSteps, typicalHeight * 1.2);
+  const bodyLines = lines.filter((line) => line.text.length >= 30 && line.height <= typicalHeight * 1.25);
+  const typicalWidth = median(bodyLines.map((line) => line.width).filter((width) => width > 0), 0);
+  const commonLeft = median(bodyLines.map((line) => line.x), lines[0].x);
+
+  let text = lines[0].text;
+  for (let index = 1; index < lines.length; index += 1) {
+    const previous = lines[index - 1];
+    const current = lines[index];
+    const verticalGap = Math.abs(previous.y - current.y);
+    const largeGap = verticalGap > Math.max(typicalStep * 1.35, typicalHeight * 1.55);
+    const indented = current.x - commonLeft > Math.max(12, current.averageCharacterWidth * 1.75);
+    const fontScaleChanged =
+      Math.max(previous.height, current.height) / Math.max(1, Math.min(previous.height, current.height)) > 1.2;
+    const listItem = /^(?:[•▪◦*\-]|\(?\d+[.)])\s+/.test(current.text);
+    const previousLooksComplete =
+      typicalWidth > 0 &&
+      previous.width < typicalWidth * 0.72 &&
+      /[.!?]["')\]]?$/.test(previous.text);
+    const openingDocumentLabel =
+      index <= 3 && (previous.text.length < 80 || current.text.length < 80) && previousLooksComplete === false;
+    const paragraphBreak = largeGap || indented || fontScaleChanged || listItem || previousLooksComplete || openingDocumentLabel;
+
+    if (paragraphBreak) {
+      text += `\n\n${current.text}`;
+    } else if (/[-‐‑]$/.test(previous.text)) {
+      text += current.text;
+    } else {
+      text += ` ${current.text}`;
+    }
+  }
+
+  return text;
+}
+
 function normalizePdfDraftText(pages: string[]) {
   return pages
     .map((page) => page.replace(/[ \t]+/g, " ").trim())
     .filter(Boolean)
-    .join("\n")
+    // A page boundary is usually just another visual wrap, not a paragraph.
+    .join(" ")
+    .replace(/([A-Za-z])\s+-\s+(?=[A-Za-z])/g, "$1-")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
@@ -5526,7 +5675,7 @@ function EssayReviewWorkspaceLoadingOverlay({
       description: "Evaluating the depth of your writing, including the meaning of your experiences and what you learned, realized, questioned, or changed.",
     },
     {
-      title: "Narrative Structure, Flow & Coherence",
+      title: "Flow & Coherence",
       description: "Evaluating your essay’s organization, progression, transitions, timeline, and logical consistency.",
     },
     {
@@ -5672,14 +5821,12 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   const activeScholarshipName = user?.activeScholarship?.name?.trim() ?? "";
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("outline");
   const [panelOpen, setPanelOpen] = useState(true);
-  const [panelWidth, setPanelWidth] = useState(() => {
-    if (typeof window === "undefined") return 420;
-    const saved = Number(window.localStorage.getItem("scholar-e:essay-panel-width"));
-    const minimum = Math.max(300, Math.round(window.innerWidth * 0.4));
-    return Number.isFinite(saved) && saved >= 300
-      ? saved
-      : Math.min(Math.max(420, minimum), Math.round(window.innerWidth * 0.55));
-  });
+  const workspaceColumnsRef = useRef<HTMLDivElement | null>(null);
+  const [workspaceColumnsWidth, setWorkspaceColumnsWidth] = useState(
+    ESSAY_REVIEW_PANEL_MIN_WIDTH * 2,
+  );
+  const [panelWidth, setPanelWidth] = useState(ESSAY_REVIEW_PANEL_MIN_WIDTH);
+  const panelBounds = essayReviewPanelBounds(workspaceColumnsWidth);
 
   useEffect(() => {
     if (!user || essayTitle.trim() || !activeScholarshipName) return;
@@ -5689,7 +5836,6 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   const [isEvaluating, setIsEvaluating] = useState(false);
   const [sessionProgress, setSessionProgress] = useState(0);
   const [reviewReady, setReviewReady] = useState(false);
-  const [mechanicsNote, setMechanicsNote] = useState<string | null>(null);
   const [pdfStatus, setPdfStatus] = useState<string | null>(null);
   const [analysisStatus, setAnalysisStatus] = useState<string | null>(null);
   const [bgStatus, setBgStatus] = useState<string | null>(null);
@@ -5978,9 +6124,11 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   useEffect(() => {
     if (!panelResizing) return;
     const resize = (event: PointerEvent) => {
-      const minimum = Math.max(300, Math.round(window.innerWidth * 0.4));
-      const maximum = Math.round(window.innerWidth * 0.7);
-      setPanelWidth(Math.max(minimum, Math.min(maximum, window.innerWidth - event.clientX)));
+      const workspace = workspaceColumnsRef.current?.getBoundingClientRect();
+      if (!workspace) return;
+      const { minimum, maximum } = essayReviewPanelBounds(workspace.width);
+      const requestedWidth = workspace.right - event.clientX;
+      setPanelWidth(Math.max(minimum, Math.min(maximum, requestedWidth)));
     };
     const stop = () => setPanelResizing(false);
     const previousCursor = document.body.style.cursor;
@@ -5998,20 +6146,23 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   }, [panelResizing]);
 
   useEffect(() => {
-    if (panelResizing) return;
-    window.localStorage.setItem("scholar-e:essay-panel-width", String(Math.round(panelWidth)));
-  }, [panelWidth, panelResizing]);
+    const workspace = workspaceColumnsRef.current;
+    if (!workspace) return;
+    const resizeObserver = new ResizeObserver(([entry]) => {
+      const width = entry.contentRect.width;
+      const { minimum, maximum } = essayReviewPanelBounds(width);
+      setWorkspaceColumnsWidth(width);
+      setPanelWidth((current) => Math.max(minimum, Math.min(maximum, current)));
+    });
+    resizeObserver.observe(workspace);
+    return () => resizeObserver.disconnect();
+  }, []);
 
   useEffect(() => {
-    const clamp = () => {
-      const minimum = Math.max(300, Math.round(window.innerWidth * 0.4));
-      const maximum = Math.round(window.innerWidth * 0.7);
-      setPanelWidth((width) => Math.max(minimum, Math.min(maximum, width)));
-    };
-    clamp();
-    window.addEventListener("resize", clamp);
-    return () => window.removeEventListener("resize", clamp);
-  }, []);
+    if (panelWidth < panelBounds.minimum || panelWidth > panelBounds.maximum) {
+      setPanelWidth((current) => Math.max(panelBounds.minimum, Math.min(panelBounds.maximum, current)));
+    }
+  }, [panelBounds.maximum, panelBounds.minimum, panelWidth]);
 
   const savedLabel = (() => {
     if (!savedAt) return "Not saved yet";
@@ -6137,26 +6288,16 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     setCoachLoading(true);
     setReviewReady(false);
     setSessionProgress(6);
-    setMechanicsNote(null);
     setAnalysisStatus(null);
     setPanelOpen(true);
     setActiveTab("coach");
 
     try {
-      // One backend request owns mechanics and one Manager-led review graph.
+      // One backend request owns the Manager-led review graph. It evaluates the
+      // submitted draft exactly as written; grammar corrections remain optional fixes.
       // Seven criterion agents evaluate, simulate the reviewer, score, and
       // propose one aligned action in parallel.
       const session = await runWorkspaceCoachingSession(buildCoachingSessionPayload(user, essayPrompt));
-      const workingDraft = session.cleaned_draft || draft;
-      const appliedCount = session.mechanics?.applied_count ?? 0;
-
-      if (workingDraft !== draft) updateActiveDraft(workingDraft);
-      setMechanicsNote(
-        appliedCount > 0
-          ? `${appliedCount} spelling/mechanics fix${appliedCount === 1 ? "" : "es"} applied before coaching.`
-          : null,
-      );
-
       const review = session.review ?? null;
       const gotReview = !!review && review.schema_version === 3 && review.status !== "error";
       const coveredIds = session.outline_coverage?.covered_point_ids;
@@ -6168,7 +6309,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
       const combinedWarnings = session.warnings ?? [];
 
       if (!gotReview) throw new Error(combinedWarnings[0] || "The coaching session could not review your draft.");
-      persistEssayReview(review, workingDraft);
+      persistEssayReview(review, draft);
       setReviewReady(true);
 
       setSessionProgress(100);
@@ -6235,7 +6376,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
       type PdfDoc = {
         numPages: number;
         getPage: (n: number) => Promise<{
-          getTextContent: () => Promise<{ items: { str?: string }[] }>;
+          getTextContent: () => Promise<{ items: PdfTextItem[] }>;
         }>;
       };
 
@@ -6261,7 +6402,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
       for (let p = 1; p <= pdf.numPages; p++) {
         const page = await pdf.getPage(p);
         const tc = await page.getTextContent();
-        pages.push(tc.items.map((i) => i.str ?? "").join(" "));
+        pages.push(reconstructPdfPageText(tc.items));
       }
       updateActiveDraft(normalizePdfDraftText(pages));
       setPdfStatus(`Imported ${pdf.numPages} pages from ${file.name}.`);
@@ -6324,10 +6465,13 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   }, [reviewResult]);
 
   return (
-    <div className="relative w-full border-t border-border bg-background" aria-busy={outlineLoading || isEvaluating}>
-      <div inert={outlineLoading || isEvaluating || workspaceTutorialActive ? true : undefined}>
+    <div className="relative flex h-full min-h-0 w-full flex-col overflow-hidden border-t border-border bg-background" aria-busy={outlineLoading || isEvaluating}>
+      <div
+        inert={outlineLoading || isEvaluating || workspaceTutorialActive ? true : undefined}
+        className="flex min-h-0 flex-1 flex-col overflow-hidden"
+      >
       {/* Zone 1 — slim top bar (Grammarly-style) */}
-      <header className="sticky top-0 z-20 border-b border-border bg-background/90 backdrop-blur">
+      <header className="sticky top-0 z-20 shrink-0 border-b border-border bg-background/90 backdrop-blur">
         <div className="mx-auto flex h-14 max-w-[1440px] items-center gap-2 px-3 md:px-4">
           <button
             type="button"
@@ -6439,12 +6583,10 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
           </div>
         </div>
 
-        {(pdfStatus || analysisStatus || bgStatus || mechanicsNote) && (
+        {(pdfStatus || analysisStatus || bgStatus) && (
           <div className="flex items-center gap-1.5 border-t border-border bg-accent/40 px-4 py-1.5 text-[11px] text-muted-foreground">
             {bgStatus && <span className="size-2.5 shrink-0 animate-spin rounded-full border-2 border-info/30 border-t-info" />}
-            <span className={mechanicsNote && !bgStatus && !pdfStatus && !analysisStatus ? "text-success" : undefined}>
-              {bgStatus ?? pdfStatus ?? analysisStatus ?? mechanicsNote}
-            </span>
+            <span>{bgStatus ?? pdfStatus ?? analysisStatus}</span>
           </div>
         )}
       </header>
@@ -6542,7 +6684,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
         </DialogContent>
       </Dialog>
 
-      <section className="border-b border-border bg-card">
+      <section className="shrink-0 border-b border-border bg-card">
         <div className="mx-auto max-w-[1440px] space-y-3 px-4 py-3 md:px-6">
           {promptConfirmed && (
             <div className="rounded-xl border border-info/20 bg-info/5 p-3">
@@ -6596,8 +6738,8 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
       </section>
 
       {/* Zone 2 (editor) + Zone 3 (sidebar) */}
-      <div className="mx-auto flex max-w-[1440px] flex-col items-stretch lg:flex-row lg:items-start">
-        <div className="flex min-h-[60vh] min-w-0 flex-1 flex-col lg:h-[calc(100vh-120px)] lg:min-h-0">
+      <div ref={workspaceColumnsRef} className="mx-auto flex min-h-0 w-full max-w-[1440px] flex-1 flex-col items-stretch overflow-hidden lg:flex-row">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           <div
             data-essay-workspace-tour="editor"
             className={`mx-auto flex min-h-0 w-full flex-1 flex-col transition-[max-width] duration-300 ${panelOpen ? "max-w-[760px]" : "max-w-[960px]"}`}
@@ -6621,7 +6763,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
         {panelOpen ? (
           <div
             style={{ "--essay-panel-width": `${panelWidth}px` } as React.CSSProperties}
-            className={`relative max-h-[1200px] w-full overflow-visible lg:w-[var(--essay-panel-width)] lg:min-w-[40vw] lg:shrink-0 ${
+            className={`relative min-h-0 w-full flex-1 overflow-hidden lg:w-[var(--essay-panel-width)] lg:flex-none ${
               panelResizing ? "transition-none" : "transition-[width] duration-300 ease-out"
             }`}
           >
@@ -6629,8 +6771,8 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
               role="separator"
               aria-label="Resize coaching sidebar"
               aria-orientation="vertical"
-              aria-valuemin={300}
-              aria-valuemax={Math.round(typeof window !== "undefined" ? window.innerWidth * 0.7 : 1200)}
+              aria-valuemin={panelBounds.minimum}
+              aria-valuemax={panelBounds.maximum}
               aria-valuenow={Math.round(panelWidth)}
               tabIndex={0}
               onPointerDown={(event) => {
@@ -6641,9 +6783,10 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
                 if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
                 event.preventDefault();
                 const direction = event.key === "ArrowLeft" ? 1 : -1;
-                const minimum = Math.max(300, Math.round(window.innerWidth * 0.4));
-                const maximum = Math.round(window.innerWidth * 0.7);
-                setPanelWidth((width) => Math.max(minimum, Math.min(maximum, width + direction * 24)));
+                setPanelWidth((width) => Math.max(
+                  panelBounds.minimum,
+                  Math.min(panelBounds.maximum, width + direction * 24),
+                ));
               }}
               className={`absolute inset-y-0 left-0 z-30 hidden w-2 -translate-x-1/2 cursor-col-resize touch-none items-center justify-center outline-none lg:flex ${
                 panelResizing ? "bg-info/10" : "hover:bg-info/10 focus:bg-info/10"
@@ -6760,7 +6903,7 @@ function EssayWorkspacePanel({
   return (
     <aside
       aria-busy={isEvaluating}
-      className="relative flex w-full shrink-0 flex-col border-t border-border bg-card lg:sticky lg:top-[56px] lg:h-[calc(100vh-120px)] lg:overflow-hidden lg:border-l lg:border-t-0"
+      className="relative flex h-full min-h-0 w-full flex-col overflow-hidden border-t border-border bg-card lg:border-l lg:border-t-0"
     >
       <div className="sticky top-0 z-10 flex items-center gap-1 border-b border-border bg-card/95 p-2 backdrop-blur">
         <div className="flex flex-1 items-center gap-1 rounded-lg bg-muted/60 p-1">
@@ -7163,6 +7306,9 @@ function CriterionScoreButton({
   onSelect: () => void;
 }) {
   const score = typeof criterion.score === "number" ? criterion.score : null;
+  const displayLabel = criterion.criterion === "narrative_structure_flow_coherence"
+    ? "Flow & Coherence"
+    : criterion.label || labelize(criterion.criterion ?? "criterion");
 
   return (
     <button
@@ -7170,14 +7316,14 @@ function CriterionScoreButton({
       onClick={onSelect}
       aria-pressed={selected}
       aria-controls="essay-review-criterion-detail"
-      className={`group h-full w-full min-w-0 rounded-lg border px-2 py-2.5 text-center transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info focus-visible:ring-offset-2 ${
+      className={`group h-full w-full min-w-0 px-1 py-1.5 text-center transition-all focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-info ${
         selected
-          ? "border-info bg-info/10 shadow-sm"
-          : "border-transparent bg-muted/35 hover:border-info/30 hover:bg-info/5"
+          ? "bg-background ring-2 ring-inset ring-info"
+          : "bg-background hover:bg-info/5"
       }`}
     >
-      <span className={`flex min-h-9 items-center justify-center text-[11px] font-semibold leading-tight ${selected ? "text-info" : "text-foreground/85"}`}>
-        {criterion.label || labelize(criterion.criterion ?? "criterion")}
+      <span className={`flex min-h-8 items-center justify-center text-[11px] font-semibold leading-tight ${selected ? "text-info" : "text-foreground/85"}`}>
+        {displayLabel}
       </span>
       <span className="mt-1 block text-[10px] font-semibold tabular-nums text-muted-foreground">
         {criterion.weight ?? 0}%
@@ -7194,6 +7340,9 @@ function CriterionScoreButton({
 
 function CriterionReviewDetails({ criterion }: { criterion: EssayCriterionReview }) {
   const score = typeof criterion.score === "number" ? criterion.score : null;
+  const displayLabel = criterion.criterion === "narrative_structure_flow_coherence"
+    ? "Flow & Coherence"
+    : criterion.label || labelize(criterion.criterion ?? "criterion");
   const feedback = criterion.coach_feedback;
   const action = criterion.priority_action;
   const rubricBands = [
@@ -7210,7 +7359,7 @@ function CriterionReviewDetails({ criterion }: { criterion: EssayCriterionReview
     >
       <div className="flex items-start gap-3 border-b border-border bg-accent/25 px-4 py-3.5">
         <div className="min-w-0 flex-1">
-          <div className="text-[15px] font-semibold">{criterion.label || labelize(criterion.criterion ?? "criterion")}</div>
+          <div className="text-[15px] font-semibold">{displayLabel}</div>
           <div className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground">
             <span>{criterion.weight ?? 0}% ·</span>
             {!!rubricBands.length ? (
@@ -7219,7 +7368,7 @@ function CriterionReviewDetails({ criterion }: { criterion: EssayCriterionReview
                   <button
                     type="button"
                     className="font-semibold text-foreground/80 underline decoration-dotted underline-offset-2 outline-none transition-colors hover:text-info focus-visible:text-info"
-                    aria-label={`Show the complete ${criterion.label || "criterion"} scoring rubric`}
+                    aria-label={`Show the complete ${displayLabel} scoring rubric`}
                   >
                     {criterion.level || "Not scored"}
                   </button>
@@ -7338,7 +7487,7 @@ function UnifiedEssayReview({
       <div className="overflow-hidden rounded-xl border border-border bg-border">
         <div className="hidden grid-cols-6 gap-px md:grid">
           {ESSAY_REVIEW_SCORE_GROUPS.map((group) => (
-            <h3 key={group.label} className={`bg-background px-3 py-3 text-center text-[18px] font-bold leading-tight text-foreground ${group.columnClass}`}>
+            <h3 key={group.label} className={`flex items-center justify-center bg-background px-1 py-3 text-center font-sans text-[14px] font-semibold leading-tight text-foreground ${group.columnClass}`}>
               {group.label}
             </h3>
           ))}
@@ -7346,13 +7495,12 @@ function UnifiedEssayReview({
             const criterion = criteriaByKey[key];
             if (!criterion) return null;
             return (
-              <div key={key} className="min-w-0 bg-background p-1.5 pt-0">
-                <CriterionScoreButton
-                  criterion={criterion}
-                  selected={selectedCriterionKey === key}
-                  onSelect={() => setSelectedCriterionKey(key)}
-                />
-              </div>
+              <CriterionScoreButton
+                key={key}
+                criterion={criterion}
+                selected={selectedCriterionKey === key}
+                onSelect={() => setSelectedCriterionKey(key)}
+              />
             );
           })}
         </div>
@@ -7365,7 +7513,7 @@ function UnifiedEssayReview({
             if (!groupCriteria.length) return null;
             return (
               <section key={group.label} className="min-w-0 bg-background p-3">
-                <h3 className="text-center text-[18px] font-bold leading-tight text-foreground">{group.label}</h3>
+                <h3 className="text-center font-sans text-[14px] font-semibold leading-tight text-foreground">{group.label}</h3>
                 <div className={`mt-3 grid gap-1.5 ${groupCriteria.length === 3 ? "grid-cols-3" : groupCriteria.length === 2 ? "grid-cols-2" : "grid-cols-1"}`}>
                   {groupCriteria.map(([key, criterion]) => (
                     <CriterionScoreButton
@@ -7382,30 +7530,29 @@ function UnifiedEssayReview({
         </div>
 
         {grammarCriterion && (
-          <section className="flex items-center gap-3 border-t border-border bg-background p-3">
+          <button
+            type="button"
+            onClick={() => setSelectedCriterionKey("grammar")}
+            aria-pressed={selectedCriterionKey === "grammar"}
+            aria-controls="essay-review-criterion-detail"
+            className={`flex w-full items-center gap-3 rounded-b-xl border-t border-border bg-background py-1 pl-5 pr-1 text-left transition-colors focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-info ${
+              selectedCriterionKey === "grammar"
+                ? "ring-2 ring-inset ring-info"
+                : "hover:bg-info/5"
+            }`}
+          >
             <div className="min-w-0 flex-1">
-              <h3 className="text-[15px] font-bold text-foreground">Grammar</h3>
+              <h3 className="font-sans text-[14px] font-semibold text-foreground">Grammar</h3>
               <p className="mt-0.5 text-[10px] leading-relaxed text-muted-foreground">Spelling, punctuation, usage, and sentence-level correctness</p>
             </div>
-            <button
-              type="button"
-              onClick={() => setSelectedCriterionKey("grammar")}
-              aria-pressed={selectedCriterionKey === "grammar"}
-              aria-controls="essay-review-criterion-detail"
-              className={`flex min-w-28 items-center justify-center gap-2 rounded-lg border px-3 py-2 text-left transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info focus-visible:ring-offset-2 ${
-                selectedCriterionKey === "grammar"
-                  ? "border-info bg-info/10 shadow-sm"
-                  : "border-transparent bg-muted/35 hover:border-info/30 hover:bg-info/5"
-              }`}
-            >
-              <span className="flex flex-col items-center">
-                <span className="text-[10px] font-semibold tabular-nums text-muted-foreground">{grammarCriterion.weight ?? 0}%</span>
-                <span className="mt-1 text-[22px] font-bold leading-none tabular-nums" style={typeof grammarCriterion.score === "number" ? { color: scoreColor(grammarCriterion.score) } : undefined}>
-                  {typeof grammarCriterion.score === "number" ? grammarCriterion.score : "—"}
-                </span>
+            <span className="h-12 w-px shrink-0 bg-border" aria-hidden="true" />
+            <span className="flex w-28 shrink-0 translate-x-1 flex-col items-center justify-center px-3 py-2 text-center">
+              <span className="text-[10px] font-semibold tabular-nums text-muted-foreground">{grammarCriterion.weight ?? 0}%</span>
+              <span className="mt-1 text-[22px] font-bold leading-none tabular-nums" style={typeof grammarCriterion.score === "number" ? { color: scoreColor(grammarCriterion.score) } : undefined}>
+                {typeof grammarCriterion.score === "number" ? grammarCriterion.score : "—"}
               </span>
-            </button>
-          </section>
+            </span>
+          </button>
         )}
       </div>
 

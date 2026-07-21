@@ -3,7 +3,7 @@
 The Essay Workspace uses one canonical evaluation path:
 
 - `POST /api/apply/coaching-session`
-  - applies deterministic mechanics cleanup
+  - evaluates the submitted draft without rewriting it
   - runs the Manager-led seven-criterion Essay Review
   - returns `review.schema_version === 3`
 

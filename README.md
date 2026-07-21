@@ -464,8 +464,8 @@ run_unified_coaching_session(...)
 ```
 
 The full review returns the schema-v3 Essay Review only: one weighted overall
-score, seven criterion packages, Manager plan, QA/Guardrail audit, mechanics
-metadata, optional outline coverage, agent statuses, and warnings.
+score, seven criterion packages, Manager plan, QA/Guardrail audit, optional
+outline coverage, agent statuses, and warnings.
 
 ---
 
@@ -560,8 +560,8 @@ agent graph through:
 POST /api/apply/coaching-session
 ```
 
-The endpoint keeps the deterministic spelling/mechanics pre-correction, then
-runs one Manager-first review. The Manager sees the scholarship and essay
+The endpoint evaluates the submitted draft exactly as written, then runs one
+Manager-first review. Grammar corrections remain optional fixes. The Manager sees the scholarship and essay
 prompt—but not the student's draft—and creates a tailored rubric plus seven
 criterion weights totaling 100. The rubric and weights are then supplied to
 these parallel criterion-review lanes:
@@ -620,7 +620,7 @@ estimates that aggregate.
 
 The Page 4 endpoint has one canonical schema-v3 review contract. It returns the
 overall score, seven criterion packages, Manager plan, and quality audit, plus
-mechanics metadata, optional outline coverage, agent statuses, and warnings.
+optional outline coverage, agent statuses, and warnings.
 It does not return the former `evaluation`, `coach_pack`, or `components`
 compatibility envelopes.
 

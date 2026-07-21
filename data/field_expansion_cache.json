@@ -96,5 +96,25 @@
       "STEM funding opportunities",
       "technology fellowships"
     ]
+  },
+  "political science and government other": {
+    "canonical_label": "Political Science and Government, Other",
+    "synonyms": [
+      "Political Science",
+      "Government Studies",
+      "Political Studies"
+    ],
+    "parent_disciplines": [
+      "Political Science"
+    ],
+    "umbrella_terms": [
+      "Social Sciences",
+      "Humanities"
+    ],
+    "funder_vocabulary": [
+      "political science scholarships",
+      "government studies grants",
+      "law school funding opportunities"
+    ]
   }
 }

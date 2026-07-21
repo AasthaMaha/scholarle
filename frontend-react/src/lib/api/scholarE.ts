@@ -560,12 +560,6 @@ export type CoachingSessionResult = {
   session_id?: string;
   draft_hash?: string;
   status: "success" | "partial" | "error";
-  mechanics: {
-    draft: string;
-    applied_count: number;
-    applied_fixes?: Array<{ original: string; suggested: string; title: string }>;
-  };
-  cleaned_draft: string;
   review?: EssayReviewResult | null;
   outline_coverage?: { covered_point_ids?: string[] };
   agents?: Record<string, "success" | "error" | "fallback" | "reused">;
