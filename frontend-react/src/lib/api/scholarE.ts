@@ -387,7 +387,7 @@ export function buildOutlinePayload(user: UserProfile | null, essayPromptOverrid
   };
 }
 
-export type EssayCoachMode = "full" | "workspace_refresh" | "grammar_tone" | "prompt_alignment" | "structure" | "reviewer" | "final_check" | "auto_check";
+export type EssayCoachMode = "full" | "workspace_refresh" | "grammar_tone" | "prompt_alignment" | "structure" | "reviewer" | "auto_check";
 export type WritingSupportLevel = "grammar_only" | "sentence_polish" | "rewrite_help";
 
 export type EssayCoachSentenceSuggestion = {
@@ -584,7 +584,6 @@ export type EssayCoachResult = {
   deeper_revision_tasks?: string[];
   outline_coverage?: { covered_point_ids?: string[] };
   guardrail?: GuardrailAudit;
-  final_check?: FinalCheck;
   warnings?: string[];
   coach_summary?: string;
   message?: string;
@@ -608,12 +607,6 @@ export type GuardrailAudit = {
   issues_found?: string[];
   removed_or_revised_suggestions?: string[];
   final_notes?: string[];
-};
-
-export type FinalCheck = {
-  remaining_blockers?: string[];
-  final_polish_notes?: string[];
-  submission_warning?: string;
 };
 
 export function buildEssayCoachPayload(

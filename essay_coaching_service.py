@@ -36,7 +36,6 @@ from templates.essay_coach import (
     build_clarity_concision_prompt,
     build_combiner_prompt,
     build_evidence_strength_prompt,
-    build_final_check_prompt,
     build_grammar_prompt,
     build_guardrail_prompt,
     build_insight_prompt,
@@ -220,12 +219,6 @@ class GuardrailOutput(BaseModel):
     final_notes: list[str] = Field(default_factory=list)
 
 
-class FinalCheckOutput(BaseModel):
-    remaining_blockers: list[str] = Field(default_factory=list)
-    final_polish_notes: list[str] = Field(default_factory=list)
-    submission_warning: str = ""
-
-
 class OutlineCoverageOutput(BaseModel):
     covered_point_ids: list[str] = Field(default_factory=list)
 
@@ -255,7 +248,6 @@ def _empty_package(status: str = "success") -> dict:
         "reviewer_simulation": {},
         "outline_coverage": {},
         "guardrail": {},
-        "final_check": {},
         "revision_priorities": [],
         "quick_fixes": [],
         "deeper_revision_tasks": [],
@@ -670,33 +662,6 @@ def _run_guardrail_critic(essay_draft: str, profile_text: str, sentence_suggesti
     return model.invoke([("system", system), ("human", human)]).model_dump()
 
 
-def _run_final_check(
-    essay_draft: str,
-    essay_prompt: str,
-    scholarship_context: str,
-    profile_text: str,
-    word_count: int,
-    word_limit: str,
-) -> dict:
-    system, human = build_final_check_prompt(
-        essay_draft=essay_draft,
-        essay_prompt=essay_prompt,
-        scholarship_context=scholarship_context,
-        profile_text=profile_text,
-        word_count=word_count,
-        word_limit=word_limit,
-    )
-    model = llm._get_client().with_structured_output(FinalCheckOutput)
-    return model.invoke([("system", system), ("human", human)]).model_dump()
-
-
-def _word_limit_number(word_limit: str) -> Optional[int]:
-    import re
-
-    nums = re.findall(r"\d{2,5}", word_limit or "")
-    return max(int(n) for n in nums) if nums else None
-
-
 def _run_outline_coverage(essay_draft: str, outline_points: list, scholarship_context: str) -> dict:
     points = [{"id": p.get("id", ""), "label": p.get("label", "")} for p in (outline_points or []) if p.get("id")]
     if not points:
@@ -902,33 +867,6 @@ def run_essay_workspace_coach(
     )
     profile_text = _profile_text(student_profile)
     outline_text = _outline_text(personalized_outline)
-    word_count = len(essay_draft.split())
-
-    # Final readiness check is a standalone, holistic pass (no specialist battery).
-    if mode == "final_check":
-        try:
-            final = _run_final_check(
-                essay_draft, essay_prompt_for_agents, scholarship_context, profile_text, word_count, word_limit
-            )
-        except Exception as exc:  # noqa: BLE001
-            package["status"] = "error"
-            package["warnings"] = warnings + [f"final check failed: {exc}"]
-            package["coach_summary"] = "Scholar-E could not run the final check this time. Please try again."
-            return package
-
-        limit = _word_limit_number(word_limit)
-        if limit and word_count > limit and not final.get("submission_warning"):
-            final["submission_warning"] = f"Your essay is {word_count} words, over the {limit}-word limit."
-        blockers = final.get("remaining_blockers") or []
-        polish_notes = final.get("final_polish_notes") or []
-        package["final_check"] = final
-        package["warnings"] = warnings
-        package["coach_summary"] = (
-            f"Final check completed: {len(blockers)} blocker(s) and "
-            f"{len(polish_notes)} polish note(s) found."
-        )
-        return package
-
     outline_points = outline_points or []
     support_level = _resolve_writing_support_level(mode, writing_support_level)
     package["writing_support_level"] = support_level

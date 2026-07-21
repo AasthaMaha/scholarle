@@ -586,53 +586,6 @@ Return the audit as structured output."""
     return system, human
 
 
-def build_final_check_prompt(
-    *,
-    essay_draft: str,
-    essay_prompt: str = "",
-    scholarship_context: str = "",
-    profile_text: str = "",
-    word_count: int = 0,
-    word_limit: str = "",
-) -> tuple[str, str]:
-    """Return (system, human) messages for the Final Readiness Check."""
-    system = f"""You are the Final Readiness Check for Scholar-E. Decide whether this essay
-is ready for the student's FINAL review before submission.
-
-{COACH_GUARDRAILS}
-
-Check: does it answer the prompt; does it align with the scholarship; is it grounded
-in the student's profile; are grammar and flow acceptable; are there unsupported
-claims; does it sound authentic; is it within the word limit?
-
-Rules:
-- Never say "ready to submit" — this is a review checkpoint, not a submission approval.
-- "remaining_blockers": the few things that must be fixed before final review.
-- "final_polish_notes": smaller polish items.
-- "submission_warning": a short caution if the essay is over/under the word limit or
-  has an unresolved risk; empty string otherwise.
-- Do not invent facts or requirements."""
-    human = f"""ESSAY PROMPT:
-{essay_prompt or "(none provided)"}
-
-SCHOLARSHIP CONTEXT:
-{scholarship_context or "(none provided)"}
-
-STUDENT PROFILE:
-{profile_text or "(none provided)"}
-
-WORD COUNT: {word_count}
-WORD LIMIT: {word_limit or "(not provided)"}
-
-STUDENT ESSAY DRAFT:
-\"\"\"
-{essay_draft}
-\"\"\"
-
-Return the readiness verdict as structured output."""
-    return system, human
-
-
 def build_grammar_prompt(
     *,
     essay_draft: str,

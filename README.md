@@ -470,7 +470,6 @@ grammar_tone
 prompt_alignment
 structure
 reviewer
-final_check
 auto_check
 ```
 
@@ -486,7 +485,6 @@ It can run these specialists:
 - Reviewer Simulation
 - Outline Coverage Coach
 - Guardrail Critic
-- Final Check
 - Combiner
 
 The UI displays:
@@ -506,7 +504,6 @@ The UI displays:
 - clarity and concision feedback
 - grammar and sentence-level correctness feedback
 - reviewer simulation
-- final check status
 
 This system is designed for live writing and revision inside the essay
 workspace.
@@ -716,8 +713,8 @@ Implementation:
 unified_coaching_service.py
 ```
 
-The individual endpoints below remain available as targeted tools for cheap
-auto-checks, coach-only reruns, deep-evaluation reruns, and final checks.
+The individual endpoints below remain available for background auto-checks and
+the legacy deep-evaluation rerun.
 
 ### Essay Workspace Coach
 
@@ -740,7 +737,6 @@ Used for:
 - structure feedback
 - tone feedback
 - reviewer-style feedback
-- final check
 - live editing support
 
 ### Deep Application Coach
@@ -1028,7 +1024,6 @@ run_essay_workspace_coach(...)
 | Downstream | Reviewer Simulation | Simulates likely reviewer reaction, strengths, concerns, and questions. |
 | Conditional | Outline Coverage Coach | Checks which personalized outline points are covered by the draft. |
 | Downstream | Guardrail Critic | Removes unsafe sentence suggestions that risk adding unsupported claims. |
-| Targeted | Final Check Agent | Checks whether the essay is ready for final review or submission. |
 | Downstream | Revision Combiner | Synthesizes specialist outputs into priorities, quick fixes, deeper tasks, and summary. |
 | Targeted | Selection Rewrite Agent | Rewrites, shortens, expands, or improves tone for selected text only. |
 

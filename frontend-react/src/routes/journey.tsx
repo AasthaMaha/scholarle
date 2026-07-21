@@ -68,10 +68,8 @@ import {
   runSelectionRewrite,
   runWorkspaceCoachingSession,
   splitEssayPrompts,
-  type EssayCoachMode,
   type EssayCoachResult,
   type RevisionPriority,
-  type WritingSupportLevel,
 } from "@/lib/api/scholarE";
 import {
   useUser,
@@ -4665,24 +4663,6 @@ function normalizePdfDraftText(pages: string[]) {
     .trim();
 }
 
-const WRITING_SUPPORT_OPTIONS: Array<{ id: WritingSupportLevel; label: string; description: string }> = [
-  {
-    id: "grammar_only",
-    label: "Grammar only",
-    description: "Fix spelling, punctuation, and grammar without changing meaning.",
-  },
-  {
-    id: "sentence_polish",
-    label: "Sentence polish",
-    description: "Improve clarity and flow while preserving the student's meaning and voice.",
-  },
-  {
-    id: "rewrite_help",
-    label: "Rewrite help",
-    description: "Suggest rewritten versions, but require user approval.",
-  },
-];
-
 /** Pull the largest 2–5 digit number out of a word-limit string (e.g. "400-500 words" → 500). */
 function parseWordTarget(limit?: string): number | null {
   const nums = (limit ?? "").match(/\d{2,5}/g);
@@ -5166,31 +5146,14 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     });
   }
 
-  async function runCoach(mode: EssayCoachMode = "full", writingSupportLevel?: WritingSupportLevel) {
+  async function runAutoCheck() {
     if (coachLoading) return;
-    const silent = mode === "auto_check";
-    const draftForRun = draft;
-    if (silent && draft === lastAutoCheckRef.current) return; // dedupe unchanged drafts
-    if (wordCount < 20) {
-      if (!silent) {
-        setPanelOpen(true);
-        setActiveTab("coach");
-        setCoachSummary("Write at least a short paragraph, then run the writing coach.");
-      }
-      return;
-    }
+    if (draft === lastAutoCheckRef.current || wordCount < 20) return;
     setCoachLoading(true);
-    if (silent) {
-      lastAutoCheckRef.current = draft;
-      setBgStatus("Checking grammar and outline coverage…");
-    } else {
-      setCoachSummary(mode === "final_check" ? "Running your final readiness check…" : "Scholar-E is reading your draft…");
-      setCoachWarnings([]);
-      setPanelOpen(true);
-      setActiveTab(mode === "grammar_tone" ? "highlights" : "coach");
-    }
+    lastAutoCheckRef.current = draft;
+    setBgStatus("Checking grammar and outline coverage…");
     try {
-      const result = await runEssayCoach(buildEssayCoachPayload(user, mode, writingSupportLevel, essayPrompt));
+      const result = await runEssayCoach(buildEssayCoachPayload(user, "auto_check", undefined, essayPrompt));
       const coveredIds = result.outline_coverage?.covered_point_ids;
       if (coveredIds) {
         // Intersect with known point ids so a hallucinated id can never tick a box.
@@ -5198,28 +5161,11 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
         setAutoCovered(new Set(coveredIds.filter((id) => known.has(id))));
       }
       setCoachRaw(result.sentence_suggestions ?? []);
-      if (!silent) {
-        persistCoachResult(result, draftForRun);
-      }
-      // A full coach run is a checkpoint: snapshot the draft + its 8-dim scores
-      // so Progress can chart improvement across drafts (deduped on draft text).
-      if (mode === "full" && result.overall_scores && Object.keys(result.overall_scores).length) {
-        upsertVersion({
-          coachScores: result.overall_scores,
-          coachOverall: meanScore(result.overall_scores) ?? undefined,
-          coachSummary: result.coach_summary ?? undefined,
-        });
-      }
-    } catch (error) {
-      if (!silent) {
-        setCoachResult(null);
-        setCoachRaw([]);
-        setCoachSummary(error instanceof Error ? error.message : "The writing coach could not analyze your draft.");
-        setCoachWarnings([]);
-      }
+    } catch {
+      // Background checks fail silently; the main session remains authoritative.
     } finally {
       setCoachLoading(false);
-      if (silent) setBgStatus(null);
+      setBgStatus(null);
     }
   }
 
@@ -5342,16 +5288,16 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
 
   // Paste/upload auto-check: a paste bumps `pasteNonce`, and a debounced effect runs
   // the cheap `auto_check` (grammar + outline coverage) once the draft has settled.
-  // `runCoachRef` keeps the latest closure so the timeout sees the post-paste draft.
-  const runCoachRef = useRef(runCoach);
+  // `runAutoCheckRef` keeps the latest closure so the timeout sees the post-paste draft.
+  const runAutoCheckRef = useRef(runAutoCheck);
   useEffect(() => {
-    runCoachRef.current = runCoach;
+    runAutoCheckRef.current = runAutoCheck;
   });
   const lastAutoCheckRef = useRef("");
   const [pasteNonce, setPasteNonce] = useState(0);
   useEffect(() => {
     if (pasteNonce === 0) return;
-    const id = window.setTimeout(() => void runCoachRef.current("auto_check"), 800);
+    const id = window.setTimeout(() => void runAutoCheckRef.current(), 800);
     return () => window.clearTimeout(id);
   }, [pasteNonce]);
   function triggerAutoCheck() {
@@ -5830,7 +5776,6 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
               onReveal={revealSuggestion}
               onAcceptAllQuickFixes={acceptAllQuickFixes}
               quickFixCount={quickFixSuggestions.length}
-              onRunCoach={runCoach}
               coachLoading={coachLoading}
               coachSummary={coachSummary}
               coachWarnings={coachWarnings}
@@ -5930,7 +5875,6 @@ function EssayWorkspacePanel({
   onReveal,
   onAcceptAllQuickFixes,
   quickFixCount,
-  onRunCoach,
   coachLoading,
   coachSummary,
   coachWarnings,
@@ -5958,7 +5902,6 @@ function EssayWorkspacePanel({
   onReveal: (s: Suggestion) => void;
   onAcceptAllQuickFixes: () => void;
   quickFixCount: number;
-  onRunCoach: (mode?: EssayCoachMode, writingSupportLevel?: WritingSupportLevel) => void;
   coachLoading: boolean;
   coachSummary: string | null;
   coachWarnings: string[];
@@ -6075,7 +6018,6 @@ function EssayWorkspacePanel({
           <WorkspaceCoachTab
             result={coachResult}
             loading={coachLoading && !coachReady}
-            onRunCoach={onRunCoach}
             coachSummary={coachSummary}
             coachWarnings={coachWarnings}
             updatedAt={coachUpdatedAt}
@@ -6093,7 +6035,6 @@ function EssayWorkspacePanel({
             onReveal={onReveal}
             onAcceptAllQuickFixes={onAcceptAllQuickFixes}
             quickFixCount={quickFixCount}
-            onRunCoach={onRunCoach}
             coachLoading={coachLoading}
             coachSummary={coachSummary}
             coachWarnings={coachWarnings}
@@ -6697,7 +6638,6 @@ function RevisionPriorityCard({ item, index }: { item: RevisionPriority; index: 
 function WorkspaceCoachTab({
   result,
   loading,
-  onRunCoach,
   coachSummary,
   coachWarnings,
   updatedAt,
@@ -6706,7 +6646,6 @@ function WorkspaceCoachTab({
 }: {
   result: EssayCoachResult | null;
   loading: boolean;
-  onRunCoach: (mode?: EssayCoachMode, writingSupportLevel?: WritingSupportLevel) => void;
   coachSummary: string | null;
   coachWarnings: string[];
   updatedAt: number | null;
@@ -6733,7 +6672,6 @@ function WorkspaceCoachTab({
   const grammar = hasContent(result?.grammar_feedback);
   const clarityConcision = hasContent(result?.clarity_concision_feedback);
   const tone = hasContent(result?.tone_feedback);
-  const finalCheck = hasContent(result?.final_check);
   const priorities = result?.revision_priorities ?? [];
   const visiblePriorities = showAllPriorities ? priorities : priorities.slice(0, 2);
   const hiddenPriorityCount = Math.max(0, priorities.length - 2);
@@ -6745,7 +6683,7 @@ function WorkspaceCoachTab({
   const hiddenParagraphFeedbackCount = Math.max(0, paragraphFeedback.length - 2);
   const hasData =
     !loading &&
-    !!(result && (alignment || align || evidence || ground || narrativeStructure || insight || structure || specificity || tone || grammar || clarityConcision || finalCheck || priorities.length || scoreEntries.length));
+    !!(result && (alignment || align || evidence || ground || narrativeStructure || insight || structure || specificity || tone || grammar || clarityConcision || priorities.length || scoreEntries.length));
 
   function toggleCoachSection(id: string) {
     setOpenCoachSections((prev) => {
@@ -6758,7 +6696,7 @@ function WorkspaceCoachTab({
 
   return (
     <div className="space-y-3">
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex items-start gap-3">
         <div className="min-w-0">
           <PanelLabel>Coach</PanelLabel>
           <div className="mt-1 text-[12px] text-muted-foreground">
@@ -6770,44 +6708,7 @@ function WorkspaceCoachTab({
             </div>
           )}
         </div>
-        <button
-          type="button"
-          onClick={() => onRunCoach()}
-          disabled={loading}
-          aria-busy={loading}
-          className={`inline-flex min-w-[158px] shrink-0 items-center justify-center gap-2 rounded-lg border border-border bg-background px-3 py-1.5 text-[12px] font-semibold text-foreground transition-colors duration-150 hover:border-info/40 hover:bg-info/10 hover:text-info focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/30 disabled:opacity-50 ${loading ? "agent-loading text-info" : ""}`}
-        >
-          {loading ? <Spinner className="size-3.5" /> : <RefreshCw className="size-3.5" />}
-          {loading ? "Running..." : "Re-run Coach"}
-        </button>
       </div>
-
-      <button
-        type="button"
-        onClick={() => onRunCoach("final_check")}
-        disabled={loading}
-        aria-busy={loading}
-        className={`flex w-full items-center justify-center gap-2 rounded-lg border border-border px-3 py-1.5 text-[12px] font-semibold text-foreground transition-colors duration-150 hover:bg-accent disabled:opacity-50 ${loading ? "agent-loading" : ""}`}
-      >
-        {loading ? <Spinner className="size-3.5" /> : <Check className="size-3.5 text-success" />}
-        Final check
-      </button>
-
-      {finalCheck && (
-        <div className="space-y-2 rounded-xl border border-border bg-background p-3">
-          <div className="flex items-center gap-2">
-            <span className="grid size-5 place-items-center rounded-full bg-info text-[11px] font-bold text-white">
-              <Check className="size-3.5" />
-            </span>
-            <span className="text-[13px] font-semibold">Final check results</span>
-          </div>
-          {finalCheck.submission_warning && (
-            <div className="rounded-md bg-destructive/10 px-2.5 py-1.5 text-[12px] font-medium text-destructive">{finalCheck.submission_warning}</div>
-          )}
-          <CoachList label="Remaining blockers" items={finalCheck.remaining_blockers} tone="danger" />
-          <CoachList label="Final polish notes" items={finalCheck.final_polish_notes} tone="info" />
-        </div>
-      )}
 
       {coachSummary && (
         <div className="rounded-xl border border-info/20 bg-info/5 p-3 text-[13px] leading-relaxed text-foreground/85">
@@ -7299,7 +7200,6 @@ function WorkspaceHighlightsTab({
   onReveal,
   onAcceptAllQuickFixes,
   quickFixCount,
-  onRunCoach,
   coachLoading,
   coachSummary,
   coachWarnings,
@@ -7311,12 +7211,10 @@ function WorkspaceHighlightsTab({
   onReveal: (s: Suggestion) => void;
   onAcceptAllQuickFixes: () => void;
   quickFixCount: number;
-  onRunCoach: (mode?: EssayCoachMode, writingSupportLevel?: WritingSupportLevel) => void;
   coachLoading: boolean;
   coachSummary: string | null;
   coachWarnings: string[];
 }) {
-  const [writingSupportLevel, setWritingSupportLevel] = useState<WritingSupportLevel>("sentence_polish");
   const { user } = useUser();
   const analysis = user?.lastAnalysis;
   const priorities = analysis?.revision_priorities ?? [];
@@ -7327,58 +7225,11 @@ function WorkspaceHighlightsTab({
 
   return (
     <div className="space-y-3">
-      <div className="rounded-xl border border-border bg-background p-3">
-        <div className="text-[12px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Writing Support Level</div>
-        <div className="mt-1 text-[12px] leading-relaxed text-muted-foreground">
-          Choose how much help you want. You stay in control of every change.
-        </div>
-        <div className="mt-3 inline-flex w-full rounded-xl border border-border bg-card p-1 shadow-sm" aria-label="Writing support level">
-          {WRITING_SUPPORT_OPTIONS.map((option) => {
-            const selected = writingSupportLevel === option.id;
-            return (
-              <button
-                key={option.id}
-                type="button"
-                onClick={() => setWritingSupportLevel(option.id)}
-                aria-pressed={selected}
-                title={option.description}
-                className={`flex-1 rounded-lg px-2 py-1.5 text-[11px] font-semibold transition-colors duration-150 ${
-                  selected
-                    ? "bg-gradient-to-br from-[#26385F] to-[#5550A4] text-white shadow-sm"
-                    : "text-muted-foreground hover:bg-info/10 hover:text-info"
-                }`}
-              >
-                {option.label}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex items-start gap-3">
         <div className="min-w-0">
           <PanelLabel>Sentence Fixes</PanelLabel>
           <div className="mt-1 text-[12px] font-semibold text-muted-foreground">{suggestions.length} open</div>
         </div>
-        <button
-          type="button"
-          onClick={() => {
-            onRunCoach("grammar_tone", writingSupportLevel);
-          }}
-          disabled={coachLoading}
-          aria-busy={coachLoading}
-          className={`inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 py-1.5 text-[12px] font-semibold text-foreground transition-colors duration-150 hover:border-info/40 hover:bg-info/10 hover:text-info focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/30 disabled:opacity-50 ${coachLoading ? "agent-loading text-info" : ""}`}
-        >
-          {coachLoading ? <Spinner className="size-3.5" /> : <RefreshCw className="size-3.5" />}
-          {coachLoading ? (
-            "Updating..."
-          ) : (
-            <span className="leading-tight">
-              <span className="block">Update coaching</span>
-              <span className="block">to regenerate fixes</span>
-            </span>
-          )}
-        </button>
       </div>
 
       {quickFixCount > 0 && (

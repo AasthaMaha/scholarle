@@ -34,7 +34,7 @@ The journey route now:
 - converts the student profile into backend-ready text
 - sends profile, essay, scholarship name/type, and prompt to `/api/analyze`
 - stores the FastAPI response in `user.lastAnalysis`
-- renders backend readiness scores, reviewer comments, revision priorities, and final readiness checks
+- renders backend readiness scores, reviewer comments, and revision priorities
 
 The integration helper is:
 
