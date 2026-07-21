@@ -1062,7 +1062,7 @@ function SidebarRail({
         <TooltipContent side="right">Expand sidebar</TooltipContent>
       </Tooltip>
 
-      <div className="mt-3 flex flex-1 flex-col items-center gap-1.5 overflow-hidden py-1">
+      <div className="mt-3 flex w-full flex-1 flex-col items-center gap-1.5 overflow-hidden py-1">
         <span className="mb-1 text-[9px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
           Steps
         </span>
@@ -1188,7 +1188,7 @@ function StepBody({
     case "discovery": return <StepDiscovery onUpdateProfile={goToProfile} onUseSource={goToRequirements} />;
     case "opportunities": return <StepOpportunities onAnalyze={goNext} />;
     case "requirements": return <StepRequirementsAndFit />;
-    case "essay-workspace": return <StepEssayWorkspace onBack={goPrev} />;
+    case "essay-workspace": return <StepEssayWorkspace />;
     case "revise": return <StepRevise />;
     case "final-check": return <StepFinalCheck onNavigate={goToStep} />;
     case "tracker": return <StepTracker onNavigate={goToStep} />;
@@ -5317,8 +5317,7 @@ function buildPdfVisualLines(items: PdfTextItem[]) {
 }
 
 /** Reflow visual PDF lines into paragraphs while preserving genuine structure. */
-function reconstructPdfPageText(items: PdfTextItem[]) {
-  const lines = buildPdfVisualLines(items);
+function reflowPdfVisualLines(lines: PdfVisualLine[]) {
   if (!lines.length) return "";
 
   const typicalHeight = median(lines.map((line) => line.height).filter((height) => height > 0), 10);
@@ -5359,6 +5358,100 @@ function reconstructPdfPageText(items: PdfTextItem[]) {
   }
 
   return text;
+}
+
+function normalizedPdfHeaderText(text: string) {
+  return text
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[‘’]/g, "'")
+    .replace(/[“”]/g, '"')
+    .replace(/[–—]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isPossiblePdfHeaderLine(line: PdfVisualLine) {
+  const normalized = normalizedPdfHeaderText(line.text);
+  const words = normalized.split(/\s+/).filter(Boolean);
+  return normalized.length >= 8 && normalized.length <= 180 && words.length >= 2;
+}
+
+function matchingPdfHeaderFormat(reference: PdfVisualLine, candidate: PdfVisualLine) {
+  const heightRatio =
+    Math.max(reference.height, candidate.height) / Math.max(1, Math.min(reference.height, candidate.height));
+  const horizontalTolerance = Math.max(
+    24,
+    reference.averageCharacterWidth * 4,
+    candidate.averageCharacterWidth * 4,
+  );
+  return heightRatio <= 1.2 && Math.abs(reference.x - candidate.x) <= horizontalTolerance;
+}
+
+function removeRepeatedPdfHeaders(pageLines: PdfVisualLine[][], studentName = "") {
+  const headerLineCount = 4;
+  const occurrences = new Map<
+    string,
+    Array<{ pageIndex: number; lineIndex: number; line: PdfVisualLine }>
+  >();
+
+  pageLines.forEach((lines, pageIndex) => {
+    const keysSeenOnPage = new Set<string>();
+    lines.slice(0, headerLineCount).forEach((line, lineIndex) => {
+      if (!isPossiblePdfHeaderLine(line)) return;
+      const key = normalizedPdfHeaderText(line.text);
+      if (keysSeenOnPage.has(key)) return;
+      keysSeenOnPage.add(key);
+      const existing = occurrences.get(key) ?? [];
+      existing.push({ pageIndex, lineIndex, line });
+      occurrences.set(key, existing);
+    });
+  });
+
+  const repeated = new Map<string, Array<{ pageIndex: number; lineIndex: number; line: PdfVisualLine }>>();
+  occurrences.forEach((items, key) => {
+    if (new Set(items.map((item) => item.pageIndex)).size < 2) return;
+    const reference = items[0].line;
+    const compatible = items.filter((item) => matchingPdfHeaderFormat(reference, item.line));
+    if (new Set(compatible.map((item) => item.pageIndex)).size >= 2) repeated.set(key, compatible);
+  });
+
+  const knownNameKey = normalizedPdfHeaderText(studentName);
+  const removals = pageLines.map(() => new Set<number>());
+  for (let pageIndex = 1; pageIndex < pageLines.length; pageIndex += 1) {
+    const matches = Array.from(repeated.entries())
+      .flatMap(([key, items]) =>
+        items
+          .filter((item) => item.pageIndex === pageIndex)
+          .map((item) => ({ key, item, repeatedPageCount: new Set(items.map((entry) => entry.pageIndex)).size })),
+      );
+    const repeatedBlock = matches.length >= 2;
+    matches.forEach(({ key, item, repeatedPageCount }) => {
+      const isKnownStudentName = !!knownNameKey && key === knownNameKey;
+      if (repeatedBlock || repeatedPageCount >= 3 || isKnownStudentName) {
+        removals[pageIndex].add(item.lineIndex);
+      }
+    });
+  }
+
+  let removedCount = 0;
+  const cleanedPages = pageLines.map((lines, pageIndex) =>
+    lines.filter((_line, lineIndex) => {
+      const remove = removals[pageIndex].has(lineIndex);
+      if (remove) removedCount += 1;
+      return !remove;
+    }),
+  );
+  return { cleanedPages, removedCount };
+}
+
+function reconstructPdfDocumentText(pages: PdfTextItem[][], studentName = "") {
+  const pageLines = pages.map(buildPdfVisualLines);
+  const { cleanedPages, removedCount } = removeRepeatedPdfHeaders(pageLines, studentName);
+  return {
+    text: normalizePdfDraftText(cleanedPages.map(reflowPdfVisualLines)),
+    removedRepeatedHeaderLines: removedCount,
+  };
 }
 
 function normalizePdfDraftText(pages: string[]) {
@@ -5800,7 +5893,7 @@ function EssayReviewWorkspaceLoadingOverlay({
   );
 }
 
-function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
+function StepEssayWorkspace() {
   const { user, updateProfile } = useUser();
   const editorApiRef = useRef<EssayEditorHandle | null>(null);
   const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
@@ -5834,6 +5927,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   }, [activeScholarshipName, essayTitle, updateProfile, user]);
   const [panelResizing, setPanelResizing] = useState(false);
   const [isEvaluating, setIsEvaluating] = useState(false);
+  const [autoCheckLoading, setAutoCheckLoading] = useState(false);
   const [sessionProgress, setSessionProgress] = useState(0);
   const [reviewReady, setReviewReady] = useState(false);
   const [pdfStatus, setPdfStatus] = useState<string | null>(null);
@@ -6229,12 +6323,6 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     editorApiRef.current?.reveal(s);
   }
 
-  function openHighlights() {
-    setPanelOpen(true);
-    setActiveTab("highlights");
-    if (suggestions[0]) requestAnimationFrame(() => editorApiRef.current?.reveal(suggestions[0]));
-  }
-
   function persistEssayReview(result: EssayReviewResult, draftForRun: string) {
     const updatedAt = Date.now();
     setReviewResult(result);
@@ -6248,9 +6336,9 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   }
 
   async function runAutoCheck() {
-    if (coachLoading) return;
+    if (autoCheckLoading || coachLoading || isEvaluating) return;
     if (draft === lastAutoCheckRef.current || wordCount < 20) return;
-    setCoachLoading(true);
+    setAutoCheckLoading(true);
     lastAutoCheckRef.current = draft;
     setBgStatus("Checking grammar and outline coverage…");
     try {
@@ -6265,7 +6353,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     } catch {
       // Background checks fail silently; the main session remains authoritative.
     } finally {
-      setCoachLoading(false);
+      setAutoCheckLoading(false);
       setBgStatus(null);
     }
   }
@@ -6398,14 +6486,30 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
 
       const buf = await file.arrayBuffer();
       const pdf: PdfDoc = await w.pdfjsLib.getDocument({ data: buf }).promise;
-      const pages: string[] = [];
+      const pages: PdfTextItem[][] = [];
       for (let p = 1; p <= pdf.numPages; p++) {
         const page = await pdf.getPage(p);
         const tc = await page.getTextContent();
-        pages.push(reconstructPdfPageText(tc.items));
+        pages.push(tc.items);
       }
-      updateActiveDraft(normalizePdfDraftText(pages));
-      setPdfStatus(`Imported ${pdf.numPages} pages from ${file.name}.`);
+      const imported = reconstructPdfDocumentText(pages, user?.name ?? "");
+      updateActiveDraft(imported.text);
+      setReviewResult(null);
+      setReviewUpdatedAt(null);
+      setReviewDraftAtRun("");
+      setReviewReady(false);
+      setAnalysisStatus(null);
+      setCoachRaw([]);
+      setDismissed(new Set());
+      updateProfile({
+        essayReviewResult: undefined,
+        essayReviewUpdatedAt: undefined,
+        essayReviewDraftAtRun: undefined,
+      });
+      const headerNote = imported.removedRepeatedHeaderLines > 0
+        ? ` Removed ${imported.removedRepeatedHeaderLines} repeated header line${imported.removedRepeatedHeaderLines === 1 ? "" : "s"}.`
+        : "";
+      setPdfStatus(`Imported ${pdf.numPages} pages from ${file.name}.${headerNote}`);
       triggerAutoCheck();
     } catch (e) {
       setPdfStatus(`Could not parse PDF: ${(e as Error).message}`);
@@ -6473,15 +6577,6 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
       {/* Zone 1 — slim top bar (Grammarly-style) */}
       <header className="sticky top-0 z-20 shrink-0 border-b border-border bg-background/90 backdrop-blur">
         <div className="mx-auto flex h-14 max-w-[1440px] items-center gap-2 px-3 md:px-4">
-          <button
-            type="button"
-            onClick={onBack}
-            aria-label="Back"
-            className="grid size-9 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground"
-          >
-            <ArrowLeft className="size-4" />
-          </button>
-
           <div className="flex min-w-0 flex-1 flex-col justify-center">
             <input
               type="text"
@@ -6572,14 +6667,6 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
               <TooltipContent>{score == null ? "Run a coaching session to get your essay score" : `Essay score: ${score}/100`}</TooltipContent>
             </Tooltip>
 
-            <button
-              type="button"
-              onClick={() => setPanelOpen((open) => !open)}
-              aria-label={panelOpen ? "Hide panel" : "Show panel"}
-              className="ml-0.5 hidden size-9 place-items-center rounded-lg text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground lg:grid"
-            >
-              {panelOpen ? <ChevronRight className="size-4" /> : <ChevronLeft className="size-4" />}
-            </button>
           </div>
         </div>
 
@@ -6742,7 +6829,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
         <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           <div
             data-essay-workspace-tour="editor"
-            className={`mx-auto flex min-h-0 w-full flex-1 flex-col transition-[max-width] duration-300 ${panelOpen ? "max-w-[760px]" : "max-w-[960px]"}`}
+            className="flex min-h-0 w-full flex-1 flex-col"
           >
             <EssayEditor
               ref={editorApiRef}
@@ -6752,7 +6839,6 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
               onRichChange={updateActiveDraftHtml}
               suggestions={suggestions}
               onDismiss={dismissSuggestion}
-              onOpenHighlights={openHighlights}
               onAutoCheck={triggerAutoCheck}
               onRequestRewrite={requestRewrite}
               className="flex-1"
@@ -6810,7 +6896,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
               onReveal={revealSuggestion}
               onAcceptAllQuickFixes={acceptAllQuickFixes}
               quickFixCount={quickFixSuggestions.length}
-              coachLoading={coachLoading}
+              fixesLoading={autoCheckLoading}
               reviewResult={reviewResult}
               reviewUpdatedAt={reviewUpdatedAt}
               reviewDraftChanged={!!reviewUpdatedAt && draft !== reviewDraftAtRun}
@@ -6861,7 +6947,7 @@ function EssayWorkspacePanel({
   onReveal,
   onAcceptAllQuickFixes,
   quickFixCount,
-  coachLoading,
+  fixesLoading,
   reviewResult,
   reviewUpdatedAt,
   reviewDraftChanged,
@@ -6884,7 +6970,7 @@ function EssayWorkspacePanel({
   onReveal: (s: Suggestion) => void;
   onAcceptAllQuickFixes: () => void;
   quickFixCount: number;
-  coachLoading: boolean;
+  fixesLoading: boolean;
   reviewResult: EssayReviewResult | null;
   reviewUpdatedAt: number | null;
   reviewDraftChanged: boolean;
@@ -6973,7 +7059,7 @@ function EssayWorkspacePanel({
             onReveal={onReveal}
             onAcceptAllQuickFixes={onAcceptAllQuickFixes}
             quickFixCount={quickFixCount}
-            coachLoading={coachLoading}
+            fixesLoading={fixesLoading}
           />
         )}
       </div>
@@ -7082,9 +7168,9 @@ function OutlineCheckRow({
           <Check className="size-3" />
         </button>
         <div className="min-w-0 flex-1">
-          <div className={`text-[14px] leading-snug ${done ? "text-muted-foreground line-through" : "text-foreground"}`}>
-            {labelPrefix && <span className="font-bold">{labelPrefix}: </span>}
-            <strong className="font-semibold">{label}</strong>
+          <div className={`text-[14px] font-semibold leading-snug ${done ? "text-muted-foreground line-through" : "text-foreground"}`}>
+            {labelPrefix && <span>{labelPrefix}: </span>}
+            <span>{label}</span>
           </div>
           {detail && <div className="mt-1 text-[12px] leading-relaxed text-muted-foreground">{detail}</div>}
           {children}
@@ -7156,8 +7242,8 @@ function PersonalizedOutlinePanel({
                     <Lightbulb className="size-4" aria-hidden="true" />
                   </span>
                   <p className="pt-0.5 text-[13px] leading-relaxed text-muted-foreground">
-                    <span className="font-medium text-info">Recommended tip: </span>
-                    <strong className="font-semibold text-foreground">{outline.strategy.tone_guidance}</strong>
+                    <span className="font-semibold text-info">Recommended tip: </span>
+                    <span className="font-normal text-foreground">{outline.strategy.tone_guidance}</span>
                   </p>
                 </div>
               )}
@@ -7582,7 +7668,7 @@ function WorkspaceEssayReviewTab({
   if (!review || review.schema_version !== 3) {
     return (
       <PanelEmpty
-        message="No review yet. Select Evaluate to generate the weighted seven-criterion review for this draft."
+        message="No review yet. Click “Evaluate” in the top-right corner to review your essay."
       />
     );
   }
@@ -7735,7 +7821,7 @@ function WorkspaceHighlightsTab({
   onReveal,
   onAcceptAllQuickFixes,
   quickFixCount,
-  coachLoading,
+  fixesLoading,
 }: {
   isEvaluating: boolean;
   suggestions: Suggestion[];
@@ -7744,7 +7830,7 @@ function WorkspaceHighlightsTab({
   onReveal: (s: Suggestion) => void;
   onAcceptAllQuickFixes: () => void;
   quickFixCount: number;
-  coachLoading: boolean;
+  fixesLoading: boolean;
 }) {
   const counts = countByCategory(suggestions);
 
@@ -7766,9 +7852,9 @@ function WorkspaceHighlightsTab({
         </button>
       )}
 
-      {coachLoading && <HighlightsSkeleton />}
+      {fixesLoading && <HighlightsSkeleton />}
 
-      {!coachLoading && !suggestions.length && (
+      {!fixesLoading && !suggestions.length && (
         <div className="rounded-xl border border-dashed border-border bg-background p-4 text-[13px] leading-relaxed text-muted-foreground">
           No sentence-level fixes are available for this draft. Run the main coaching session after making changes.
         </div>

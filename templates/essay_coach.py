@@ -618,6 +618,9 @@ Scoring and output rules:
 For EACH suggestion:
 - "original_text" MUST be copied verbatim from the student's draft (an exact
   substring of the draft text). Never paraphrase it.
+- "original_text" must be the smallest affected word or phrase that can anchor
+  the correction. Do not return a full sentence when a shorter exact substring
+  identifies the issue, and never use a paragraph as the anchor.
 - "suggested_text" must stay faithful to the original meaning and keep the
   student's voice. It must NOT add new facts, experiences, numbers, or claims.
 - "suggested_text" should be about the same length as "original_text" — a single
@@ -681,6 +684,8 @@ Scoring and output rules:
 
 For EACH sentence suggestion:
 - "original_text" MUST be copied verbatim from the draft.
+- "original_text" must be the smallest affected phrase that identifies the
+  clarity or concision issue. Never use a paragraph as the anchor.
 - "suggested_text" must preserve meaning, facts, and voice.
 - "suggestion_type" must be exactly "clarity" or "concision".
 - "severity" must be exactly one of: {", ".join(SENTENCE_SEVERITIES)}.

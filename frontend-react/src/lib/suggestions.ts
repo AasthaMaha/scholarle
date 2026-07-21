@@ -158,7 +158,9 @@ const RULES: Rule[] = [
     title: 'Capitalize "I"',
     explanation: 'The pronoun "I" is always capitalized.',
     riskTier: "C0",
-    regex: /\bi\b/g,
+    // Match the standalone pronoun, but not the first letter of abbreviations
+    // such as "i.e.".
+    regex: /\bi\b(?!\s*\.\s*e\s*\.)/g,
     replace: () => "I",
   },
   {
@@ -208,6 +210,24 @@ function priority(category: SuggestionCategory): number {
   return CATEGORY_ORDER.indexOf(category);
 }
 
+function expandShortLocalEdit(text: string, start: number, end: number, replacement: string) {
+  if (end - start > 2) {
+    return { start, end, original: text.slice(start, end), replacement };
+  }
+  let expandedStart = start;
+  let expandedEnd = end;
+  while (expandedStart > 0 && !/\s/.test(text[expandedStart - 1])) expandedStart -= 1;
+  while (expandedEnd < text.length && !/\s/.test(text[expandedEnd])) expandedEnd += 1;
+  const leftContext = text.slice(expandedStart, start);
+  const rightContext = text.slice(end, expandedEnd);
+  return {
+    start: expandedStart,
+    end: expandedEnd,
+    original: text.slice(expandedStart, expandedEnd),
+    replacement: leftContext + replacement + rightContext,
+  };
+}
+
 /** Run every heuristic over the text and return non-overlapping, anchored suggestions. */
 export function analyzeText(text: string): Suggestion[] {
   if (!text.trim()) return [];
@@ -224,15 +244,16 @@ export function analyzeText(text: string): Suggestion[] {
       }
       const replacement = rule.replace(m);
       if (replacement === original) continue;
+      const edit = expandShortLocalEdit(text, m.index, m.index + original.length, replacement);
       found.push({
-        id: `${rule.category}:${m.index}:${original}`,
+        id: `${rule.category}:${edit.start}:${edit.original}`,
         category: rule.category,
-        start: m.index,
-        end: m.index + original.length,
-        original,
+        start: edit.start,
+        end: edit.end,
+        original: edit.original,
         title: rule.title,
         explanation: rule.explanation,
-        replacement,
+        replacement: edit.replacement,
         source: "auto",
         riskTier: rule.riskTier ?? (rule.category === "correctness" ? "C0" : "C1"),
         suggestionType: rule.title.toLowerCase(),
@@ -300,6 +321,64 @@ function normalizeRiskTier(value: string | undefined, fallback: EditRiskTier): E
   return fallback;
 }
 
+function minimizeSuggestionEdit(
+  original: string,
+  replacement: string,
+  absoluteStart: number,
+): { start: number; end: number; original: string; replacement: string } {
+  let prefix = 0;
+  const sharedLength = Math.min(original.length, replacement.length);
+  while (prefix < sharedLength && original[prefix] === replacement[prefix]) prefix += 1;
+
+  let suffix = 0;
+  while (
+    suffix < original.length - prefix &&
+    suffix < replacement.length - prefix &&
+    original[original.length - 1 - suffix] === replacement[replacement.length - 1 - suffix]
+  ) {
+    suffix += 1;
+  }
+
+  // Pure insertions have no original glyph to underline. Include one adjacent
+  // unchanged character so the insertion still has a small, clickable anchor.
+  if (prefix === original.length - suffix) {
+    if (prefix > 0) prefix -= 1;
+    else if (suffix > 0) suffix -= 1;
+  }
+
+  let originalStart = prefix;
+  let originalEnd = original.length - suffix;
+  let replacementStart = prefix;
+  let replacementEnd = replacement.length - suffix;
+
+  // A punctuation mark or single changed letter is too small to make a useful
+  // inline target. Include its surrounding token as unchanged context; Accept
+  // still produces exactly the same corrected sentence.
+  if (originalEnd - originalStart <= 2) {
+    const initialStart = originalStart;
+    const initialEnd = originalEnd;
+    while (originalStart > 0 && !/\s/.test(original[originalStart - 1])) originalStart -= 1;
+    while (originalEnd < original.length && !/\s/.test(original[originalEnd])) originalEnd += 1;
+    replacementStart = Math.max(0, replacementStart - (initialStart - originalStart));
+    replacementEnd = Math.min(replacement.length, replacementEnd + (originalEnd - initialEnd));
+  }
+
+  return {
+    start: absoluteStart + originalStart,
+    end: absoluteStart + originalEnd,
+    original: original.slice(originalStart, originalEnd),
+    replacement: replacement.slice(replacementStart, replacementEnd),
+  };
+}
+
+/** Broad sentence/paragraph feedback stays in Fixes instead of marking a large block. */
+export function isInlineSuggestion(suggestion: Suggestion): boolean {
+  const original = suggestion.original.trim();
+  if (!original || suggestion.end <= suggestion.start || original.includes("\n\n")) return false;
+  const wordCount = original.split(/\s+/).filter(Boolean).length;
+  return original.length <= 96 && wordCount <= 14;
+}
+
 /**
  * Anchor backend sentence suggestions to the current draft by locating each
  * `original_text` verbatim (LLM char offsets are unreliable). Suggestions whose
@@ -361,26 +440,28 @@ export function anchorCoachSuggestions(raw: CoachSentenceSuggestion[], text: str
 
     const span = findRealSpan(text, textLower, original, used);
     if (!span) continue;
-    const [start, end] = span;
+    const [matchedStart, matchedEnd] = span;
     // Use the ACTUAL draft substring so the card shows — and Accept replaces —
     // exactly what is in the essay, even when matched case-/whitespace-insensitively.
-    const realOriginal = text.slice(start, end);
+    const realOriginal = text.slice(matchedStart, matchedEnd);
     if (realOriginal === replacement) continue;
-    used.push([start, end]);
+    const edit = minimizeSuggestionEdit(realOriginal, replacement, matchedStart);
+    if (!edit.original || edit.original === edit.replacement) continue;
+    used.push([edit.start, edit.end]);
 
     const meta = coachType(item.suggestion_type);
     const severity = (["low", "medium", "high"] as const).includes(item.severity as "low")
       ? (item.severity as "low" | "medium" | "high")
       : "medium";
     results.push({
-      id: `coach:${start}:${realOriginal.slice(0, 40)}`,
+      id: `coach:${edit.start}:${edit.original.slice(0, 40)}`,
       category: meta.category,
-      start,
-      end,
-      original: realOriginal,
+      start: edit.start,
+      end: edit.end,
+      original: edit.original,
       title: meta.title,
       explanation: item.reason ?? "",
-      replacement,
+      replacement: edit.replacement,
       severity,
       source: "coach",
       riskTier: normalizeRiskTier(item.risk_tier, meta.riskTier),

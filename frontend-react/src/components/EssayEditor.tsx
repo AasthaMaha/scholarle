@@ -10,11 +10,14 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import {
+  AlignCenter,
+  AlignJustify,
+  AlignLeft,
+  AlignRight,
   ArrowRight,
   Bold,
   Copy,
   Expand,
-  Heading2,
   Italic,
   Link as LinkIcon,
   List,
@@ -25,7 +28,7 @@ import {
   Wand2,
   X,
 } from "lucide-react";
-import { applySuggestion, CATEGORY_META, type Suggestion } from "@/lib/suggestions";
+import { applySuggestion, CATEGORY_META, isInlineSuggestion, type Suggestion } from "@/lib/suggestions";
 
 export type EssayEditorHandle = {
   accept: (s: Suggestion) => void;
@@ -48,7 +51,6 @@ type Props = {
   onRichChange?: (value: string) => void;
   suggestions: Suggestion[];
   onDismiss: (s: Suggestion) => void;
-  onOpenHighlights: () => void;
   onAutoCheck?: () => void;
   onRequestRewrite?: (action: RewriteAction, text: string, surrounding: string) => Promise<{ rewritten_text: string; note: string }>;
   className?: string;
@@ -56,7 +58,35 @@ type Props = {
 
 // Shared box metrics — the textarea and its backdrop MUST match exactly so the
 // underline marks line up under the visible glyphs.
-const EDITOR_BOX = "px-5 py-4 md:px-8 font-display text-[18px] leading-8 tracking-normal [overflow-wrap:break-word]";
+const EDITOR_BOX = "px-[45px] py-4 tracking-normal [overflow-wrap:break-word]";
+
+type EditorAlignment = "left" | "center" | "right" | "justify";
+type EditorFontFamily = "serif" | "sans";
+
+type EditorTypography = {
+  fontSize: number;
+  fontFamily: EditorFontFamily;
+};
+
+const DEFAULT_EDITOR_TYPOGRAPHY: EditorTypography = {
+  fontSize: 18,
+  fontFamily: "serif",
+};
+
+const EDITOR_TYPOGRAPHY_STORAGE_KEY = "scholar-e:essay-editor-typography";
+const EDITOR_FONT_SIZES = [14, 16, 18, 20, 22, 24] as const;
+
+function validEditorTypography(value: unknown): EditorTypography {
+  if (!value || typeof value !== "object") return DEFAULT_EDITOR_TYPOGRAPHY;
+  const candidate = value as Partial<EditorTypography>;
+  const fontSize = EDITOR_FONT_SIZES.includes(candidate.fontSize as (typeof EDITOR_FONT_SIZES)[number])
+    ? candidate.fontSize!
+    : DEFAULT_EDITOR_TYPOGRAPHY.fontSize;
+  const fontFamily = candidate.fontFamily === "sans" || candidate.fontFamily === "serif"
+    ? candidate.fontFamily
+    : DEFAULT_EDITOR_TYPOGRAPHY.fontFamily;
+  return { fontSize, fontFamily };
+}
 
 type Segment = { text: string; sugg?: Suggestion };
 
@@ -83,6 +113,108 @@ function collectTextNodes(root: Node): Text[] {
   while ((n = walker.nextNode())) nodes.push(n as Text);
   return nodes;
 }
+
+type VisibleTextPoint = { node: Text; offset: number };
+
+function visibleTextMap(root: Node) {
+  const points: VisibleTextPoint[] = [];
+  let text = "";
+  for (const node of collectTextNodes(root)) {
+    const content = node.data;
+    for (let offset = 0; offset < content.length; offset += 1) {
+      const character = content[offset];
+      if (character === "\n" || character === "\r") continue;
+      points.push({ node, offset });
+      text += character === "\u00a0" ? " " : character;
+    }
+  }
+  return { points, text };
+}
+
+function visibleOffset(text: string, offset: number) {
+  let result = 0;
+  for (let index = 0; index < Math.min(offset, text.length); index += 1) {
+    if (text[index] !== "\n" && text[index] !== "\r") result += 1;
+  }
+  return result;
+}
+
+function valueOffsetFromVisibleOffset(value: string, target: number) {
+  let visible = 0;
+  let index = 0;
+  while (index < value.length) {
+    if (value[index] === "\n" || value[index] === "\r") {
+      index += 1;
+      continue;
+    }
+    if (visible === target) return index;
+    visible += 1;
+    index += 1;
+    if (visible === target) {
+      while (index < value.length && (value[index] === "\n" || value[index] === "\r")) index += 1;
+      return index;
+    }
+  }
+  return value.length;
+}
+
+function visibleOffsetAtDomBoundary(root: HTMLElement, container: Node, offset: number) {
+  const range = document.createRange();
+  range.selectNodeContents(root);
+  try {
+    range.setEnd(container, offset);
+  } catch {
+    return null;
+  }
+  return visibleTextMap(range.cloneContents()).text.length;
+}
+
+function editorRangeForValueOffsets(root: HTMLElement, value: string, start: number, end: number) {
+  const { points, text } = visibleTextMap(root);
+  const visibleValue = value.replace(/[\r\n]/g, "").replace(/\u00a0/g, " ");
+  if (!points.length || text !== visibleValue) return null;
+
+  const visibleStart = visibleOffset(value, start);
+  const visibleEnd = visibleOffset(value, end);
+  if (visibleEnd < visibleStart || visibleStart > points.length) return null;
+
+  const boundary = (offset: number) => {
+    if (offset <= 0) return points[0];
+    if (offset >= points.length) {
+      const last = points[points.length - 1];
+      return { node: last.node, offset: last.offset + 1 };
+    }
+    return points[offset];
+  };
+  const first = boundary(visibleStart);
+  const last = boundary(visibleEnd);
+
+  const range = document.createRange();
+  range.setStart(first.node, first.offset);
+  range.setEnd(last.node, last.offset);
+  return range;
+}
+
+type HighlightRegistry = {
+  set: (name: string, highlight: unknown) => void;
+  delete: (name: string) => void;
+};
+
+const ESSAY_HIGHLIGHT_NAMES = [
+  "essay-fix-correctness",
+  "essay-fix-clarity",
+  "essay-fix-engagement",
+  "essay-fix-tone",
+  "essay-fix-selected",
+] as const;
+
+const ESSAY_HIGHLIGHT_STYLES = `
+::highlight(essay-fix-correctness) { text-decoration: underline wavy #dc2626bf 1.5px; text-decoration-skip-ink: none; text-underline-offset: 3px; }
+::highlight(essay-fix-clarity) { text-decoration: underline wavy #2563ebbf 1.5px; text-decoration-skip-ink: none; text-underline-offset: 3px; }
+::highlight(essay-fix-engagement) { text-decoration: underline wavy #16a34abf 1.5px; text-decoration-skip-ink: none; text-underline-offset: 3px; }
+::highlight(essay-fix-tone) { text-decoration: underline wavy #8b5cf6bf 1.5px; text-decoration-skip-ink: none; text-underline-offset: 3px; }
+::highlight(essay-fix-selected) { text-decoration: underline wavy #6d5df6 2px; text-decoration-skip-ink: none; text-underline-offset: 3px; }
+`;
 
 function locate(nodes: Text[], offset: number): { node: Text; pos: number } | null {
   let acc = 0;
@@ -138,9 +270,16 @@ function sanitizeRichHtml(html: string) {
       el.replaceWith(...Array.from(el.childNodes));
       return;
     }
+    const requestedAlignment = (
+      el.getAttribute("align")
+      || (el instanceof HTMLElement ? el.style.textAlign : "")
+    ).toLowerCase();
     Array.from(el.attributes).forEach((attr) => {
       if (!allowedAttrs.has(attr.name)) el.removeAttribute(attr.name);
     });
+    if (["left", "center", "right", "justify"].includes(requestedAlignment)) {
+      el.setAttribute("style", `text-align: ${requestedAlignment};`);
+    }
     if (el.tagName === "A") {
       const href = el.getAttribute("href") ?? "";
       if (!/^https?:\/\//i.test(href) && !/^mailto:/i.test(href)) el.removeAttribute("href");
@@ -154,7 +293,7 @@ function sanitizeRichHtml(html: string) {
 let flashSeq = 0;
 
 export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEditor(
-  { value, onChange, richValue, onRichChange, suggestions, onDismiss, onOpenHighlights, onAutoCheck, onRequestRewrite, className = "" },
+  { value, onChange, richValue, onRichChange, suggestions, onDismiss, onAutoCheck, onRequestRewrite, className = "" },
   ref,
 ) {
   const editorRef = useRef<HTMLDivElement | null>(null);
@@ -177,15 +316,64 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
     left: number;
   } | null>(null);
   const [mounted, setMounted] = useState(false);
+  const [nativeHighlightsSupported, setNativeHighlightsSupported] = useState(false);
+  const [nativeHighlightsReady, setNativeHighlightsReady] = useState(false);
+  const [typography, setTypography] = useState<EditorTypography>(DEFAULT_EDITOR_TYPOGRAPHY);
+  const [activeAlignment, setActiveAlignment] = useState<EditorAlignment>("left");
+  const [typographyLoaded, setTypographyLoaded] = useState(false);
   const pendingFlash = useRef<{ start: number; len: number; pulse: boolean } | null>(null);
   const lastSyncedHtml = useRef("");
 
   // Overlays use position:fixed with viewport coords; an ancestor `transform`
   // (the full-bleed wrapper) would otherwise become their containing block, so
   // render them through a portal on <body>.
-  useEffect(() => setMounted(true), []);
+  useEffect(() => {
+    setMounted(true);
+    const highlightRegistry = (CSS as typeof CSS & { highlights?: HighlightRegistry }).highlights;
+    const HighlightConstructor = (window as unknown as { Highlight?: new (...ranges: Range[]) => unknown }).Highlight;
+    setNativeHighlightsSupported(!!highlightRegistry && !!HighlightConstructor);
+    try {
+      const saved = window.localStorage.getItem(EDITOR_TYPOGRAPHY_STORAGE_KEY);
+      if (saved) setTypography(validEditorTypography(JSON.parse(saved)));
+    } catch {
+      // Keep the defaults when browser storage is unavailable or malformed.
+    } finally {
+      setTypographyLoaded(true);
+    }
+  }, []);
 
-  const segments = useMemo(() => buildSegments(value, suggestions), [value, suggestions]);
+  useEffect(() => {
+    if (!nativeHighlightsSupported) return;
+    const style = document.createElement("style");
+    style.dataset.essayFixHighlights = "true";
+    style.textContent = ESSAY_HIGHLIGHT_STYLES;
+    document.head.appendChild(style);
+    return () => style.remove();
+  }, [nativeHighlightsSupported]);
+
+  useEffect(() => {
+    if (!typographyLoaded) return;
+    try {
+      window.localStorage.setItem(EDITOR_TYPOGRAPHY_STORAGE_KEY, JSON.stringify(typography));
+    } catch {
+      // The controls still work for this session when storage is unavailable.
+    }
+  }, [typography, typographyLoaded]);
+
+  const typographyStyle = useMemo(
+    () => ({
+      fontFamily:
+        typography.fontFamily === "serif"
+          ? '"Source Serif 4", "Iowan Old Style", Georgia, serif'
+          : 'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+      fontSize: `${typography.fontSize}px`,
+      lineHeight: 1.75,
+    }),
+    [typography],
+  );
+
+  const inlineSuggestions = useMemo(() => suggestions.filter(isInlineSuggestion), [suggestions]);
+  const segments = useMemo(() => buildSegments(value, inlineSuggestions), [value, inlineSuggestions]);
 
   const syncScroll = useCallback(() => {
     if (backdropRef.current && editorRef.current) {
@@ -209,6 +397,39 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
     lastSyncedHtml.current = editor.innerHTML;
   }, [richValue, value]);
 
+  useLayoutEffect(() => {
+    if (!nativeHighlightsSupported) return;
+    const editor = editorRef.current;
+    const registry = (CSS as typeof CSS & { highlights?: HighlightRegistry }).highlights;
+    const HighlightConstructor = (window as unknown as { Highlight?: new (...ranges: Range[]) => unknown }).Highlight;
+    if (!editor || !registry || !HighlightConstructor) return;
+
+    ESSAY_HIGHLIGHT_NAMES.forEach((name) => registry.delete(name));
+    const grouped = new Map<string, Range[]>();
+    let mappedSuggestionCount = 0;
+    inlineSuggestions.forEach((suggestion) => {
+      const range = editorRangeForValueOffsets(editor, value, suggestion.start, suggestion.end);
+      if (!range) return;
+      mappedSuggestionCount += 1;
+      const name = card?.sugg.id === suggestion.id
+        ? "essay-fix-selected"
+        : `essay-fix-${suggestion.category}`;
+      const ranges = grouped.get(name) ?? [];
+      ranges.push(range);
+      grouped.set(name, ranges);
+    });
+    if (mappedSuggestionCount !== inlineSuggestions.length) {
+      setNativeHighlightsReady(false);
+      return;
+    }
+    grouped.forEach((ranges, name) => registry.set(name, new HighlightConstructor(...ranges)));
+    setNativeHighlightsReady(true);
+
+    return () => {
+      ESSAY_HIGHLIGHT_NAMES.forEach((name) => registry.delete(name));
+    };
+  }, [card?.sugg.id, inlineSuggestions, nativeHighlightsSupported, richValue, value]);
+
   function syncFromEditor() {
     const editor = editorRef.current;
     if (!editor) return;
@@ -222,7 +443,7 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
   }
 
   function addFlash(start: number, len: number, pulse: boolean) {
-    const rect = rangeRect(backdropRef.current, start, start + len);
+    const rect = valueRangeRect(start, start + len);
     if (!rect) return;
     const id = ++flashSeq;
     setFlashes((prev) => [...prev, { id, top: rect.top, left: rect.left, width: rect.width, height: rect.height, pulse }]);
@@ -239,14 +460,27 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
 
   function scrollOffsetIntoView(start: number, end: number) {
     const editor = editorRef.current;
-    const backdrop = backdropRef.current;
-    if (!editor || !backdrop) return;
-    const rect = rangeRect(backdrop, start, end);
+    if (!editor) return;
+    const rect = valueRangeRect(start, end);
     if (!rect) return;
-    const backdropRect = backdrop.getBoundingClientRect();
-    const contentTop = rect.top - backdropRect.top + backdrop.scrollTop;
+    const editorRect = editor.getBoundingClientRect();
+    const contentTop = rect.top - editorRect.top + editor.scrollTop;
     editor.scrollTop = Math.max(0, contentTop - editor.clientHeight / 2);
     syncScroll();
+  }
+
+  function valueRangeRect(start: number, end: number) {
+    const editor = editorRef.current;
+    if (editor) {
+      const editorRange = editorRangeForValueOffsets(editor, value, start, end);
+      if (editorRange) {
+        const rects = editorRange.getClientRects();
+        if (rects.length) return rects[0];
+        const rect = editorRange.getBoundingClientRect();
+        if (rect.width || rect.height) return rect;
+      }
+    }
+    return rangeRect(backdropRef.current, start, end);
   }
 
   function getSelectionOffsets() {
@@ -255,6 +489,20 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
     if (!editor || !selection || selection.rangeCount === 0) return null;
     const range = selection.getRangeAt(0);
     if (!editor.contains(range.startContainer) || !editor.contains(range.endContainer)) return null;
+
+    const mappedEditorText = visibleTextMap(editor).text;
+    const mappedValue = value.replace(/[\r\n]/g, "").replace(/\u00a0/g, " ");
+    const visibleStart = mappedEditorText === mappedValue
+      ? visibleOffsetAtDomBoundary(editor, range.startContainer, range.startOffset)
+      : null;
+    const visibleEnd = mappedEditorText === mappedValue
+      ? visibleOffsetAtDomBoundary(editor, range.endContainer, range.endOffset)
+      : null;
+    if (visibleStart !== null && visibleEnd !== null) {
+      const start = valueOffsetFromVisibleOffset(value, visibleStart);
+      const end = valueOffsetFromVisibleOffset(value, visibleEnd);
+      return { start: Math.min(start, end), end: Math.max(start, end) };
+    }
 
     const startRange = document.createRange();
     startRange.selectNodeContents(editor);
@@ -270,6 +518,13 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
   function setSelectionByOffsets(start: number, end: number) {
     const editor = editorRef.current;
     if (!editor) return false;
+    const formattedRange = editorRangeForValueOffsets(editor, value, start, end);
+    if (formattedRange) {
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(formattedRange);
+      return true;
+    }
     if (!editor.textContent) editor.appendChild(document.createTextNode(""));
     const nodes = collectTextNodes(editor);
     const a = locate(nodes, start);
@@ -300,11 +555,11 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
   }));
 
   function suggestionAt(offset: number): Suggestion | null {
-    return suggestions.find((s) => offset >= s.start && offset < s.end) ?? null;
+    return inlineSuggestions.find((s) => offset >= s.start && offset < s.end) ?? null;
   }
 
   function openCardFor(s: Suggestion) {
-    const rect = rangeRect(backdropRef.current, s.start, s.end);
+    const rect = valueRangeRect(s.start, s.end);
     if (!rect) return;
     const vw = window.innerWidth;
     const vh = window.innerHeight;
@@ -335,6 +590,13 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
   }
 
   function refreshSelectionUi() {
+    const nextAlignment = ([
+      ["justifyCenter", "center"],
+      ["justifyRight", "right"],
+      ["justifyFull", "justify"],
+      ["justifyLeft", "left"],
+    ] as const).find(([command]) => document.queryCommandState(command))?.[1] ?? "left";
+    setActiveAlignment(nextAlignment);
     const selection = getSelectionOffsets();
     if (!selection) return;
     updateGutter();
@@ -342,7 +604,7 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
       setSelBar(null);
       return;
     }
-    const rect = rangeRect(backdropRef.current, selection.start, selection.end);
+    const rect = valueRangeRect(selection.start, selection.end);
     if (!rect) return;
     // Flip below the selection when it's too close to the viewport top.
     const below = rect.top < 96;
@@ -413,7 +675,7 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
     const { start, end } = selection;
     const original = value.slice(start, end);
     if (!original.trim()) return;
-    const rect = rangeRect(backdropRef.current, start, end);
+    const rect = valueRangeRect(start, end);
     const vw = window.innerWidth;
     const vh = window.innerHeight;
     const previewWidth = vw >= 640 ? Math.min(608, vw - 16) : vw - 16;
@@ -473,10 +735,7 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
     return () => document.removeEventListener("mousedown", onDocClick);
   }, []);
 
-  const openCount = suggestions.length;
-
   const formattingTools = [
-    { label: "Heading", icon: Heading2, run: () => runEditorCommand("formatBlock", "<h2>") },
     { label: "Bold", icon: Bold, run: () => runEditorCommand("bold") },
     { label: "Italic", icon: Italic, run: () => runEditorCommand("italic") },
     { label: "Bullet list", icon: List, run: () => runEditorCommand("insertUnorderedList") },
@@ -506,9 +765,10 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
           ref={backdropRef}
           aria-hidden
           className={`pointer-events-none absolute inset-0 select-none overflow-hidden whitespace-pre-wrap break-words text-transparent ${EDITOR_BOX}`}
+          style={typographyStyle}
         >
           {segments.map((seg, i) =>
-            seg.sugg ? (
+            seg.sugg && !nativeHighlightsReady ? (
               <mark
                 key={i}
                 data-sugg-id={seg.sugg.id}
@@ -516,8 +776,12 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
                 style={{
                   textDecoration: "underline",
                   textDecorationStyle: "wavy",
-                  textDecorationColor: CATEGORY_META[seg.sugg.category].color,
-                  textDecorationThickness: "1.5px",
+                  textDecorationColor:
+                    card?.sugg.id === seg.sugg.id
+                      ? CATEGORY_META[seg.sugg.category].color
+                      : `${CATEGORY_META[seg.sugg.category].color}bf`,
+                  textDecorationThickness: card?.sugg.id === seg.sugg.id ? "2px" : "1.5px",
+                  textDecorationSkipInk: "none",
                   textUnderlineOffset: "3px",
                 }}
               >
@@ -530,7 +794,10 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
         </div>
 
         {!value.trim() && (
-          <div className={`pointer-events-none absolute inset-0 text-muted-foreground/60 ${EDITOR_BOX}`}>
+          <div
+            className={`pointer-events-none absolute inset-0 text-muted-foreground/60 ${EDITOR_BOX}`}
+            style={typographyStyle}
+          >
             Type or paste your essay draft here, or upload a PDF to get started.
           </div>
         )}
@@ -549,6 +816,7 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
           onFocus={updateGutter}
           aria-label="Essay draft editor"
           className={`absolute inset-0 block h-full w-full overflow-y-auto whitespace-pre-wrap break-words border-0 bg-transparent text-foreground caret-foreground outline-none empty:before:content-[''] [&_h2]:mb-2 [&_h2]:mt-3 [&_h2]:text-2xl [&_h2]:font-semibold [&_h2]:leading-9 [&_h2]:text-foreground ${EDITOR_BOX}`}
+          style={typographyStyle}
         />
 
         {/* Paragraph gutter affordance */}
@@ -567,17 +835,6 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
           </button>
         )}
 
-        {/* Open-suggestions badge */}
-        {openCount > 0 && (
-          <button
-            type="button"
-            onClick={onOpenHighlights}
-            className="absolute bottom-3 right-3 z-10 inline-flex items-center gap-1.5 rounded-full bg-info px-3 py-1.5 text-[12px] font-semibold text-white shadow-lg shadow-info/25 transition-transform duration-150 hover:-translate-y-0.5"
-          >
-            <Sparkles className="size-3.5" />
-            {openCount} suggestion{openCount === 1 ? "" : "s"}
-          </button>
-        )}
       </div>
 
       {/* Bottom formatting toolbar */}
@@ -599,6 +856,71 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
             </button>
           );
         })}
+        <div className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
+
+        <label className="inline-flex h-8 items-center gap-1 rounded-md border border-border bg-background px-2 text-[12px] text-muted-foreground">
+          <span className="sr-only">Font size</span>
+          <select
+            aria-label="Font size"
+            value={typography.fontSize}
+            onChange={(event) =>
+              setTypography((current) => ({ ...current, fontSize: Number(event.target.value) }))
+            }
+            className="cursor-pointer bg-transparent font-medium text-foreground outline-none"
+          >
+            {EDITOR_FONT_SIZES.map((size) => (
+              <option key={size} value={size}>
+                {size} px
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="inline-flex h-8 items-center rounded-md border border-border bg-background px-2 text-[12px] text-muted-foreground">
+          <span className="sr-only">Font family</span>
+          <select
+            aria-label="Font family"
+            value={typography.fontFamily}
+            onChange={(event) =>
+              setTypography((current) => ({ ...current, fontFamily: event.target.value as EditorFontFamily }))
+            }
+            className="cursor-pointer bg-transparent font-medium text-foreground outline-none"
+          >
+            <option value="serif">Serif</option>
+            <option value="sans">Sans serif</option>
+          </select>
+        </label>
+
+        <div className="ml-0.5 inline-flex items-center overflow-hidden rounded-md border border-border bg-background" aria-label="Text alignment">
+          {([
+            { value: "left", label: "Align left", icon: AlignLeft, command: "justifyLeft" },
+            { value: "center", label: "Align center", icon: AlignCenter, command: "justifyCenter" },
+            { value: "right", label: "Align right", icon: AlignRight, command: "justifyRight" },
+            { value: "justify", label: "Justify", icon: AlignJustify, command: "justifyFull" },
+          ] as const).map((option) => {
+            const Icon = option.icon;
+            const selected = activeAlignment === option.value;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                title={option.label}
+                aria-label={option.label}
+                aria-pressed={selected}
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  runEditorCommand(option.command);
+                  setActiveAlignment(option.value);
+                }}
+                className={`grid size-8 place-items-center border-l border-border first:border-l-0 transition-colors ${
+                  selected ? "bg-info/10 text-info" : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                }`}
+              >
+                <Icon className="size-4" />
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {/* Floating selection mini-toolbar */}
