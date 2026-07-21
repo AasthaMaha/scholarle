@@ -14,7 +14,6 @@ import {
   Compass,
   Copy,
   FileUp,
-  Gauge,
   Lightbulb,
   LineChart,
   ListChecks,
@@ -47,14 +46,13 @@ import {
   type Suggestion,
 } from "@/lib/suggestions";
 import { essayDraft as exampleEssayDraft, journeySteps } from "@/lib/persona";
-import { CoachRunButton } from "@/components/CoachRunButton";
 import { Spinner } from "@/components/Spinner";
 import { AcademicOnboarding } from "@/components/AcademicOnboarding";
 import {
   analyzeScholarshipFit,
   autofillProfileFromResume,
   buildCoachingSessionPayload,
-  buildEssayCoachPayload,
+  buildEditorCheckPayload,
   buildFitPayload,
   buildOutlinePayload,
   buildOutlinePoints,
@@ -64,12 +62,10 @@ import {
   buildRewritePayload,
   extractScholarshipOpportunity,
   generatePersonalizedOutline,
-  runEssayCoach,
+  runEditorCheck,
   runSelectionRewrite,
   runWorkspaceCoachingSession,
   splitEssayPrompts,
-  type EssayCoachResult,
-  type RevisionPriority,
 } from "@/lib/api/scholarE";
 import {
   useUser,
@@ -79,9 +75,9 @@ import {
   type ResearchExperienceEntry,
   type WorkExperienceEntry,
   type UserProfile,
-  type AnalysisResult,
-  type AnalysisScore,
+  type EssayCriterionReview,
   type EssayDraft,
+  type EssayReviewResult,
   type ActiveScholarship,
   type WikiDiscoveryResult,
   type ApplicationReadinessMatrix,
@@ -4651,8 +4647,27 @@ function criteriaAlignmentTone(alignment?: string): "default" | "gold" | "succes
 
 /* ---------------- Step 5: Essay Workspace ---------------- */
 
-type WorkspaceTab = "outline" | "coach" | "evaluation" | "highlights";
-type WorkspaceStage = "prompt" | "outline" | "draft" | "coach" | "revise";
+type WorkspaceTab = "outline" | "coach" | "highlights";
+
+const ESSAY_REVIEW_DIMENSIONS = [
+  "alignment",
+  "evidence_strength",
+  "insight",
+  "narrative_structure_flow_coherence",
+  "tone_authenticity",
+  "clarity_concision",
+  "grammar",
+] as const;
+
+const EVALUATION_DIMENSION_LABELS: Record<string, string> = {
+  alignment: "Alignment",
+  evidence_strength: "Evidence Strength",
+  insight: "Insight",
+  narrative_structure_flow_coherence: "Narrative Structure, Flow & Coherence",
+  tone_authenticity: "Tone & Authenticity",
+  clarity_concision: "Clarity & Concision",
+  grammar: "Grammar",
+};
 
 function normalizePdfDraftText(pages: string[]) {
   return pages
@@ -4668,22 +4683,6 @@ function parseWordTarget(limit?: string): number | null {
   const nums = (limit ?? "").match(/\d{2,5}/g);
   if (!nums?.length) return null;
   return Math.max(...nums.map(Number));
-}
-
-/** Overall essay score (0–100) = mean of the readiness-index dimension scores. */
-function overallEssayScore(analysis?: AnalysisResult): number | null {
-  const scores = Object.values(analysis?.readiness_index ?? {})
-    .map((entry) => entry.score)
-    .filter((s): s is number => typeof s === "number");
-  if (!scores.length) return null;
-  return Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
-}
-
-/** Mean of a flat score map (e.g. the coach's 8-dim overall_scores) → 0–100. */
-function meanScore(scores?: Record<string, number> | null): number | null {
-  const vals = Object.values(scores ?? {}).filter((v): v is number => typeof v === "number");
-  if (!vals.length) return null;
-  return Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
 }
 
 function scoreColor(score: number): string {
@@ -4778,13 +4777,12 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
   const [coachRaw, setCoachRaw] = useState<CoachSentenceSuggestion[]>([]);
   const [coachLoading, setCoachLoading] = useState(false);
-  const [coachSummary, setCoachSummary] = useState<string | null>(() => user?.essayCoachSummary ?? null);
-  const [coachWarnings, setCoachWarnings] = useState<string[]>([]);
-  const [coachResult, setCoachResult] = useState<EssayCoachResult | null>(
-    () => (user?.essayCoachResult as EssayCoachResult | undefined) ?? null,
+  const [reviewResult, setReviewResult] = useState<EssayReviewResult | null>(
+    () => user?.essayReviewResult?.schema_version === 2 ? user.essayReviewResult : null,
   );
-  const [coachUpdatedAt, setCoachUpdatedAt] = useState<number | null>(() => user?.essayCoachUpdatedAt ?? null);
-  const [coachDraftAtRun, setCoachDraftAtRun] = useState<string>("");
+  const [reviewWarnings, setReviewWarnings] = useState<string[]>([]);
+  const [reviewUpdatedAt, setReviewUpdatedAt] = useState<number | null>(() => user?.essayReviewUpdatedAt ?? null);
+  const [reviewDraftAtRun, setReviewDraftAtRun] = useState<string>(() => user?.essayReviewDraftAtRun ?? "");
   // Outline coverage is layered: `autoCovered` comes from the AI coverage agent;
   // `manualChecked`/`manualUnchecked` are the student's overrides, which persist
   // across auto-runs. Displayed = (auto ∪ manualChecked) − manualUnchecked.
@@ -4809,8 +4807,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   const [isEvaluating, setIsEvaluating] = useState(false);
   const [sessionPhase, setSessionPhase] = useState("");
   const [sessionProgress, setSessionProgress] = useState(0);
-  const [coachReady, setCoachReady] = useState(false);
-  const [scoresReady, setScoresReady] = useState(false);
+  const [reviewReady, setReviewReady] = useState(false);
   const [mechanicsNote, setMechanicsNote] = useState<string | null>(null);
   const [pdfStatus, setPdfStatus] = useState<string | null>(null);
   const [analysisStatus, setAnalysisStatus] = useState<string | null>(null);
@@ -4845,7 +4842,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     () => parseWordTarget(buildOutlinePayload(user, essayPrompt).word_limit),
     [user, essayPrompt],
   );
-  const score = useMemo(() => overallEssayScore(user?.lastAnalysis), [user?.lastAnalysis]);
+  const score = typeof reviewResult?.overall_score === "number" ? reviewResult.overall_score : null;
   const suggestions = useMemo(() => {
     const auto = analyzeText(draft);
     const coach = anchorCoachSuggestions(coachRaw, draft);
@@ -4897,14 +4894,6 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
       prompts: user?.prompts ?? {},
     });
   }, [essayPrompt, user]);
-
-  const workspaceStage: WorkspaceStage = useMemo(() => {
-    if (!promptConfirmed) return "prompt";
-    if (!hasOutline) return "outline";
-    if (wordCount < 30) return "draft";
-    if (coachResult || user?.lastAnalysis) return "revise";
-    return "coach";
-  }, [promptConfirmed, hasOutline, wordCount, coachResult, user?.lastAnalysis]);
 
   // Landing: after profile hydration, open the prompt popup unless this visit
   // already confirmed a writing focus. Re-open when the prompt blob changes.
@@ -5013,15 +5002,14 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     return () => window.clearInterval(id);
   }, []);
 
-  // Restore persisted coach pack after hydration / account switch.
+  // Restore only schema-v2 Essay Review data. Older coach/evaluation payloads
+  // are intentionally ignored and render as an empty Evaluate state.
   useEffect(() => {
-    if (!user?.essayCoachResult) return;
-    const restoredResult = user.essayCoachResult as EssayCoachResult;
-    setCoachResult(restoredResult);
-    setCoachRaw(restoredResult.sentence_suggestions ?? []);
-    setCoachSummary(user.essayCoachSummary ?? null);
-    setCoachUpdatedAt(user.essayCoachUpdatedAt ?? null);
-  }, [user?.email, user?.essayCoachResult, user?.essayCoachSummary, user?.essayCoachUpdatedAt]);
+    const restored = user?.essayReviewResult;
+    setReviewResult(restored?.schema_version === 2 ? restored : null);
+    setReviewUpdatedAt(restored?.schema_version === 2 ? user?.essayReviewUpdatedAt ?? null : null);
+    setReviewDraftAtRun(restored?.schema_version === 2 ? user?.essayReviewDraftAtRun ?? "" : "");
+  }, [user?.email, user?.essayReviewResult, user?.essayReviewUpdatedAt, user?.essayReviewDraftAtRun]);
 
   useEffect(() => {
     if (!panelResizing) return;
@@ -5132,17 +5120,15 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     if (suggestions[0]) requestAnimationFrame(() => editorApiRef.current?.reveal(suggestions[0]));
   }
 
-  function persistCoachResult(result: EssayCoachResult, draftForRun: string) {
+  function persistEssayReview(result: EssayReviewResult, draftForRun: string) {
     const updatedAt = Date.now();
-    setCoachResult(result);
-    setCoachSummary(result.coach_summary ?? null);
-    setCoachWarnings(result.warnings ?? []);
-    setCoachUpdatedAt(updatedAt);
-    setCoachDraftAtRun(draftForRun);
+    setReviewResult(result);
+    setReviewUpdatedAt(updatedAt);
+    setReviewDraftAtRun(draftForRun);
     updateProfile({
-      essayCoachResult: result as unknown as Record<string, unknown>,
-      essayCoachSummary: result.coach_summary ?? undefined,
-      essayCoachUpdatedAt: updatedAt,
+      essayReviewResult: result,
+      essayReviewUpdatedAt: updatedAt,
+      essayReviewDraftAtRun: draftForRun,
     });
   }
 
@@ -5153,7 +5139,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     lastAutoCheckRef.current = draft;
     setBgStatus("Checking grammar and outline coverage…");
     try {
-      const result = await runEssayCoach(buildEssayCoachPayload(user, "auto_check", undefined, essayPrompt));
+      const result = await runEditorCheck(buildEditorCheckPayload(user));
       const coveredIds = result.outline_coverage?.covered_point_ids;
       if (coveredIds) {
         // Intersect with known point ids so a hallucinated id can never tick a box.
@@ -5172,36 +5158,34 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   async function runCoachingSession() {
     if (coachLoading || isEvaluating || !user) return;
     if (!promptConfirmed) {
-      setCoachSummary("Confirm your writing focus first (prompt or scholarship-guided), then run coaching.");
+      setAnalysisStatus("Confirm your writing focus first, then select Evaluate.");
       setPromptPickerOpen(true);
       setActiveTab("outline");
       setPanelOpen(true);
       return;
     }
     if (wordCount < 30) {
-      setCoachSummary("Write at least ~30 words, then run a coaching session.");
+      setAnalysisStatus("Write at least 30 words, then select Evaluate.");
       return;
     }
 
     setIsEvaluating(true);
     setCoachLoading(true);
-    setCoachReady(false);
-    setScoresReady(false);
+    setReviewReady(false);
     setSessionProgress(6);
     setSessionPhase("Cleaning spelling…");
     setMechanicsNote(null);
     setAnalysisStatus(null);
-    setCoachWarnings([]);
+    setReviewWarnings([]);
     setPanelOpen(true);
-    setCoachSummary("Scholar-E is preparing your coaching session…");
 
     try {
-      setSessionPhase("Running coach suggestions and deep evaluation…");
+      setSessionPhase("Running seven criterion reviews…");
       setSessionProgress(28);
 
-      // One backend request owns mechanics and one shared coaching/evaluation
-      // graph. Specialists fan out in parallel, then one evaluator consumes
-      // their reports and projects both UI result packages.
+      // One backend request owns mechanics and one Manager-led review graph.
+      // Seven criterion agents evaluate, simulate the reviewer, score, and
+      // propose one aligned action in parallel.
       const session = await runWorkspaceCoachingSession(buildCoachingSessionPayload(user, essayPrompt));
       const workingDraft = session.cleaned_draft || draft;
       const appliedCount = session.mechanics?.applied_count ?? 0;
@@ -5213,58 +5197,28 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
           : null,
       );
 
-      const coach = session.coach_pack ?? null;
-      const evaluation = session.evaluation ?? null;
-      const gotCoach = !!coach && coach.status !== "error" && session.components?.coach !== "error";
-      const gotScores = !!evaluation && session.components?.evaluation !== "error";
-
-      if (gotCoach && coach) {
-        setCoachReady(true);
-        const coveredIds = coach.outline_coverage?.covered_point_ids;
-        if (coveredIds) {
-          const known = new Set(buildOutlinePoints(user.personalizedOutline).map((p) => p.id));
-          setAutoCovered(new Set(coveredIds.filter((id) => known.has(id))));
-        }
-        setCoachRaw(coach.sentence_suggestions ?? []);
-        persistCoachResult(coach, workingDraft);
-        if (coach.overall_scores && Object.keys(coach.overall_scores).length) {
-          upsertVersion(
-            {
-              coachScores: coach.overall_scores,
-              coachOverall: meanScore(coach.overall_scores) ?? undefined,
-              coachSummary: coach.coach_summary ?? undefined,
-            },
-            workingDraft,
-          );
-        }
+      const review = session.review ?? null;
+      const gotReview = !!review && review.schema_version === 2 && review.status !== "error";
+      const coveredIds = session.outline_coverage?.covered_point_ids;
+      if (coveredIds) {
+        const known = new Set(buildOutlinePoints(user.personalizedOutline).map((p) => p.id));
+        setAutoCovered(new Set(coveredIds.filter((id) => known.has(id))));
       }
 
-      if (gotScores && evaluation) {
-        setScoresReady(true);
-        updateProfile({ lastAnalysis: evaluation });
-      }
+      const combinedWarnings = session.warnings ?? [];
+      setReviewWarnings(Array.from(new Set(combinedWarnings)));
 
-      const combinedWarnings = [...(session.warnings ?? []), ...(coach?.warnings ?? [])];
-      setCoachWarnings(Array.from(new Set(combinedWarnings)));
+      if (!gotReview) throw new Error(combinedWarnings[0] || "The coaching session could not review your draft.");
+      persistEssayReview(review, workingDraft);
+      setReviewReady(true);
 
-      if (!gotCoach && !gotScores) {
-        throw new Error(combinedWarnings[0] || "The coaching session could not analyze your draft.");
-      }
-      if (!gotCoach) {
-        setCoachSummary("Deep evaluation finished, but writing suggestions are temporarily unavailable.");
-        setAnalysisStatus("Deep evaluation completed. Writing-coach feedback is unavailable for this run.");
-      } else if (!gotScores) {
-        setAnalysisStatus("Writing feedback completed. Deep evaluation is unavailable for this run.");
-      }
-
-      setSessionPhase(gotCoach && gotScores ? "Coach suggestions and scores ready…" : "Partial coaching results ready…");
+      setSessionPhase(review?.status === "partial" ? "Partial essay review ready…" : "Essay review ready…");
       setSessionProgress(100);
-      setActiveTab(gotCoach ? "coach" : "evaluation");
+      setActiveTab("coach");
       await new Promise((resolve) => window.setTimeout(resolve, 200));
     } catch (error) {
       console.error("Scholar-E coaching session failed.", error);
-      const message = error instanceof Error ? error.message : "The coaching session could not analyze your draft.";
-      setCoachSummary(message);
+      const message = error instanceof Error ? error.message : "The coaching session could not review your draft.";
       setAnalysisStatus(message);
     } finally {
       setIsEvaluating(false);
@@ -5389,7 +5343,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
 
   function saveAsDraft() {
     if (wordCount < 1) return;
-    upsertVersion({ score: score ?? undefined });
+    upsertVersion({ reviewOverall: score ?? undefined });
   }
 
   function loadExampleEssay() {
@@ -5398,20 +5352,17 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     triggerAutoCheck();
   }
 
-  // When a deep Evaluate (readiness index) completes, attach its scores to the
-  // current draft version so the Progress view can show both metrics per draft.
+  // Attach the canonical criterion scores to the current draft version.
   useEffect(() => {
-    const analysis = user?.lastAnalysis;
-    const idx = analysis?.readiness_index;
-    if (!idx) return;
-    const readinessScores: Record<string, number> = {};
-    for (const [key, value] of Object.entries(idx)) {
-      if (typeof value?.score === "number") readinessScores[key] = value.score;
+    if (!reviewResult?.criteria) return;
+    const reviewScores: Record<string, number> = {};
+    for (const [key, value] of Object.entries(reviewResult.criteria)) {
+      if (typeof value?.score === "number") reviewScores[key] = value.score;
     }
-    if (!Object.keys(readinessScores).length) return;
-    upsertVersion({ readinessScores, readinessOverall: overallEssayScore(analysis) ?? undefined });
+    if (!Object.keys(reviewScores).length) return;
+    upsertVersion({ reviewScores, reviewOverall: reviewResult.overall_score ?? undefined });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.lastAnalysis]);
+  }, [reviewResult]);
 
   return (
     <div className="w-full border-t border-border bg-background">
@@ -5500,7 +5451,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
               className={`ml-0.5 inline-flex items-center gap-1.5 rounded-lg bg-info px-3 py-2 text-[13px] font-medium text-white transition-opacity duration-150 hover:opacity-90 disabled:opacity-60 ${coachLoading || isEvaluating ? "agent-loading" : ""}`}
             >
               {coachLoading || isEvaluating ? <Spinner className="size-4" /> : <Wand2 className="size-4" />}
-              {coachLoading || isEvaluating ? "Coaching…" : "Run coaching session"}
+              {coachLoading || isEvaluating ? "Evaluating…" : "Evaluate"}
             </button>
 
             <Tooltip>
@@ -5628,14 +5579,6 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
 
       <section className="border-b border-border bg-card">
         <div className="mx-auto max-w-[1440px] space-y-3 px-4 py-3 md:px-6">
-          <WorkspaceStageGuide
-            stage={workspaceStage}
-            onChoosePrompt={() => {
-              setPendingPromptIndex(selectedPromptIndex);
-              setPromptPickerOpen(true);
-            }}
-          />
-
           {hasMultiplePrompts && promptConfirmed && (
             <div className="rounded-xl border border-info/20 bg-info/5 p-3">
               <div className="flex items-center justify-between gap-2">
@@ -5767,8 +5710,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
               promptConfirmed={promptConfirmed}
               sessionPhase={sessionPhase}
               sessionProgress={sessionProgress}
-              coachReady={coachReady}
-              scoresReady={scoresReady}
+              reviewReady={reviewReady}
               sessionRunning={isEvaluating}
               suggestions={suggestions}
               onAccept={acceptSuggestion}
@@ -5777,11 +5719,10 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
               onAcceptAllQuickFixes={acceptAllQuickFixes}
               quickFixCount={quickFixSuggestions.length}
               coachLoading={coachLoading}
-              coachSummary={coachSummary}
-              coachWarnings={coachWarnings}
-              coachResult={coachResult}
-              coachUpdatedAt={coachUpdatedAt}
-              coachDraftChanged={!!coachUpdatedAt && draft !== coachDraftAtRun}
+              reviewWarnings={reviewWarnings}
+              reviewResult={reviewResult}
+              reviewUpdatedAt={reviewUpdatedAt}
+              reviewDraftChanged={!!reviewUpdatedAt && draft !== reviewDraftAtRun}
               now={nowTick}
               covered={coveredPoints}
               onToggleCovered={toggleCovered}
@@ -5803,60 +5744,6 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   );
 }
 
-function WorkspaceStageGuide({
-  stage,
-  onChoosePrompt,
-}: {
-  stage: WorkspaceStage;
-  onChoosePrompt?: () => void;
-}) {
-  const stages: Array<{ id: WorkspaceStage; label: string; hint: string }> = [
-    { id: "prompt", label: "1. Prompt", hint: "Confirm a prompt — or continue without one if the scholarship has none" },
-    { id: "outline", label: "2. Outline", hint: "Build an outline adapted to your writing focus" },
-    { id: "draft", label: "3. Draft", hint: "Write against the outline section by section" },
-    { id: "coach", label: "4. Coach", hint: "Run one coaching session for fixes + scores" },
-    { id: "revise", label: "5. Revise", hint: "Apply Coach suggestions, then re-run" },
-  ];
-  const activeIndex = stages.findIndex((item) => item.id === stage);
-  const active = stages[Math.max(0, activeIndex)];
-  return (
-    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-      <div className="flex flex-wrap gap-1.5">
-        {stages.map((item, index) => {
-          const done = index < activeIndex;
-          const current = index === activeIndex;
-          return (
-            <span
-              key={item.id}
-              className={`rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
-                current
-                  ? "bg-info text-white"
-                  : done
-                    ? "bg-success/15 text-success"
-                    : "bg-muted text-muted-foreground"
-              }`}
-            >
-              {item.label}
-            </span>
-          );
-        })}
-      </div>
-      <div className="flex items-center gap-2">
-        <p className="text-[12px] text-muted-foreground">{active?.hint}</p>
-        {stage === "prompt" && onChoosePrompt && (
-          <button
-            type="button"
-            onClick={onChoosePrompt}
-            className="text-[12px] font-semibold text-info hover:underline"
-          >
-            Open prompt picker
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
-
 function EssayWorkspacePanel({
   activeTab,
   onTabChange,
@@ -5866,8 +5753,7 @@ function EssayWorkspacePanel({
   promptConfirmed,
   sessionPhase,
   sessionProgress,
-  coachReady,
-  scoresReady,
+  reviewReady,
   sessionRunning,
   suggestions,
   onAccept,
@@ -5876,11 +5762,10 @@ function EssayWorkspacePanel({
   onAcceptAllQuickFixes,
   quickFixCount,
   coachLoading,
-  coachSummary,
-  coachWarnings,
-  coachResult,
-  coachUpdatedAt,
-  coachDraftChanged,
+  reviewWarnings,
+  reviewResult,
+  reviewUpdatedAt,
+  reviewDraftChanged,
   now,
   covered,
   onToggleCovered,
@@ -5893,8 +5778,7 @@ function EssayWorkspacePanel({
   promptConfirmed: boolean;
   sessionPhase: string;
   sessionProgress: number;
-  coachReady: boolean;
-  scoresReady: boolean;
+  reviewReady: boolean;
   sessionRunning: boolean;
   suggestions: Suggestion[];
   onAccept: (s: Suggestion) => void;
@@ -5903,11 +5787,10 @@ function EssayWorkspacePanel({
   onAcceptAllQuickFixes: () => void;
   quickFixCount: number;
   coachLoading: boolean;
-  coachSummary: string | null;
-  coachWarnings: string[];
-  coachResult: EssayCoachResult | null;
-  coachUpdatedAt: number | null;
-  coachDraftChanged: boolean;
+  reviewWarnings: string[];
+  reviewResult: EssayReviewResult | null;
+  reviewUpdatedAt: number | null;
+  reviewDraftChanged: boolean;
   now: number;
   covered: Set<string>;
   onToggleCovered: (id: string) => void;
@@ -5957,8 +5840,7 @@ function EssayWorkspacePanel({
 
   const tabs: Array<{ id: WorkspaceTab; label: string; icon: typeof ListChecks; count?: number }> = [
     { id: "outline", label: "Outline", icon: ListChecks },
-    { id: "coach", label: "Coach", icon: Wand2 },
-    { id: "evaluation", label: "Evaluation", icon: Gauge },
+    { id: "coach", label: "Essay Review", icon: Wand2 },
     { id: "highlights", label: "Fixes", icon: Sparkles, count: suggestions.length },
   ];
 
@@ -6015,17 +5897,15 @@ function EssayWorkspacePanel({
           />
         )}
         {activeTab === "coach" && (
-          <WorkspaceCoachTab
-            result={coachResult}
-            loading={coachLoading && !coachReady}
-            coachSummary={coachSummary}
-            coachWarnings={coachWarnings}
-            updatedAt={coachUpdatedAt}
-            draftChanged={coachDraftChanged}
+          <WorkspaceEssayReviewTab
+            review={reviewResult}
+            loading={isEvaluating && !reviewReady}
+            warnings={reviewWarnings}
+            updatedAt={reviewUpdatedAt}
+            draftChanged={reviewDraftChanged}
             now={now}
           />
         )}
-        {activeTab === "evaluation" && <WorkspaceEvaluationTab isEvaluating={isEvaluating && !scoresReady} />}
         {activeTab === "highlights" && (
           <WorkspaceHighlightsTab
             isEvaluating={isEvaluating}
@@ -6036,8 +5916,6 @@ function EssayWorkspacePanel({
             onAcceptAllQuickFixes={onAcceptAllQuickFixes}
             quickFixCount={quickFixCount}
             coachLoading={coachLoading}
-            coachSummary={coachSummary}
-            coachWarnings={coachWarnings}
           />
         )}
       </div>
@@ -6046,11 +5924,7 @@ function EssayWorkspacePanel({
           <div className="flex items-center justify-between gap-3 text-[12px] font-medium text-muted-foreground">
             <span className="min-w-0 leading-snug">
               {sessionPhase
-                || (scoresReady && !coachReady
-                  ? "Scores ready…"
-                  : !scoresReady && coachReady
-                    ? "Coach suggestions ready…"
-                    : "Running coaching session…")}
+                || (reviewReady ? "Essay review ready…" : "Running essay review…")}
             </span>
             <span className="shrink-0 tabular-nums text-foreground">{sessionProgress}%</span>
           </div>
@@ -6431,51 +6305,6 @@ function PanelEmpty({ label, message }: { label: string; message: string }) {
   );
 }
 
-function ReadinessRow({ label, value }: { label: string; value: AnalysisScore }) {
-  const [open, setOpen] = useState(false);
-  const s = typeof value.score === "number" ? value.score : 0;
-  const hasDetail = !!value.coaching?.trim();
-  return (
-    <div className="rounded-lg border border-border bg-background p-3">
-      <button
-        type="button"
-        onClick={() => hasDetail && setOpen((o) => !o)}
-        className="flex w-full items-center justify-between gap-2 text-left"
-        aria-expanded={open}
-      >
-        <span className="flex items-center gap-1.5 text-[13px] font-medium">
-          {label}
-          {hasDetail && <ChevronDown className={`size-3.5 text-muted-foreground transition-transform duration-200 ${open ? "rotate-180" : ""}`} />}
-        </span>
-        <span className="text-[12px] font-semibold tabular-nums" style={{ color: scoreColor(s) }}>
-          {s}
-        </span>
-      </button>
-      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-border">
-        <div className="h-full rounded-full transition-all duration-500" style={{ width: `${s}%`, background: scoreColor(s) }} />
-      </div>
-      {value.level && <div className="mt-1.5 text-[11px] text-muted-foreground">{value.level}</div>}
-      {open && hasDetail && (
-        <div className="mt-2 border-t border-border pt-2 text-[12px] leading-relaxed text-muted-foreground animate-in fade-in slide-in-from-top-1 duration-150">
-          {value.coaching}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function EvaluationSkeleton() {
-  return (
-    <div className="space-y-3">
-      <Skeleton className="h-4 w-40" />
-      <Skeleton className="h-16 w-full rounded-xl" />
-      {[0, 1, 2, 3, 4].map((i) => (
-        <Skeleton key={i} className="h-14 w-full rounded-lg" />
-      ))}
-    </div>
-  );
-}
-
 function HighlightsSkeleton() {
   return (
     <div className="space-y-3">
@@ -6548,451 +6377,196 @@ function CoachList({ label, items, tone, icon: Icon }: { label: string; items?: 
   );
 }
 
-function CoachAccordion({
-  id,
-  title,
-  score,
-  open,
-  onToggle,
-  icon: Icon,
-  children,
-}: {
-  id: string;
-  title: string;
-  score?: number;
-  open: boolean;
-  onToggle: (id: string) => void;
-  icon?: typeof Check;
-  children: React.ReactNode;
-}) {
-  const hasScore = typeof score === "number";
+function CriterionReviewCard({ criterion }: { criterion: EssayCriterionReview }) {
+  const [open, setOpen] = useState(false);
+  const score = typeof criterion.score === "number" ? criterion.score : null;
+  const assessment = criterion.assessment;
+  const reviewer = criterion.reviewer_feedback;
+  const action = criterion.priority_action;
+  const evidence = assessment?.essay_evidence ?? [];
+
   return (
     <div className="overflow-hidden rounded-xl border border-border bg-background">
       <button
         type="button"
-        onClick={() => onToggle(id)}
+        onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
-        className="flex w-full items-center gap-2 bg-accent/40 px-3 py-2.5 text-left transition-colors duration-150 hover:bg-accent/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/30"
+        className="flex w-full items-center gap-3 bg-accent/30 px-3 py-3 text-left transition-colors hover:bg-accent/60"
       >
-        {Icon && <Icon className="size-4 text-info" />}
-        <span className="min-w-0 flex-1 text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">{title}</span>
-        <span
-          className="shrink-0 text-[12px] font-semibold tabular-nums text-muted-foreground"
-          style={hasScore ? { color: scoreColor(score) } : undefined}
-        >
-          {hasScore ? `${score}/100` : "Not scored"}
-        </span>
-        <ChevronDown className={`size-4 shrink-0 text-muted-foreground transition-transform duration-200 ${open ? "rotate-180" : ""}`} />
-      </button>
-      {open && <div className="space-y-2.5 p-3">{children}</div>}
-    </div>
-  );
-}
-
-function CoachScoreBar({ label, score }: { label: string; score: number }) {
-  return (
-    <div>
-      <div className="flex items-center justify-between text-[12px]">
-        <span className="font-medium">{label}</span>
-        <span className="font-semibold tabular-nums" style={{ color: scoreColor(score) }}>{score}</span>
-      </div>
-      <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-border">
-        <div className="h-full rounded-full transition-all duration-500" style={{ width: `${score}%`, background: scoreColor(score) }} />
-      </div>
-    </div>
-  );
-}
-
-function RevisionPriorityCard({ item, index }: { item: RevisionPriority; index: number }) {
-  const impact = (item.impact ?? "").toLowerCase();
-  const impactClass = impact.includes("high")
-    ? "bg-destructive/10 text-destructive"
-    : impact.includes("low")
-      ? "bg-success/10 text-success"
-      : "bg-warning/10 text-warning";
-  return (
-    <div className="rounded-lg border border-border bg-background p-3">
-      <div className="flex items-start gap-2">
-        <span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-info text-[11px] font-bold text-white">{index + 1}</span>
         <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-semibold leading-snug">{item.priority}</div>
-          {item.why_it_matters && <div className="mt-0.5 text-[12px] leading-relaxed text-muted-foreground">{item.why_it_matters}</div>}
-          {item.how_to_fix && (
-            <div className="mt-1.5 text-[12px] leading-relaxed text-foreground/85">
-              <span className="font-medium text-foreground">How: </span>
-              {item.how_to_fix}
-            </div>
+          <div className="text-[13px] font-semibold">{criterion.label || labelize(criterion.criterion ?? "criterion")}</div>
+          <div className="mt-0.5 text-[11px] text-muted-foreground">
+            Weight {criterion.weight ?? 0}% · {criterion.level || "Not scored"}
+          </div>
+        </div>
+        <span className="text-[15px] font-semibold tabular-nums" style={score != null ? { color: scoreColor(score) } : undefined}>
+          {score != null ? `${score}/100` : "Unavailable"}
+        </span>
+        <ChevronDown className={`size-4 shrink-0 text-muted-foreground transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+
+      {open && (
+        <div className="space-y-3 border-t border-border p-3">
+          {criterion.rubric?.description && (
+            <div className="text-[12px] leading-relaxed text-muted-foreground">{criterion.rubric.description}</div>
           )}
-          {(item.impact || item.estimated_effort) && (
-            <div className="mt-2 flex flex-wrap gap-1">
-              {item.impact && <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${impactClass}`}>{item.impact} impact</span>}
-              {item.estimated_effort && <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{item.estimated_effort}</span>}
-            </div>
+
+          {(assessment?.what_is_working || assessment?.main_gap || evidence.length > 0) && (
+            <section className="space-y-2 rounded-lg border border-border/70 p-3">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Specialist assessment</div>
+              {assessment?.what_is_working && (
+                <div className="text-[12px] leading-relaxed"><span className="font-semibold text-success">Working: </span>{assessment.what_is_working}</div>
+              )}
+              {assessment?.main_gap && (
+                <div className="text-[12px] leading-relaxed"><span className="font-semibold text-warning">Main gap: </span>{assessment.main_gap}</div>
+              )}
+              {!!evidence.length && <CoachList label="Essay evidence" items={evidence} tone="muted" />}
+            </section>
+          )}
+
+          {(reviewer?.likely_reaction || reviewer?.main_concern) && (
+            <section className="space-y-2 rounded-lg border border-info/20 bg-info/5 p-3">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-info">Scholarship reviewer feedback</div>
+              {reviewer?.likely_reaction && <p className="text-[12px] leading-relaxed text-foreground/90">{reviewer.likely_reaction}</p>}
+              {reviewer?.main_concern && (
+                <p className="text-[12px] leading-relaxed"><span className="font-semibold">Main concern: </span>{reviewer.main_concern}</p>
+              )}
+            </section>
+          )}
+
+          {action && (
+            <section className="space-y-2 rounded-lg border border-success/20 bg-success/5 p-3">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-success">Priority revision action</div>
+              {action.title && <div className="text-[13px] font-semibold">{action.title}</div>}
+              {action.location && <p className="text-[12px] leading-relaxed"><span className="font-semibold">Where: </span>{action.location}</p>}
+              {action.how_to_fix && <p className="text-[12px] leading-relaxed"><span className="font-semibold">How to fix it: </span>{action.how_to_fix}</p>}
+              {action.why_this_addresses_the_reviewer && (
+                <p className="text-[12px] leading-relaxed text-muted-foreground"><span className="font-semibold text-foreground">Why this works: </span>{action.why_this_addresses_the_reviewer}</p>
+              )}
+              {action.evidence_safety && (
+                <p className="text-[11px] leading-relaxed text-muted-foreground">Evidence guardrail: {action.evidence_safety}</p>
+              )}
+            </section>
           )}
         </div>
-      </div>
+      )}
     </div>
   );
 }
 
-function WorkspaceCoachTab({
-  result,
-  loading,
-  coachSummary,
-  coachWarnings,
+function UnifiedEssayReview({
+  review,
+  warnings,
   updatedAt,
   draftChanged,
   now,
 }: {
-  result: EssayCoachResult | null;
-  loading: boolean;
-  coachSummary: string | null;
-  coachWarnings: string[];
+  review: EssayReviewResult;
+  warnings: string[];
   updatedAt: number | null;
   draftChanged: boolean;
   now: number;
 }) {
-  const [showAllPriorities, setShowAllPriorities] = useState(false);
-  const [showAllParagraphFeedback, setShowAllParagraphFeedback] = useState(false);
-  const [openCoachSections, setOpenCoachSections] = useState<Set<string>>(() => new Set());
-  const hasContent = <T extends object>(obj: T | undefined | null): T | undefined =>
-    obj && Object.values(obj).some((v) => (Array.isArray(v) ? v.length > 0 : typeof v === "number" ? v > 0 : !!v))
-      ? obj
-      : undefined;
-  const alignment = hasContent(result?.alignment);
-  const align = alignment ? undefined : hasContent(result?.prompt_alignment);
-  const evidence = hasContent(result?.evidence_strength);
-  // Older targeted responses still use the two legacy sections. A unified
-  // coaching session supplies Evidence Strength and suppresses both duplicates.
-  const ground = evidence ? undefined : hasContent(result?.profile_grounding);
-  const narrativeStructure = hasContent(result?.narrative_structure);
-  const insight = hasContent(result?.insight);
-  const structure = narrativeStructure ? undefined : hasContent(result?.structure_feedback);
-  const specificity = evidence ? undefined : hasContent(result?.specificity_feedback);
-  const grammar = hasContent(result?.grammar_feedback);
-  const clarityConcision = hasContent(result?.clarity_concision_feedback);
-  const tone = hasContent(result?.tone_feedback);
-  const priorities = result?.revision_priorities ?? [];
-  const visiblePriorities = showAllPriorities ? priorities : priorities.slice(0, 2);
-  const hiddenPriorityCount = Math.max(0, priorities.length - 2);
-  const quickFixes = result?.quick_fixes ?? [];
-  const deeperTasks = result?.deeper_revision_tasks ?? [];
-  const scoreEntries = Object.entries(result?.overall_scores ?? {});
-  const paragraphFeedback = narrativeStructure?.paragraph_feedback ?? structure?.paragraph_feedback ?? [];
-  const visibleParagraphFeedback = showAllParagraphFeedback ? paragraphFeedback : paragraphFeedback.slice(0, 2);
-  const hiddenParagraphFeedbackCount = Math.max(0, paragraphFeedback.length - 2);
-  const hasData =
-    !loading &&
-    !!(result && (alignment || align || evidence || ground || narrativeStructure || insight || structure || specificity || tone || grammar || clarityConcision || priorities.length || scoreEntries.length));
-
-  function toggleCoachSection(id: string) {
-    setOpenCoachSections((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
+  const { user } = useUser();
+  const criteria = ESSAY_REVIEW_DIMENSIONS
+    .map((key) => review.criteria?.[key])
+    .filter((entry): entry is EssayCriterionReview => !!entry);
+  const score = typeof review.overall_score === "number" ? review.overall_score : null;
+  const scoredVersions = (user?.drafts ?? []).filter((version) => typeof version.reviewOverall === "number");
+  const managerCriteria = review.manager_plan?.criteria ?? {};
 
   return (
     <div className="space-y-3">
-      <div className="flex items-start gap-3">
+      <div>
+        <PanelLabel>Essay Review</PanelLabel>
+        <div className="mt-1 text-[12px] text-muted-foreground">Last updated: {relativeTimeLabel(updatedAt, now)}</div>
+        {draftChanged && <div className="mt-1 text-[12px] font-medium text-warning">Essay changed since this review.</div>}
+      </div>
+
+      <div className="flex items-center gap-3 rounded-xl border border-border bg-background p-3">
+        <ScoreRing score={score} size={58} stroke={4} />
         <div className="min-w-0">
-          <PanelLabel>Coach</PanelLabel>
-          <div className="mt-1 text-[12px] text-muted-foreground">
-            Last updated: {relativeTimeLabel(updatedAt, now)}
+          <div className="text-[13px] font-semibold">Overall essay score</div>
+          <div className="text-[12px] text-muted-foreground">
+            {score != null ? `${levelWord(score)} · weighted for this scholarship and prompt` : "A complete score is unavailable"}
           </div>
-          {draftChanged && (
-            <div className="mt-1 text-[12px] font-medium text-warning">
-              Essay changed since last coach run.
-            </div>
-          )}
         </div>
       </div>
 
-      {coachSummary && (
-        <div className="rounded-xl border border-info/20 bg-info/5 p-3 text-[13px] leading-relaxed text-foreground/85">
-          {coachSummary}
+      {review.manager_plan?.manager_summary && (
+        <div className="rounded-xl border border-info/20 bg-info/5 p-3 text-[12px] leading-relaxed text-foreground/85">
+          {review.manager_plan.manager_summary}
         </div>
       )}
 
-      {loading && <CoachSkeleton />}
-
-      {!loading && !hasData && !coachSummary && (
-        <div className="rounded-xl border border-dashed border-border bg-background p-4 text-[13px] leading-relaxed text-muted-foreground">
-          Run a coaching session to check how well your essay answers the scholarship prompt and whether it's grounded in your real profile.
-        </div>
-      )}
-
-      {!!coachWarnings.length && (
-        <div className="rounded-xl border border-warning/25 bg-warning/5 p-3">
-          <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-warning">Coaching notes</div>
-          <MiniList items={coachWarnings} />
-        </div>
-      )}
-
-      {!!priorities.length && (
-        <div className="space-y-2">
-          <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Top revision priorities</div>
-          {visiblePriorities.map((p, i) => (
-            <RevisionPriorityCard key={i} item={p} index={i} />
-          ))}
-          {hiddenPriorityCount > 0 && (
-            <button
-              type="button"
-              onClick={() => setShowAllPriorities((open) => !open)}
-              className="inline-flex items-center rounded-md px-2 py-1 text-[12px] font-semibold text-info transition-colors hover:bg-info/10 hover:text-info"
-            >
-              {showAllPriorities ? "Show less ▲" : `Show ${hiddenPriorityCount} more ▼`}
-            </button>
-          )}
-        </div>
-      )}
-
-      {!!quickFixes.length && (
-        <div className="rounded-xl border border-success/20 bg-success/5 p-3">
-          <CoachList label="Quick fixes" items={quickFixes} tone="success" icon={Check} />
-        </div>
-      )}
-
-      {!!deeperTasks.length && (
-        <div className="rounded-xl border border-info/20 bg-info/5 p-3">
-          <CoachList label="Deeper revision tasks" items={deeperTasks} tone="info" />
-        </div>
-      )}
-
-      {!!scoreEntries.length && (
-        <div className="space-y-2.5 rounded-xl border border-border bg-background p-3">
-          <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Scores</div>
-          {scoreEntries.map(([key, val]) => (
-            <CoachScoreBar key={key} label={labelize(key)} score={typeof val === "number" ? val : 0} />
-          ))}
-        </div>
-      )}
-
-      {alignment && (
-        <CoachAccordion id="alignment" title="Alignment (Prompt + Scholarship Values) Coach" score={alignment.alignment_score} open={openCoachSections.has("alignment")} onToggle={toggleCoachSection}>
-          {alignment.fit_summary && (
-            <div className="rounded-md bg-info/10 px-2.5 py-2 text-[12px] leading-relaxed text-foreground/85">
-              {alignment.fit_summary}
-            </div>
-          )}
-          <CoachList label="Prompt parts covered" items={alignment.covered_prompt_parts} tone="success" icon={Check} />
-          <CoachList label="Prompt parts weakly covered" items={alignment.weakly_covered_prompt_parts} tone="warning" />
-          <CoachList label="Prompt parts missing" items={alignment.missing_prompt_parts} tone="danger" />
-          <CoachList label="What this scholarship values" items={alignment.stated_scholarship_values} tone="muted" />
-          <CoachList label="What reviewers appear to evaluate" items={alignment.actual_evaluation_focus} tone="muted" />
-          <CoachList label="Scholarship values addressed" items={alignment.addressed_scholarship_values} tone="success" icon={Check} />
-          <CoachList label="Values missing or weak" items={alignment.weak_or_missing_scholarship_values} tone="warning" />
-          <CoachList label="Specific student-to-scholarship connections" items={alignment.student_fit_connections} tone="info" />
-          <CoachList label="Generic or unsupported fit claims" items={alignment.generic_or_unsupported_fit_claims} tone="danger" />
-          <CoachList label="Notes" items={alignment.comments} tone="muted" />
-          <CoachList label="Revision tasks" items={alignment.revision_tasks} tone="info" />
-        </CoachAccordion>
-      )}
-
-      {align && (
-        <CoachAccordion id="alignment" title="Prompt Alignment" score={align.alignment_score} open={openCoachSections.has("alignment")} onToggle={toggleCoachSection}>
-          <CoachList label="Covered" items={align.covered_requirements} tone="success" icon={Check} />
-          <CoachList label="Weakly covered" items={align.weakly_covered_requirements} tone="warning" />
-          <CoachList label="Missing" items={align.missing_requirements} tone="danger" />
-          <CoachList label="Notes" items={align.comments} tone="muted" />
-          <CoachList label="Revision tasks" items={align.revision_tasks} tone="info" />
-        </CoachAccordion>
-      )}
-
-      {ground && (
-        <CoachAccordion id="grounding" title="Profile Grounding" score={ground.grounding_score} open={openCoachSections.has("grounding")} onToggle={toggleCoachSection}>
-          <CoachList label="Supported by your profile" items={ground.supported_claims} tone="success" icon={Check} />
-          <CoachList label="Unsupported — verify or soften" items={ground.unsupported_or_risky_claims} tone="danger" />
-          <CoachList label="Strong evidence you haven't used" items={ground.unused_relevant_profile_evidence} tone="info" />
-          <CoachList label="Recommendations" items={ground.recommendations} tone="muted" />
-        </CoachAccordion>
-      )}
-
-      {evidence && (
-        <CoachAccordion id="evidence-strength" title="Evidence Strength Coach" score={evidence.evidence_strength_score} open={openCoachSections.has("evidence-strength")} onToggle={toggleCoachSection}>
-          <CoachList label="Supported by your draft or profile" items={evidence.supported_claims} tone="success" icon={Check} />
-          <CoachList label="Unsupported — verify or soften" items={evidence.unsupported_or_risky_claims} tone="danger" />
-          <CoachList label="Details that need verification" items={evidence.invented_or_unverifiable_details} tone="danger" />
-          <CoachList label="Vague statements" items={evidence.vague_statements} tone="warning" />
-          <CoachList label="Add concrete detail here" items={evidence.places_to_add_detail} tone="info" />
-          <CoachList label="Impact opportunities" items={evidence.impact_opportunities} tone="success" />
-          <CoachList label="Strong profile evidence you haven't used" items={evidence.unused_relevant_profile_evidence} tone="info" />
-          {evidence.recommended_experience_to_feature && (
-            <div className="rounded-md bg-info/10 px-2.5 py-2 text-[12px] leading-relaxed text-foreground/85">
-              <span className="font-semibold">Strongest experience to consider: </span>
-              {evidence.recommended_experience_to_feature}
-            </div>
-          )}
-          <CoachList label="Questions to answer with real details" items={evidence.recommended_questions} tone="muted" />
-          <CoachList label="Recommendations" items={evidence.recommendations} tone="muted" />
-        </CoachAccordion>
-      )}
-
-      {narrativeStructure && (
-        <CoachAccordion id="narrative-structure" title="Narrative Structure, Flow & Coherence Coach" score={narrativeStructure.narrative_structure_score} open={openCoachSections.has("narrative-structure")} onToggle={toggleCoachSection}>
-          {narrativeStructure.overall_narrative_assessment && (
-            <div className="rounded-md bg-info/10 px-2.5 py-2 text-[12px] leading-relaxed text-foreground/85">
-              {narrativeStructure.overall_narrative_assessment}
-            </div>
-          )}
-          {narrativeStructure.biggest_narrative_gap && (
-            <div className="rounded-md bg-warning/10 px-2.5 py-2 text-[12px] leading-relaxed text-foreground/85">
-              <span className="font-semibold">Biggest narrative gap: </span>
-              {narrativeStructure.biggest_narrative_gap}
-            </div>
-          )}
-          <div className="space-y-2 rounded-md border border-border/70 p-2.5">
-            <CoachScoreBar label="Structure & flow" score={narrativeStructure.structure_flow_score ?? 0} />
-            <CoachScoreBar label="Logical coherence" score={narrativeStructure.coherence_score ?? 0} />
-            <CoachScoreBar label="Narrative arc" score={narrativeStructure.narrative_arc_score ?? 0} />
+      {Object.keys(managerCriteria).length > 0 && (
+        <div className="rounded-xl border border-border bg-background p-3">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Tailored criterion weights</div>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {Object.entries(managerCriteria).map(([key, value]) => (
+              <span key={key} title={value.weight_rationale} className="rounded-full bg-muted px-2 py-1 text-[11px] font-medium text-foreground/80">
+                {value.label || EVALUATION_DIMENSION_LABELS[key] || labelize(key)} {value.weight ?? 0}%
+              </span>
+            ))}
           </div>
-          {!!narrativeStructure.arc_progression?.length && (
-            <div className="space-y-1.5">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">Narrative progression</div>
-              {narrativeStructure.arc_progression.map((stage, i) => (
-                <div key={`${stage.stage ?? "stage"}-${i}`} className="rounded-md border border-border/70 p-2">
-                  <div className="text-[12px] font-semibold capitalize">
-                    {stage.stage || `Stage ${i + 1}`}
-                    {stage.status && <span className="ml-1 font-normal text-muted-foreground">· {stage.status}</span>}
-                  </div>
-                  {stage.evidence && <div className="mt-0.5 text-[12px] text-success">＋ {stage.evidence}</div>}
-                  {stage.issue && <div className="mt-0.5 text-[12px] text-warning">！ {stage.issue}</div>}
-                  {stage.suggestion && <div className="mt-0.5 text-[12px] leading-relaxed text-muted-foreground">{stage.suggestion}</div>}
-                </div>
-              ))}
-            </div>
-          )}
-          {!!paragraphFeedback.length && (
-            <div className="space-y-1.5">
-              {visibleParagraphFeedback.map((pf, i) => (
-                <div key={i} className="rounded-md border border-border/70 p-2">
-                  <div className="text-[12px] font-semibold">
-                    Paragraph {pf.paragraph_number || i + 1}
-                    {pf.priority ? <span className="ml-1 font-normal text-muted-foreground">· {pf.priority}</span> : null}
-                  </div>
-                  {pf.strength && <div className="mt-0.5 text-[12px] text-success">＋ {pf.strength}</div>}
-                  {pf.main_issue && <div className="mt-0.5 text-[12px] text-warning">！ {pf.main_issue}</div>}
-                  {pf.suggestion && <div className="mt-0.5 text-[12px] leading-relaxed text-muted-foreground">{pf.suggestion}</div>}
-                </div>
-              ))}
-              {hiddenParagraphFeedbackCount > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setShowAllParagraphFeedback((open) => !open)}
-                  className="inline-flex items-center rounded-md px-2 py-1 text-[12px] font-semibold text-info transition-colors hover:bg-info/10 hover:text-info"
-                  aria-expanded={showAllParagraphFeedback}
-                >
-                  {showAllParagraphFeedback ? "Show less ▲" : `Show ${hiddenParagraphFeedbackCount} more ▼`}
-                </button>
-              )}
-            </div>
-          )}
-          <CoachList label="Strong connections to preserve" items={narrativeStructure.logical_connections_to_preserve} tone="success" icon={Check} />
-          <CoachList label="Transition and flow issues" items={narrativeStructure.transition_and_flow_issues} tone="warning" />
-          <CoachList label="Coherence issues" items={narrativeStructure.coherence_issues} tone="warning" />
-          <CoachList label="Contradictions or timeline issues" items={narrativeStructure.contradictions_or_timeline_issues} tone="danger" />
-          <CoachList label="Missing reasoning" items={narrativeStructure.missing_reasoning} tone="danger" />
-          <CoachList label="Suggested reordering" items={narrativeStructure.recommended_reordering} tone="info" />
-          <CoachList label="Revision tasks" items={narrativeStructure.revision_tasks} tone="muted" />
-        </CoachAccordion>
+        </div>
       )}
 
-      {insight && (
-        <CoachAccordion id="insight" title="Insight (Depth + Meaning + Reflection) Coach" score={insight.insight_score} open={openCoachSections.has("insight")} onToggle={toggleCoachSection}>
-          <CoachList label="Meaningful reflections already working" items={insight.meaningful_reflections} tone="success" icon={Check} />
-          <CoachList label="Surface-level or generic reflections" items={insight.surface_level_or_generic_reflections} tone="warning" />
-          <CoachList label="Lessons, realizations, or questions" items={insight.lessons_realizations_or_questions} tone="info" />
-          <CoachList label="Changes in mindset or behavior" items={insight.changes_in_mindset_or_behavior} tone="info" />
-          <CoachList label="Changes in values, goals, or responsibility" items={insight.changes_in_values_goals_or_responsibility} tone="info" />
-          <CoachList label="Why it mattered to the student" items={insight.significance_to_self} tone="success" />
-          <CoachList label="Why it mattered to others or a community" items={insight.significance_to_others_or_community} tone="success" />
-          <CoachList label="Connections to future direction" items={insight.future_direction_connections} tone="info" />
-          <CoachList label="Meaning or reflection still missing" items={insight.missing_meaning_or_reflection} tone="danger" />
-          <CoachList label="Questions to deepen the student's reflection" items={insight.recommended_reflection_questions} tone="muted" />
-          <CoachList label="Revision tasks" items={insight.revision_tasks} tone="muted" />
-        </CoachAccordion>
+      {!!warnings.length && (
+        <div className="rounded-xl border border-warning/25 bg-warning/5 p-3">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-warning">Review notes</div>
+          <MiniList items={warnings} />
+        </div>
       )}
 
-      {structure && (
-        <CoachAccordion id="structure-flow" title="Structure & Flow" score={structure.structure_score} open={openCoachSections.has("structure-flow")} onToggle={toggleCoachSection}>
-          {!!paragraphFeedback.length && (
-            <div className="space-y-1.5">
-              {visibleParagraphFeedback.map((pf, i) => (
-                <div key={i} className="rounded-md border border-border/70 p-2">
-                  <div className="text-[12px] font-semibold">
-                    Paragraph {pf.paragraph_number || i + 1}
-                    {pf.priority ? <span className="ml-1 font-normal text-muted-foreground">· {pf.priority}</span> : null}
-                  </div>
-                  {pf.strength && <div className="mt-0.5 text-[12px] text-success">＋ {pf.strength}</div>}
-                  {pf.main_issue && <div className="mt-0.5 text-[12px] text-warning">！ {pf.main_issue}</div>}
-                  {pf.suggestion && <div className="mt-0.5 text-[12px] leading-relaxed text-muted-foreground">{pf.suggestion}</div>}
-                </div>
-              ))}
-              {hiddenParagraphFeedbackCount > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setShowAllParagraphFeedback((open) => !open)}
-                  className="inline-flex items-center rounded-md px-2 py-1 text-[12px] font-semibold text-info transition-colors hover:bg-info/10 hover:text-info"
-                  aria-expanded={showAllParagraphFeedback}
-                >
-                  {showAllParagraphFeedback ? "Show less ▲" : `Show ${hiddenParagraphFeedbackCount} more ▼`}
-                </button>
-              )}
-            </div>
-          )}
-          <CoachList label="Flow issues" items={structure.flow_issues} tone="warning" />
-          <CoachList label="Suggested reordering" items={structure.recommended_reordering} tone="info" />
-          <CoachList label="Structure tasks" items={structure.revision_tasks} tone="muted" />
-        </CoachAccordion>
-      )}
+      <div className="space-y-2">
+        {criteria.map((criterion) => <CriterionReviewCard key={criterion.criterion || criterion.label} criterion={criterion} />)}
+      </div>
 
-      {specificity && (
-        <CoachAccordion id="specificity" title="Specificity & Impact" score={specificity.specificity_score} open={openCoachSections.has("specificity")} onToggle={toggleCoachSection}>
-          <CoachList label="Vague statements" items={specificity.vague_statements} tone="warning" />
-          <CoachList label="Add concrete detail here" items={specificity.places_to_add_detail} tone="info" />
-          <CoachList label="Impact opportunities" items={specificity.impact_opportunities} tone="success" />
-          <CoachList label="Questions to answer" items={specificity.recommended_questions} tone="muted" />
-        </CoachAccordion>
-      )}
-
-      {clarityConcision && (
-        <CoachAccordion id="clarity-concision" title="Clarity & Concision Coach" score={clarityConcision.clarity_concision_score} open={openCoachSections.has("clarity-concision")} onToggle={toggleCoachSection}>
-          <CoachList label="Clear and direct wording to preserve" items={clarityConcision.clear_and_direct_sentences} tone="success" icon={Check} />
-          <CoachList label="Filler or repetition" items={clarityConcision.filler_or_repetition} tone="warning" />
-          <CoachList label="Wordiness" items={clarityConcision.wordiness} tone="warning" />
-          <CoachList label="Unclear phrasing" items={clarityConcision.unclear_phrasing} tone="danger" />
-          <CoachList label="Tangled sentence structure" items={clarityConcision.tangled_sentence_structure} tone="danger" />
-          <CoachList label="Revision tasks" items={clarityConcision.revision_tasks} tone="info" />
-        </CoachAccordion>
-      )}
-
-      {tone && (
-        <CoachAccordion id="tone" title="Tone & Authenticity Coach" score={tone.authenticity_score} open={openCoachSections.has("tone")} onToggle={toggleCoachSection}>
-          <CoachList label="Tone quality notes" items={tone.tone_quality_notes} tone="info" />
-          <CoachList label="Voice worth keeping" items={tone.voice_preservation_notes} tone="success" icon={Check} />
-          <CoachList label="AI-like phrases" items={tone.ai_like_phrases} tone="danger" />
-          <CoachList label="Generic phrases" items={tone.generic_phrases} tone="warning" />
-          <CoachList label="Overly polished or corporate phrases" items={tone.overly_polished_or_corporate_phrases} tone="warning" />
-          <CoachList label="Formulaic or performative phrases" items={tone.formulaic_or_performative_phrases} tone="warning" />
-          <CoachList label="Tone suggestions" items={tone.tone_improvement_suggestions} tone="info" />
-        </CoachAccordion>
-      )}
-
-      {grammar && (
-        <CoachAccordion id="grammar" title="Grammar Coach" score={grammar.grammar_score} open={openCoachSections.has("grammar")} onToggle={toggleCoachSection}>
-          <CoachList label="Spelling" items={grammar.spelling_issues} tone="danger" />
-          <CoachList label="Punctuation" items={grammar.punctuation_issues} tone="warning" />
-          <CoachList label="Capitalization" items={grammar.capitalization_issues} tone="warning" />
-          <CoachList label="Verb tense" items={grammar.verb_tense_issues} tone="warning" />
-          <CoachList label="Agreement" items={grammar.agreement_issues} tone="warning" />
-          <CoachList label="Other grammar issues" items={grammar.other_grammar_issues} tone="danger" />
-          <CoachList label="Sentence-level correctness" items={grammar.sentence_level_correctness_issues} tone="danger" />
-          <CoachList label="Revision tasks" items={grammar.revision_tasks} tone="info" />
-        </CoachAccordion>
-      )}
+      {scoredVersions.length > 0 && <ProgressCard versions={scoredVersions} />}
     </div>
+  );
+}
+
+function WorkspaceEssayReviewTab({
+  review,
+  loading,
+  warnings,
+  updatedAt,
+  draftChanged,
+  now,
+}: {
+  review: EssayReviewResult | null;
+  loading: boolean;
+  warnings: string[];
+  updatedAt: number | null;
+  draftChanged: boolean;
+  now: number;
+}) {
+  if (loading) {
+    return (
+      <div className="space-y-3">
+        <PanelLabel>Essay Review</PanelLabel>
+        <CoachSkeleton />
+      </div>
+    );
+  }
+  if (!review || review.schema_version !== 2) {
+    return (
+      <PanelEmpty
+        label="Essay Review"
+        message="No review yet. Select Evaluate to generate the weighted seven-criterion review for this draft."
+      />
+    );
+  }
+  return (
+    <UnifiedEssayReview
+      review={review}
+      warnings={warnings}
+      updatedAt={updatedAt}
+      draftChanged={draftChanged}
+      now={now}
+    />
   );
 }
 
@@ -7014,16 +6588,16 @@ function Sparkline({ points }: { points: number[] }) {
 }
 
 function ProgressCard({ versions }: { versions: EssayDraft[] }) {
-  const scored = versions.filter((v) => typeof v.coachOverall === "number");
+  const scored = versions.filter((v) => typeof v.reviewOverall === "number");
   if (!scored.length) return null;
   const latest = scored[scored.length - 1];
   const prev = scored.length > 1 ? scored[scored.length - 2] : null;
-  const overall = latest.coachOverall ?? 0;
-  const overallDelta = prev ? overall - (prev.coachOverall ?? 0) : null;
+  const overall = latest.reviewOverall ?? 0;
+  const overallDelta = prev ? overall - (prev.reviewOverall ?? 0) : null;
   const deltas =
-    prev?.coachScores && latest.coachScores
-      ? Object.entries(latest.coachScores)
-          .map(([k, v]) => ({ key: k, delta: v - (prev.coachScores?.[k] ?? v) }))
+    prev?.reviewScores && latest.reviewScores
+      ? Object.entries(latest.reviewScores)
+          .map(([k, v]) => ({ key: k, delta: v - (prev.reviewScores?.[k] ?? v) }))
           .filter((x) => x.delta !== 0)
           .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta))
       : [];
@@ -7032,7 +6606,7 @@ function ProgressCard({ versions }: { versions: EssayDraft[] }) {
       <div className="flex items-center gap-3">
         <ScoreRing score={overall} size={52} stroke={4} />
         <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-semibold">Overall coach score</div>
+          <div className="text-[13px] font-semibold">Overall essay score</div>
           <div className="text-[12px] text-muted-foreground">
             {prev && overallDelta != null ? (
               <>
@@ -7048,7 +6622,7 @@ function ProgressCard({ versions }: { versions: EssayDraft[] }) {
           </div>
         </div>
       </div>
-      {scored.length > 1 && <Sparkline points={scored.map((v) => v.coachOverall ?? 0)} />}
+      {scored.length > 1 && <Sparkline points={scored.map((v) => v.reviewOverall ?? 0)} />}
       {deltas.length > 0 && (
         <div className="flex flex-wrap gap-1">
           {deltas.slice(0, 5).map((x) => (
@@ -7065,68 +6639,10 @@ function ProgressCard({ versions }: { versions: EssayDraft[] }) {
         {[...scored].reverse().slice(0, 6).map((v) => (
           <div key={v.id} className="flex items-center justify-between text-[12px]">
             <span className="text-muted-foreground">Draft {v.version} · {v.wordCount} words</span>
-            <span className="font-semibold tabular-nums" style={{ color: scoreColor(v.coachOverall ?? 0) }}>{v.coachOverall}</span>
+            <span className="font-semibold tabular-nums" style={{ color: scoreColor(v.reviewOverall ?? 0) }}>{v.reviewOverall}</span>
           </div>
         ))}
       </div>
-    </div>
-  );
-}
-
-function WorkspaceEvaluationTab({ isEvaluating }: { isEvaluating: boolean }) {
-  const { user } = useUser();
-  const [localEvaluating, setLocalEvaluating] = useState(false);
-  const [evalStatus, setEvalStatus] = useState<string | null>(null);
-  const evaluating = isEvaluating || localEvaluating;
-  const analysis = user?.lastAnalysis;
-  const entries = Object.entries(analysis?.readiness_index ?? {});
-  const score = overallEssayScore(analysis);
-  const scoredVersions = (user?.drafts ?? []).filter((v) => typeof v.coachOverall === "number");
-
-  return (
-    <div className="space-y-3">
-      <PanelLabel>Progress &amp; Evaluation</PanelLabel>
-
-      {scoredVersions.length > 0 && <ProgressCard versions={scoredVersions} />}
-
-      <CoachRunButton
-        label="Run deep evaluation"
-        loadingLabel="Evaluating…"
-        onRunningChange={setLocalEvaluating}
-        onStatus={setEvalStatus}
-        className="flex w-full items-center justify-center gap-2 rounded-lg border border-border px-3 py-2 text-[13px] font-semibold text-foreground transition-colors duration-150 hover:bg-accent disabled:opacity-50"
-      />
-      {evalStatus && <div className="rounded-md bg-accent px-3 py-2 text-[12px] text-muted-foreground">{evalStatus}</div>}
-
-      {evaluating && <EvaluationSkeleton />}
-
-      {!evaluating && entries.length > 0 && (
-        <>
-          <div className="flex items-center gap-3 rounded-xl border border-border bg-background p-3">
-            <ScoreRing score={score} size={52} stroke={4} />
-            <div className="min-w-0">
-              <div className="text-[13px] font-semibold">Readiness index</div>
-              <div className="text-[12px] text-muted-foreground">{score != null ? levelWord(score) : "Not scored yet"}</div>
-            </div>
-          </div>
-          <div className="space-y-2">
-            {entries.map(([key, value]) => (
-              <ReadinessRow key={key} label={labelize(key)} value={value} />
-            ))}
-          </div>
-          {analysis?.coaching_brief?.coach_message && (
-            <div className="rounded-xl border border-info/20 bg-info/5 p-3 text-[13px] leading-relaxed text-foreground/85">
-              {analysis.coaching_brief.coach_message}
-            </div>
-          )}
-        </>
-      )}
-
-      {!evaluating && !entries.length && scoredVersions.length === 0 && (
-        <div className="rounded-xl border border-dashed border-border bg-background p-4 text-[13px] leading-relaxed text-muted-foreground">
-          Run the coach to start tracking your draft scores, or run a deep evaluation for the readiness index and coach message.
-        </div>
-      )}
     </div>
   );
 }
@@ -7201,8 +6717,6 @@ function WorkspaceHighlightsTab({
   onAcceptAllQuickFixes,
   quickFixCount,
   coachLoading,
-  coachSummary,
-  coachWarnings,
 }: {
   isEvaluating: boolean;
   suggestions: Suggestion[];
@@ -7212,14 +6726,8 @@ function WorkspaceHighlightsTab({
   onAcceptAllQuickFixes: () => void;
   quickFixCount: number;
   coachLoading: boolean;
-  coachSummary: string | null;
-  coachWarnings: string[];
 }) {
-  const { user } = useUser();
-  const analysis = user?.lastAnalysis;
-  const priorities = analysis?.revision_priorities ?? [];
   const counts = countByCategory(suggestions);
-  const hasBackend = priorities.length > 0;
 
   if (isEvaluating) return <HighlightsSkeleton />;
 
@@ -7244,26 +6752,11 @@ function WorkspaceHighlightsTab({
         </button>
       )}
 
-      {coachSummary && (
-        <div className="rounded-xl border border-info/20 bg-info/5 p-3 text-[13px] leading-relaxed text-foreground/85">
-          {coachSummary}
-        </div>
-      )}
-
-      {!!coachWarnings.length && (
-        <div className="rounded-xl border border-warning/25 bg-warning/5 p-3">
-          <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-warning">Coaching notes</div>
-          <MiniList items={coachWarnings} />
-        </div>
-      )}
-
       {coachLoading && <HighlightsSkeleton />}
 
       {!coachLoading && !suggestions.length && (
         <div className="rounded-xl border border-dashed border-border bg-background p-4 text-[13px] leading-relaxed text-muted-foreground">
-          {coachSummary
-            ? "No sentence-level fixes to show right now. Keep writing, then run the coach again."
-            : "Write your draft, then run the writing coach for grammar, clarity, tone, and specificity suggestions. Quick fixes also appear here as you type."}
+          No sentence-level fixes are available for this draft. Run the main coaching session after making changes.
         </div>
       )}
 
@@ -7284,23 +6777,6 @@ function WorkspaceHighlightsTab({
         );
       })}
 
-      {!!hasBackend && (
-        <div className="space-y-3 border-t border-border pt-3">
-          {!!priorities.length && (
-            <div className="rounded-xl border border-warning/25 bg-warning/5 p-3">
-              <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-warning">Top revision priorities</div>
-              <ol className="mt-2 space-y-1.5 text-[13px] leading-relaxed">
-                {priorities.slice(0, 4).map((item, i) => (
-                  <li key={item} className="flex gap-2">
-                    <span className="font-semibold text-warning">{i + 1}.</span>
-                    <span>{item}</span>
-                  </li>
-                ))}
-              </ol>
-            </div>
-          )}
-        </div>
-      )}
     </div>
   );
 }
@@ -7377,546 +6853,7 @@ function StepEssayOutline() {
   );
 }
 
-/* ---------------- Step 8: Essay Upload (paste OR PDF) ---------------- */
-
-function StepEssayUpload() {
-  const { user, updateProfile } = useUser();
-  const draft = user?.essayDraft ?? "";
-  const wordCount = draft.trim() ? draft.trim().split(/\s+/).length : 0;
-  const [pdfStatus, setPdfStatus] = useState<string | null>(null);
-  const [analysisStatus, setAnalysisStatus] = useState<string | null>(null);
-
-  async function handlePdf(file: File) {
-    setPdfStatus(`Extracting text from ${file.name}…`);
-    try {
-      const w = window as unknown as {
-        pdfjsLib?: {
-          GlobalWorkerOptions?: { workerSrc?: string };
-          getDocument: (opts: { data: ArrayBuffer }) => { promise: Promise<PdfDoc> };
-        };
-      };
-      type PdfDoc = {
-        numPages: number;
-        getPage: (n: number) => Promise<{
-          getTextContent: () => Promise<{ items: { str?: string }[] }>;
-        }>;
-      };
-
-      if (!w.pdfjsLib) {
-        await new Promise<void>((resolve, reject) => {
-          const s = document.createElement("script");
-          s.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.min.mjs";
-          s.type = "module";
-          s.onload = () => resolve();
-          s.onerror = () => reject(new Error("Failed to load PDF parser"));
-          document.head.appendChild(s);
-        });
-      }
-      if (!w.pdfjsLib) throw new Error("PDF parser unavailable");
-      if (w.pdfjsLib.GlobalWorkerOptions) {
-        w.pdfjsLib.GlobalWorkerOptions.workerSrc =
-          "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.worker.min.mjs";
-      }
-
-      const buf = await file.arrayBuffer();
-      const pdf: PdfDoc = await w.pdfjsLib.getDocument({ data: buf }).promise;
-      const pages: string[] = [];
-      for (let p = 1; p <= pdf.numPages; p++) {
-        const page = await pdf.getPage(p);
-        const tc = await page.getTextContent();
-        pages.push(tc.items.map((i) => i.str ?? "").join(" "));
-      }
-      updateProfile({ essayDraft: normalizePdfDraftText(pages) });
-      setPdfStatus(`Imported ${pdf.numPages} pages from ${file.name}.`);
-    } catch (e) {
-      setPdfStatus(`Could not parse PDF: ${(e as Error).message}`);
-    }
-  }
-
-
-  function saveAsDraft() {
-    const prev = user?.drafts ?? [];
-    const nextVersion = (prev[prev.length - 1]?.version ?? 0) + 1;
-    const newDraft: EssayDraft = {
-      id: crypto.randomUUID(),
-      version: nextVersion,
-      content: draft,
-      wordCount,
-      savedAt: new Date().toISOString(),
-    };
-    updateProfile({ drafts: [...prev, newDraft] });
-  }
-
-  return (
-    <div className="space-y-6">
-      <Card className="bg-secondary/40">
-        <div className="text-xs uppercase tracking-widest text-muted-foreground">Essay prompt</div>
-        <p className="mt-2 font-display italic text-lg">
-          "{user?.activeScholarship?.essayPrompts || "Paste the scholarship prompt in the import step."}"
-        </p>
-        <p className="mt-2 text-xs text-muted-foreground">
-          Paste your draft below — or upload a PDF and we'll pull the text out for you.
-        </p>
-      </Card>
-
-      <Card>
-        <SectionLabel>Upload a PDF (optional)</SectionLabel>
-        <div className="mt-2 flex items-center gap-3 rounded-lg border-2 border-dashed border-border p-4">
-          <input
-            type="file"
-            accept="application/pdf,.pdf"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) handlePdf(f);
-            }}
-            className="text-sm"
-          />
-          {pdfStatus && <span className="text-xs text-muted-foreground">{pdfStatus}</span>}
-        </div>
-      </Card>
-
-      <Card>
-        <div className="flex items-center justify-between text-xs text-muted-foreground">
-          <span className="font-mono">your-essay-draft.txt</span>
-          <span>{wordCount} words · Draft v{(user?.drafts?.length ?? 0) + 1}</span>
-        </div>
-        <textarea
-          value={draft}
-          onChange={(e) => updateProfile({ essayDraft: e.target.value })}
-          rows={16}
-          placeholder="Paste or write your essay here…"
-          className="mt-3 w-full rounded-lg border border-border bg-background p-4 font-display text-[15px] leading-relaxed"
-        />
-      </Card>
-
-      <Card>
-        <div className="flex flex-wrap gap-2">
-          <button
-            onClick={saveAsDraft}
-            disabled={wordCount < 30}
-            className="rounded-lg bg-card border border-border px-4 py-2 text-sm hover:bg-accent disabled:opacity-40"
-          >
-            Save as new draft
-          </button>
-          <CoachRunButton
-            label={
-              wordCount < 30
-                ? "Write at least a paragraph to send to the coach"
-                : "Send to AI Coach for evaluation"
-            }
-            loadingLabel="Analyzing…"
-            disabled={wordCount < 30}
-            onStatus={setAnalysisStatus}
-            className="flex-1 rounded-lg bg-primary text-primary-foreground py-2 text-sm font-medium hover:opacity-90 disabled:opacity-40"
-          />
-        </div>
-        {analysisStatus && <p className="mt-3 text-xs text-muted-foreground">{analysisStatus}</p>}
-      </Card>
-    </div>
-  );
-}
-
-/* ---------------- Step 9: Application Evaluation (combined eval + scores) ---------------- */
-
-const SCORE_DESCRIPTIONS: Record<string, string> = {
-  Clarity: "How easily a reader can follow your argument and identify each sentence's purpose.",
-  Specificity: "Concrete sensory details, names, numbers, and moments instead of vague generalities.",
-  Leadership: "Evidence you initiated something, organized people, or carried responsibility — not just participated.",
-  Storytelling: "Pacing, scene-building, and emotional arc — does the essay carry the reader through a change?",
-  Impact: "Quantified outcomes (people helped, dollars raised, lives changed) and what the reader can verify.",
-  "Scholarship alignment": "How clearly your goals and identity match the sponsor's stated mission and values.",
-  Grammar: "Sentence-level correctness, punctuation, and consistent verb tense.",
-  Structure: "Paragraph order, transitions, and a strong opener / closer.",
-};
-
-function StepScores() {
-  const { user } = useUser();
-  const analysis = user?.lastAnalysis;
-  const cats = Object.entries(analysis?.readiness_index ?? {})
-    .filter(([, entry]) => typeof entry?.score === "number")
-    .map(([key, entry]) => ({
-      name: key.replace(/_/g, " "),
-      score: entry.score ?? 0,
-      description: entry.coaching || entry.level || "Reviewed by the Scholar-E coach.",
-    }));
-  const overall = cats.length
-    ? Math.round(cats.reduce((a, c) => a + c.score, 0) / cats.length)
-    : 0;
-  const [open, setOpen] = useState<string | null>(null);
-  const stages = [
-    "Analyzer + Retriever agents",
-    "Content / structure / voice / grammar coaches",
-    "Reviewer simulation agent",
-    "Combiner agent synthesis",
-    "Critic agent quality check",
-  ];
-  const critique = analysis?.critique;
-
-  return (
-    <div className="space-y-6">
-      {!analysis && (
-        <Card>
-          <div className="font-medium">No evaluation yet</div>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Run the AI coach from step 8 (Upload Essay Draft) first. Your scores will appear here.
-          </p>
-        </Card>
-      )}
-
-      {!!analysis && (
-      <>
-      <Card>
-        <div className="flex items-center gap-3">
-          <div className="size-10 rounded-full bg-gold text-gold-foreground grid place-items-center font-display">AI</div>
-          <div>
-            <div className="font-medium">Scholar-E Coach evaluated your essay</div>
-            <div className="text-xs text-muted-foreground">
-              Draft {analysis.draft_number ?? 1} evaluated by the Scholar-E AI coaching agents.
-            </div>
-          </div>
-        </div>
-        <div className="mt-4 grid sm:grid-cols-5 gap-2 text-xs">
-          {stages.map((s) => (
-            <div key={s} className="rounded-lg bg-success/10 text-success p-2 flex items-center gap-1.5">
-              <Check className="size-3.5 shrink-0" strokeWidth={2.5} />
-              <span className="truncate">{s}</span>
-            </div>
-          ))}
-        </div>
-      </Card>
-
-      {critique && Object.keys(critique).length > 0 && (
-        <Card>
-          <div className="flex items-center justify-between">
-            <div className="text-xs uppercase tracking-widest text-muted-foreground">
-              Critic agent quality check
-            </div>
-            <Pill tone={critique.verdict === "needs_revision" ? "warn" : "success"}>
-              {critique.verdict === "needs_revision" ? "Revised by critic" : "Approved"}
-            </Pill>
-          </div>
-          <div className="mt-3 grid sm:grid-cols-3 gap-3 text-sm">
-            <div>
-              <div className="text-xs text-muted-foreground">Confidence</div>
-              <div className="font-display text-2xl">{critique.confidence ?? "—"}</div>
-            </div>
-            <div>
-              <div className="text-xs text-muted-foreground">Grounding</div>
-              <div className="font-medium">{critique.grounding_pass === false ? "Fail" : "Pass"}</div>
-            </div>
-            <div>
-              <div className="text-xs text-muted-foreground">Review passes</div>
-              <div className="font-medium">{critique.attempt ?? 1}</div>
-            </div>
-          </div>
-          {(critique.issues?.length ?? 0) > 0 && (
-            <ul className="mt-3 list-disc pl-5 text-sm text-muted-foreground space-y-1">
-              {critique.issues!.map((issue) => (
-                <li key={issue}>{issue}</li>
-              ))}
-            </ul>
-          )}
-        </Card>
-      )}
-
-      <Card className="grid md:grid-cols-3 gap-6 items-center">
-        <div className="md:col-span-1 text-center">
-          <div className="font-display text-7xl text-primary">{overall}</div>
-          <div className="text-xs text-muted-foreground uppercase tracking-widest">Overall essay score</div>
-          <Pill tone={overall >= 80 ? "success" : "warn"}>{overall >= 80 ? "Ready to polish" : "Promising — needs revision"}</Pill>
-        </div>
-        <div className="md:col-span-2 grid sm:grid-cols-2 gap-3">
-          {cats.map((c) => {
-            const isOpen = open === c.name;
-            return (
-              <button
-                key={c.name}
-                onClick={() => setOpen(isOpen ? null : c.name)}
-                className="text-left rounded-xl border border-border hover:bg-accent transition-colors p-3"
-              >
-                <div className="flex items-baseline justify-between text-sm">
-                  <span className="border-b border-dotted border-muted-foreground/50">{c.name}</span>
-                  <span className="font-mono text-xs">{c.score}</span>
-                </div>
-                <div className="mt-1 h-1.5 rounded-full bg-secondary overflow-hidden">
-                  <div
-                    className="h-full"
-                    style={{
-                      width: `${c.score}%`,
-                      background: c.score >= 80 ? "var(--success)" : c.score >= 65 ? "var(--gold)" : "var(--warning)",
-                    }}
-                  />
-                </div>
-                {isOpen && (
-                  <p className="mt-2 text-xs text-muted-foreground leading-relaxed">
-                    {c.description}
-                  </p>
-                )}
-              </button>
-            );
-          })}
-        </div>
-      </Card>
-
-      {analysis.growth_report?.has_previous_draft && (
-        <Card>
-          <div className="text-xs uppercase tracking-widest text-muted-foreground">Growth across drafts</div>
-          <p className="mt-2 text-sm">{analysis.growth_report.growth_message}</p>
-          {(analysis.growth_report.improvements?.length ?? 0) > 0 && (
-            <ul className="mt-3 space-y-2 text-sm">
-              {analysis.growth_report.improvements!.map((item) => (
-                <li key={item} className="flex gap-2">
-                  <span className="text-success shrink-0">↑</span>
-                  <span>{item}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Card>
-      )}
-
-      <Card>
-        <div className="text-xs uppercase tracking-widest text-muted-foreground">Top three things to fix</div>
-        <ol className="mt-3 space-y-3 text-sm">
-          {(analysis.revision_priorities?.length
-            ? analysis.revision_priorities
-            : [analysis.coaching_brief?.recommended_action, analysis.coaching_brief?.biggest_opportunity, analysis.feedback].filter(
-                (item): item is string => !!item,
-              )
-          ).slice(0, 3).map((item, i) => (
-            <li key={String(item)} className="flex gap-3">
-              <span className="font-display text-gold">{i + 1}.</span>
-              {item}
-            </li>
-          ))}
-        </ol>
-      </Card>
-      </>
-      )}
-    </div>
-  );
-}
-
-/* ---------------- Step 10: Highlights (accept/decline) ---------------- */
-
-function StepHighlights() {
-  const { user } = useUser();
-  const analysis = user?.lastAnalysis;
-  const priorities = analysis?.revision_priorities ?? [];
-  const reviewers = analysis?.reviewer_comments ?? [];
-  const reports = analysis?.coaching_reports ?? {};
-  const draft = user?.essayDraft ?? "";
-  const [showPackage, setShowPackage] = useState(false);
-
-  const strategy = reports.strategy as Record<string, string> | undefined;
-  const alignmentReport = reports.alignment as unknown as
-    | {
-        alignment_score?: number;
-        fit_summary?: string;
-        revision_tasks?: string[];
-      }
-    | undefined;
-  const discovery = reports.discovery as Record<string, string> | undefined;
-  const evidenceStrength = reports.evidence_strength as unknown as
-    | {
-        evidence_strength_score?: number;
-        recommended_experience_to_feature?: string;
-        recommendations?: string[];
-      }
-    | undefined;
-  const narrativeStructureReport = reports.narrative_structure_flow_coherence as unknown as
-    | {
-        narrative_structure_score?: number;
-        overall_narrative_assessment?: string;
-        biggest_narrative_gap?: string;
-      }
-    | undefined;
-  const insightReport = reports.insight as unknown as
-    | {
-        insight_score?: number;
-        missing_meaning_or_reflection?: string[];
-        revision_tasks?: string[];
-      }
-    | undefined;
-  const narrative = narrativeStructureReport ? undefined : reports.narrative as Record<string, string> | undefined;
-
-  return (
-    <div className="space-y-6">
-    <div className="grid lg:grid-cols-5 gap-6">
-      <Card className="lg:col-span-3">
-        <div className="text-xs uppercase tracking-widest text-muted-foreground flex items-center justify-between">
-          <span>Your essay draft</span>
-          <span className="font-mono">{draft.trim() ? draft.trim().split(/\s+/).length : 0} words</span>
-        </div>
-        <div className="mt-4 font-display text-[15px] leading-relaxed text-foreground/90 whitespace-pre-wrap">
-          {draft || "Paste your essay in the previous step to review it here."}
-        </div>
-      </Card>
-
-      <Card className="lg:col-span-2 h-fit sticky top-24">
-        <div className="flex items-center justify-between">
-          <Pill tone={analysis ? "info" : "warn"}>{analysis ? "Backend feedback" : "No analysis yet"}</Pill>
-          {analysis?.coaching_brief?.current_strength_level && (
-            <span className="text-xs text-muted-foreground uppercase tracking-widest">
-              {analysis.coaching_brief.current_strength_level}
-            </span>
-          )}
-        </div>
-        <div className="mt-4 text-sm">
-          {analysis?.coaching_brief?.coach_message ||
-            analysis?.feedback ||
-            "Send your draft to the AI coach to receive revision guidance."}
-        </div>
-        {priorities.length > 0 && (
-          <div className="mt-5">
-            <div className="text-xs uppercase tracking-widest text-muted-foreground">Revision priorities</div>
-            <ol className="mt-3 space-y-3 text-sm">
-              {priorities.map((item, i) => (
-                <li key={item} className="flex gap-3">
-                  <span className="font-display text-gold">{i + 1}.</span>
-                  <span>{item}</span>
-                </li>
-              ))}
-            </ol>
-          </div>
-        )}
-        {reviewers.length > 0 && (
-          <div className="mt-5">
-            <div className="text-xs uppercase tracking-widest text-muted-foreground">Reviewer comments</div>
-            <div className="mt-3 space-y-3">
-              {reviewers.map((item, i) => (
-                <div key={i} className="rounded-xl border border-border bg-secondary/50 p-3 text-sm">
-                  <div className="text-xs uppercase tracking-widest text-muted-foreground mb-1">
-                    {item.persona || "Reviewer"}
-                  </div>
-                  <div>{item.comment}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </Card>
-    </div>
-
-    {!analysis && (
-      <Card>
-        <p className="text-sm text-muted-foreground">
-          Run the AI coach from step 8 first to receive alignment, narrative, and reviewer feedback.
-        </p>
-      </Card>
-    )}
-
-    {!!analysis && (alignmentReport || strategy || evidenceStrength || discovery || narrativeStructureReport || insightReport || narrative) && (
-      <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-4">
-        {strategy && (
-          <Card>
-            <div className="text-xs uppercase tracking-widest text-muted-foreground">Opportunity strategy</div>
-            <p className="mt-2 text-sm">{strategy.strategic_insight}</p>
-            {strategy.reflection_vs_story_ratio && (
-              <p className="mt-2 text-xs text-muted-foreground">{strategy.reflection_vs_story_ratio}</p>
-            )}
-          </Card>
-        )}
-        {alignmentReport && (
-          <Card>
-            <div className="text-xs uppercase tracking-widest text-muted-foreground">Alignment (Prompt + Scholarship Values) Coach</div>
-            {typeof alignmentReport.alignment_score === "number" && (
-              <p className="mt-2 text-sm font-semibold">{alignmentReport.alignment_score}/100</p>
-            )}
-            {alignmentReport.fit_summary && <p className="mt-2 text-sm">{alignmentReport.fit_summary}</p>}
-            {!!alignmentReport.revision_tasks?.[0] && (
-              <p className="mt-2 text-xs text-muted-foreground">Next: {alignmentReport.revision_tasks[0]}</p>
-            )}
-          </Card>
-        )}
-        {discovery && (
-          <Card>
-            <div className="text-xs uppercase tracking-widest text-muted-foreground">Experience discovery</div>
-            <p className="mt-2 text-sm">{discovery.coaching_message}</p>
-            {discovery.recommended_experience_to_feature && (
-              <p className="mt-2 text-xs text-muted-foreground">
-                Feature: {discovery.recommended_experience_to_feature}
-              </p>
-            )}
-          </Card>
-        )}
-        {evidenceStrength && (
-          <Card>
-            <div className="text-xs uppercase tracking-widest text-muted-foreground">Evidence Strength Coach</div>
-            {typeof evidenceStrength.evidence_strength_score === "number" && (
-              <p className="mt-2 text-sm font-semibold">{evidenceStrength.evidence_strength_score}/100</p>
-            )}
-            {evidenceStrength.recommended_experience_to_feature && (
-              <p className="mt-2 text-xs text-muted-foreground">
-                Strongest experience: {evidenceStrength.recommended_experience_to_feature}
-              </p>
-            )}
-            {!!evidenceStrength.recommendations?.[0] && (
-              <p className="mt-2 text-xs text-muted-foreground">Next: {evidenceStrength.recommendations[0]}</p>
-            )}
-          </Card>
-        )}
-        {narrativeStructureReport && (
-          <Card>
-            <div className="text-xs uppercase tracking-widest text-muted-foreground">Narrative Structure, Flow & Coherence Coach</div>
-            {typeof narrativeStructureReport.narrative_structure_score === "number" && (
-              <p className="mt-2 text-sm font-semibold">{narrativeStructureReport.narrative_structure_score}/100</p>
-            )}
-            {narrativeStructureReport.overall_narrative_assessment && (
-              <p className="mt-2 text-sm">{narrativeStructureReport.overall_narrative_assessment}</p>
-            )}
-            {narrativeStructureReport.biggest_narrative_gap && (
-              <p className="mt-2 text-xs text-muted-foreground">Gap: {narrativeStructureReport.biggest_narrative_gap}</p>
-            )}
-          </Card>
-        )}
-        {insightReport && (
-          <Card>
-            <div className="text-xs uppercase tracking-widest text-muted-foreground">Insight (Depth + Meaning + Reflection) Coach</div>
-            {typeof insightReport.insight_score === "number" && (
-              <p className="mt-2 text-sm font-semibold">{insightReport.insight_score}/100</p>
-            )}
-            {!!insightReport.missing_meaning_or_reflection?.[0] && (
-              <p className="mt-2 text-sm">Needs depth: {insightReport.missing_meaning_or_reflection[0]}</p>
-            )}
-            {!!insightReport.revision_tasks?.[0] && (
-              <p className="mt-2 text-xs text-muted-foreground">Next: {insightReport.revision_tasks[0]}</p>
-            )}
-          </Card>
-        )}
-        {narrative && (
-          <Card>
-            <div className="text-xs uppercase tracking-widest text-muted-foreground">Narrative coach</div>
-            <p className="mt-2 text-sm">{narrative.overall_narrative_coaching}</p>
-            {narrative.biggest_narrative_gap && (
-              <p className="mt-2 text-xs text-muted-foreground">Gap: {narrative.biggest_narrative_gap}</p>
-            )}
-          </Card>
-        )}
-      </div>
-    )}
-
-    {analysis?.final_application_package && (
-      <Card>
-        <button
-          type="button"
-          onClick={() => setShowPackage((v) => !v)}
-          className="w-full text-left text-xs uppercase tracking-widest text-muted-foreground"
-        >
-          Full coaching package {showPackage ? "▲" : "▼"}
-        </button>
-        {showPackage && (
-          <pre className="mt-4 max-h-96 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-foreground/80">
-            {analysis.final_application_package}
-          </pre>
-        )}
-      </Card>
-    )}
-    </div>
-  );
-}
-
-/* ---------------- Step 11: Revise — multiple drafts ---------------- */
+/* ---------------- Step 5: Revise — multiple drafts ---------------- */
 
 function StepRevise() {
   const { user, updateProfile } = useUser();
@@ -8021,71 +6958,26 @@ function StepRevise() {
   );
 }
 
-/* ---------------- Step 12: Resubmit — with improvement tips ---------------- */
-
-function StepResubmit() {
-  const { user } = useUser();
-  const [status, setStatus] = useState<string | null>(null);
-  const tips = user?.lastAnalysis?.revision_priorities ?? [
-    "Revise the draft using the feedback from the previous step.",
-    "Add evidence from your profile where the scholarship asks for fit.",
-    "Run the AI coach again to compare the new draft with the prior review.",
-  ];
-
-  return (
-    <div className="space-y-6">
-      <Card>
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="font-display text-2xl">Resubmit your latest draft</div>
-            <div className="text-xs text-muted-foreground mt-1">
-              {user?.activeScholarship?.name || "Current scholarship"} · {user?.essayDraft?.trim().split(/\s+/).filter(Boolean).length ?? 0} words
-            </div>
-          </div>
-          <Pill tone="info">AI coach review</Pill>
-        </div>
-        <div className="mt-5">
-          <CoachRunButton
-            label="Get coaching again"
-            loadingLabel="Reviewing revised draft..."
-            disabled={!user?.essayDraft?.trim()}
-            onStatus={setStatus}
-            className="rounded-full bg-primary text-primary-foreground px-5 py-2 text-sm hover:opacity-90 disabled:opacity-40"
-          />
-          {status && <p className="mt-3 text-xs text-muted-foreground">{status}</p>}
-        </div>
-      </Card>
-
-      <Card>
-        <div className="text-xs uppercase tracking-widest text-gold">Ways to improve your score further</div>
-        <ul className="mt-3 space-y-3 text-sm">
-          {tips.map((t, i) => (
-            <li key={t} className="flex gap-3">
-              <span className="font-display text-gold shrink-0">{i + 1}.</span>
-              <span>{t}</span>
-            </li>
-          ))}
-        </ul>
-      </Card>
-
-      <Card className="bg-success/10 border-success/30">
-        <div className="text-sm font-medium text-success">
-          {user?.lastAnalysis?.coaching_brief?.recommended_action || "Coach feedback will update after each review."}
-        </div>
-        <p className="text-sm text-foreground/80 mt-1">
-          {user?.lastAnalysis?.coaching_brief?.coach_message ||
-            "Continue to the final submission check when your materials and draft are ready."}
-        </p>
-      </Card>
-    </div>
-  );
+function essayReviewPriorityActions(review?: EssayReviewResult | null): string[] {
+  if (!review?.criteria) return [];
+  return ESSAY_REVIEW_DIMENSIONS
+    .map((key) => review.criteria[key]?.priority_action?.title)
+    .filter((item): item is string => !!item?.trim());
 }
 
-/* ---------------- Step 13: Final Check ---------------- */
+function lowEssayReviewCriteria(review?: EssayReviewResult | null): string[] {
+  if (!review?.criteria) return [];
+  return ESSAY_REVIEW_DIMENSIONS
+    .map((key) => review.criteria[key])
+    .filter((entry): entry is EssayCriterionReview => typeof entry?.score === "number" && (entry.score ?? 0) < 70)
+    .map((entry) => `${entry.label || labelize(entry.criterion ?? "criterion")} (${entry.score}/100)`);
+}
+
+/* ---------------- Step 6: Final Check ---------------- */
 
 function StepFinalCheck() {
   const { user } = useUser();
-  const analysis = user?.lastAnalysis;
+  const review = user?.essayReviewResult?.schema_version === 2 ? user.essayReviewResult : null;
   const docs = user?.documents ?? [];
   const hasDoc = (kind: string) => docs.some((doc) => doc.kind.toLowerCase().includes(kind));
   const checklist = [
@@ -8110,17 +7002,14 @@ function StepFinalCheck() {
     { item: "Transcript uploaded or identified", done: hasDoc("transcript") },
     { item: "Recommendation letter uploaded or identified", done: hasDoc("recommendation") || hasDoc("rec") },
     { item: "Essay draft added", done: !!user?.essayDraft?.trim() },
-    { item: "AI coach review completed", done: !!analysis },
+    { item: "Essay review completed", done: !!review },
   ];
   const blockers = [
-    ...(analysis?.revision_priorities ?? []).slice(0, 3),
+    ...essayReviewPriorityActions(review).slice(0, 3),
     ...checklist.filter((c) => !c.done).map((c) => c.item),
   ].filter((item, i, arr) => arr.indexOf(item) === i);
   const done = checklist.filter((x) => x.done).length;
-  const readiness = analysis?.readiness_index ?? {};
-  const lowDims = Object.entries(readiness)
-    .filter(([, entry]) => typeof entry?.score === "number" && (entry.score ?? 0) < 70)
-    .map(([key, entry]) => `${key.replace(/_/g, " ")} (${entry.score}/100)`);
+  const lowDims = lowEssayReviewCriteria(review);
 
   return (
     <div className="space-y-6">
@@ -8177,25 +7066,22 @@ function StepFinalCheck() {
   );
 }
 
-/* ---------------- Step 14: Tracker ---------------- */
+/* ---------------- Step 7: Tracker ---------------- */
 
 function StepTracker() {
   const columns = ["Interested", "Drafting", "Submitted", "Awarded"] as const;
   const { user } = useUser();
   const scholarship = user?.activeScholarship;
-  const readiness = user?.lastAnalysis?.readiness_index ?? {};
-  const scores = Object.values(readiness)
-    .map((entry) => entry.score)
-    .filter((score): score is number => typeof score === "number");
-  const average = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : 0;
-  const activeColumn = user?.lastAnalysis ? "Drafting" : scholarship?.name ? "Interested" : "Interested";
+  const review = user?.essayReviewResult?.schema_version === 2 ? user.essayReviewResult : null;
+  const score = typeof review?.overall_score === "number" ? review.overall_score : 0;
+  const activeColumn = review ? "Drafting" : scholarship?.name ? "Interested" : "Interested";
 
   return (
     <div className="space-y-6">
       <div className="grid sm:grid-cols-3 gap-4">
         <Card><div className="text-xs text-muted-foreground uppercase tracking-widest">Active</div><div className="font-display text-3xl mt-1">{scholarship?.name ? 1 : 0}</div></Card>
-        <Card><div className="text-xs text-muted-foreground uppercase tracking-widest">Readiness</div><div className="font-display text-3xl mt-1">{average || "—"}</div></Card>
-        <Card><div className="text-xs text-muted-foreground uppercase tracking-widest">Latest review</div><div className="font-display text-3xl mt-1">{user?.lastAnalysis ? "Done" : "Needed"}</div><div className="text-xs text-muted-foreground">{scholarship?.name || "No scholarship imported"}</div></Card>
+        <Card><div className="text-xs text-muted-foreground uppercase tracking-widest">Essay score</div><div className="font-display text-3xl mt-1">{score || "—"}</div></Card>
+        <Card><div className="text-xs text-muted-foreground uppercase tracking-widest">Latest review</div><div className="font-display text-3xl mt-1">{review ? "Done" : "Needed"}</div><div className="text-xs text-muted-foreground">{scholarship?.name || "No scholarship imported"}</div></Card>
       </div>
 
       <div className="grid md:grid-cols-4 gap-4">
@@ -8211,8 +7097,8 @@ function StepTracker() {
                   <div className="text-sm font-medium leading-tight">{scholarship.name}</div>
                   <div className="text-xs text-muted-foreground mt-0.5">{scholarship.type || "Scholarship"}</div>
                   <div className="mt-2 flex items-center justify-between text-xs">
-                    <Pill tone="gold">{average ? `${average}/100 readiness` : "Needs review"}</Pill>
-                    <span className="text-muted-foreground">{user?.lastAnalysis ? "AI reviewed" : "Not reviewed"}</span>
+                    <Pill tone="gold">{score ? `${score}/100 essay score` : "Needs review"}</Pill>
+                    <span className="text-muted-foreground">{review ? "AI reviewed" : "Not reviewed"}</span>
                   </div>
                 </div>
               ) : (

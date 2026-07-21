@@ -1,13 +1,13 @@
 """Quality-gate unit tests for essay coaching architecture."""
 
-from essay_coaching_service import (
+from essay_editor_service import (
     SentenceSuggestion,
     _clean_sentence_suggestions,
     _resolve_writing_support_level,
 )
 from essay_mechanics import apply_deterministic_mechanics
-from nodes.critic import _programmatic_completeness
-from nodes.combine import _build_eligibility_matrix, _normalize_revision_actions, _rank_global_actions
+from nodes.coaching.readiness import READINESS_DIMENSIONS
+from nodes.coaching.criterion_review import normalize_manager_plan, weighted_overall_score
 from templates.essay_coach import (
     COACH_GUARDRAILS,
     EDIT_RISK_TIERS,
@@ -198,92 +198,44 @@ def test_clarity_concision_prompt_owns_directness_without_grammar_overlap():
     assert "In order to help" in human
 
 
-def test_programmatic_completeness_flags_missing_actions():
-    readiness = {
-        "alignment": {"score": 70, "justification": "ok", "revision_actions": []},
-        "evidence_strength": {
-            "score": 65,
-            "justification": "ok",
-            "revision_actions": [{
-                "priority": "Add evidence",
-                "how_to_fix": "In paragraph 2, add a profile-backed result.",
-                "impact": "High",
-                "estimated_effort": "Moderate",
-            }],
-        },
-    }
-    # Fill remaining dims with incomplete stubs so issues accumulate.
-    for dim in (
+def test_readiness_dimensions_match_standard_specialists():
+    assert READINESS_DIMENSIONS == [
+        "alignment",
+        "evidence_strength",
         "insight",
-        "coherence_continuity",
-        "flow_narrative_arc",
+        "narrative_structure_flow_coherence",
         "tone_authenticity",
         "clarity_concision",
-    ):
-        readiness[dim] = {"score": 50, "justification": "", "revision_actions": []}
-    issues = _programmatic_completeness(readiness, {"coach_message": ""})
-    assert any("alignment" in i for i in issues)
-    assert any("coach_message" in i for i in issues)
+        "grammar",
+    ]
 
 
-def test_normalize_revision_actions_keeps_one():
-    actions = _normalize_revision_actions([
-        {
-            "priority": "A",
-            "why_it_matters": "because",
-            "how_to_fix": "do X in para 1",
-            "impact": "high",
-            "estimated_effort": "quick",
-        },
-        {
-            "priority": "B",
-            "how_to_fix": "do Y",
-            "impact": "Low",
-            "estimated_effort": "Deep",
-        },
-    ])
-    assert len(actions) == 1
-    assert actions[0]["impact"] == "High"
-    assert actions[0]["estimated_effort"] == "Quick"
+def test_manager_weights_are_bounded_and_total_one_hundred():
+    plan = normalize_manager_plan({
+        "criteria": {
+            key: {"weight": 99 if key == "alignment" else 1}
+            for key in READINESS_DIMENSIONS
+        }
+    })
+    weights = [plan["criteria"][key]["weight"] for key in READINESS_DIMENSIONS]
+    assert sum(weights) == 100
+    assert all(5 <= weight <= 30 for weight in weights)
 
 
-def test_empty_eligibility_report_is_not_mislabeled_eligible():
-    assert _build_eligibility_matrix({}) == {}
-
-
-def test_rank_global_actions_orders_by_impact_then_score():
-    readiness = {
-        "alignment": {
-            "score": 40,
-            "revision_actions": [{
-                "priority": "Fix alignment",
-                "impact": "High",
-                "how_to_fix": "Cover prompt part 2",
-                "estimated_effort": "Moderate",
-            }],
-        },
-        "clarity_concision": {
-            "score": 80,
-            "revision_actions": [{
-                "priority": "Tighten sentence",
-                "impact": "Low",
-                "how_to_fix": "Cut filler in para 3",
-                "estimated_effort": "Quick",
-            }],
-        },
-        "evidence_strength": {
-            "score": 55,
-            "revision_actions": [{
-                "priority": "Add metric",
-                "impact": "High",
-                "how_to_fix": "Add a profile-backed number",
-                "estimated_effort": "Moderate",
-            }],
-        },
+def test_weighted_overall_score_is_deterministic():
+    plan = normalize_manager_plan({})
+    reviews = {
+        key: {
+            "available": True,
+            "score": 80 if key == "alignment" else 60,
+            "weight": plan["criteria"][key]["weight"],
+        }
+        for key in READINESS_DIMENSIONS
     }
-    ranked = _rank_global_actions(readiness)
-    assert ranked[0]["priority"] in {"Fix alignment", "Add metric"}
-    assert ranked[0]["impact"] == "High"
+    expected = round(
+        sum(item["score"] * item["weight"] for item in reviews.values()) / 100
+    )
+    assert weighted_overall_score(reviews) == expected
 
 
 def test_deterministic_mechanics_applies_spelling_and_spacing():
@@ -362,49 +314,54 @@ def test_unified_coaching_session_runs_one_merged_graph_on_cleaned_draft(monkeyp
     def fake_unified(**kwargs):
         seen["draft"] = kwargs["essay_draft"]
         return {
-            "evaluation": {"readiness_index": {"alignment": {"score": 70}}},
-            "coach_pack": {"status": "success", "sentence_suggestions": [], "warnings": []},
+            "review": {
+                "schema_version": 2,
+                "status": "success",
+                "overall_score": 70,
+                "criteria": {},
+                "manager_plan": {},
+                "quality_review": {},
+            },
+            "outline_coverage": {"covered_point_ids": ["p-core"]},
             "warnings": [],
-            "agent_status": {"alignment": "success", "evaluator": "success"},
+            "agent_status": {"alignment": "success", "manager": "success"},
         }
-
-    def legacy_pipeline_must_not_run(*_args, **_kwargs):
-        raise AssertionError("legacy lightweight/deep pipeline was called")
 
     monkeypatch.setattr(routes.settings, "openai_api_key", "test-key")
     monkeypatch.setattr(routes, "run_unified_coaching_session", fake_unified)
-    monkeypatch.setattr(routes, "analyze_application", legacy_pipeline_must_not_run)
-    monkeypatch.setattr(routes, "run_essay_workspace_coach", legacy_pipeline_must_not_run)
 
     result = routes.run_workspace_coaching_session(_coaching_session_request())
 
     assert result["status"] == "success"
-    assert result["components"] == {
-        "mechanics": "success",
-        "evaluation": "success",
-        "coach": "success",
-    }
+    assert result["review"]["schema_version"] == 2
+    assert result["review"]["overall_score"] == 70
+    assert result["outline_coverage"]["covered_point_ids"] == ["p-core"]
+    assert "components" not in result
+    assert "evaluation" not in result
+    assert "coach_pack" not in result
     assert result["session_id"].startswith("coach_")
     assert len(result["draft_hash"]) == 64
     assert "receive" in result["cleaned_draft"]
     assert seen["draft"] == result["cleaned_draft"]
-    assert result["agents"]["evaluator"] == "success"
+    assert result["agents"]["manager"] == "success"
 
 
-def test_unified_coaching_session_keeps_coach_when_evaluation_fails(monkeypatch):
+def test_unified_coaching_session_preserves_partial_review_and_warning(monkeypatch):
     from api import routes
 
     def fake_unified(**_kwargs):
         return {
-            "evaluation": None,
-            "coach_pack": {
-                "status": "success",
-                "coach_summary": "Writing feedback is ready.",
-                "sentence_suggestions": [],
-                "warnings": [],
+            "review": {
+                "schema_version": 2,
+                "status": "partial",
+                "overall_score": 62,
+                "criteria": {},
+                "manager_plan": {},
+                "quality_review": {"approved": False},
             },
-            "warnings": ["unified evaluation failed: score provider timed out"],
-            "agent_status": {"evaluator": "error"},
+            "outline_coverage": {},
+            "warnings": ["grammar criterion timed out"],
+            "agent_status": {"grammar": "error"},
         }
 
     monkeypatch.setattr(routes.settings, "openai_api_key", "test-key")
@@ -413,168 +370,112 @@ def test_unified_coaching_session_keeps_coach_when_evaluation_fails(monkeypatch)
     result = routes.run_workspace_coaching_session(_coaching_session_request())
 
     assert result["status"] == "partial"
-    assert result["components"]["coach"] == "success"
-    assert result["components"]["evaluation"] == "error"
-    assert result["coach_pack"]["coach_summary"] == "Writing feedback is ready."
-    assert any("score provider timed out" in warning for warning in result["warnings"])
+    assert result["review"]["overall_score"] == 62
+    assert result["agents"]["grammar"] == "error"
+    assert any("grammar criterion timed out" in warning for warning in result["warnings"])
+    assert "evaluation" not in result
+    assert "coach_pack" not in result
 
 
-def test_merged_graph_feeds_shared_specialists_to_single_evaluator(monkeypatch):
+def test_manager_first_review_runs_seven_criterion_lanes_and_weights_once(monkeypatch):
     import unified_coaching_service as unified
 
     monkeypatch.setattr(
         unified,
-        "analyze_opportunity",
-        lambda _state: {
-            "opportunity_analysis": {
-                "opportunity_type": "Scholarship",
-                "requirements": ["Leadership"],
-                "evaluation_themes": ["Community impact"],
-                "deadlines": [],
-            }
+        "analyze_opportunity_text",
+        lambda _text: {
+            "opportunity_type": "Scholarship",
+            "requirements": ["Leadership"],
+            "evaluation_themes": ["Community impact"],
+            "deadlines": [],
         },
     )
-    monkeypatch.setattr(
-        unified,
-        "_run_grammar",
-        lambda *_args: {
-            "grammar_score": 92,
-            "spelling_issues": [],
-            "punctuation_issues": [],
-            "capitalization_issues": [],
-            "verb_tense_issues": [],
-            "agreement_issues": [],
-            "other_grammar_issues": [],
-            "sentence_level_correctness_issues": [],
-            "revision_tasks": [],
-            "sentence_suggestions": [],
-        },
-    )
-    monkeypatch.setattr(
-        unified,
-        "_run_clarity_concision",
-        lambda *_args: {
-            "clarity_concision_score": 76,
-            "clear_and_direct_sentences": ["I mentor younger robotics students each week."],
-            "filler_or_repetition": [],
-            "wordiness": [],
-            "unclear_phrasing": ["have learned to lead"],
-            "tangled_sentence_structure": [],
-            "revision_tasks": ["Clarify what leading by listening means."],
-            "sentence_suggestions": [],
-        },
-    )
-    monkeypatch.setattr(
-        unified,
-        "_run_alignment",
-        lambda *_args: {
-            "alignment_score": 72,
-            "covered_prompt_parts": ["Leadership"],
-            "weakly_covered_prompt_parts": ["Impact"],
-            "missing_prompt_parts": [],
-            "stated_scholarship_values": ["Community impact"],
-            "actual_evaluation_focus": ["Leadership with demonstrated impact"],
-            "addressed_scholarship_values": ["Leadership"],
-            "weak_or_missing_scholarship_values": ["Community impact"],
-            "student_fit_connections": ["Robotics mentoring supports leadership"],
-            "generic_or_unsupported_fit_claims": [],
-            "fit_summary": "The draft shows leadership but needs a clearer impact connection.",
-            "comments": [],
-            "revision_tasks": ["Answer the impact question."],
-        },
-    )
-    monkeypatch.setattr(
-        unified,
-        "_run_evidence_strength",
-        lambda *_args: {
-            "evidence_strength_score": 80,
-            "supported_claims": ["Robotics mentoring"],
-            "unsupported_or_risky_claims": [],
-            "invented_or_unverifiable_details": [],
-            "unused_relevant_profile_evidence": ["Weekly mentoring"],
-            "vague_statements": ["learned to lead"],
-            "places_to_add_detail": ["Explain what changed for the students."],
-            "impact_opportunities": ["Show the result of the mentoring."],
-            "recommended_experience_to_feature": "Weekly robotics mentoring",
-            "recommended_questions": ["How many students did you mentor?"],
-            "recommendations": ["Add one verified result."],
-        },
-    )
-    monkeypatch.setattr(
-        unified,
-        "_run_narrative_structure",
-        lambda *_args: {
-            "narrative_structure_score": 75,
-            "structure_flow_score": 78,
-            "coherence_score": 74,
-            "narrative_arc_score": 72,
-            "arc_progression": [],
-            "paragraph_feedback": [],
-            "transition_and_flow_issues": ["The impact appears before the action is explained."],
-            "coherence_issues": [],
-            "contradictions_or_timeline_issues": [],
-            "missing_reasoning": ["Explain why mentoring changed the student's leadership approach."],
-            "logical_connections_to_preserve": ["Mentoring connects to listening."],
-            "recommended_reordering": [],
-            "overall_narrative_assessment": "The arc is visible but the reflection needs a clearer bridge.",
-            "biggest_narrative_gap": "Connect the mentoring result to the leadership lesson.",
-            "revision_tasks": ["Add the missing action-to-reflection bridge."],
-        },
-    )
-    monkeypatch.setattr(
-        unified,
-        "_run_insight",
-        lambda *_args: {
-            "insight_score": 70,
-            "meaningful_reflections": ["Listening changed the student's approach to leadership."],
-            "surface_level_or_generic_reflections": [],
-            "lessons_realizations_or_questions": ["Leadership begins with listening."],
-            "changes_in_mindset_or_behavior": ["The student now listens before deciding."],
-            "changes_in_values_goals_or_responsibility": [],
-            "significance_to_self": ["Mentoring reshaped the student's leadership practice."],
-            "significance_to_others_or_community": [],
-            "future_direction_connections": [],
-            "missing_meaning_or_reflection": ["Explain why the students' result mattered."],
-            "recommended_reflection_questions": ["What responsibility did the result create?"],
-            "revision_tasks": ["Deepen the action-to-learning reflection."],
-        },
-    )
-    monkeypatch.setattr(unified, "_run_tone_authenticity", lambda *_args: {"authenticity_score": 85})
-    monkeypatch.setattr(unified, "_run_outline_coverage", lambda *_args: {"covered_point_ids": ["p-core"]})
-    monkeypatch.setattr(
-        unified,
-        "run_reviewer_simulation_coach",
-        lambda *_args: {"scholarship_reviewer": {"comment": "Promising but incomplete."}},
-    )
-    evaluator_inputs = []
+    weights = {
+        "alignment": 25,
+        "evidence_strength": 20,
+        "insight": 20,
+        "narrative_structure_flow_coherence": 15,
+        "tone_authenticity": 8,
+        "clarity_concision": 7,
+        "grammar": 5,
+    }
+    scores = {
+        "alignment": 60,
+        "evidence_strength": 70,
+        "insight": 80,
+        "narrative_structure_flow_coherence": 90,
+        "tone_authenticity": 85,
+        "clarity_concision": 75,
+        "grammar": 95,
+    }
+    manager_contexts = []
 
-    def fake_evaluator(state):
-        evaluator_inputs.append(state["specialist_reports"])
-        action = {
-            "priority": "Answer the impact question",
-            "why_it_matters": "The prompt asks for impact.",
-            "how_to_fix": "Add the mentoring result after paragraph two.",
-            "impact": "High",
-            "estimated_effort": "Moderate",
-        }
-        return {
-            "coaching_brief": {"coach_message": "Focus on the missing impact explanation."},
-            "readiness_index": {"alignment": {"score": 72}},
-            "growth_report": {},
-            "reviewer_comments": [],
-            "coaching_reports": {},
-            "eligibility_matrix": {},
-            "feedback": "Focus on impact.",
-            "revision_priorities": ["Answer the impact question"],
-            "ranked_revision_actions": [action],
-            "scores": {"overall_score": 72},
-        }
+    def fake_manager(context):
+        manager_contexts.append(context)
+        return unified.normalize_manager_plan({
+            "manager_summary": "Leadership and impact carry the most weight.",
+            "criteria": {
+                key: {
+                    "weight": weight,
+                    "description": f"Tailored {key}",
+                    "excellent": "Excellent",
+                    "developing": "Developing",
+                    "weak": "Weak",
+                }
+                for key, weight in weights.items()
+            },
+        })
 
-    monkeypatch.setattr(unified, "combine_coaching", fake_evaluator)
+    criterion_calls = []
+
+    def fake_criterion(key, context, plan, **_kwargs):
+        criterion_calls.append((key, plan["weight"], context))
+        return unified.normalize_criterion_review(
+            key,
+            {
+                "score": scores[key],
+                "assessment": {
+                    "what_is_working": f"Working {key}",
+                    "main_gap": f"Gap {key}",
+                    "essay_evidence": ["I mentor younger robotics students each week."],
+                },
+                "reviewer_feedback": {
+                    "likely_reaction": f"Reviewer reaction for {key}",
+                    "main_concern": f"Reviewer concern for {key}",
+                },
+                "priority_action": {
+                    "title": f"Fix {key}",
+                    "location": "Paragraph 1",
+                    "how_to_fix": f"Specific fix for {key}",
+                    "why_this_addresses_the_reviewer": f"Resolves concern for {key}",
+                    "evidence_safety": "Use only a real detail.",
+                    "impact": "High",
+                    "estimated_effort": "Moderate",
+                },
+            },
+            plan,
+        )
+
+    monkeypatch.setattr(unified, "run_manager_agent", fake_manager)
+    monkeypatch.setattr(unified, "run_criterion_review_agent", fake_criterion)
+    monkeypatch.setattr(unified, "run_outline_coverage", lambda *_args: {"covered_point_ids": ["p-core"]})
     monkeypatch.setattr(
         unified,
-        "critic_review",
-        lambda _state: {"critique": {"verdict": "approved"}, "critic_attempts": 1, "needs_revision": False},
+        "run_criterion_qa",
+        lambda _context, _plan, reviews: {
+            "approved": len(reviews) == 7,
+            "failed_criteria": [],
+            "issues": [],
+        },
+    )
+    monkeypatch.setattr(
+        unified,
+        "run_action_guardrail",
+        lambda _context, reviews: {
+            "approved": len(reviews) == 7,
+            "unsafe_criteria": [],
+            "issues": [],
+        },
     )
 
     result = unified.run_unified_coaching_session(
@@ -587,41 +488,43 @@ def test_merged_graph_feeds_shared_specialists_to_single_evaluator(monkeypatch):
         opportunity_prompt="Describe your leadership and impact.",
     )
 
-    assert len(evaluator_inputs) == 1
-    assert evaluator_inputs[0]["alignment"]["alignment_score"] == 72
-    assert "prompt_alignment" not in evaluator_inputs[0]
-    assert evaluator_inputs[0]["evidence_strength"]["evidence_strength_score"] == 80
-    assert evaluator_inputs[0]["narrative_structure_flow_coherence"]["narrative_structure_score"] == 75
-    assert evaluator_inputs[0]["insight"]["insight_score"] == 70
-    assert evaluator_inputs[0]["grammar"]["grammar_score"] == 92
-    assert "sentence_suggestions" not in evaluator_inputs[0]["grammar"]
-    assert evaluator_inputs[0]["clarity_concision"]["clarity_concision_score"] == 76
-    assert "sentence_suggestions" not in evaluator_inputs[0]["clarity_concision"]
-    assert "profile_grounding" not in evaluator_inputs[0]
-    assert "specificity" not in evaluator_inputs[0]
-    assert result["evaluation"]["readiness_index"]["alignment"]["score"] == 72
-    assert result["evaluation"]["eligibility_matrix"] == {}
-    assert result["coach_pack"]["revision_priorities"][0]["priority"] == "Answer the impact question"
-    assert result["coach_pack"]["outline_coverage"]["covered_point_ids"] == ["p-core"]
-    assert result["coach_pack"]["evidence_strength"]["evidence_strength_score"] == 80
-    assert result["coach_pack"]["alignment"]["alignment_score"] == 72
-    assert result["coach_pack"]["prompt_alignment"]["alignment_score"] == 72
-    assert result["coach_pack"]["profile_grounding"]["grounding_score"] == 80
-    assert result["coach_pack"]["specificity_feedback"]["specificity_score"] == 80
-    assert result["coach_pack"]["narrative_structure"]["narrative_structure_score"] == 75
-    assert result["coach_pack"]["structure_feedback"]["structure_score"] == 75
-    assert result["coach_pack"]["insight"]["insight_score"] == 70
-    assert result["coach_pack"]["grammar_feedback"]["grammar_score"] == 92
-    assert result["coach_pack"]["clarity_concision_feedback"]["clarity_concision_score"] == 76
+    assert len(manager_contexts) == 1
+    assert "I mentor younger robotics students" not in manager_contexts[0]
+    assert len(criterion_calls) == 7
+    assert {call[0] for call in criterion_calls} == set(READINESS_DIMENSIONS)
+    assert result["review"]["schema_version"] == 2
+    assert result["review"]["overall_score"] == 75
+    assert result["review"]["manager_plan"]["weight_total"] == 100
+    assert len(result["review"]["criteria"]) == 7
+    for key, criterion in result["review"]["criteria"].items():
+        assert criterion["score"] == scores[key]
+        assert criterion["weight"] == weights[key]
+        assert criterion["reviewer_feedback"]["main_concern"] == f"Reviewer concern for {key}"
+        assert criterion["priority_action"]["how_to_fix"] == f"Specific fix for {key}"
+        assert "Resolves concern" in criterion["priority_action"]["why_this_addresses_the_reviewer"]
+    assert result["outline_coverage"]["covered_point_ids"] == ["p-core"]
+    assert "evaluation" not in result
+    assert "coach_pack" not in result
+    assert result["agent_status"]["manager"] == "success"
     assert result["agent_status"]["grammar"] == "success"
     assert result["agent_status"]["clarity_concision"] == "success"
     assert result["agent_status"]["evidence_strength"] == "success"
-    assert "grounding" not in result["agent_status"]
-    assert "specificity" not in result["agent_status"]
-    assert "discovery" not in result["agent_status"]
-    assert "strategy" not in result["agent_status"]
-    assert "structure" not in result["agent_status"]
-    assert "narrative" not in result["agent_status"]
-    assert result["agent_status"]["narrative_structure"] == "success"
-    assert "eligibility" not in result["agent_status"]
+    assert result["agent_status"]["narrative_structure_flow_coherence"] == "success"
     assert result["agent_status"]["insight"] == "success"
+    assert result["agent_status"]["qa_critic"] == "success"
+    assert result["agent_status"]["guardrail_critic"] == "success"
+    assert "evaluator" not in result["agent_status"]
+    assert "reviewer" not in result["agent_status"]
+
+    second = unified.run_unified_coaching_session(
+        student_profile={"profile_text": "I mentor students through a robotics club."},
+        clean_scholarship_record={"name": "Engineering Award"},
+        essay_prompt="Describe your leadership and impact.",
+        essay_draft="I mentor younger robotics students and now explain the result more clearly.",
+        scholarship_name="Engineering Award",
+        opportunity_prompt="Describe your leadership and impact.",
+        previous_manager_plan=result["review"]["manager_plan"],
+    )
+    assert len(manager_contexts) == 1
+    assert second["agent_status"]["manager"] == "reused"
+    assert second["review"]["manager_plan"]["criteria"] == result["review"]["manager_plan"]["criteria"]

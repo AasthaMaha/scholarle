@@ -4,22 +4,19 @@
 import hashlib
 import io
 import json
-import re
 import time
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Optional
 
 import pypdf
-from langchain_core.documents import Document
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pydantic import BaseModel, Field
 from fastapi import HTTPException, UploadFile
 
 from config import settings
-from essay_coaching_service import run_essay_workspace_coach, run_selection_rewrite
+from essay_editor_service import run_editor_check as run_editor_check_service
+from essay_editor_service import run_selection_rewrite
 from essay_mechanics import apply_deterministic_mechanics
 from prompt_adaptation import format_brief_for_prompt, resolve_writing_brief
-from graph.builder import build_application_graph
 from graph.fit_builder import build_fit_analysis_graph
 from graph.opportunity_builder import build_opportunity_extraction_graph
 from graph.profile_builder import build_profile_extraction_graph
@@ -45,17 +42,6 @@ from persistence.services import (
 from persistence.vector_service import VectorService
 from unified_coaching_service import run_unified_coaching_session
 from utils.opportunity_sources import resolve_opportunity_sources
-
-
-class AnalyzeRequest(BaseModel):
-    user_id: str = Field(default="", max_length=100)
-    cv_text: str = Field(..., min_length=1, max_length=50000)
-    essay_text: str = Field(..., min_length=1, max_length=20000)
-    scholarship_name: str = Field(..., min_length=1, max_length=500)
-    scholarship_type: str = Field(..., min_length=1, max_length=200)
-    prompt: str = Field(..., min_length=1, max_length=10000)
-    previous_readiness: Optional[Dict[str, int]] = None
-    draft_number: int = Field(default=1, ge=1, le=50)
 
 
 class ProfileAutofillResponse(BaseModel):
@@ -194,22 +180,16 @@ class WikiDiscoverResponse(BaseModel):
     result_note: str = ""
 
 
-class EssayCoachRequest(BaseModel):
+class EditorCheckRequest(BaseModel):
     user_id: str = Field(default="", max_length=100)
-    student_profile: dict = Field(default_factory=dict)
     clean_scholarship_record: dict = Field(default_factory=dict)
-    essay_prompt: str = Field(default="", max_length=12000)
     essay_draft: str = Field(default="", max_length=20000)
-    personalized_outline: dict = Field(default_factory=dict)
     user_notes: str = Field(default="", max_length=5000)
-    word_limit: str = Field(default="", max_length=120)
     outline_points: list[dict] = Field(default_factory=list)
-    mode: str = Field(default="full", max_length=40)
-    writing_support_level: str = Field(default="grammar_only", max_length=40)
 
 
 class CoachingSessionRequest(BaseModel):
-    """One-button Step 4 session: mechanics → parallel evaluate + coach."""
+    """One-button Page 4 session: mechanics → one weighted essay review."""
 
     user_id: str = Field(default="", max_length=100)
     cv_text: str = Field(default="", max_length=50000)
@@ -217,16 +197,12 @@ class CoachingSessionRequest(BaseModel):
     scholarship_name: str = Field(default="", max_length=500)
     scholarship_type: str = Field(default="", max_length=200)
     prompt: str = Field(..., min_length=1, max_length=10000)
-    previous_readiness: Optional[Dict[str, int]] = None
-    draft_number: int = Field(default=1, ge=1, le=50)
+    previous_manager_plan: Optional[dict] = None
     student_profile: dict = Field(default_factory=dict)
     clean_scholarship_record: dict = Field(default_factory=dict)
     essay_prompt: str = Field(default="", max_length=12000)
-    personalized_outline: dict = Field(default_factory=dict)
-    user_notes: str = Field(default="", max_length=5000)
     word_limit: str = Field(default="", max_length=120)
     outline_points: list[dict] = Field(default_factory=list)
-    writing_support_level: str = Field(default="sentence_polish", max_length=40)
 
 
 class RewriteRequest(BaseModel):
@@ -290,12 +266,6 @@ class OutlineGenerateResponse(BaseModel):
     missing_profile_info: list[str] = Field(default_factory=list)
 
 
-def _text_to_chunks(text: str, source: str) -> list:
-    doc = Document(page_content=text.strip(), metadata={"source": source})
-    splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
-    return splitter.split_documents([doc])
-
-
 def _stable_source_id(prefix: str, value: object) -> str:
     raw = json.dumps(value, sort_keys=True, default=str) if not isinstance(value, str) else value
     digest = hashlib.sha256(raw.strip().encode("utf-8")).hexdigest()[:24]
@@ -338,27 +308,6 @@ def _persist_domain_record(save_fn, *args, **kwargs):
         return None
 
 
-def _build_opportunity_text(
-    scholarship_name: str,
-    scholarship_type: str,
-    prompt: str,
-) -> str:
-    return (
-        f"Scholarship: {scholarship_name}\n"
-        f"Type: {scholarship_type}\n\n"
-        f"{prompt.strip()}"
-    )
-
-
-def _profile_store_path(profile_text: str) -> Path:
-    profile_hash = hashlib.sha256(profile_text.strip().encode("utf-8")).hexdigest()[:16]
-    return Path(settings.profile_vector_db_path) / profile_hash
-
-
-def _has_existing_chroma_store(path: Path) -> bool:
-    return (path / "chroma.sqlite3").exists()
-
-
 def extract_text_from_pdf(file_bytes: bytes) -> str:
     try:
         reader = pypdf.PdfReader(io.BytesIO(file_bytes))
@@ -382,78 +331,6 @@ def _gather_opportunity_source_text(request: OpportunityExtractRequest):
         scholarship_url=request.scholarship_url,
         additional_notes=request.additional_notes,
     )
-
-
-def run_application_pipeline(
-    user_id: str,
-    opportunity_text: str,
-    student_draft: str,
-    profile_text: str,
-    previous_readiness: Optional[Dict[str, int]] = None,
-    draft_number: int = 1,
-) -> dict:
-    vector_service = _safe_vector_service()
-    profile_docs = _text_to_chunks(profile_text, "uploaded_cv")
-
-    _upsert_memory(
-        vector_service,
-        user_id=user_id,
-        source_type="profile_summary",
-        source_id="current-profile",
-        title="Current student profile",
-        canonical_text=profile_text,
-        structured_json={"profile_text": profile_text},
-        collection_name="user_profile_memory",
-    )
-    _upsert_memory(
-        vector_service,
-        user_id=user_id,
-        source_type="opportunity",
-        source_id=_stable_source_id("opportunity", opportunity_text),
-        title="Current scholarship opportunity",
-        canonical_text=opportunity_text,
-        structured_json={"opportunity_text": opportunity_text},
-        collection_name="user_opportunity_memory",
-    )
-    if student_draft.strip():
-        _upsert_memory(
-            vector_service,
-            user_id=user_id,
-            source_type="essay_draft",
-            source_id=_stable_source_id(f"essay-draft-{draft_number}", student_draft),
-            title=f"Essay draft {draft_number}",
-            canonical_text=student_draft,
-            structured_json={"draft_number": draft_number, "essay_text": student_draft},
-            collection_name="user_application_memory",
-        )
-
-    graph = build_application_graph(vector_service, user_id)
-    result = graph.invoke(
-        {
-            "opportunity_text": opportunity_text,
-            "student_profile_docs": profile_docs,
-            "student_draft": student_draft,
-            "previous_readiness": previous_readiness or {},
-            "draft_number": draft_number,
-        }
-    )
-    feedback_text = build_feedback_memory_text(
-        {
-            "summary": result.get("feedback", ""),
-            "strengths": result.get("revision_priorities", []),
-        }
-    )
-    _upsert_memory(
-        vector_service,
-        user_id=user_id,
-        source_type="coaching_feedback",
-        source_id=_stable_source_id(f"coaching-{draft_number}", result.get("feedback", "")),
-        title=f"Coaching feedback draft {draft_number}",
-        canonical_text=feedback_text,
-        structured_json=result,
-        collection_name="user_feedback_memory",
-    )
-    return result
 
 
 def _outline_fallback(request: OutlineGenerateRequest, message: str = "") -> dict:
@@ -616,7 +493,7 @@ def generate_personalized_outline(request: OutlineGenerateRequest) -> dict:
     return data
 
 
-def analyze_application(request: AnalyzeRequest) -> dict:
+def run_editor_check(request: EditorCheckRequest) -> dict:
     if not settings.openai_api_key:
         raise HTTPException(
             status_code=400,
@@ -626,76 +503,16 @@ def analyze_application(request: AnalyzeRequest) -> dict:
             ),
         )
 
-    opportunity_text = _build_opportunity_text(
-        request.scholarship_name,
-        request.scholarship_type,
-        request.prompt,
-    )
-
-    result, _ = run_agent_with_persistence(
-        user_id=request.user_id,
-        agent_name="essay_application_coaching",
-        input_json={
-            "cv_text_chars": len(request.cv_text),
-            "essay_text_chars": len(request.essay_text),
-            "scholarship_name": request.scholarship_name,
-            "scholarship_type": request.scholarship_type,
-            "prompt_chars": len(request.prompt),
-            "draft_number": request.draft_number,
-        },
-        run_fn=lambda _: run_application_pipeline(
-            user_id=default_user_id(request.user_id),
-            opportunity_text=opportunity_text,
-            student_draft=request.essay_text,
-            profile_text=request.cv_text,
-            previous_readiness=request.previous_readiness,
-            draft_number=request.draft_number,
-        ),
-    )
-
-    return {
-        "coaching_brief": result.get("coaching_brief", {}),
-        "readiness_index": result.get("readiness_index", {}),
-        "growth_report": result.get("growth_report", {}),
-        "reviewer_comments": result.get("reviewer_comments", []),
-        "coaching_reports": result.get("coaching_reports", {}),
-        "eligibility_matrix": result.get("eligibility_matrix", {}),
-        "feedback": result.get("feedback", ""),
-        "opportunity_analysis": result.get("opportunity_analysis", {}),
-        "critique": result.get("critique", {}),
-        "final_application_package": result.get("final_application_package", ""),
-        "revision_priorities": result.get("revision_priorities", []),
-        "ranked_revision_actions": result.get("ranked_revision_actions", []),
-        "draft_number": result.get("draft_number", request.draft_number),
-    }
-
-
-def run_essay_coach(request: EssayCoachRequest) -> dict:
-    if not settings.openai_api_key:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Missing OPENAI_API_KEY. Add a .env file in the project root "
-                "with OPENAI_API_KEY=your_key, then restart the server."
-            ),
-        )
-
-    return run_essay_workspace_coach(
-        student_profile=request.student_profile,
-        clean_scholarship_record=request.clean_scholarship_record,
-        essay_prompt=request.essay_prompt,
+    return run_editor_check_service(
         essay_draft=request.essay_draft,
-        personalized_outline=request.personalized_outline,
+        clean_scholarship_record=request.clean_scholarship_record,
         user_notes=request.user_notes,
-        word_limit=request.word_limit,
         outline_points=request.outline_points,
-        mode=request.mode or "full",
-        writing_support_level=request.writing_support_level or "grammar_only",
     )
 
 
 def run_workspace_coaching_session(request: CoachingSessionRequest) -> dict:
-    """Mechanics first, then one shared specialist/evaluator coaching graph."""
+    """Mechanics first, then one Manager-led criterion review graph."""
     if not settings.openai_api_key:
         raise HTTPException(
             status_code=400,
@@ -718,38 +535,18 @@ def run_workspace_coaching_session(request: CoachingSessionRequest) -> dict:
         clean_scholarship_record=request.clean_scholarship_record,
         essay_prompt=essay_prompt,
         essay_draft=cleaned_draft,
-        personalized_outline=request.personalized_outline,
-        user_notes=request.user_notes,
         word_limit=request.word_limit,
         outline_points=request.outline_points,
-        writing_support_level=request.writing_support_level or "sentence_polish",
         profile_text=request.cv_text,
         scholarship_name=request.scholarship_name,
         scholarship_type=request.scholarship_type,
         opportunity_prompt=request.prompt,
-        previous_readiness=request.previous_readiness,
-        draft_number=request.draft_number,
+        previous_manager_plan=request.previous_manager_plan,
     )
-    evaluation = merged.get("evaluation")
-    coach_pack = merged.get("coach_pack")
+    review = merged.get("review")
     warnings = list(merged.get("warnings") or [])
-
-    evaluation_ok = bool(evaluation) and str(evaluation.get("status", "")).lower() != "error"
-    coach_ok = bool(coach_pack) and str(coach_pack.get("status", "")).lower() != "error"
-
-    # A branch can return a structured error package without raising. Treat it
-    # as a failed component while preserving its useful explanation/warnings.
-    if coach_pack and not coach_ok:
-        warnings.extend(str(item) for item in coach_pack.get("warnings", []) if item)
-    if evaluation and not evaluation_ok:
-        detail = evaluation.get("message") or evaluation.get("feedback")
-        if detail:
-            warnings.append(f"evaluation failed: {detail}")
-
-    status = "success"
-    if not evaluation_ok and not coach_ok:
-        status = "error"
-    elif not evaluation_ok or not coach_ok:
+    status = str((review or {}).get("status") or "error").lower()
+    if status not in {"success", "partial", "error"}:
         status = "partial"
 
     return {
@@ -758,13 +555,8 @@ def run_workspace_coaching_session(request: CoachingSessionRequest) -> dict:
         "status": status,
         "mechanics": mechanics,
         "cleaned_draft": cleaned_draft,
-        "evaluation": evaluation,
-        "coach_pack": coach_pack,
-        "components": {
-            "mechanics": "success",
-            "evaluation": "success" if evaluation_ok else "error",
-            "coach": "success" if coach_ok else "error",
-        },
+        "review": review,
+        "outline_coverage": merged.get("outline_coverage") or {},
         "agents": merged.get("agent_status", {}),
         "warnings": list(dict.fromkeys(warnings)),
         "duration_ms": round((time.perf_counter() - started_at) * 1000),

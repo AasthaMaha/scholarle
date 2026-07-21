@@ -128,14 +128,10 @@ export type EssayDraft = {
   version: number;
   content: string;
   wordCount: number;
-  score?: number;
   savedAt: string;
-  // Per-version evaluation snapshots (progress tracking).
-  coachScores?: Record<string, number>;
-  coachOverall?: number;
-  coachSummary?: string;
-  readinessScores?: Record<string, number>;
-  readinessOverall?: number;
+  // Per-version snapshots of the canonical Essay Review.
+  reviewScores?: Record<string, number>;
+  reviewOverall?: number;
 };
 
 export type ActiveScholarship = {
@@ -225,6 +221,62 @@ export type AnalysisScore = {
   delta?: number;
 };
 
+export type EssayCriterionReview = {
+  criterion?: string;
+  label?: string;
+  weight?: number;
+  score?: number | null;
+  level?: string;
+  assessment?: {
+    what_is_working?: string;
+    main_gap?: string;
+    essay_evidence?: string[];
+  };
+  reviewer_feedback?: {
+    likely_reaction?: string;
+    main_concern?: string;
+  };
+  priority_action?: {
+    title?: string;
+    location?: string;
+    how_to_fix?: string;
+    why_this_addresses_the_reviewer?: string;
+    evidence_safety?: string;
+    impact?: string;
+    estimated_effort?: string;
+  };
+  rubric?: AnalysisScore["rubric"];
+  available?: boolean;
+};
+
+export type EssayManagerPlan = {
+  manager_summary?: string;
+  weight_total?: number;
+  criteria?: Record<string, {
+    label?: string;
+    weight?: number;
+    weight_rationale?: string;
+    description?: string;
+    excellent?: string;
+    developing?: string;
+    weak?: string;
+    reviewer_lens?: string;
+  }>;
+};
+
+export type EssayReviewResult = {
+  schema_version: 2;
+  status: "success" | "partial" | "error";
+  overall_score?: number | null;
+  criteria: Record<string, EssayCriterionReview>;
+  manager_plan: EssayManagerPlan;
+  quality_review: {
+    approved?: boolean;
+    qa?: Record<string, unknown>;
+    guardrail?: Record<string, unknown>;
+  };
+};
+
 export type EligibilityStatus = "met" | "not_met" | "missing";
 
 export type EligibilityRow = {
@@ -264,49 +316,6 @@ export type ApplicationReadinessMatrix = {
   blockers?: Array<Record<string, string>>;
   preparation_tasks?: string[];
   summary?: string;
-};
-
-export type AnalysisResult = {
-  coaching_brief?: {
-    recommended_action?: string;
-    current_strength_level?: string;
-    biggest_opportunity?: string;
-    expected_improvement?: string;
-    coach_message?: string;
-  };
-  readiness_index?: Record<string, AnalysisScore>;
-  growth_report?: {
-    has_previous_draft?: boolean;
-    improvements?: string[];
-    growth_message?: string;
-  };
-  reviewer_comments?: Array<{ persona?: string; comment?: string }>;
-  coaching_reports?: Record<string, Record<string, string>>;
-  eligibility_matrix?: EligibilityMatrix;
-  feedback?: string;
-  opportunity_analysis?: Record<string, unknown>;
-  critique?: {
-    verdict?: string;
-    confidence?: number;
-    grounding_pass?: boolean;
-    guardrail_pass?: boolean;
-    issues?: string[];
-    revision_guidance?: string;
-    attempt?: number;
-  };
-  final_application_package?: string;
-  revision_priorities?: string[];
-  ranked_revision_actions?: Array<{
-    priority?: string;
-    why_it_matters?: string;
-    how_to_fix?: string;
-    impact?: string;
-    estimated_effort?: string;
-    criterion?: string;
-    criterion_label?: string;
-    score?: number;
-  }>;
-  draft_number?: number;
 };
 
 export type FitAnalysisResult = {
@@ -494,12 +503,10 @@ export type UserProfile = {
   lastStep?: number;
   // scholarship currently being analyzed
   activeScholarship?: ActiveScholarship;
-  // latest result returned by the Scholar-E AI coach
-  lastAnalysis?: AnalysisResult;
-  // latest Essay Workspace coach pack (Coach tab), persisted across remounts
-  essayCoachResult?: Record<string, unknown>;
-  essayCoachSummary?: string;
-  essayCoachUpdatedAt?: number;
+  // latest schema-v2 Essay Review, persisted across remounts
+  essayReviewResult?: EssayReviewResult;
+  essayReviewUpdatedAt?: number;
+  essayReviewDraftAtRun?: string;
   // latest dedicated scholarship fit analysis
   fitAnalysis?: FitAnalysisResult;
   // latest discovery wiki recommendations
@@ -536,6 +543,56 @@ const MAX_VERSIONS = 20;
 
 type PersistShape = { currentEmail: string; accounts: Record<string, UserProfile> };
 
+/** Drop retired Page 4 review fields instead of carrying them forward forever. */
+function withoutLegacyEssayReviewData(user: UserProfile): UserProfile {
+  const legacyUser = user as UserProfile & {
+    lastAnalysis?: unknown;
+    essayCoachResult?: unknown;
+    essayCoachSummary?: unknown;
+    essayCoachUpdatedAt?: unknown;
+  };
+  const {
+    lastAnalysis: _lastAnalysis,
+    essayCoachResult: _essayCoachResult,
+    essayCoachSummary: _essayCoachSummary,
+    essayCoachUpdatedAt: _essayCoachUpdatedAt,
+    ...current
+  } = legacyUser;
+  void _lastAnalysis;
+  void _essayCoachResult;
+  void _essayCoachSummary;
+  void _essayCoachUpdatedAt;
+
+  const drafts = current.drafts?.map((draft) => {
+    const legacyDraft = draft as EssayDraft & {
+      score?: unknown;
+      coachScores?: unknown;
+      coachOverall?: unknown;
+      coachSummary?: unknown;
+      readinessScores?: unknown;
+      readinessOverall?: unknown;
+    };
+    const {
+      score: _score,
+      coachScores: _coachScores,
+      coachOverall: _coachOverall,
+      coachSummary: _coachSummary,
+      readinessScores: _readinessScores,
+      readinessOverall: _readinessOverall,
+      ...currentDraft
+    } = legacyDraft;
+    void _score;
+    void _coachScores;
+    void _coachOverall;
+    void _coachSummary;
+    void _readinessScores;
+    void _readinessOverall;
+    return currentDraft;
+  });
+
+  return drafts ? { ...current, drafts } : current;
+}
+
 function readStore(): PersistShape {
   if (typeof window === "undefined") return { currentEmail: "", accounts: {} };
   try {
@@ -559,10 +616,11 @@ function writeStore(shape: PersistShape) {
 
 // Bound stored size: keep only the most recent draft versions.
 function forStorage(user: UserProfile): UserProfile {
-  if (user.drafts && user.drafts.length > MAX_VERSIONS) {
-    return { ...user, drafts: user.drafts.slice(-MAX_VERSIONS) };
+  const current = withoutLegacyEssayReviewData(user);
+  if (current.drafts && current.drafts.length > MAX_VERSIONS) {
+    return { ...current, drafts: current.drafts.slice(-MAX_VERSIONS) };
   }
-  return user;
+  return current;
 }
 
 const UserContext = createContext<Ctx | null>(null);
@@ -579,7 +637,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
     } catch {}
     const store = readStore();
     const saved = store.accounts[store.currentEmail] ?? store.accounts[""];
-    if (saved) setUser(saved);
+    if (saved) setUser(withoutLegacyEssayReviewData(saved));
     hydrated.current = true;
     setIsHydrated(true);
   }, []);
@@ -619,7 +677,8 @@ export function UserProvider({ children }: { children: ReactNode }) {
       const existing = store.accounts[key];
       if (existing) {
         // Resume this account exactly where it left off.
-        return { ...existing, email: key, name: existing.name || name };
+        const current = withoutLegacyEssayReviewData(existing);
+        return { ...current, email: key, name: current.name || name };
       }
       // New account: carry over any guest edits made before signing in.
       const guest = prev && !prev.email ? prev : null;

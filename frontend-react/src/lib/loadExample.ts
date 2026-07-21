@@ -91,7 +91,6 @@ export function loadExampleProfile(
       additionalNotes: `Sponsor: ${shpe.sponsor}. Tags: ${shpe.tags.join(", ")}.`,
     },
     essayDraft,
-    lastAnalysis: undefined,
     drafts: undefined,
   };
 }

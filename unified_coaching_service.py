@@ -1,48 +1,35 @@
-"""Single-graph Essay Workspace coaching orchestration.
+"""One Manager-first review pipeline for the Page 4 Essay Workspace.
 
-This service replaces the former "run the lightweight pipeline beside the deep
-pipeline" session behavior. It prepares one grounded context, fans out one set
-of complementary specialists, sends their reports to one rubric-based
-evaluator, runs one bounded QA loop, and projects the shared result into the
-existing Coach and Evaluation response contracts.
+Mechanical pre-correction remains owned by the API route. This service receives
+that cleaned draft, creates one scholarship-specific rubric, runs seven
+criterion-owned review agents in parallel, audits their result, and calculates
+one deterministic weighted overall score.
 """
 
 from __future__ import annotations
 
+import json
+import hashlib
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Optional
 
-from essay_coaching_service import (
-    _compose_summary,
-    _derive_writing_scores,
-    _empty_package,
-    _outline_text,
-    _prepare_sentence_suggestions,
-    _profile_text,
-    _profile_grounding_view,
-    _prompt_alignment_view,
-    _run_alignment,
-    _run_clarity_concision,
-    _run_evidence_strength,
-    _run_grammar,
-    _run_guardrail_critic,
-    _run_insight,
-    _run_outline_coverage,
-    _run_narrative_structure,
-    _run_tone_authenticity,
-    _scholarship_context,
-    _sentence_feedback_view,
-    _specificity_view,
-    _structure_flow_view,
+from essay_context import build_review_context
+from essay_context import profile_text as profile_text_from_payload
+from essay_context import scholarship_context as build_scholarship_context
+from essay_editor_service import run_outline_coverage
+from nodes.coaching.criterion_review import (
+    audit_failed_criteria,
+    correction_guidance_for,
+    normalize_criterion_review,
+    normalize_manager_plan,
+    run_action_guardrail,
+    run_criterion_qa,
+    run_criterion_review_agent,
+    run_manager_agent,
+    weighted_overall_score,
 )
-from graph.builder import analyze_opportunity
-from nodes.assemble_package import assemble_package
-from nodes.coaching.agents import (
-    build_context,
-    run_reviewer_simulation_coach,
-)
-from nodes.combine import combine_coaching
-from nodes.critic import critic_review
+from nodes.coaching.readiness import READINESS_DIMENSIONS
+from opportunity_analysis import analyze_opportunity_text
 from prompt_adaptation import format_brief_for_prompt, resolve_writing_brief
 from utils.input_validation import summarize_submitted_input
 
@@ -77,7 +64,9 @@ def _fallback_opportunity_analysis(record: dict, prompt: str) -> dict:
     return {
         "opportunity_type": record.get("type") or "Scholarship",
         "requirements": list(dict.fromkeys(requirements)),
-        "deadlines": [str(record["applicationDeadline"])] if record.get("applicationDeadline") else [],
+        "deadlines": [str(record["applicationDeadline"])]
+        if record.get("applicationDeadline")
+        else [],
         "evaluation_themes": [str(item) for item in themes if item],
         "prompt": prompt,
     }
@@ -88,7 +77,7 @@ def _run_parallel(
     warnings: list[str],
     agent_status: dict[str, str],
     *,
-    max_workers: int = 6,
+    max_workers: int = 8,
 ) -> dict[str, Any]:
     results: dict[str, Any] = {}
     if not jobs:
@@ -99,153 +88,86 @@ def _run_parallel(
             try:
                 results[name] = future.result()
                 agent_status[name] = "success"
-            except Exception as exc:  # noqa: BLE001 - specialists degrade independently
+            except Exception as exc:  # noqa: BLE001 - lanes degrade independently
                 results[name] = None
                 agent_status[name] = "error"
                 warnings.append(f"{name} failed: {exc}")
     return results
 
 
-def _evaluation_response(state: dict) -> dict:
-    return {
-        "coaching_brief": state.get("coaching_brief", {}),
-        "readiness_index": state.get("readiness_index", {}),
-        "growth_report": state.get("growth_report", {}),
-        "reviewer_comments": state.get("reviewer_comments", []),
-        "coaching_reports": state.get("coaching_reports", {}),
-        "eligibility_matrix": state.get("eligibility_matrix", {}),
-        "feedback": state.get("feedback", ""),
-        "opportunity_analysis": state.get("opportunity_analysis", {}),
-        "critique": state.get("critique", {}),
-        "final_application_package": state.get("final_application_package", ""),
-        "revision_priorities": state.get("revision_priorities", []),
-        "ranked_revision_actions": state.get("ranked_revision_actions", []),
-        "draft_number": state.get("draft_number", 1),
-    }
+def _manager_context(
+    opportunity_text: str,
+    opportunity_analysis: dict,
+    scholarship_details: str,
+    prompt_for_agents: str,
+    word_limit: str,
+) -> str:
+    """Manager input is deliberately blind to the student profile and draft."""
+    return f"""
+SCHOLARSHIP INFORMATION:
+{opportunity_text}
+
+STRUCTURED OPPORTUNITY ANALYSIS:
+{json.dumps(opportunity_analysis or {}, indent=2, default=str)}
+
+SCHOLARSHIP CONTEXT:
+{scholarship_details}
+
+ESSAY PROMPT AND WRITING BRIEF:
+{prompt_for_agents}
+
+WORD LIMIT:
+{word_limit or '(not stated)'}
+""".strip()
 
 
-def _fallback_priorities(results: dict[str, Any]) -> list[dict[str, str]]:
-    candidates: list[str] = []
-    alignment = results.get("alignment") or {}
-    narrative_structure = results.get("narrative_structure") or {}
-    evidence = results.get("evidence_strength") or {}
-    insight = results.get("insight") or {}
-    tone = results.get("tone") or {}
-    grammar = results.get("grammar") or {}
-    clarity = results.get("clarity_concision") or {}
-    candidates.extend(alignment.get("revision_tasks") or [])
-    candidates.extend(narrative_structure.get("revision_tasks") or [])
-    candidates.extend(evidence.get("recommendations") or [])
-    candidates.extend(evidence.get("places_to_add_detail") or [])
-    candidates.extend(insight.get("revision_tasks") or [])
-    candidates.extend(insight.get("missing_meaning_or_reflection") or [])
-    candidates.extend(tone.get("tone_improvement_suggestions") or [])
-    candidates.extend(grammar.get("revision_tasks") or [])
-    candidates.extend(clarity.get("revision_tasks") or [])
-    return [
-        {
-            "priority": item,
-            "why_it_matters": "This specialist finding is the strongest available revision lead.",
-            "how_to_fix": item,
-            "impact": "Medium",
-            "estimated_effort": "Moderate",
-        }
-        for item in list(dict.fromkeys(str(item) for item in candidates if item))[:4]
-    ]
+def _programmatic_failed_criteria(reviews: dict) -> list[str]:
+    failed = []
+    for key in READINESS_DIMENSIONS:
+        review = reviews.get(key) or {}
+        assessment = review.get("assessment") or {}
+        reviewer = review.get("reviewer_feedback") or {}
+        action = review.get("priority_action") or {}
+        if not review.get("available"):
+            failed.append(key)
+            continue
+        required = (
+            assessment.get("main_gap"),
+            reviewer.get("likely_reaction"),
+            reviewer.get("main_concern"),
+            action.get("title"),
+            action.get("how_to_fix"),
+            action.get("why_this_addresses_the_reviewer"),
+        )
+        if not all(str(value or "").strip() for value in required):
+            failed.append(key)
+    return failed
 
 
-def _coach_response(
-    results: dict[str, Any],
-    sentence_suggestions: list[dict],
+def _build_review_result(
+    manager_plan: dict,
+    reviews: dict,
+    qa: dict,
     guardrail: dict,
-    evaluation: Optional[dict],
-    writing_brief: dict,
-    writing_support_level: str,
-    warnings: list[str],
 ) -> dict:
-    package = _empty_package()
-    coach_specialists = {
-        "grammar",
-        "clarity_concision",
-        "alignment",
-        "evidence_strength",
-        "narrative_structure",
-        "insight",
-        "tone",
-        "coverage",
+    overall_score = weighted_overall_score(reviews)
+    missing = [key for key in READINESS_DIMENSIONS if not reviews[key].get("available")]
+    audit_ok = bool(qa.get("approved")) and bool(guardrail.get("approved"))
+    available_count = len(READINESS_DIMENSIONS) - len(missing)
+    status = "success" if not missing and audit_ok else "partial" if available_count else "error"
+    quality_review = {
+        "qa": qa,
+        "guardrail": guardrail,
+        "approved": audit_ok,
     }
-    if not any(name in results and results[name] is not None for name in coach_specialists):
-        package["status"] = "error"
-        package["coach_summary"] = "The writing specialists could not analyze this draft."
-        package["warnings"] = list(dict.fromkeys(warnings))
-        return package
-    package["writing_brief"] = {
-        "mode": writing_brief.get("mode"),
-        "has_formal_prompt": writing_brief.get("has_formal_prompt"),
-        "prompt_asks": writing_brief.get("prompt_asks") or [],
+    return {
+        "schema_version": 2,
+        "status": status,
+        "overall_score": overall_score,
+        "criteria": reviews,
+        "manager_plan": manager_plan,
+        "quality_review": quality_review,
     }
-    package["writing_support_level"] = writing_support_level
-    package["sentence_suggestions"] = sentence_suggestions
-    grammar_feedback = results.get("grammar") or {}
-    clarity_feedback = results.get("clarity_concision") or {}
-    package["grammar_feedback"] = _sentence_feedback_view(grammar_feedback)
-    package["clarity_concision_feedback"] = _sentence_feedback_view(clarity_feedback)
-    package["guardrail"] = guardrail or {}
-    alignment = results.get("alignment") or {}
-    package["alignment"] = alignment
-    package["prompt_alignment"] = _prompt_alignment_view(alignment)
-    evidence_strength = results.get("evidence_strength") or {}
-    package["evidence_strength"] = evidence_strength
-    # Compatibility projections keep old clients and targeted-tool contracts
-    # working without running duplicate grounding or specificity agents.
-    package["profile_grounding"] = _profile_grounding_view(evidence_strength)
-    narrative_structure = results.get("narrative_structure") or {}
-    package["narrative_structure"] = narrative_structure
-    package["structure_feedback"] = _structure_flow_view(narrative_structure)
-    package["paragraph_feedback"] = narrative_structure.get("paragraph_feedback", [])
-    insight = results.get("insight") or {}
-    package["insight"] = insight
-    package["specificity_feedback"] = _specificity_view(evidence_strength)
-    package["tone_feedback"] = results.get("tone") or {}
-    package["outline_coverage"] = results.get("coverage") or {}
-
-    readiness = (evaluation or {}).get("readiness_index") or {}
-    formal_scores = {
-        key: value.get("score", 0)
-        for key, value in readiness.items()
-        if key != "revision_progress" and isinstance(value, dict) and isinstance(value.get("score"), int)
-    }
-    derived_clarity, derived_grammar = _derive_writing_scores(sentence_suggestions)
-    package["overall_scores"] = formal_scores or {
-        "alignment": alignment.get("alignment_score", 0),
-        "evidence_strength": evidence_strength.get("evidence_strength_score", 0),
-        "narrative_structure_flow_coherence": narrative_structure.get("narrative_structure_score", 0),
-        "insight": insight.get("insight_score", 0),
-        "authenticity": package["tone_feedback"].get("authenticity_score", 0),
-        "clarity_concision": clarity_feedback.get("clarity_concision_score", derived_clarity),
-    }
-    package["overall_scores"]["grammar_mechanics"] = grammar_feedback.get(
-        "grammar_score", derived_grammar
-    )
-
-    ranked = (evaluation or {}).get("ranked_revision_actions") or _fallback_priorities(results)
-    package["revision_priorities"] = ranked[:5]
-    package["quick_fixes"] = [
-        item.get("how_to_fix") or item.get("priority", "")
-        for item in ranked
-        if item.get("estimated_effort") == "Quick"
-    ][:5]
-    package["deeper_revision_tasks"] = [
-        item.get("how_to_fix") or item.get("priority", "")
-        for item in ranked
-        if item.get("estimated_effort") in {"Moderate", "Deep"}
-    ][:5]
-    package["coach_summary"] = (
-        ((evaluation or {}).get("coaching_brief") or {}).get("coach_message")
-        or _compose_summary(package)
-    )
-    package["warnings"] = list(dict.fromkeys(warnings))
-    return package
 
 
 def run_unified_coaching_session(
@@ -254,32 +176,26 @@ def run_unified_coaching_session(
     clean_scholarship_record: Optional[dict] = None,
     essay_prompt: str = "",
     essay_draft: str = "",
-    personalized_outline: Optional[dict] = None,
-    user_notes: str = "",
     word_limit: str = "",
     outline_points: Optional[list] = None,
-    writing_support_level: str = "sentence_polish",
     profile_text: str = "",
     scholarship_name: str = "",
     scholarship_type: str = "Scholarship",
     opportunity_prompt: str = "",
-    previous_readiness: Optional[dict] = None,
-    draft_number: int = 1,
+    previous_manager_plan: Optional[dict] = None,
 ) -> dict:
-    """Run one shared specialist graph and project it into both UI contracts."""
+    """Run the Manager, seven criterion lanes, and two parallel critics."""
     essay_draft = (essay_draft or "").strip()
     if not essay_draft:
         return {
-            "evaluation": None,
-            "coach_pack": {**_empty_package("error"), "coach_summary": "Add an essay draft, then run the coach."},
+            "review": None,
+            "outline_coverage": {},
             "warnings": ["No essay draft provided."],
             "agent_status": {},
         }
 
     record = clean_scholarship_record or {}
-    # The API's cv_text is the fullest canonical profile rendering. Fall back
-    # to the structured lightweight payload when callers omit it.
-    profile = (profile_text or _profile_text(student_profile) or "").strip()[:50000]
+    profile = (profile_text or profile_text_from_payload(student_profile) or "").strip()[:50000]
     selected_prompt = (essay_prompt or opportunity_prompt or "").strip()
     writing_brief = resolve_writing_brief(
         essay_prompt=selected_prompt,
@@ -288,10 +204,10 @@ def run_unified_coaching_session(
     )
     prompt_for_agents = (
         f"{format_brief_for_prompt(writing_brief)}\n\n"
-        f"SELECTED ESSAY PROMPT TEXT:\n{selected_prompt or '(none — use scholarship-guided brief)'}"
+        f"SELECTED ESSAY PROMPT TEXT:\n"
+        f"{selected_prompt or '(none — use scholarship-guided brief)'}"
     )
-    scholarship_context = _scholarship_context(record)
-    outline_text = _outline_text(personalized_outline)
+    scholarship_details = build_scholarship_context(record)
     opportunity_text = _opportunity_text(
         scholarship_name or record.get("name", ""),
         scholarship_type or record.get("type", "Scholarship"),
@@ -301,14 +217,16 @@ def run_unified_coaching_session(
     warnings: list[str] = []
     agent_status: dict[str, str] = {}
     try:
-        opportunity_analysis = analyze_opportunity({"opportunity_text": opportunity_text}).get(
-            "opportunity_analysis", {}
-        )
+        opportunity_analysis = analyze_opportunity_text(opportunity_text)
         agent_status["opportunity_analysis"] = "success"
     except Exception as exc:  # noqa: BLE001
-        opportunity_analysis = _fallback_opportunity_analysis(record, opportunity_prompt or selected_prompt)
+        opportunity_analysis = _fallback_opportunity_analysis(
+            record, opportunity_prompt or selected_prompt
+        )
         agent_status["opportunity_analysis"] = "fallback"
-        warnings.append(f"opportunity analysis failed; structured scholarship fallback used: {exc}")
+        warnings.append(
+            f"opportunity analysis failed; structured scholarship fallback used: {exc}"
+        )
 
     submitted_summary = summarize_submitted_input(
         profile,
@@ -316,7 +234,7 @@ def run_unified_coaching_session(
         scholarship_name or record.get("name", ""),
         opportunity_prompt or selected_prompt,
     )
-    shared_context = build_context(
+    shared_context = build_review_context(
         opportunity_text,
         profile or "(none provided)",
         essay_draft,
@@ -324,133 +242,140 @@ def run_unified_coaching_session(
         submitted_summary=submitted_summary,
     )
 
+    manager_context = _manager_context(
+        opportunity_text,
+        opportunity_analysis,
+        scholarship_details,
+        prompt_for_agents,
+        word_limit,
+    )
+    # Fingerprint deterministic scholarship/prompt inputs only. The structured
+    # opportunity analysis may be LLM-generated and must not invalidate an
+    # otherwise unchanged rubric between draft revisions.
+    manager_fingerprint = json.dumps(
+        {
+            "opportunity_text": opportunity_text,
+            "scholarship_context": scholarship_details,
+            "prompt_for_agents": prompt_for_agents,
+            "word_limit": word_limit or "",
+        },
+        sort_keys=True,
+    )
+    manager_context_hash = hashlib.sha256(manager_fingerprint.encode("utf-8")).hexdigest()
+    prior_plan = previous_manager_plan or {}
+    if prior_plan.get("context_hash") == manager_context_hash:
+        manager_plan = normalize_manager_plan(prior_plan)
+        agent_status["manager"] = "reused"
+    else:
+        try:
+            manager_plan = run_manager_agent(manager_context)
+            agent_status["manager"] = "success"
+        except Exception as exc:  # noqa: BLE001
+            manager_plan = normalize_manager_plan({})
+            agent_status["manager"] = "fallback"
+            warnings.append(f"manager failed; balanced fallback rubric used: {exc}")
+    manager_plan["context_hash"] = manager_context_hash
+
     jobs: dict[str, Runner] = {
-        "grammar": lambda: _run_grammar(essay_draft, user_notes or ""),
-        "clarity_concision": lambda: _run_clarity_concision(
-            essay_draft,
-            user_notes or "",
-            writing_support_level,
-        ),
-        "alignment": lambda: _run_alignment(essay_draft, prompt_for_agents, profile, scholarship_context),
-        "evidence_strength": lambda: _run_evidence_strength(essay_draft, profile, scholarship_context),
-        "narrative_structure": lambda: _run_narrative_structure(
-            essay_draft,
-            prompt_for_agents,
-            outline_text,
-            profile,
-        ),
-        "insight": lambda: _run_insight(essay_draft, prompt_for_agents, profile, scholarship_context),
-        "tone": lambda: _run_tone_authenticity(essay_draft, profile, scholarship_context),
+        key: (
+            lambda criterion=key: run_criterion_review_agent(
+                criterion,
+                shared_context,
+                manager_plan["criteria"][criterion],
+            )
+        )
+        for key in READINESS_DIMENSIONS
     }
     if outline_points:
-        jobs["coverage"] = lambda: _run_outline_coverage(essay_draft, outline_points or [], scholarship_context)
-    results = _run_parallel(jobs, warnings, agent_status)
-    grammar_feedback = results.get("grammar") or {}
-    clarity_feedback = results.get("clarity_concision") or {}
-    sentence_suggestions = _prepare_sentence_suggestions(
-        essay_draft,
-        grammar_feedback,
-        clarity_feedback,
-        writing_support_level,
-    )
-
-    state: dict[str, Any] = {
-        "opportunity_text": opportunity_text,
-        "opportunity_analysis": opportunity_analysis,
-        "student_draft": essay_draft,
-        "profile_text": profile,
-        "retrieved_profile_chunks": [profile] if profile else [],
-        "shared_context": shared_context,
-        "submitted_summary": submitted_summary,
-        # The standalone Strategy specialist is merged into Alignment here.
-        "strategy_report": {},
-        # Eligibility/profile fit belongs to the earlier Fit Assessment page,
-        # not the Essay Workspace specialist wave.
-        "eligibility_report": {},
-        # The old discovery stage is intentionally empty in this graph; its
-        # responsibilities now live in the single Evidence Strength report.
-        "discovery_report": {},
-        # The standalone Narrative specialist is merged with Structure & Flow.
-        "narrative_report": {},
-        "specialist_reports": {
-            "grammar": _sentence_feedback_view(grammar_feedback),
-            "clarity_concision": _sentence_feedback_view(clarity_feedback),
-            "alignment": results.get("alignment") or {},
-            "evidence_strength": results.get("evidence_strength") or {},
-            "narrative_structure_flow_coherence": results.get("narrative_structure") or {},
-            "insight": results.get("insight") or {},
-            "tone_authenticity": results.get("tone") or {},
-        },
-        "previous_readiness": previous_readiness or {},
-        "draft_number": draft_number,
-        "active_scholarship": record,
-        "critic_attempts": 0,
-    }
-
-    second_jobs: dict[str, Runner] = {
-        "reviewer": lambda: run_reviewer_simulation_coach(
-            shared_context,
-            results.get("alignment") or {},
-        ),
-    }
-    if sentence_suggestions:
-        second_jobs["guardrail"] = lambda: _run_guardrail_critic(
+        jobs["outline_coverage"] = lambda: run_outline_coverage(
             essay_draft,
-            profile,
-            sentence_suggestions,
+            outline_points or [],
+            scholarship_details,
         )
-    second = _run_parallel(second_jobs, warnings, agent_status)
-    state["reviewer_report"] = second.get("reviewer") or {}
+    first_wave = _run_parallel(jobs, warnings, agent_status, max_workers=8)
+    reviews = {
+        key: (
+            first_wave[key]
+            if isinstance(first_wave.get(key), dict)
+            else normalize_criterion_review(
+                key, {}, manager_plan["criteria"][key]
+            )
+        )
+        for key in READINESS_DIMENSIONS
+    }
+    outline_coverage = first_wave.get("outline_coverage") or {}
 
-    guardrail = second.get("guardrail") or {}
-    if guardrail:
-        unsafe = {
-            int(index)
-            for index in guardrail.get("unsafe_suggestion_indices", [])
-            if isinstance(index, int) or str(index).isdigit()
-        }
-        if unsafe:
-            sentence_suggestions = [
-                suggestion
-                for index, suggestion in enumerate(sentence_suggestions)
-                if index not in unsafe
-            ]
-            warnings.append(f"Guardrail removed {len(unsafe)} unsafe sentence suggestion(s).")
+    critic_jobs: dict[str, Runner] = {
+        "qa_critic": lambda: run_criterion_qa(shared_context, manager_plan, reviews),
+        "guardrail_critic": lambda: run_action_guardrail(shared_context, reviews),
+    }
+    audits = _run_parallel(critic_jobs, warnings, agent_status, max_workers=2)
+    qa = audits.get("qa_critic") or {
+        "approved": False,
+        "failed_criteria": [],
+        "issues": ["QA Critic was unavailable."],
+    }
+    guardrail = audits.get("guardrail_critic") or {
+        "approved": False,
+        "unsafe_criteria": [],
+        "issues": ["Guardrail Critic was unavailable."],
+    }
 
-    evaluation: Optional[dict] = None
-    try:
-        state.update(combine_coaching(state))
-        agent_status["evaluator"] = "success"
-        try:
-            state.update(critic_review(state))
-            agent_status["qa_critic"] = "success"
-            if state.get("needs_revision"):
-                state.update(combine_coaching(state))
-                agent_status["evaluator_retry"] = "success"
-                state.update(critic_review(state))
-                agent_status["qa_critic_retry"] = "success"
-        except Exception as exc:  # noqa: BLE001
-            agent_status["qa_critic"] = "error"
-            warnings.append(f"quality review failed: {exc}")
+    failed = set(_programmatic_failed_criteria(reviews))
+    failed.update(audit_failed_criteria(qa, guardrail))
+    failed_ordered = [key for key in READINESS_DIMENSIONS if key in failed]
+    if failed_ordered:
+        retry_jobs: dict[str, Runner] = {}
+        for key in failed_ordered:
+            guidance = correction_guidance_for(key, qa, guardrail)
+            if key in _programmatic_failed_criteria(reviews):
+                guidance = (
+                    guidance + " " if guidance else ""
+                ) + (
+                    "Return every required field: a valid score, main gap, reviewer reaction, "
+                    "reviewer concern, and one specific aligned priority action."
+                )
+            retry_jobs[f"{key}_retry"] = (
+                lambda criterion=key, notes=guidance: run_criterion_review_agent(
+                    criterion,
+                    shared_context,
+                    manager_plan["criteria"][criterion],
+                    correction_guidance=notes,
+                    prior_review=reviews[criterion],
+                )
+            )
+        repaired = _run_parallel(retry_jobs, warnings, agent_status, max_workers=7)
+        for key in failed_ordered:
+            candidate = repaired.get(f"{key}_retry")
+            if isinstance(candidate, dict):
+                reviews[key] = candidate
+                agent_status[key] = "success"
 
-        state.update(assemble_package(state))
-        evaluation = _evaluation_response(state)
-    except Exception as exc:  # noqa: BLE001
-        agent_status["evaluator"] = "error"
-        warnings.append(f"unified evaluation failed: {exc}")
+        final_audits = _run_parallel(
+            {
+                "qa_critic_retry": lambda: run_criterion_qa(
+                    shared_context, manager_plan, reviews
+                ),
+                "guardrail_critic_retry": lambda: run_action_guardrail(
+                    shared_context, reviews
+                ),
+            },
+            warnings,
+            agent_status,
+            max_workers=2,
+        )
+        qa = final_audits.get("qa_critic_retry") or qa
+        guardrail = final_audits.get("guardrail_critic_retry") or guardrail
 
-    coach_pack = _coach_response(
-        results,
-        sentence_suggestions,
+    review = _build_review_result(
+        manager_plan,
+        reviews,
+        qa,
         guardrail,
-        evaluation,
-        writing_brief,
-        writing_support_level,
-        warnings,
     )
     return {
-        "evaluation": evaluation,
-        "coach_pack": coach_pack,
+        "review": review,
+        "outline_coverage": outline_coverage,
         "warnings": list(dict.fromkeys(warnings)),
         "agent_status": agent_status,
     }
