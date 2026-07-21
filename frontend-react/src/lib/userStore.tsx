@@ -129,9 +129,21 @@ export type EssayDraft = {
   content: string;
   wordCount: number;
   savedAt: string;
+  scholarshipName?: string;
   // Per-version snapshots of the canonical Essay Review.
   reviewScores?: Record<string, number>;
   reviewOverall?: number;
+};
+
+export type ApplicationStatus = "Drafting" | "Submitted" | "Awarded";
+
+export type TrackedApplication = {
+  id: string;
+  name: string;
+  type?: string;
+  status: ApplicationStatus;
+  scoreHistory?: number[];
+  updatedAt?: string;
 };
 
 export type EssayPromptEntry = {
@@ -524,6 +536,8 @@ export type UserProfile = {
   drafts?: EssayDraft[];
   // documents
   documents?: { name: string; kind: string }[];
+  // scholarship and internship applications shown in Journey Step 7
+  applications?: TrackedApplication[];
 };
 
 type Ctx = {

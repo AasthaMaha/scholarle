@@ -12,6 +12,7 @@ import {
   ChevronDown,
   ClipboardList,
   Copy,
+  Download,
   FileUp,
   FlaskConical,
   Gauge,
@@ -24,13 +25,26 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   PencilLine,
+  Plus,
   Power,
   RefreshCw,
   Save,
+  Send,
+  ShieldCheck,
   Sparkles,
   UserRound,
   Wand2,
 } from "lucide-react";
+import {
+  CartesianGrid,
+  Legend,
+  Line,
+  LineChart as RechartsLineChart,
+  ResponsiveContainer,
+  Tooltip as RechartsTooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EssayEditor, type EssayEditorHandle, type RewriteAction } from "@/components/EssayEditor";
 import {
@@ -45,6 +59,7 @@ import {
   type Suggestion,
 } from "@/lib/suggestions";
 import { essayDraft as exampleEssayDraft, journeySteps } from "@/lib/persona";
+import { getFile, removeFile, storeFile } from "@/lib/fileStore";
 import { Spinner } from "@/components/Spinner";
 import { AcademicOnboarding } from "@/components/AcademicOnboarding";
 import {
@@ -84,6 +99,8 @@ import {
   type ApplicationReadinessMatrix,
   type FitAnalysisResult,
   type PersonalizedOutlineResult,
+  type ApplicationStatus,
+  type TrackedApplication,
 } from "@/lib/userStore";
 import {
   Tooltip,
@@ -239,6 +256,10 @@ function Journey() {
     if (journeyTutorialActive || (guidedProfileSetupActive && idx > 0)) return;
     setStepIdx(idx);
   };
+  const goToStep = (slug: string) => {
+    const nextIndex = journeySteps.findIndex((item) => item.slug === slug);
+    if (nextIndex >= 0) selectStep(nextIndex);
+  };
 
   function startJourneyTutorial() {
     setStepIdx(0);
@@ -339,6 +360,7 @@ function Journey() {
                 goPrev={goPrev}
                 goToProfile={() => setStepIdx(Math.max(0, journeySteps.findIndex((s) => s.slug === "profile")))}
                 goToRequirements={() => setStepIdx(Math.max(0, journeySteps.findIndex((s) => s.slug === "requirements")))}
+                goToStep={goToStep}
                 profileError={profileError}
                 startProfilePrompt={showResumePrompt}
                 onProfileSetupComplete={startJourneyTutorial}
@@ -1190,6 +1212,7 @@ function StepBody({
   goPrev,
   goToProfile,
   goToRequirements,
+  goToStep,
   profileError,
   startProfilePrompt,
   onProfileSetupComplete,
@@ -1199,6 +1222,7 @@ function StepBody({
   goPrev: () => void;
   goToProfile: () => void;
   goToRequirements: () => void;
+  goToStep: (slug: string) => void;
   profileError: string;
   startProfilePrompt: boolean;
   onProfileSetupComplete: () => void;
@@ -1210,8 +1234,8 @@ function StepBody({
     case "requirements": return <StepRequirementsAndFit />;
     case "essay-workspace": return <StepEssayWorkspace onBack={goPrev} />;
     case "revise": return <StepRevise />;
-    case "final-check": return <StepFinalCheck />;
-    case "tracker": return <StepTracker />;
+    case "final-check": return <StepFinalCheck onNavigate={goToStep} />;
+    case "tracker": return <StepTracker onNavigate={goToStep} />;
     default: return null;
   }
 }
@@ -1729,9 +1753,11 @@ function StepProfile({
   // documents
   const docs = user?.documents ?? [];
   function addDoc(kind: string, file: File) {
+    storeFile(file.name, file);
     updateProfile({ documents: [...docs, { name: file.name, kind }] });
   }
   function removeDoc(name: string) {
+    removeFile(name);
     updateProfile({ documents: docs.filter((d) => d.name !== name) });
   }
 
@@ -1739,6 +1765,7 @@ function StepProfile({
     setResumeStatus("Reading resume...");
     setResumeError("");
     setProfileStartMode("resume");
+    storeFile(file.name, file);
     try {
       const profile = await autofillProfileFromResume(file);
       const nextLevel = user?.educationLevel || profile.educationLevel;
@@ -6253,9 +6280,10 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     const contentWordCount = content.trim().split(/\s+/).filter(Boolean).length;
     const prev = user?.drafts ?? [];
     const last = prev[prev.length - 1];
+    const scholarshipName = user?.activeScholarship?.name || last?.scholarshipName;
     if (last && last.content === content) {
       const merged = [...prev];
-      merged[merged.length - 1] = { ...last, ...patch, wordCount: contentWordCount, savedAt: new Date().toISOString() };
+      merged[merged.length - 1] = { ...last, ...patch, scholarshipName, wordCount: contentWordCount, savedAt: new Date().toISOString() };
       updateProfile({ drafts: merged });
     } else {
       const newVersion: EssayDraft = {
@@ -6264,6 +6292,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
         content,
         wordCount: contentWordCount,
         savedAt: new Date().toISOString(),
+        scholarshipName,
         ...patch,
       };
       updateProfile({ drafts: [...prev, newVersion] });
@@ -7813,15 +7842,96 @@ function lowEssayReviewCriteria(review?: EssayReviewResult | null): string[] {
 
 /* ---------------- Step 6: Final Check ---------------- */
 
-function StepFinalCheck() {
-  const { user } = useUser();
+function StepFinalCheck({ onNavigate }: { onNavigate?: (slug: string) => void }) {
+  const { user, updateProfile } = useUser();
   const review = user?.essayReviewResult?.schema_version === 3 ? user.essayReviewResult : null;
   const docs = user?.documents ?? [];
   const hasDoc = (kind: string) => docs.some((doc) => doc.kind.toLowerCase().includes(kind));
-  const checklist = [
-    { item: "Student profile created", done: !!user?.educationLevel },
+  const [zipping, setZipping] = useState(false);
+  const [zipStatus, setZipStatus] = useState<string | null>(null);
+
+  function addDocument(kind: string, file: File) {
+    storeFile(file.name, file);
+    updateProfile({ documents: [...docs, { name: file.name, kind }] });
+  }
+
+  async function downloadSubmissionZip() {
+    setZipping(true);
+    setZipStatus(null);
+    try {
+      const [{ default: JSZip }, { convertFileToPdf, essayToPdf }] = await Promise.all([
+        import("jszip"),
+        import("@/lib/pdfExport"),
+      ]);
+      const zip = new JSZip();
+      let included = 0;
+      const unavailable: string[] = [];
+      const converted: string[] = [];
+
+      if (user?.essayDraft?.trim()) {
+        zip.file("essay.pdf", essayToPdf(user.essayDraft));
+        included += 1;
+      }
+
+      for (const document of docs) {
+        const file = getFile(document.name);
+        const pdfName = `${document.name.replace(/\.[^./]+$/, "")}.pdf`;
+        if (file) {
+          const { blob, note } = await convertFileToPdf(file);
+          zip.file(`${document.kind}/${pdfName}`, blob);
+          included += 1;
+          if (note) converted.push(document.name);
+        } else {
+          zip.file(
+            `${document.kind}/${pdfName.replace(/\.pdf$/, ".MISSING.pdf")}`,
+            essayToPdf(`"${document.name}" is recorded in the profile, but its file contents are not available in this browser session. Re-upload it on this page and download again.`),
+          );
+          unavailable.push(document.name);
+        }
+      }
+
+      if (included === 0 && unavailable.length === 0) {
+        setZipStatus("Nothing to download yet — add an essay draft or upload documents first.");
+        return;
+      }
+
+      const blob = await zip.generateAsync({ type: "blob" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${(user?.activeScholarship?.name || "scholarship").replace(/[^\w-]+/g, "_")}-submission.zip`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+
+      const notes: string[] = [];
+      if (unavailable.length) notes.push(`Re-upload ${unavailable.join(", ")} to include the original file contents.`);
+      if (converted.length) notes.push(`${converted.join(", ")} were converted to PDF; review their formatting.`);
+      setZipStatus(notes.length ? `Downloaded. ${notes.join(" ")}` : "Downloaded — everything was included as PDF.");
+    } catch {
+      setZipStatus("The submission ZIP could not be created. Try again.");
+    } finally {
+      setZipping(false);
+    }
+  }
+
+  const checklist: Array<{
+    item: string;
+    hint: string;
+    done: boolean;
+    targetSlug: string;
+    documentKind?: string;
+  }> = [
+    {
+      item: "Student profile created",
+      hint: "Complete the required student profile information.",
+      done: !!user?.educationLevel,
+      targetSlug: "profile",
+    },
     {
       item: "Scholarship requirements imported",
+      hint: "Add or extract the scholarship requirements.",
       done: !!(
         user?.activeScholarship?.minimumGpa ||
         user?.activeScholarship?.enrollmentLevel ||
@@ -7835,69 +7945,153 @@ function StepFinalCheck() {
         user?.activeScholarship?.essayPrompts ||
         user?.activeScholarship?.fullText
       ),
+      targetSlug: "requirements",
     },
-    { item: "Resume uploaded or identified", done: hasDoc("resume") },
-    { item: "Transcript uploaded or identified", done: hasDoc("transcript") },
-    { item: "Recommendation letter uploaded or identified", done: hasDoc("recommendation") || hasDoc("rec") },
-    { item: "Essay draft added", done: !!user?.essayDraft?.trim() },
-    { item: "Essay review completed", done: !!review },
+    {
+      item: "Resume uploaded or identified",
+      hint: "Upload the resume you want included with this submission.",
+      done: hasDoc("resume"),
+      targetSlug: "profile",
+      documentKind: "Resume",
+    },
+    {
+      item: "Transcript uploaded or identified",
+      hint: "Upload your transcript.",
+      done: hasDoc("transcript"),
+      targetSlug: "profile",
+      documentKind: "Transcript",
+    },
+    {
+      item: "Recommendation letter uploaded or identified",
+      hint: "Upload a recommendation letter.",
+      done: hasDoc("recommendation") || hasDoc("rec"),
+      targetSlug: "profile",
+      documentKind: "Letter of Recommendation",
+    },
+    {
+      item: "Essay draft added",
+      hint: "Write or paste a draft in the Essay Workspace.",
+      done: !!user?.essayDraft?.trim(),
+      targetSlug: "essay-workspace",
+    },
+    {
+      item: "Essay review completed",
+      hint: "Run the Essay Review in the Essay Workspace.",
+      done: !!review,
+      targetSlug: "essay-workspace",
+    },
   ];
-  const blockers = [
-    ...essayReviewPriorityActions(review).slice(0, 3),
-    ...checklist.filter((c) => !c.done).map((c) => c.item),
-  ].filter((item, i, arr) => arr.indexOf(item) === i);
   const done = checklist.filter((x) => x.done).length;
+  const percent = Math.round((done / checklist.length) * 100);
+  const allDone = done === checklist.length;
+  const nextIncomplete = checklist.find((item) => !item.done);
+  const revisionNotes = essayReviewPriorityActions(review).slice(0, 3);
   const lowDims = lowEssayReviewCriteria(review);
 
   return (
     <div className="space-y-6">
+      <Card className="border-primary/30 bg-primary/5">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="flex items-center gap-4">
+            <div className="grid size-11 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground">
+              <Download className="size-5" />
+            </div>
+            <div>
+              <div className="text-sm font-semibold">Download your submission</div>
+              <p className="mt-0.5 text-xs text-muted-foreground">Bundle your essay and supporting documents into one ZIP file.</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => void downloadSubmissionZip()}
+            disabled={zipping}
+            className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+          >
+            <Download className="size-4" />
+            {zipping ? "Zipping…" : "Download as ZIP"}
+          </button>
+        </div>
+        {zipStatus && <p className="mt-3 text-xs text-muted-foreground" role="status">{zipStatus}</p>}
+      </Card>
+
       <Card>
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-4">
           <div>
             <div className="text-xs uppercase tracking-widest text-muted-foreground">Submission readiness</div>
-            <div className="font-display text-3xl mt-1">{done} / {checklist.length} complete</div>
+            <div className="mt-1 font-display text-3xl">
+              {done} / {checklist.length} complete
+              <span className="ml-2 text-base font-normal text-muted-foreground">({percent}%)</span>
+            </div>
           </div>
-          <div className="size-16 rounded-2xl bg-warning/20 grid place-items-center font-display text-2xl">!</div>
+          <div className={`grid size-16 shrink-0 place-items-center rounded-2xl font-display text-2xl ${allDone ? "bg-success/20 text-success" : "bg-warning/20"}`}>
+            {allDone ? <Check className="size-7" strokeWidth={3} /> : "!"}
+          </div>
         </div>
-        <div className="mt-4 h-2 rounded-full bg-secondary overflow-hidden">
-          <div className="h-full bg-success" style={{ width: `${(done / checklist.length) * 100}%` }} />
+        <div className="mt-4 h-2 overflow-hidden rounded-full bg-secondary">
+          <div className={`h-full transition-[width] duration-500 ${allDone ? "bg-success" : "bg-warning"}`} style={{ width: `${percent}%` }} />
         </div>
+        {!allDone && nextIncomplete && onNavigate && (
+          <button type="button" onClick={() => onNavigate(nextIncomplete.targetSlug)} className="mt-4 inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90">
+            Fix next: {nextIncomplete.item}
+            <ArrowRight className="size-4" />
+          </button>
+        )}
       </Card>
 
       <Card>
         <div className="text-xs uppercase tracking-widest text-muted-foreground">Final checklist</div>
         <ul className="mt-3 divide-y divide-border">
-          {checklist.map((c) => (
-            <li key={c.item} className="py-3 flex items-center gap-3">
-              <div className={`size-5 rounded-md grid place-items-center ${c.done ? "bg-success text-white" : "border-2 border-warning"}`}>
-                {c.done && <Check className="size-3.5" strokeWidth={3} />}
-              </div>
-              <div className={`text-sm flex-1 ${c.done ? "" : "text-foreground font-medium"}`}>{c.item}</div>
-              {!c.done && <Pill tone="warn">action needed</Pill>}
-            </li>
-          ))}
+          {checklist.map((item) => {
+            const canUpload = !!item.documentKind && !item.done;
+            const canNavigate = !item.done && !canUpload && !!onNavigate;
+            return (
+              <li key={item.item} className="flex items-start gap-3 py-3">
+                <div className={`mt-0.5 grid size-5 shrink-0 place-items-center rounded-md ${item.done ? "bg-success text-white" : "border-2 border-warning"}`}>
+                  {item.done && <Check className="size-3.5" strokeWidth={3} />}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className={`text-sm ${item.done ? "" : "font-medium text-foreground"}`}>{item.item}</div>
+                  {!item.done && <p className="mt-0.5 text-xs text-muted-foreground">{item.hint}</p>}
+                </div>
+                {!item.done && <Pill tone="warn">action needed</Pill>}
+                {canUpload && (
+                  <label className="inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium hover:bg-accent focus-within:ring-2 focus-within:ring-primary/30">
+                    <FileUp className="size-3.5" /> Upload
+                    <input type="file" accept=".pdf,.doc,.docx,.png,.jpg,.jpeg" className="hidden" onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      if (file) addDocument(item.documentKind!, file);
+                    }} />
+                  </label>
+                )}
+                {canNavigate && (
+                  <button type="button" onClick={() => onNavigate?.(item.targetSlug)} className="rounded-lg p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" aria-label={`Go to ${item.item}`}>
+                    <ChevronRight className="size-4" />
+                  </button>
+                )}
+              </li>
+            );
+          })}
         </ul>
       </Card>
 
-      {blockers.length > 0 ? (
-        <Card className="bg-warning/10 border-warning/30">
-          <div className="text-sm font-medium">
-            {blockers.length} item{blockers.length === 1 ? "" : "s"} to address before you submit:
+      {allDone && (
+        <Card className="border-success/30 bg-success/10">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="text-sm font-medium text-success">Ready to submit — all checks passed.</div>
+            {onNavigate && <button type="button" onClick={() => onNavigate("tracker")} className="inline-flex items-center gap-2 rounded-lg border border-success/40 bg-card px-3 py-1.5 text-xs font-medium text-success hover:bg-success/10">Go to Tracker <ArrowRight className="size-3.5" /></button>}
           </div>
-          <ul className="mt-2 list-disc pl-5 text-sm text-foreground/80 space-y-1">
-            {blockers.map((item) => (
+        </Card>
+      )}
+
+      {(revisionNotes.length > 0 || lowDims.length > 0) && (
+        <Card className="bg-secondary/40">
+          <div className="text-sm font-medium">Optional polish from your Essay Review{allDone ? "" : " (not required to submit)"}:</div>
+          {revisionNotes.length > 0 && <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-foreground/80">
+            {revisionNotes.map((item) => (
               <li key={item}>{item}</li>
             ))}
-          </ul>
-          {lowDims.length > 0 && (
-            <p className="mt-3 text-xs text-muted-foreground">
-              Lowest readiness dimensions: {lowDims.join(", ")}
-            </p>
-          )}
-        </Card>
-      ) : (
-        <Card className="bg-success/10 border-success/30">
-          <div className="text-sm font-medium text-success">Ready to submit — all checks passed.</div>
+          </ul>}
+          {lowDims.length > 0 && <p className="mt-3 text-xs text-muted-foreground">Lowest review dimensions: {lowDims.join(", ")}</p>}
         </Card>
       )}
     </div>
@@ -7906,57 +8100,155 @@ function StepFinalCheck() {
 
 /* ---------------- Step 7: Tracker ---------------- */
 
-function StepTracker() {
-  const columns = ["Interested", "Drafting", "Submitted", "Awarded"] as const;
-  const { user } = useUser();
+function daysAgoLabel(iso?: string): string {
+  if (!iso) return "";
+  const days = Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000);
+  if (days <= 0) return "today";
+  return days === 1 ? "1 day ago" : `${days} days ago`;
+}
+
+type DateRangeFilter = "all" | "24h" | "1w" | "1m" | "6m" | "1y";
+const DATE_RANGE_OPTIONS: Array<{ value: DateRangeFilter; label: string }> = [
+  { value: "all", label: "All time" },
+  { value: "24h", label: "Last 24 hours" },
+  { value: "1w", label: "Last week" },
+  { value: "1m", label: "Last month" },
+  { value: "6m", label: "Last 6 months" },
+  { value: "1y", label: "Last year" },
+];
+
+function dateRangeCutoff(range: DateRangeFilter): Date | null {
+  if (range === "all") return null;
+  const cutoff = new Date();
+  if (range === "24h") cutoff.setHours(cutoff.getHours() - 24);
+  if (range === "1w") cutoff.setDate(cutoff.getDate() - 7);
+  if (range === "1m") cutoff.setMonth(cutoff.getMonth() - 1);
+  if (range === "6m") cutoff.setMonth(cutoff.getMonth() - 6);
+  if (range === "1y") cutoff.setFullYear(cutoff.getFullYear() - 1);
+  return cutoff;
+}
+
+type DraftChartPoint = { draft: string; score: number; draftId: string };
+type DraftDotProps = { cx?: number; cy?: number; index?: number; payload?: DraftChartPoint };
+
+function DraftDot({ cx, cy, index, payload, r = 4, onSelect }: DraftDotProps & { r?: number; onSelect: (point: DraftChartPoint) => void }) {
+  if (cx == null || cy == null) return null;
+  return <circle key={`draft-dot-${index}`} cx={cx} cy={cy} r={r} fill="var(--info)" stroke="var(--card)" strokeWidth={1.5} className="cursor-pointer" onClick={() => payload && onSelect(payload)} />;
+}
+
+function StepTracker({ onNavigate }: { onNavigate?: (slug: string) => void }) {
+  const { user, updateProfile } = useUser();
   const scholarship = user?.activeScholarship;
   const review = user?.essayReviewResult?.schema_version === 3 ? user.essayReviewResult : null;
-  const score = typeof review?.overall_score === "number" ? review.overall_score : 0;
-  const activeColumn = review ? "Drafting" : scholarship?.name ? "Interested" : "Interested";
+  const currentScore = typeof review?.overall_score === "number" ? review.overall_score : undefined;
+  const applications = useMemo(() => user?.applications ?? [], [user?.applications]);
+  const [openColumn, setOpenColumn] = useState<ApplicationStatus | null>(null);
+  const [scholarshipFilter, setScholarshipFilter] = useState("");
+  const [dateFilter, setDateFilter] = useState<DateRangeFilter>("all");
+
+  useEffect(() => {
+    if (!scholarship?.name) return;
+    const existing = applications.find((application) => application.name === scholarship.name);
+    if (!existing) {
+      updateProfile({
+        applications: [...applications, {
+          id: crypto.randomUUID(),
+          name: scholarship.name,
+          type: scholarship.type,
+          status: "Drafting",
+          scoreHistory: currentScore === undefined ? [] : [currentScore],
+          updatedAt: new Date().toISOString(),
+        }],
+      });
+      return;
+    }
+    if (currentScore !== undefined && existing.scoreHistory?.at(-1) !== currentScore) {
+      updateProfile({
+        applications: applications.map((application) => application.id === existing.id
+          ? { ...application, scoreHistory: [...(application.scoreHistory ?? []), currentScore], updatedAt: new Date().toISOString() }
+          : application),
+      });
+    }
+    // Persist only when the active scholarship or completed review changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scholarship?.name, currentScore]);
+
+  function updateStatus(id: string, status: ApplicationStatus) {
+    updateProfile({ applications: applications.map((application) => application.id === id ? { ...application, status, updatedAt: new Date().toISOString() } : application) });
+  }
+
+  if (applications.length === 0) {
+    return <Card className="py-12 text-center text-sm text-muted-foreground">Nothing tracked yet. Import a scholarship and begin an application to see it here.</Card>;
+  }
+
+  const latest = [...applications].sort((a, b) => new Date(b.updatedAt ?? 0).getTime() - new Date(a.updatedAt ?? 0).getTime())[0];
+  const drafting = applications.filter((application) => application.status === "Drafting");
+  const submitted = applications.filter((application) => application.status === "Submitted");
+  const awarded = applications.filter((application) => application.status === "Awarded");
+  const active = drafting.length + submitted.length;
+  const needsAttention = applications
+    .filter((application) => application.status !== "Awarded" && (application.scoreHistory?.length ?? 0) > 0)
+    .sort((a, b) => a.scoreHistory!.at(-1)! - b.scoreHistory!.at(-1)!)
+    .slice(0, 3);
+
+  const drafts = user?.drafts ?? [];
+  const scholarshipOptions = Array.from(new Set([...applications.map((application) => application.name), ...drafts.map((draft) => draft.scholarshipName).filter((name): name is string => !!name)]));
+  const cutoff = dateRangeCutoff(dateFilter);
+  const filteredDrafts = drafts
+    .filter((draft) => !scholarshipFilter || draft.scholarshipName === scholarshipFilter)
+    .filter((draft) => !cutoff || new Date(draft.savedAt).getTime() >= cutoff.getTime());
+  let lastScore: number | undefined;
+  const chartData = filteredDrafts.map((draft) => {
+    if (typeof draft.reviewOverall === "number") lastScore = draft.reviewOverall;
+    return { draft: `Draft ${draft.version}`, score: lastScore, draftId: draft.id };
+  }).filter((point): point is DraftChartPoint => typeof point.score === "number");
+  const pipeline: Array<{ status: ApplicationStatus; items: TrackedApplication[] }> = [
+    { status: "Drafting", items: drafting },
+    { status: "Submitted", items: submitted },
+    { status: "Awarded", items: awarded },
+  ];
 
   return (
     <div className="space-y-6">
-      <div className="grid sm:grid-cols-3 gap-4">
-        <Card><div className="text-xs text-muted-foreground uppercase tracking-widest">Active</div><div className="font-display text-3xl mt-1">{scholarship?.name ? 1 : 0}</div></Card>
-        <Card><div className="text-xs text-muted-foreground uppercase tracking-widest">Essay score</div><div className="font-display text-3xl mt-1">{score || "—"}</div></Card>
-        <Card><div className="text-xs text-muted-foreground uppercase tracking-widest">Latest review</div><div className="font-display text-3xl mt-1">{review ? "Done" : "Needed"}</div><div className="text-xs text-muted-foreground">{scholarship?.name || "No scholarship imported"}</div></Card>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Card className="flex items-center gap-4"><div className="grid size-11 shrink-0 place-items-center rounded-xl bg-secondary text-primary"><UserRound className="size-5" /></div><div><div className="text-xs uppercase tracking-widest text-muted-foreground">Active</div><div className="mt-0.5 font-display text-2xl">{active}</div></div></Card>
+        <Card className="flex items-center gap-4"><div className="grid size-11 shrink-0 place-items-center rounded-xl bg-success/15 text-success"><Check className="size-5" strokeWidth={3} /></div><div className="min-w-0"><div className="text-xs uppercase tracking-widest text-muted-foreground">Latest application</div><button type="button" onClick={() => onNavigate?.("discovery")} className="max-w-full truncate text-left text-sm font-medium hover:underline">{latest.name}</button><div className="text-xs text-muted-foreground">Updated {daysAgoLabel(latest.updatedAt)}</div></div></Card>
       </div>
 
-      <div className="grid md:grid-cols-4 gap-4">
-        {columns.map((col) => (
-          <div key={col} className="rounded-2xl bg-secondary/40 p-3 min-h-[320px]">
-            <div className="flex items-center justify-between px-1 mb-3">
-              <div className="text-xs uppercase tracking-widest text-muted-foreground">{col}</div>
-              <span className="text-xs font-mono text-muted-foreground">{scholarship?.name && col === activeColumn ? 1 : 0}</span>
-            </div>
-            <div className="space-y-2">
-              {scholarship?.name && col === activeColumn ? (
-                <div className="rounded-xl bg-card border border-border p-3">
-                  <div className="text-sm font-medium leading-tight">{scholarship.name}</div>
-                  <div className="text-xs text-muted-foreground mt-0.5">{scholarship.type || "Scholarship"}</div>
-                  <div className="mt-2 flex items-center justify-between text-xs">
-                    <Pill tone="gold">{score ? `${score}/100 essay score` : "Needs review"}</Pill>
-                    <span className="text-muted-foreground">{review ? "AI reviewed" : "Not reviewed"}</span>
-                  </div>
-                </div>
-              ) : (
-                <div className="text-xs text-muted-foreground text-center py-6">No items yet.</div>
-              )}
-            </div>
+      <Card>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="text-xs uppercase tracking-widest text-muted-foreground">Score by draft</div>
+          <div className="flex flex-wrap items-center gap-2">
+            <select value={dateFilter} onChange={(event) => setDateFilter(event.target.value as DateRangeFilter)} className="rounded-full border border-border bg-card px-3 py-1 text-xs font-medium">
+              {DATE_RANGE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+            {scholarshipOptions.length > 1 && <select value={scholarshipFilter} onChange={(event) => setScholarshipFilter(event.target.value)} className="max-w-[60%] rounded-full border border-border bg-card px-3 py-1 text-xs font-medium"><option value="">All scholarships</option>{scholarshipOptions.map((name) => <option key={name} value={name}>{name}</option>)}</select>}
           </div>
-        ))}
+        </div>
+        <div className="mt-4 h-72">
+          {chartData.length ? <ResponsiveContainer width="100%" height="100%"><RechartsLineChart data={chartData} margin={{ top: 8, right: 8, left: -16, bottom: 24 }}><CartesianGrid vertical={false} stroke="var(--border)" /><XAxis dataKey="draft" tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} axisLine={false} tickLine={false} /><YAxis domain={[0, 100]} tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} axisLine={false} tickLine={false} /><RechartsTooltip contentStyle={{ borderRadius: 12, border: "1px solid var(--border)", fontSize: 12 }} /><Legend verticalAlign="top" align="right" height={28} wrapperStyle={{ fontSize: 11 }} /><Line type="monotone" dataKey="score" name="Overall score" stroke="var(--info)" strokeWidth={2.5} dot={(props: DraftDotProps) => <DraftDot {...props} onSelect={() => onNavigate?.("revise")} />} activeDot={(props: DraftDotProps) => <DraftDot {...props} r={6} onSelect={() => onNavigate?.("revise")} />} /></RechartsLineChart></ResponsiveContainer> : <div className="grid h-full place-items-center text-sm text-muted-foreground">{scholarshipFilter || dateFilter !== "all" ? "No scored drafts match this filter." : "No drafts scored yet."}</div>}
+        </div>
+      </Card>
+
+      {needsAttention.length > 0 && <Card><div className="text-xs uppercase tracking-widest text-muted-foreground">Needs attention · Lowest scores</div><ul className="mt-3 divide-y divide-border">{needsAttention.map((application) => { const score = application.scoreHistory!.at(-1)!; return <li key={application.id} className="flex items-center gap-3 py-3"><span className={`size-2 shrink-0 rounded-full ${score < 50 ? "bg-destructive" : "bg-info"}`} /><span className="min-w-0 flex-1 truncate text-sm font-medium">{application.name}</span><span className="shrink-0 text-xs uppercase tracking-widest text-muted-foreground">{application.status}</span><span className={`shrink-0 font-mono text-sm ${score < 50 ? "text-destructive" : "text-info"}`}>{score}/100</span></li>; })}</ul></Card>}
+
+      <div className="grid gap-4 md:grid-cols-3">
+        {pipeline.map((column) => <StatusColumn key={column.status} status={column.status} items={column.items} onViewAll={() => setOpenColumn(column.status)} />)}
       </div>
 
-      <Card className="bg-primary text-primary-foreground">
-        <div className="font-display text-2xl">That's the full Scholar-E journey.</div>
-        <p className="text-primary-foreground/80 mt-2 text-sm">
-          From landing on the homepage to a polished, sponsor-aligned submission — all without anyone writing your essay for you.
-        </p>
-        <Link to="/" className="mt-4 inline-flex items-center gap-2 rounded-lg bg-gold text-gold-foreground px-5 py-2 text-sm font-medium">
-          <ArrowLeft className="size-4" />
-          Back to landing
-        </Link>
-      </Card>
+      <Dialog open={openColumn !== null} onOpenChange={(open) => !open && setOpenColumn(null)}>
+        <DialogContent className="max-w-md"><DialogHeader><DialogTitle className="font-display text-xl">{openColumn}</DialogTitle><DialogDescription>{openColumn ? pipeline.find((column) => column.status === openColumn)?.items.length : 0} applications</DialogDescription></DialogHeader><div className="max-h-80 space-y-2 overflow-y-auto">{openColumn && pipeline.find((column) => column.status === openColumn)?.items.map((application) => <div key={application.id} className="rounded-lg border border-border p-3"><div className="flex items-center justify-between gap-2"><div className="truncate text-sm font-medium">{application.name}</div>{(application.scoreHistory?.length ?? 0) > 0 && <span className="shrink-0 font-mono text-xs text-muted-foreground">{application.scoreHistory!.at(-1)}/100</span>}</div><div className="mt-2 flex items-center gap-2">{application.status === "Drafting" && <button type="button" onClick={() => updateStatus(application.id, "Submitted")} className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1 text-xs font-medium hover:bg-accent"><Send className="size-3" /> Mark submitted</button>}{application.status === "Submitted" && <button type="button" onClick={() => updateStatus(application.id, "Awarded")} className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1 text-xs font-medium hover:bg-accent"><ShieldCheck className="size-3" /> Mark awarded</button>}</div></div>)}</div></DialogContent>
+      </Dialog>
     </div>
+  );
+}
+
+function StatusColumn({ status, items, onViewAll }: { status: ApplicationStatus; items: TrackedApplication[]; onViewAll: () => void }) {
+  const tone = status === "Drafting" ? "bg-warning/15 text-warning" : status === "Submitted" ? "bg-info/15 text-info" : "bg-success/15 text-success";
+  return (
+    <Card>
+      <div className="flex items-center justify-between"><div className="text-xs uppercase tracking-widest text-muted-foreground">{status}</div><span className={`rounded-full px-2 py-0.5 font-mono text-xs ${tone}`}>{items.length}</span></div>
+      {items.length > 0 ? <button type="button" onClick={onViewAll} className="mt-3 w-full rounded-xl border border-border p-4 text-left hover:bg-accent"><div className="font-display text-3xl">{items.length}</div><div className="mt-1 flex items-center justify-between text-sm text-muted-foreground">application{items.length === 1 ? "" : "s"}<span className="inline-flex items-center gap-1 font-medium text-foreground">View all <ChevronRight className="size-3.5" /></span></div></button> : <div className="mt-3 rounded-xl border border-dashed border-border p-6 text-center"><Plus className="mx-auto size-5 text-muted-foreground" /><div className="mt-2 text-sm text-muted-foreground">No items yet</div></div>}
+    </Card>
   );
 }

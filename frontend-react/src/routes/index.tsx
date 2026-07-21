@@ -1,5 +1,7 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import scholarELogoUrl from "../../logo/logoPic.jpeg";
+import { loadExampleProfile } from "@/lib/loadExample";
+import { useUser } from "@/lib/userStore";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -46,7 +48,7 @@ function Header() {
         <nav className="hidden md:flex items-center gap-7 text-sm text-[#1F2A44]/70">
           <a href="#demo" className="hover:text-[#1F2A44]">How it works</a>
           <a href="#pillars" className="hover:text-[#1F2A44]">What we deliver</a>
-          <a href="#demo" className="hover:text-[#1F2A44]">Student Demo</a>
+          <Link to="/student-demo" className="hover:text-[#1F2A44]">Student Demo</Link>
         </nav>
         <div className="flex items-center gap-2">
           <Link
@@ -162,6 +164,14 @@ function HeroCard() {
 }
 
 function StudentDemo() {
+  const { updateProfile } = useUser();
+  const navigate = useNavigate();
+
+  function startDemo() {
+    updateProfile({ ...loadExampleProfile(), lastStep: 0 });
+    void navigate({ to: "/journey" });
+  }
+
   return (
     <section id="demo" className="mx-auto max-w-7xl px-6 py-20">
       <div className="rounded-3xl border border-white/80 bg-white/82 backdrop-blur p-8 shadow-xl shadow-[#1F2A44]/5 md:p-12 grid md:grid-cols-12 gap-8 items-center">
@@ -188,12 +198,13 @@ function StudentDemo() {
             </div>
           ))}
           <div className="sm:col-span-3 flex items-center justify-end">
-            <Link
-              to="/journey"
+            <button
+              type="button"
+              onClick={startDemo}
               className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-[#1F2A44] to-[#5B5FEF] text-white px-5 py-2.5 text-sm font-medium hover:opacity-95"
             >
               Start the Student Demo →
-            </Link>
+            </button>
           </div>
         </div>
       </div>
