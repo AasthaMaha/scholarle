@@ -1,31 +1,29 @@
 # server.py
 """
 FastAPI server for Scholar-E MVP.
-Exposes POST /api/analyze and auth routes for frontend-react.
+Exposes Scholar-E API routes for frontend-react.
 """
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.routes import (
-    AnalyzeRequest,
     CoachingSessionRequest,
-    EssayCoachRequest,
+    EditorCheckRequest,
     FitAnalyzeRequest,
     OpportunityExtractRequest,
     OutlineGenerateRequest,
     RewriteRequest,
     WikiDiscoverRequest,
     WikiBootstrapRequest,
-    analyze_application,
     analyze_scholarship_fit,
     autofill_profile_from_resume,
     discover_scholarship_wiki,
     get_scholarship_discovery_bootstrap,
     extract_scholarship_opportunity,
     generate_personalized_outline,
+    run_editor_check,
     rewrite_selection,
-    run_essay_coach,
     run_workspace_coaching_session,
 )
 from persistence.database import initialize_database
@@ -73,16 +71,6 @@ def search_education_majors(
         return {"results": get_education_catalog().search_majors(q, limit)}
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-
-
-@app.post("/api/analyze")
-def analyze(request: AnalyzeRequest):
-    try:
-        return analyze_application(request)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.post("/api/profile/autofill-resume")
@@ -145,10 +133,10 @@ def generate_outline(request: OutlineGenerateRequest):
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@app.post("/api/apply/essay-coach")
-def essay_coach(request: EssayCoachRequest):
+@app.post("/api/apply/editor-check")
+def editor_check(request: EditorCheckRequest):
     try:
-        return run_essay_coach(request)
+        return run_editor_check(request)
     except HTTPException:
         raise
     except Exception as exc:

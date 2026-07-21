@@ -28,7 +28,6 @@ import {
   RefreshCw,
   Save,
   Sparkles,
-  Target,
   UserRound,
   Wand2,
 } from "lucide-react";
@@ -46,14 +45,13 @@ import {
   type Suggestion,
 } from "@/lib/suggestions";
 import { essayDraft as exampleEssayDraft, journeySteps } from "@/lib/persona";
-import { CoachRunButton } from "@/components/CoachRunButton";
 import { Spinner } from "@/components/Spinner";
 import { AcademicOnboarding } from "@/components/AcademicOnboarding";
 import {
   analyzeScholarshipFit,
   autofillProfileFromResume,
   buildCoachingSessionPayload,
-  buildEssayCoachPayload,
+  buildEditorCheckPayload,
   buildFitPayload,
   buildOutlinePayload,
   buildOutlinePoints,
@@ -62,14 +60,12 @@ import {
   buildRewritePayload,
   extractScholarshipOpportunity,
   generatePersonalizedOutline,
-  runEssayCoach,
+  runEditorCheck,
   runSelectionRewrite,
   runWorkspaceCoachingSession,
   normalizeEssayPromptEntries,
   normalizeSelectedEssayPromptEntries,
   serializeEssayPromptEntries,
-  type EssayCoachResult,
-  type RevisionPriority,
 } from "@/lib/api/scholarE";
 import {
   useUser,
@@ -79,9 +75,9 @@ import {
   type ResearchExperienceEntry,
   type WorkExperienceEntry,
   type UserProfile,
-  type AnalysisResult,
-  type AnalysisScore,
+  type EssayCriterionReview,
   type EssayDraft,
+  type EssayReviewResult,
   type ActiveScholarship,
   type EssayPromptEntry,
   type WikiDiscoveryResult,
@@ -778,6 +774,207 @@ function JourneyNavigationTutorial({
               className="rounded-full bg-info px-4 py-2 text-sm font-medium text-white hover:opacity-90"
             >
               {stepIndex === JOURNEY_TUTORIAL_STEPS.length - 1 ? "Finish" : "Next"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const ESSAY_WORKSPACE_TUTORIAL_KEY = "scholar-e:essay-workspace-tutorial:v1";
+
+const ESSAY_WORKSPACE_TUTORIAL_STEPS = [
+  {
+    target: "upload",
+    title: "Upload an existing draft",
+    description: "If you have an existing document of your draft, upload it here.",
+  },
+  {
+    target: "editor",
+    title: "Start writing here",
+    description: "If you do not have an existing draft, start typing or paste your essay here.",
+  },
+  {
+    target: "evaluate",
+    title: "Evaluate your draft",
+    description: "Select Evaluate to receive scores and specific feedback for every criterion. After each revision, select it again to see how your criterion and overall scores change.",
+  },
+] as const;
+
+function EssayWorkspaceTutorial({
+  onFinish,
+  onSkip,
+}: {
+  onFinish: () => void;
+  onSkip: () => void;
+}) {
+  const [stepIndex, setStepIndex] = useState(0);
+  const [spotlight, setSpotlight] = useState({ left: 8, top: 8, width: 56, height: 56 });
+  const [compact, setCompact] = useState(false);
+  const [leaving, setLeaving] = useState(false);
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  const exitTimer = useRef<number | null>(null);
+  const step = ESSAY_WORKSPACE_TUTORIAL_STEPS[stepIndex];
+
+  useEffect(() => {
+    cardRef.current?.focus();
+  }, [stepIndex]);
+
+  useEffect(() => {
+    const keepFocusInTutorial = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        return;
+      }
+      if (event.key !== "Tab" || !cardRef.current) return;
+      const focusable = Array.from(
+        cardRef.current.querySelectorAll<HTMLElement>("button:not([disabled]), [href], [tabindex]:not([tabindex='-1'])"),
+      );
+      if (!focusable.length) {
+        event.preventDefault();
+        cardRef.current.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && (document.activeElement === first || document.activeElement === cardRef.current)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", keepFocusInTutorial);
+    return () => document.removeEventListener("keydown", keepFocusInTutorial);
+  }, []);
+
+  useEffect(() => {
+    let frame = 0;
+    const target = document.querySelector<HTMLElement>(`[data-essay-workspace-tour="${step.target}"]`);
+    target?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    const startedAt = window.performance.now();
+    const measure = () => {
+      const currentTarget = document.querySelector<HTMLElement>(`[data-essay-workspace-tour="${step.target}"]`);
+      if (currentTarget) {
+        const rect = currentTarget.getBoundingClientRect();
+        const padding = step.target === "editor" ? 8 : 12;
+        const left = Math.max(8, rect.left - padding);
+        const top = Math.max(8, rect.top - padding);
+        const right = Math.min(window.innerWidth - 8, rect.right + padding);
+        const bottom = Math.min(window.innerHeight - 8, rect.bottom + padding);
+        setSpotlight({
+          left,
+          top,
+          width: Math.max(48, right - left),
+          height: Math.max(48, bottom - top),
+        });
+      }
+      setCompact(window.innerWidth < 768);
+      if (window.performance.now() - startedAt < 450) frame = window.requestAnimationFrame(measure);
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    window.addEventListener("scroll", measure, true);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure, true);
+    };
+  }, [step.target]);
+
+  useEffect(() => () => {
+    if (exitTimer.current !== null) window.clearTimeout(exitTimer.current);
+  }, []);
+
+  function close(callback: () => void) {
+    setLeaving(true);
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    exitTimer.current = window.setTimeout(callback, reduceMotion ? 0 : 200);
+  }
+
+  const cardWidth = compact ? window.innerWidth - 32 : Math.min(352, window.innerWidth - 32);
+  const cardHeightEstimate = 260;
+  const spaceRight = window.innerWidth - (spotlight.left + spotlight.width);
+  const spaceLeft = spotlight.left;
+  const cardStyle: React.CSSProperties = compact
+    ? { left: 16, right: 16, bottom: 16 }
+    : spaceRight >= cardWidth + 32
+      ? {
+          left: spotlight.left + spotlight.width + 20,
+          top: Math.max(16, Math.min(spotlight.top, window.innerHeight - cardHeightEstimate - 16)),
+          width: cardWidth,
+        }
+      : spaceLeft >= cardWidth + 32
+        ? {
+            left: spotlight.left - cardWidth - 20,
+            top: Math.max(16, Math.min(spotlight.top, window.innerHeight - cardHeightEstimate - 16)),
+            width: cardWidth,
+          }
+        : {
+            left: Math.max(16, Math.min(spotlight.left, window.innerWidth - cardWidth - 16)),
+            top: Math.max(16, Math.min(spotlight.top + spotlight.height + 16, window.innerHeight - cardHeightEstimate - 16)),
+            width: cardWidth,
+          };
+
+  return (
+    <div className={`fixed inset-0 z-[70] transition-opacity duration-200 motion-reduce:transition-none ${leaving ? "opacity-0" : "opacity-100"}`}>
+      <div className="absolute inset-0 pointer-events-auto" aria-hidden="true" />
+      <div
+        className="pointer-events-none fixed rounded-2xl border border-info/60 shadow-[0_0_0_9999px_rgba(20,28,48,0.46),0_10px_30px_rgba(31,42,68,0.22)] transition-[left,top,width,height] duration-300 ease-out motion-reduce:transition-none"
+        style={spotlight}
+        aria-hidden="true"
+      />
+      <div
+        ref={cardRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="essay-workspace-tutorial-title"
+        aria-describedby="essay-workspace-tutorial-description"
+        tabIndex={-1}
+        className="fixed z-10 rounded-2xl border border-border bg-card p-5 shadow-xl outline-none motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-200"
+        style={cardStyle}
+      >
+        <div className="text-xs font-semibold uppercase tracking-[0.16em] text-info">
+          Step {stepIndex + 1} of {ESSAY_WORKSPACE_TUTORIAL_STEPS.length}
+        </div>
+        <h2 id="essay-workspace-tutorial-title" className="mt-2 font-display text-xl font-bold">
+          {step.title}
+        </h2>
+        <p id="essay-workspace-tutorial-description" className="mt-2 text-sm leading-6 text-muted-foreground">
+          {step.description}
+        </p>
+        <div className="sr-only" aria-live="polite">
+          Essay Workspace tutorial step {stepIndex + 1} of {ESSAY_WORKSPACE_TUTORIAL_STEPS.length}
+        </div>
+        <div className="mt-5 flex items-center justify-between gap-3">
+          <button
+            type="button"
+            onClick={() => close(onSkip)}
+            className="text-sm font-medium text-muted-foreground hover:text-foreground"
+          >
+            Skip tour
+          </button>
+          <div className="flex items-center gap-2">
+            {stepIndex > 0 && (
+              <button
+                type="button"
+                onClick={() => setStepIndex((current) => current - 1)}
+                className="rounded-full border border-border px-4 py-2 text-sm font-medium hover:bg-accent"
+              >
+                Back
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                if (stepIndex === ESSAY_WORKSPACE_TUTORIAL_STEPS.length - 1) close(onFinish);
+                else setStepIndex((current) => current + 1);
+              }}
+              className="rounded-full bg-info px-4 py-2 text-sm font-medium text-white hover:opacity-90"
+            >
+              {stepIndex === ESSAY_WORKSPACE_TUTORIAL_STEPS.length - 1 ? "Got it" : "Next"}
             </button>
           </div>
         </div>
@@ -4954,8 +5151,41 @@ function criteriaAlignmentTone(alignment?: string): "default" | "gold" | "succes
 
 /* ---------------- Step 5: Essay Workspace ---------------- */
 
-type WorkspaceTab = "outline" | "coach" | "evaluation" | "highlights";
-type WorkspaceStage = "prompt" | "outline" | "draft" | "coach" | "revise";
+type WorkspaceTab = "outline" | "coach" | "highlights";
+
+const ESSAY_REVIEW_DIMENSIONS = [
+  "alignment",
+  "evidence_strength",
+  "insight",
+  "narrative_structure_flow_coherence",
+  "tone_authenticity",
+  "clarity_concision",
+  "grammar",
+] as const;
+
+type EssayReviewDimension = (typeof ESSAY_REVIEW_DIMENSIONS)[number];
+
+const ESSAY_REVIEW_SCORE_GROUPS: ReadonlyArray<{
+  label: string;
+  criteria: readonly EssayReviewDimension[];
+  columnClass: string;
+}> = [
+  {
+    label: "Content",
+    criteria: ["alignment", "evidence_strength", "insight"],
+    columnClass: "md:col-span-3",
+  },
+  {
+    label: "Structure",
+    criteria: ["narrative_structure_flow_coherence"],
+    columnClass: "md:col-span-1",
+  },
+  {
+    label: "Voice",
+    criteria: ["tone_authenticity", "clarity_concision"],
+    columnClass: "md:col-span-2",
+  },
+];
 
 function normalizePdfDraftText(pages: string[]) {
   return pages
@@ -4973,22 +5203,6 @@ function parseWordTarget(limit?: string): number | null {
   return Math.max(...nums.map(Number));
 }
 
-/** Overall essay score (0–100) = mean of the readiness-index dimension scores. */
-function overallEssayScore(analysis?: AnalysisResult): number | null {
-  const scores = Object.values(analysis?.readiness_index ?? {})
-    .map((entry) => entry.score)
-    .filter((s): s is number => typeof s === "number");
-  if (!scores.length) return null;
-  return Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
-}
-
-/** Mean of a flat score map (e.g. the coach's 8-dim overall_scores) → 0–100. */
-function meanScore(scores?: Record<string, number> | null): number | null {
-  const vals = Object.values(scores ?? {}).filter((v): v is number => typeof v === "number");
-  if (!vals.length) return null;
-  return Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
-}
-
 function scoreColor(score: number): string {
   if (score >= 80) return "var(--success)";
   if (score >= 60) return "var(--warning)";
@@ -4997,12 +5211,6 @@ function scoreColor(score: number): string {
 
 function labelize(key: string): string {
   return key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
-function levelWord(score: number): string {
-  if (score >= 80) return "Strong — competitive draft";
-  if (score >= 60) return "Developing — keep refining";
-  return "Needs work — focus on the priorities";
 }
 
 function relativeTimeLabel(timestamp: number | null, now: number): string {
@@ -5075,19 +5283,358 @@ function WordCountMeter({ wordCount, characterCount, target }: { wordCount: numb
   );
 }
 
+function OutlineWorkspaceLoadingOverlay({ loading }: { loading: boolean }) {
+  const [progress, setProgress] = useState(0);
+  const [visible, setVisible] = useState(false);
+  const [region, setRegion] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  const wasLoading = useRef(false);
+
+  useEffect(() => {
+    let progressTimer: number | undefined;
+    let completionTimer: number | undefined;
+
+    if (loading) {
+      wasLoading.current = true;
+      setVisible(true);
+      setProgress(10);
+      const startedAt = Date.now();
+      progressTimer = window.setInterval(() => {
+        const elapsedSeconds = (Date.now() - startedAt) / 1000;
+        let nextProgress: number;
+        if (elapsedSeconds < 2) nextProgress = 10 + (elapsedSeconds / 2) * 20;
+        else if (elapsedSeconds < 5) nextProgress = 30 + ((elapsedSeconds - 2) / 3) * 25;
+        else if (elapsedSeconds < 10) nextProgress = 55 + ((elapsedSeconds - 5) / 5) * 30;
+        else nextProgress = Math.min(95, 85 + (elapsedSeconds - 10));
+        setProgress(Math.round(nextProgress));
+      }, 250);
+    } else if (wasLoading.current) {
+      setProgress(100);
+      completionTimer = window.setTimeout(() => {
+        wasLoading.current = false;
+        setVisible(false);
+        setRegion(null);
+      }, 300);
+    } else {
+      setProgress(0);
+      setVisible(false);
+      setRegion(null);
+    }
+
+    return () => {
+      if (progressTimer !== undefined) window.clearInterval(progressTimer);
+      if (completionTimer !== undefined) window.clearTimeout(completionTimer);
+    };
+  }, [loading]);
+
+  useEffect(() => {
+    if (!visible) return;
+    let frame = 0;
+    const startedAt = window.performance.now();
+    const measure = () => {
+      const target = document.querySelector<HTMLElement>("[data-outline-loading-region]");
+      if (target) {
+        const rect = target.getBoundingClientRect();
+        const left = Math.max(0, rect.left);
+        const top = Math.max(0, rect.top);
+        const right = Math.min(window.innerWidth, rect.right);
+        const bottom = Math.min(window.innerHeight, rect.bottom);
+        setRegion({
+          left,
+          top,
+          width: Math.max(0, right - left),
+          height: Math.max(0, bottom - top),
+        });
+      }
+      if (window.performance.now() - startedAt < 600) frame = window.requestAnimationFrame(measure);
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    window.addEventListener("scroll", measure, true);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure, true);
+    };
+  }, [visible]);
+
+  if (!visible) return null;
+
+  const activeStep = progress < 30 ? 0 : progress < 55 ? 1 : progress < 85 ? 2 : 3;
+  const cardWidth = region ? Math.max(280, Math.min(576, region.width - 32)) : 576;
+  const cardLeft = region
+    ? region.left + Math.max(16, (region.width - cardWidth) / 2)
+    : Math.max(16, (window.innerWidth - cardWidth) / 2);
+  const requestedTop = (region?.top ?? 0) + 120;
+  const cardTop = region
+    ? Math.max(region.top + 16, Math.min(requestedTop, region.top + region.height - 300))
+    : 120;
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] cursor-wait bg-black/20 backdrop-grayscale"
+      role="status"
+      aria-live="polite"
+      aria-label={`Building your personalized outline, ${progress}% complete`}
+    >
+      {region && (
+        <div
+          className="fixed bg-[#cccccc]"
+          style={{ left: region.left, top: region.top, width: region.width, height: region.height }}
+          aria-hidden="true"
+        />
+      )}
+      <div
+        className="fixed z-10 rounded-xl border border-info/25 bg-background p-5 shadow-lg"
+        style={{ left: cardLeft, top: cardTop, width: cardWidth }}
+      >
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <span className="size-4 shrink-0 animate-spin rounded-full border-2 border-info/25 border-t-info" />
+            <span className="truncate text-[15px] font-semibold text-foreground">Building your personalized outline…</span>
+          </div>
+          <span className="shrink-0 text-[14px] font-semibold tabular-nums text-info">{progress}%</span>
+        </div>
+
+        <div
+          className="mt-4 h-2 overflow-hidden rounded-full bg-info/10"
+          role="progressbar"
+          aria-label="Personalized outline generation progress"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={progress}
+        >
+          <div
+            className="h-full rounded-full bg-info transition-[width] duration-300 ease-out"
+            style={{ width: `${progress}%` }}
+          />
+        </div>
+
+        <div className="mt-5 space-y-2.5">
+          {[
+            "Reading scholarship and essay requirements",
+            "Matching profile evidence",
+            "Planning essay sections",
+            "Verifying complete coverage of requirements",
+          ].map((item, index) => {
+            const completed = progress === 100 || index < activeStep;
+            const active = progress < 100 && index === activeStep;
+            return (
+              <div key={item} className={`flex items-center gap-2.5 text-[13px] ${completed || active ? "text-foreground" : "text-muted-foreground"}`}>
+                {completed ? (
+                  <span className="grid size-4 shrink-0 place-items-center rounded-full bg-success text-white">
+                    <Check className="size-3" aria-hidden="true" />
+                  </span>
+                ) : active ? (
+                  <span className="size-4 shrink-0 animate-spin rounded-full border-2 border-info/25 border-t-info" />
+                ) : (
+                  <span className="size-4 shrink-0 rounded-full border border-border bg-background" />
+                )}
+                <span className={active ? "font-semibold" : ""}>{item}</span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EssayReviewWorkspaceLoadingOverlay({
+  loading,
+  progress,
+}: {
+  loading: boolean;
+  progress: number;
+}) {
+  const [region, setRegion] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+
+  useEffect(() => {
+    if (!loading) {
+      setRegion(null);
+      return;
+    }
+    let frame = 0;
+    const startedAt = window.performance.now();
+    const measure = () => {
+      const target = document.querySelector<HTMLElement>("[data-essay-review-loading-region]");
+      if (target) {
+        const rect = target.getBoundingClientRect();
+        const left = Math.max(0, rect.left);
+        const top = Math.max(0, rect.top);
+        const right = Math.min(window.innerWidth, rect.right);
+        const bottom = Math.min(window.innerHeight, rect.bottom);
+        setRegion({
+          left,
+          top,
+          width: Math.max(0, right - left),
+          height: Math.max(0, bottom - top),
+        });
+      }
+      if (window.performance.now() - startedAt < 600) frame = window.requestAnimationFrame(measure);
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    window.addEventListener("scroll", measure, true);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure, true);
+    };
+  }, [loading]);
+
+  if (!loading) return null;
+
+  const displayedProgress = Math.max(1, Math.min(100, Math.round(progress)));
+  const evaluationSteps = [
+    {
+      title: "Alignment",
+      description: "Evaluating how directly your essay answers the prompt and connects with the scholarship’s values and priorities.",
+    },
+    {
+      title: "Evidence Strength",
+      description: "Evaluating whether your essay uses the strongest relevant experiences from your profile and supports them with explicit details, examples, achievements, and measurable outcomes.",
+    },
+    {
+      title: "Insight",
+      description: "Evaluating the depth of your writing, including the meaning of your experiences and what you learned, realized, questioned, or changed.",
+    },
+    {
+      title: "Narrative Structure, Flow & Coherence",
+      description: "Evaluating your essay’s organization, progression, transitions, timeline, and logical consistency.",
+    },
+    {
+      title: "Tone & Authenticity",
+      description: "Evaluating whether your voice sounds sincere, confident, respectful, and authentic.",
+    },
+    {
+      title: "Clarity & Concision",
+      description: "Evaluating whether your sentences are direct, easy to understand, and free from unnecessary wording or convoluted phrasing.",
+    },
+    {
+      title: "Grammar",
+      description: "Evaluating spelling, punctuation, capitalization, verb tense, agreement, and sentence-level correctness.",
+    },
+    {
+      title: "Preparing specific revision guidance",
+      description: "Preparing one clear, specific revision action for each criterion based on its score and feedback.",
+    },
+    {
+      title: "Your essay review is ready",
+      description: "",
+    },
+  ];
+  const activeStep = displayedProgress < 15
+    ? 0
+    : displayedProgress < 25
+      ? 1
+      : displayedProgress < 35
+        ? 2
+        : displayedProgress < 50
+          ? 3
+          : displayedProgress < 60
+            ? 4
+            : displayedProgress < 70
+              ? 5
+              : displayedProgress < 85
+                ? 6
+                : displayedProgress < 100
+                  ? 7
+                  : 8;
+  const cardWidth = region ? Math.max(280, Math.min(576, region.width - 32)) : 576;
+  const cardLeft = region
+    ? region.left + Math.max(16, (region.width - cardWidth) / 2)
+    : Math.max(16, (window.innerWidth - cardWidth) / 2);
+  const requestedTop = (region?.top ?? 0) + 120;
+  const cardTop = region
+    ? Math.max(region.top + 16, Math.min(requestedTop, window.innerHeight - 536))
+    : 120;
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] cursor-wait bg-black/20 backdrop-grayscale"
+      role="status"
+      aria-live="polite"
+      aria-label={`Reviewing your essay, ${displayedProgress}% complete`}
+    >
+      {region && (
+        <div
+          className="fixed bg-[#cccccc]"
+          style={{ left: region.left, top: region.top, width: region.width, height: region.height }}
+          aria-hidden="true"
+        />
+      )}
+      <div
+        className="fixed z-10 max-h-[calc(100vh-32px)] overflow-y-auto rounded-xl border border-info/25 bg-background p-5 shadow-lg"
+        style={{
+          left: cardLeft,
+          top: cardTop,
+          width: cardWidth,
+          maxHeight: Math.max(240, window.innerHeight - cardTop - 16),
+        }}
+      >
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <span className="size-4 shrink-0 animate-spin rounded-full border-2 border-info/25 border-t-info" />
+            <span className="truncate text-[15px] font-semibold text-foreground">Reviewing your essay…</span>
+          </div>
+          <span className="shrink-0 text-[14px] font-semibold tabular-nums text-info">{displayedProgress}%</span>
+        </div>
+
+        <div
+          className="mt-4 h-2 overflow-hidden rounded-full bg-info/10"
+          role="progressbar"
+          aria-label="Essay evaluation progress"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={displayedProgress}
+        >
+          <div
+            className="h-full rounded-full bg-info transition-[width] duration-500 ease-out"
+            style={{ width: `${displayedProgress}%` }}
+          />
+        </div>
+
+        <div className="mt-5 space-y-2.5">
+          {evaluationSteps.map((step, index) => {
+            const completed = index < activeStep || (displayedProgress === 100 && index === activeStep);
+            const active = index === activeStep;
+            return (
+              <div key={step.title} className={`flex items-start gap-2.5 text-[13px] ${completed || active ? "text-foreground" : "text-muted-foreground"}`}>
+                {completed ? (
+                  <span className="mt-0.5 grid size-4 shrink-0 place-items-center rounded-full bg-success text-white">
+                    <Check className="size-3" aria-hidden="true" />
+                  </span>
+                ) : active ? (
+                  <span className="mt-0.5 size-4 shrink-0 animate-spin rounded-full border-2 border-info/25 border-t-info" />
+                ) : (
+                  <span className="mt-0.5 size-4 shrink-0 rounded-full border border-border bg-background" />
+                )}
+                <div className="min-w-0">
+                  <div className={active ? "font-semibold" : ""}>{step.title}</div>
+                  {active && step.description && (
+                    <p className="mt-1 leading-relaxed text-muted-foreground">{step.description}</p>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   const { user, updateProfile } = useUser();
   const editorApiRef = useRef<EssayEditorHandle | null>(null);
   const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
   const [coachRaw, setCoachRaw] = useState<CoachSentenceSuggestion[]>([]);
   const [coachLoading, setCoachLoading] = useState(false);
-  const [coachSummary, setCoachSummary] = useState<string | null>(() => user?.essayCoachSummary ?? null);
-  const [coachWarnings, setCoachWarnings] = useState<string[]>([]);
-  const [coachResult, setCoachResult] = useState<EssayCoachResult | null>(
-    () => (user?.essayCoachResult as EssayCoachResult | undefined) ?? null,
+  const [reviewResult, setReviewResult] = useState<EssayReviewResult | null>(
+    () => user?.essayReviewResult?.schema_version === 3 ? user.essayReviewResult : null,
   );
-  const [coachUpdatedAt, setCoachUpdatedAt] = useState<number | null>(() => user?.essayCoachUpdatedAt ?? null);
-  const [coachDraftAtRun, setCoachDraftAtRun] = useState<string>("");
+  const [reviewUpdatedAt, setReviewUpdatedAt] = useState<number | null>(() => user?.essayReviewUpdatedAt ?? null);
+  const [reviewDraftAtRun, setReviewDraftAtRun] = useState<string>(() => user?.essayReviewDraftAtRun ?? "");
   // Outline coverage is layered: `autoCovered` comes from the AI coverage agent;
   // `manualChecked`/`manualUnchecked` are the student's overrides, which persist
   // across auto-runs. Displayed = (auto ∪ manualChecked) − manualUnchecked.
@@ -5095,6 +5642,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   const [manualChecked, setManualChecked] = useState<Set<string>>(() => new Set());
   const [manualUnchecked, setManualUnchecked] = useState<Set<string>>(() => new Set());
   const essayTitle = user?.essayTitle ?? "";
+  const activeScholarshipName = user?.activeScholarship?.name?.trim() ?? "";
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("outline");
   const [panelOpen, setPanelOpen] = useState(true);
   const [panelWidth, setPanelWidth] = useState(() => {
@@ -5105,12 +5653,15 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
       ? saved
       : Math.min(Math.max(420, minimum), Math.round(window.innerWidth * 0.55));
   });
+
+  useEffect(() => {
+    if (!user || essayTitle.trim() || !activeScholarshipName) return;
+    updateProfile({ essayTitle: activeScholarshipName });
+  }, [activeScholarshipName, essayTitle, updateProfile, user]);
   const [panelResizing, setPanelResizing] = useState(false);
   const [isEvaluating, setIsEvaluating] = useState(false);
-  const [sessionPhase, setSessionPhase] = useState("");
   const [sessionProgress, setSessionProgress] = useState(0);
-  const [coachReady, setCoachReady] = useState(false);
-  const [scoresReady, setScoresReady] = useState(false);
+  const [reviewReady, setReviewReady] = useState(false);
   const [mechanicsNote, setMechanicsNote] = useState<string | null>(null);
   const [pdfStatus, setPdfStatus] = useState<string | null>(null);
   const [analysisStatus, setAnalysisStatus] = useState<string | null>(null);
@@ -5122,6 +5673,8 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   const [promptConfirmed, setPromptConfirmed] = useState(false);
   const [promptPickerOpen, setPromptPickerOpen] = useState(false);
   const [pendingPromptIndex, setPendingPromptIndex] = useState(0);
+  const [workspaceTutorialActive, setWorkspaceTutorialActive] = useState(false);
+  const workspaceTutorialHandled = useRef(false);
 
   const legacyPromptBlob =
     user?.activeScholarship?.essayPrompts
@@ -5149,7 +5702,6 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   const wordCount = draft.trim() ? draft.trim().split(/\s+/).filter(Boolean).length : 0;
   const characterCount = draft.length;
   const hasMultiplePrompts = availablePrompts.length > 1;
-  const hasOutline = !!user?.personalizedOutline?.outline?.sections?.length;
 
   useEffect(() => {
     if (selectedPromptIndex >= availablePrompts.length) {
@@ -5161,7 +5713,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     () => parseWordTarget(buildOutlinePayload(user, essayPrompt).word_limit),
     [user, essayPrompt],
   );
-  const score = useMemo(() => overallEssayScore(user?.lastAnalysis), [user?.lastAnalysis]);
+  const score = typeof reviewResult?.overall_score === "number" ? reviewResult.overall_score : null;
   const suggestions = useMemo(() => {
     const auto = analyzeText(draft);
     const coach = anchorCoachSuggestions(coachRaw, draft);
@@ -5238,14 +5790,6 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     });
   }, [essayPrompt, user]);
 
-  const workspaceStage: WorkspaceStage = useMemo(() => {
-    if (!promptConfirmed) return "prompt";
-    if (!hasOutline) return "outline";
-    if (wordCount < 30) return "draft";
-    if (coachResult || user?.lastAnalysis) return "revise";
-    return "coach";
-  }, [promptConfirmed, hasOutline, wordCount, coachResult, user?.lastAnalysis]);
-
   // Landing: after profile hydration, open the prompt popup unless this visit
   // already confirmed a writing focus. Re-open when the prompt blob changes.
   useEffect(() => {
@@ -5267,16 +5811,44 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.email, promptDataKey, outlineKey]);
 
+  useEffect(() => {
+    if (
+      workspaceTutorialHandled.current
+      || outlineLoading
+      || promptPickerOpen
+      || !promptConfirmed
+      || !user?.personalizedOutline?.outline
+    ) return;
+    try {
+      if (window.localStorage.getItem(ESSAY_WORKSPACE_TUTORIAL_KEY) === "complete") {
+        workspaceTutorialHandled.current = true;
+        return;
+      }
+    } catch {
+      // The tour can still run once in this visit when storage is unavailable.
+    }
+    const timer = window.setTimeout(() => {
+      workspaceTutorialHandled.current = true;
+      setWorkspaceTutorialActive(true);
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [outlineLoading, promptConfirmed, promptPickerOpen, user?.personalizedOutline?.generatedForKey, user?.personalizedOutline?.outline]);
+
+  function closeWorkspaceTutorial() {
+    workspaceTutorialHandled.current = true;
+    try {
+      window.localStorage.setItem(ESSAY_WORKSPACE_TUTORIAL_KEY, "complete");
+    } catch {
+      // Dismissing the tour should still work when storage is unavailable.
+    }
+    setWorkspaceTutorialActive(false);
+  }
+
   async function runOutlineGeneration(promptOverride?: string) {
     if (!user || outlineLoading) return;
     const promptForOutline = (promptOverride ?? essayPrompt).trim();
-    // Empty prompt is allowed: backend adapts to scholarship-guided mode.
     setOutlineLoading(true);
-    setOutlineStatus(
-      promptForOutline
-        ? "Building an outline adapted to your selected essay prompt…"
-        : "Building a scholarship-guided outline (no formal prompt)…",
-    );
+    setOutlineStatus("Building an outline adapted to your selected essay prompt…");
     setPanelOpen(true);
     setActiveTab("outline");
     const scholarship = user.activeScholarship ?? {};
@@ -5309,10 +5881,10 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     }
   }
 
-  async function confirmEssayPrompt(index?: number, options?: { allowEmpty?: boolean }) {
+  async function confirmEssayPrompt(index?: number) {
     const nextIndex = typeof index === "number" ? index : pendingPromptIndex;
     const nextPrompt = (availablePrompts[nextIndex] || legacyPromptBlob).trim();
-    if (!nextPrompt && !options?.allowEmpty) {
+    if (!nextPrompt) {
       setOutlineStatus("Add an essay prompt, or continue without a formal prompt.");
       return;
     }
@@ -5327,15 +5899,13 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     setPromptPickerOpen(false);
     setPanelOpen(true);
     setActiveTab("outline");
-    setOutlineStatus(
-      nextPrompt
-        ? "Prompt confirmed — generating an outline adapted to this prompt…"
-        : "No formal prompt — generating a scholarship-guided outline…",
-    );
+    setOutlineStatus("Prompt confirmed — generating an outline adapted to this prompt…");
     await runOutlineGeneration(nextPrompt);
   }
 
-  async function continueWithoutFormalPrompt() {
+  function continueWithoutFormalPrompt() {
+    // Clear any stale pasted materials masquerading as a prompt so evaluation
+    // uses scholarship-guided adaptation without generating an outline.
     if (!user) return;
     updateProfile({
       activeScholarship: {
@@ -5349,7 +5919,11 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     });
     setSelectedPromptIndex(0);
     setPendingPromptIndex(0);
-    await confirmEssayPrompt(0, { allowEmpty: true });
+    setPromptConfirmed(true);
+    setPromptPickerOpen(false);
+    setPanelOpen(true);
+    setActiveTab("outline");
+    setOutlineStatus("No formal prompt selected. Evaluation will use the scholarship mission and selection criteria.");
   }
 
   // Lightweight autosave indicator — the working draft is continuously synced to
@@ -5365,15 +5939,14 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     return () => window.clearInterval(id);
   }, []);
 
-  // Restore persisted coach pack after hydration / account switch.
+  // Restore only schema-v3 Essay Review data. Older coach/evaluation payloads
+  // are intentionally ignored and render as an empty Evaluate state.
   useEffect(() => {
-    if (!user?.essayCoachResult) return;
-    const restoredResult = user.essayCoachResult as EssayCoachResult;
-    setCoachResult(restoredResult);
-    setCoachRaw(restoredResult.sentence_suggestions ?? []);
-    setCoachSummary(user.essayCoachSummary ?? null);
-    setCoachUpdatedAt(user.essayCoachUpdatedAt ?? null);
-  }, [user?.email, user?.essayCoachResult, user?.essayCoachSummary, user?.essayCoachUpdatedAt]);
+    const restored = user?.essayReviewResult;
+    setReviewResult(restored?.schema_version === 3 ? restored : null);
+    setReviewUpdatedAt(restored?.schema_version === 3 ? user?.essayReviewUpdatedAt ?? null : null);
+    setReviewDraftAtRun(restored?.schema_version === 3 ? user?.essayReviewDraftAtRun ?? "" : "");
+  }, [user?.email, user?.essayReviewResult, user?.essayReviewUpdatedAt, user?.essayReviewDraftAtRun]);
 
   useEffect(() => {
     if (!panelResizing) return;
@@ -5484,17 +6057,15 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     if (suggestions[0]) requestAnimationFrame(() => editorApiRef.current?.reveal(suggestions[0]));
   }
 
-  function persistCoachResult(result: EssayCoachResult, draftForRun: string) {
+  function persistEssayReview(result: EssayReviewResult, draftForRun: string) {
     const updatedAt = Date.now();
-    setCoachResult(result);
-    setCoachSummary(result.coach_summary ?? null);
-    setCoachWarnings(result.warnings ?? []);
-    setCoachUpdatedAt(updatedAt);
-    setCoachDraftAtRun(draftForRun);
+    setReviewResult(result);
+    setReviewUpdatedAt(updatedAt);
+    setReviewDraftAtRun(draftForRun);
     updateProfile({
-      essayCoachResult: result as unknown as Record<string, unknown>,
-      essayCoachSummary: result.coach_summary ?? undefined,
-      essayCoachUpdatedAt: updatedAt,
+      essayReviewResult: result,
+      essayReviewUpdatedAt: updatedAt,
+      essayReviewDraftAtRun: draftForRun,
     });
   }
 
@@ -5505,7 +6076,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     lastAutoCheckRef.current = draft;
     setBgStatus("Checking grammar and outline coverage…");
     try {
-      const result = await runEssayCoach(buildEssayCoachPayload(user, "auto_check", undefined, essayPrompt));
+      const result = await runEditorCheck(buildEditorCheckPayload(user));
       const coveredIds = result.outline_coverage?.covered_point_ids;
       if (coveredIds) {
         // Intersect with known point ids so a hallucinated id can never tick a box.
@@ -5524,36 +6095,30 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   async function runCoachingSession() {
     if (coachLoading || isEvaluating || !user) return;
     if (!promptConfirmed) {
-      setCoachSummary("Confirm your writing focus first (prompt or scholarship-guided), then run coaching.");
+      setAnalysisStatus("Confirm your writing focus first, then select Evaluate.");
       setPromptPickerOpen(true);
       setActiveTab("outline");
       setPanelOpen(true);
       return;
     }
     if (wordCount < 30) {
-      setCoachSummary("Write at least ~30 words, then run a coaching session.");
+      setAnalysisStatus("Write at least 30 words, then select Evaluate.");
       return;
     }
 
     setIsEvaluating(true);
     setCoachLoading(true);
-    setCoachReady(false);
-    setScoresReady(false);
+    setReviewReady(false);
     setSessionProgress(6);
-    setSessionPhase("Cleaning spelling…");
     setMechanicsNote(null);
     setAnalysisStatus(null);
-    setCoachWarnings([]);
     setPanelOpen(true);
-    setCoachSummary("Scholar-E is preparing your coaching session…");
+    setActiveTab("coach");
 
     try {
-      setSessionPhase("Running coach suggestions and deep evaluation…");
-      setSessionProgress(28);
-
-      // One backend request owns mechanics and one shared coaching/evaluation
-      // graph. Specialists fan out in parallel, then one evaluator consumes
-      // their reports and projects both UI result packages.
+      // One backend request owns mechanics and one Manager-led review graph.
+      // Seven criterion agents evaluate, simulate the reviewer, score, and
+      // propose one aligned action in parallel.
       const session = await runWorkspaceCoachingSession(buildCoachingSessionPayload(user, essayPrompt));
       const workingDraft = session.cleaned_draft || draft;
       const appliedCount = session.mechanics?.applied_count ?? 0;
@@ -5565,64 +6130,31 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
           : null,
       );
 
-      const coach = session.coach_pack ?? null;
-      const evaluation = session.evaluation ?? null;
-      const gotCoach = !!coach && coach.status !== "error" && session.components?.coach !== "error";
-      const gotScores = !!evaluation && session.components?.evaluation !== "error";
-
-      if (gotCoach && coach) {
-        setCoachReady(true);
-        const coveredIds = coach.outline_coverage?.covered_point_ids;
-        if (coveredIds) {
-          const known = new Set(buildOutlinePoints(user.personalizedOutline).map((p) => p.id));
-          setAutoCovered(new Set(coveredIds.filter((id) => known.has(id))));
-        }
-        setCoachRaw(coach.sentence_suggestions ?? []);
-        persistCoachResult(coach, workingDraft);
-        if (coach.overall_scores && Object.keys(coach.overall_scores).length) {
-          upsertVersion(
-            {
-              coachScores: coach.overall_scores,
-              coachOverall: meanScore(coach.overall_scores) ?? undefined,
-              coachSummary: coach.coach_summary ?? undefined,
-            },
-            workingDraft,
-          );
-        }
+      const review = session.review ?? null;
+      const gotReview = !!review && review.schema_version === 3 && review.status !== "error";
+      const coveredIds = session.outline_coverage?.covered_point_ids;
+      if (coveredIds) {
+        const known = new Set(buildOutlinePoints(user.personalizedOutline).map((p) => p.id));
+        setAutoCovered(new Set(coveredIds.filter((id) => known.has(id))));
       }
 
-      if (gotScores && evaluation) {
-        setScoresReady(true);
-        updateProfile({ lastAnalysis: evaluation });
-      }
+      const combinedWarnings = session.warnings ?? [];
 
-      const combinedWarnings = [...(session.warnings ?? []), ...(coach?.warnings ?? [])];
-      setCoachWarnings(Array.from(new Set(combinedWarnings)));
+      if (!gotReview) throw new Error(combinedWarnings[0] || "The coaching session could not review your draft.");
+      persistEssayReview(review, workingDraft);
+      setReviewReady(true);
 
-      if (!gotCoach && !gotScores) {
-        throw new Error(combinedWarnings[0] || "The coaching session could not analyze your draft.");
-      }
-      if (!gotCoach) {
-        setCoachSummary("Deep evaluation finished, but writing suggestions are temporarily unavailable.");
-        setAnalysisStatus("Deep evaluation completed. Writing-coach feedback is unavailable for this run.");
-      } else if (!gotScores) {
-        setAnalysisStatus("Writing feedback completed. Deep evaluation is unavailable for this run.");
-      }
-
-      setSessionPhase(gotCoach && gotScores ? "Coach suggestions and scores ready…" : "Partial coaching results ready…");
       setSessionProgress(100);
-      setActiveTab(gotCoach ? "coach" : "evaluation");
+      setActiveTab("coach");
       await new Promise((resolve) => window.setTimeout(resolve, 200));
     } catch (error) {
       console.error("Scholar-E coaching session failed.", error);
-      const message = error instanceof Error ? error.message : "The coaching session could not analyze your draft.";
-      setCoachSummary(message);
+      const message = error instanceof Error ? error.message : "The coaching session could not review your draft.";
       setAnalysisStatus(message);
     } finally {
       setIsEvaluating(false);
       setCoachLoading(false);
       setSessionProgress(0);
-      setSessionPhase("");
     }
   }
 
@@ -5741,7 +6273,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
 
   function saveAsDraft() {
     if (wordCount < 1) return;
-    upsertVersion({ score: score ?? undefined });
+    upsertVersion({ reviewOverall: score ?? undefined });
   }
 
   function loadExampleEssay() {
@@ -5750,23 +6282,21 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     triggerAutoCheck();
   }
 
-  // When a deep Evaluate (readiness index) completes, attach its scores to the
-  // current draft version so the Progress view can show both metrics per draft.
+  // Attach the canonical criterion scores to the current draft version.
   useEffect(() => {
-    const analysis = user?.lastAnalysis;
-    const idx = analysis?.readiness_index;
-    if (!idx) return;
-    const readinessScores: Record<string, number> = {};
-    for (const [key, value] of Object.entries(idx)) {
-      if (typeof value?.score === "number") readinessScores[key] = value.score;
+    if (!reviewResult?.criteria) return;
+    const reviewScores: Record<string, number> = {};
+    for (const [key, value] of Object.entries(reviewResult.criteria)) {
+      if (typeof value?.score === "number") reviewScores[key] = value.score;
     }
-    if (!Object.keys(readinessScores).length) return;
-    upsertVersion({ readinessScores, readinessOverall: overallEssayScore(analysis) ?? undefined });
+    if (!Object.keys(reviewScores).length) return;
+    upsertVersion({ reviewScores, reviewOverall: reviewResult.overall_score ?? undefined });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.lastAnalysis]);
+  }, [reviewResult]);
 
   return (
-    <div className="w-full border-t border-border bg-background">
+    <div className="relative w-full border-t border-border bg-background" aria-busy={outlineLoading || isEvaluating}>
+      <div inert={outlineLoading || isEvaluating || workspaceTutorialActive ? true : undefined}>
       {/* Zone 1 — slim top bar (Grammarly-style) */}
       <header className="sticky top-0 z-20 border-b border-border bg-background/90 backdrop-blur">
         <div className="mx-auto flex h-14 max-w-[1440px] items-center gap-2 px-3 md:px-4">
@@ -5813,7 +6343,11 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
 
             <Tooltip>
               <TooltipTrigger asChild>
-                <label className="grid size-9 cursor-pointer place-items-center rounded-lg text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground">
+                <label
+                  data-essay-workspace-tour="upload"
+                  aria-label="Upload PDF draft"
+                  className="grid size-9 cursor-pointer place-items-center rounded-lg text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground"
+                >
                   <FileUp className="size-4" />
                   <input
                     type="file"
@@ -5845,6 +6379,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
             </Tooltip>
 
             <button
+              data-essay-workspace-tour="evaluate"
               type="button"
               onClick={() => void runCoachingSession()}
               disabled={wordCount < 30 || !promptConfirmed || coachLoading || isEvaluating}
@@ -5852,7 +6387,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
               className={`ml-0.5 inline-flex items-center gap-1.5 rounded-lg bg-info px-3 py-2 text-[13px] font-medium text-white transition-opacity duration-150 hover:opacity-90 disabled:opacity-60 ${coachLoading || isEvaluating ? "agent-loading" : ""}`}
             >
               {coachLoading || isEvaluating ? <Spinner className="size-4" /> : <Wand2 className="size-4" />}
-              {coachLoading || isEvaluating ? "Coaching…" : "Run coaching session"}
+              {coachLoading || isEvaluating ? "Evaluating…" : "Evaluate"}
             </button>
 
             <Tooltip>
@@ -5966,13 +6501,13 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
             </button>
             <button
               type="button"
-              onClick={() => void continueWithoutFormalPrompt()}
+              onClick={continueWithoutFormalPrompt}
               className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-border bg-background px-4 py-2.5 text-sm font-semibold text-foreground transition-colors hover:bg-accent"
             >
               Continue without a formal prompt
             </button>
             <p className="text-center text-[12px] text-muted-foreground">
-              Without a prompt, outline and coaching adapt to the scholarship mission and selection criteria.
+              Without a prompt, evaluation adapts to the scholarship mission and selection criteria; no outline is generated.
             </p>
           </DialogFooter>
         </DialogContent>
@@ -5980,18 +6515,16 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
 
       <section className="border-b border-border bg-card">
         <div className="mx-auto max-w-[1440px] space-y-3 px-4 py-3 md:px-6">
-          <WorkspaceStageGuide
-            stage={workspaceStage}
-            onChoosePrompt={() => {
-              setPendingPromptIndex(selectedPromptIndex);
-              setPromptPickerOpen(true);
-            }}
-          />
-
-          {hasMultiplePrompts && promptConfirmed && (
+          {promptConfirmed && (
             <div className="rounded-xl border border-info/20 bg-info/5 p-3">
               <div className="flex items-center justify-between gap-2">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-info">Working on prompt {selectedPromptIndex + 1}</div>
+                <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-info">
+                  {essayPrompt.trim()
+                    ? hasMultiplePrompts
+                      ? `Working on prompt ${selectedPromptIndex + 1}`
+                      : "Working on essay prompt"
+                    : "Scholarship-guided writing focus"}
+                </div>
                 <button
                   type="button"
                   onClick={() => {
@@ -6003,34 +6536,11 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
                   Change prompt
                 </button>
               </div>
-              <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground line-clamp-2">{essayPrompt}</p>
+              <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground line-clamp-2">
+                {essayPrompt || "No formal prompt selected; evaluation uses the scholarship mission and selection criteria."}
+              </p>
             </div>
           )}
-
-          <div className="flex items-center gap-3">
-            <label htmlFor="workspace-essay-prompt" className="shrink-0 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-              {hasMultiplePrompts ? "Selected prompt" : "Essay prompt"}
-            </label>
-            <input
-              id="workspace-essay-prompt"
-              type="text"
-              value={essayPrompt}
-              onChange={(event) => updateEssayPrompt(event.target.value, selectedPromptIndex)}
-              readOnly={hasMultiplePrompts}
-              placeholder="Paste or enter the scholarship essay prompt here."
-              className="h-10 min-w-0 flex-1 rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground/60 focus:border-info focus:ring-2 focus:ring-info/10 read-only:bg-muted/30"
-            />
-            <button
-              type="button"
-              onClick={() => void runOutlineGeneration()}
-              disabled={outlineLoading || !promptConfirmed}
-              aria-busy={outlineLoading}
-              className={`inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-lg bg-primary px-5 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${outlineLoading ? "agent-loading" : ""}`}
-            >
-              {outlineLoading ? <Spinner className="size-4" /> : hasOutline ? <RefreshCw className="size-4" /> : <Sparkles className="size-4" />}
-              {outlineLoading ? "Generating Outline…" : hasOutline ? "Regenerate Outline" : "Generate Outline"}
-            </button>
-          </div>
           {!promptConfirmed && (
             <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-info/30 bg-info/10 px-3 py-2.5">
               <p className="text-[12px] font-medium text-foreground">
@@ -6050,17 +6560,19 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
           )}
           {promptConfirmed && !essayPrompt.trim() && (
             <p className="text-xs text-muted-foreground">
-              Scholarship-guided mode: outline and coaching adapt to mission/criteria. Add a prompt anytime to regenerate.
+              Scholarship-guided mode: evaluation adapts to the mission and selection criteria. Use Change prompt to add a formal prompt and build an outline.
             </p>
           )}
-          {outlineStatus && <p className="text-xs text-muted-foreground">{outlineStatus}</p>}
         </div>
       </section>
 
       {/* Zone 2 (editor) + Zone 3 (sidebar) */}
       <div className="mx-auto flex max-w-[1440px] flex-col items-stretch lg:flex-row lg:items-start">
         <div className="flex min-h-[60vh] min-w-0 flex-1 flex-col lg:h-[calc(100vh-120px)] lg:min-h-0">
-          <div className={`mx-auto flex min-h-0 w-full flex-1 flex-col transition-[max-width] duration-300 ${panelOpen ? "max-w-[760px]" : "max-w-[960px]"}`}>
+          <div
+            data-essay-workspace-tour="editor"
+            className={`mx-auto flex min-h-0 w-full flex-1 flex-col transition-[max-width] duration-300 ${panelOpen ? "max-w-[760px]" : "max-w-[960px]"}`}
+          >
             <EssayEditor
               ref={editorApiRef}
               value={draft}
@@ -6117,11 +6629,9 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
               onCollapse={() => setPanelOpen(false)}
               essayPrompt={essayPrompt}
               promptConfirmed={promptConfirmed}
-              sessionPhase={sessionPhase}
-              sessionProgress={sessionProgress}
-              coachReady={coachReady}
-              scoresReady={scoresReady}
-              sessionRunning={isEvaluating}
+              outlineLoading={outlineLoading}
+              outlineStatus={outlineStatus}
+              reviewReady={reviewReady}
               suggestions={suggestions}
               onAccept={acceptSuggestion}
               onDismiss={dismissSuggestion}
@@ -6129,11 +6639,9 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
               onAcceptAllQuickFixes={acceptAllQuickFixes}
               quickFixCount={quickFixSuggestions.length}
               coachLoading={coachLoading}
-              coachSummary={coachSummary}
-              coachWarnings={coachWarnings}
-              coachResult={coachResult}
-              coachUpdatedAt={coachUpdatedAt}
-              coachDraftChanged={!!coachUpdatedAt && draft !== coachDraftAtRun}
+              reviewResult={reviewResult}
+              reviewUpdatedAt={reviewUpdatedAt}
+              reviewDraftChanged={!!reviewUpdatedAt && draft !== reviewDraftAtRun}
               now={nowTick}
               covered={coveredPoints}
               onToggleCovered={toggleCovered}
@@ -6151,60 +6659,16 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
           </button>
         )}
       </div>
-    </div>
-  );
-}
+      </div>
 
-function WorkspaceStageGuide({
-  stage,
-  onChoosePrompt,
-}: {
-  stage: WorkspaceStage;
-  onChoosePrompt?: () => void;
-}) {
-  const stages: Array<{ id: WorkspaceStage; label: string; hint: string }> = [
-    { id: "prompt", label: "1. Prompt", hint: "Confirm a prompt — or continue without one if the scholarship has none" },
-    { id: "outline", label: "2. Outline", hint: "Build an outline adapted to your writing focus" },
-    { id: "draft", label: "3. Draft", hint: "Write against the outline section by section" },
-    { id: "coach", label: "4. Coach", hint: "Run one coaching session for fixes + scores" },
-    { id: "revise", label: "5. Revise", hint: "Apply Coach suggestions, then re-run" },
-  ];
-  const activeIndex = stages.findIndex((item) => item.id === stage);
-  const active = stages[Math.max(0, activeIndex)];
-  return (
-    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-      <div className="flex flex-wrap gap-1.5">
-        {stages.map((item, index) => {
-          const done = index < activeIndex;
-          const current = index === activeIndex;
-          return (
-            <span
-              key={item.id}
-              className={`rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
-                current
-                  ? "bg-info text-white"
-                  : done
-                    ? "bg-success/15 text-success"
-                    : "bg-muted text-muted-foreground"
-              }`}
-            >
-              {item.label}
-            </span>
-          );
-        })}
-      </div>
-      <div className="flex items-center gap-2">
-        <p className="text-[12px] text-muted-foreground">{active?.hint}</p>
-        {stage === "prompt" && onChoosePrompt && (
-          <button
-            type="button"
-            onClick={onChoosePrompt}
-            className="text-[12px] font-semibold text-info hover:underline"
-          >
-            Open prompt picker
-          </button>
-        )}
-      </div>
+      <OutlineWorkspaceLoadingOverlay loading={outlineLoading} />
+      <EssayReviewWorkspaceLoadingOverlay loading={isEvaluating} progress={sessionProgress} />
+      {workspaceTutorialActive && (
+        <EssayWorkspaceTutorial
+          onFinish={closeWorkspaceTutorial}
+          onSkip={closeWorkspaceTutorial}
+        />
+      )}
     </div>
   );
 }
@@ -6216,11 +6680,9 @@ function EssayWorkspacePanel({
   onCollapse,
   essayPrompt,
   promptConfirmed,
-  sessionPhase,
-  sessionProgress,
-  coachReady,
-  scoresReady,
-  sessionRunning,
+  outlineLoading,
+  outlineStatus,
+  reviewReady,
   suggestions,
   onAccept,
   onDismiss,
@@ -6228,11 +6690,9 @@ function EssayWorkspacePanel({
   onAcceptAllQuickFixes,
   quickFixCount,
   coachLoading,
-  coachSummary,
-  coachWarnings,
-  coachResult,
-  coachUpdatedAt,
-  coachDraftChanged,
+  reviewResult,
+  reviewUpdatedAt,
+  reviewDraftChanged,
   now,
   covered,
   onToggleCovered,
@@ -6243,11 +6703,9 @@ function EssayWorkspacePanel({
   onCollapse: () => void;
   essayPrompt: string;
   promptConfirmed: boolean;
-  sessionPhase: string;
-  sessionProgress: number;
-  coachReady: boolean;
-  scoresReady: boolean;
-  sessionRunning: boolean;
+  outlineLoading: boolean;
+  outlineStatus: string | null;
+  reviewReady: boolean;
   suggestions: Suggestion[];
   onAccept: (s: Suggestion) => void;
   onDismiss: (s: Suggestion) => void;
@@ -6255,68 +6713,24 @@ function EssayWorkspacePanel({
   onAcceptAllQuickFixes: () => void;
   quickFixCount: number;
   coachLoading: boolean;
-  coachSummary: string | null;
-  coachWarnings: string[];
-  coachResult: EssayCoachResult | null;
-  coachUpdatedAt: number | null;
-  coachDraftChanged: boolean;
+  reviewResult: EssayReviewResult | null;
+  reviewUpdatedAt: number | null;
+  reviewDraftChanged: boolean;
   now: number;
   covered: Set<string>;
   onToggleCovered: (id: string) => void;
 }) {
-  const { user, updateProfile } = useUser();
-  const [outlineLoading, setOutlineLoading] = useState(false);
-  const [outlineStatus, setOutlineStatus] = useState<string | null>(null);
-  const outlineKey = useMemo(() => {
-    const scholarship = user?.activeScholarship ?? {};
-    return JSON.stringify({
-      scholarshipName: scholarship.name ?? "",
-      scholarshipUrl: scholarship.url ?? scholarship.officialWebsite ?? "",
-      prompt: essayPrompt,
-      requirementsPreview: scholarship.requirementsPreview ?? "",
-      updatedAt: scholarship.extractionCompletedAt ?? "",
-      profileName: user?.name ?? "",
-      educationLevel: user?.educationLevel ?? "",
-      careerGoal: user?.careerGoal ?? "",
-      highSchool: user?.highSchool ?? {},
-      undergrad: user?.undergrad ?? {},
-      graduate: user?.graduate ?? {},
-      researchExperience: user?.researchExperience ?? [],
-      workExperience: user?.workExperience ?? [],
-      optional: user?.optional ?? {},
-      prompts: user?.prompts ?? {},
-    });
-  }, [essayPrompt, user]);
-
-  async function runOutlineGeneration(force = false) {
-    if (!user || outlineLoading || !essayPrompt.trim()) return;
-    if (!force && user.personalizedOutline?.generatedForKey === outlineKey) return;
-    setOutlineLoading(true);
-    setOutlineStatus("Building your personalized outline from the selected prompt and your profile...");
-    try {
-      const result = await generatePersonalizedOutline(buildOutlinePayload(user, essayPrompt));
-      updateProfile({ personalizedOutline: { ...result, generatedForKey: outlineKey } });
-      setOutlineStatus(result.status === "error" ? "A fallback outline is ready." : "Personalized outline ready.");
-    } catch (error) {
-      setOutlineStatus(error instanceof Error ? error.message : "Could not generate the outline.");
-    } finally {
-      setOutlineLoading(false);
-    }
-  }
-
-  // Outline is generated from the confirmed prompt via the landing popup confirm
-  // action or the explicit Generate Outline button — not auto-raced on mount.
+  const { user } = useUser();
 
   const tabs: Array<{ id: WorkspaceTab; label: string; icon: typeof ListChecks; count?: number }> = [
     { id: "outline", label: "Outline", icon: ListChecks },
-    { id: "coach", label: "Coach", icon: Wand2 },
-    { id: "evaluation", label: "Evaluation", icon: Gauge },
+    { id: "coach", label: "Essay Review", icon: Wand2 },
     { id: "highlights", label: "Fixes", icon: Sparkles, count: suggestions.length },
   ];
 
   return (
     <aside
-      aria-busy={sessionRunning}
+      aria-busy={isEvaluating}
       className="relative flex w-full shrink-0 flex-col border-t border-border bg-card lg:sticky lg:top-[56px] lg:h-[calc(100vh-120px)] lg:overflow-hidden lg:border-l lg:border-t-0"
     >
       <div className="sticky top-0 z-10 flex items-center gap-1 border-b border-border bg-card/95 p-2 backdrop-blur">
@@ -6353,31 +6767,31 @@ function EssayWorkspacePanel({
           <ChevronRight className="size-4" />
         </button>
       </div>
-      <div key={activeTab} className="min-h-0 flex-1 animate-in fade-in slide-in-from-bottom-1 overflow-y-auto p-4 duration-200">
+      <div
+        key={activeTab}
+        data-outline-loading-region={activeTab === "outline" ? true : undefined}
+        data-essay-review-loading-region={activeTab === "coach" ? true : undefined}
+        className="min-h-0 flex-1 animate-in fade-in slide-in-from-bottom-1 overflow-y-auto p-4 duration-200"
+      >
         {activeTab === "outline" && (
           <PersonalizedOutlinePanel
             outline={user?.personalizedOutline}
-            scholarshipName={user?.activeScholarship?.name}
             wordLimit={buildOutlinePayload(user, essayPrompt).word_limit}
             loading={outlineLoading}
             status={outlineStatus}
-            onRegenerate={() => void runOutlineGeneration(true)}
             covered={covered}
             onToggleCovered={onToggleCovered}
           />
         )}
         {activeTab === "coach" && (
-          <WorkspaceCoachTab
-            result={coachResult}
-            loading={coachLoading && !coachReady}
-            coachSummary={coachSummary}
-            coachWarnings={coachWarnings}
-            updatedAt={coachUpdatedAt}
-            draftChanged={coachDraftChanged}
+          <WorkspaceEssayReviewTab
+            review={reviewResult}
+            loading={isEvaluating && !reviewReady}
+            updatedAt={reviewUpdatedAt}
+            draftChanged={reviewDraftChanged}
             now={now}
           />
         )}
-        {activeTab === "evaluation" && <WorkspaceEvaluationTab isEvaluating={isEvaluating && !scoresReady} />}
         {activeTab === "highlights" && (
           <WorkspaceHighlightsTab
             isEvaluating={isEvaluating}
@@ -6388,39 +6802,9 @@ function EssayWorkspacePanel({
             onAcceptAllQuickFixes={onAcceptAllQuickFixes}
             quickFixCount={quickFixCount}
             coachLoading={coachLoading}
-            coachSummary={coachSummary}
-            coachWarnings={coachWarnings}
           />
         )}
       </div>
-      {sessionRunning && (
-        <div className="sticky bottom-0 z-20 border-t border-border bg-card/95 px-4 py-2.5 backdrop-blur">
-          <div className="flex items-center justify-between gap-3 text-[12px] font-medium text-muted-foreground">
-            <span className="min-w-0 leading-snug">
-              {sessionPhase
-                || (scoresReady && !coachReady
-                  ? "Scores ready…"
-                  : !scoresReady && coachReady
-                    ? "Coach suggestions ready…"
-                    : "Running coaching session…")}
-            </span>
-            <span className="shrink-0 tabular-nums text-foreground">{sessionProgress}%</span>
-          </div>
-          <div
-            className="mt-2 h-1.5 overflow-hidden rounded-full bg-border"
-            role="progressbar"
-            aria-label="Coaching session progress"
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={sessionProgress}
-          >
-            <div
-              className="h-full rounded-full bg-info transition-[width] duration-500 ease-out"
-              style={{ width: `${sessionProgress}%` }}
-            />
-          </div>
-        </div>
-      )}
     </aside>
   );
 }
@@ -6428,15 +6812,11 @@ function EssayWorkspacePanel({
 function outlineToText(outline?: PersonalizedOutlineResult) {
   const data = outline?.outline;
   if (!data) return "";
+  const sections = data.sections ?? [];
   const lines = [
-    data.outline_title,
-    "",
-    "Core message:",
-    data.thesis_or_core_message,
-    "",
-    ...(data.sections ?? []).flatMap((section, index) => [
-      `Section ${index + 1}: ${section.section_name}`,
-      `Purpose: ${section.purpose}`,
+    ...sections.flatMap((section, index) => [
+      outlineSectionHeading(section.section_name || `Section ${index + 1}`, index, sections.length),
+      `Guidance: ${section.purpose}`,
       "Suggested content:",
       ...(section.suggested_content ?? []).map((item) => `- ${item}`),
       "Profile evidence to use:",
@@ -6448,13 +6828,32 @@ function outlineToText(outline?: PersonalizedOutlineResult) {
       ...(section.coaching_notes ?? []).map((item) => `- ${item}`),
       "",
     ]),
-    "Recommended opening:",
-    data.recommended_opening,
-    "",
-    "Recommended conclusion:",
-    data.recommended_conclusion,
   ];
   return lines.filter(Boolean).join("\n").trim();
+}
+
+function outlineSectionRole(index: number, total: number): string {
+  if (total === 1) return "Introduction & Conclusion";
+  if (index === 0) return "Introduction";
+  if (index === total - 1) return "Conclusion";
+  return "";
+}
+
+function cleanOutlineSectionTitle(title: string): string {
+  return title.replace(/^(?:introduction(?:\s*&\s*conclusion)?|conclusion)\s*:\s*/i, "").trim();
+}
+
+function outlineSectionHeading(title: string, index: number, total: number): string {
+  const role = outlineSectionRole(index, total);
+  const cleanTitle = cleanOutlineSectionTitle(title);
+  return role ? `${role}: ${cleanTitle}` : `Section ${index + 1}: ${cleanTitle}`;
+}
+
+function estimatedWordCountLabel(value: string): string {
+  const estimate = value.trim();
+  if (!/\d/.test(estimate)) return estimate;
+  const approximate = estimate.startsWith("~") ? estimate : `~${estimate}`;
+  return /\bwords?\b/i.test(approximate) ? approximate : `${approximate} words`;
 }
 
 function MiniList({ items }: { items?: string[] }) {
@@ -6475,6 +6874,7 @@ function MiniList({ items }: { items?: string[] }) {
 function OutlineCheckRow({
   id,
   label,
+  labelPrefix,
   detail,
   covered,
   onToggle,
@@ -6482,6 +6882,7 @@ function OutlineCheckRow({
 }: {
   id: string;
   label: string;
+  labelPrefix?: string;
   detail?: string;
   covered: Set<string>;
   onToggle: (id: string) => void;
@@ -6489,7 +6890,13 @@ function OutlineCheckRow({
 }) {
   const done = covered.has(id);
   return (
-    <div className="rounded-lg border border-border bg-background p-2.5">
+    <div
+      className={`rounded-lg border p-2.5 transition-colors duration-150 ${
+        done
+          ? "border-border bg-muted/20"
+          : "border-border bg-background hover:border-info/30"
+      }`}
+    >
       <div className="flex items-start gap-2">
         <button
           type="button"
@@ -6503,8 +6910,11 @@ function OutlineCheckRow({
           <Check className="size-3" />
         </button>
         <div className="min-w-0 flex-1">
-          <div className={`text-[13px] font-medium leading-snug ${done ? "text-muted-foreground line-through" : "text-foreground"}`}>{label}</div>
-          {detail && <div className="mt-0.5 text-[12px] leading-relaxed text-muted-foreground">{detail}</div>}
+          <div className={`text-[14px] leading-snug ${done ? "text-muted-foreground line-through" : "text-foreground"}`}>
+            {labelPrefix && <span className="font-bold">{labelPrefix}: </span>}
+            <strong className="font-semibold">{label}</strong>
+          </div>
+          {detail && <div className="mt-1 text-[12px] leading-relaxed text-muted-foreground">{detail}</div>}
           {children}
         </div>
       </div>
@@ -6512,77 +6922,23 @@ function OutlineCheckRow({
   );
 }
 
-function OutlineGroup({
-  id,
-  title,
-  icon: Icon,
-  total,
-  coveredCount,
-  open,
-  onToggle,
-  children,
-}: {
-  id: string;
-  title: string;
-  icon: typeof Target;
-  total: number;
-  coveredCount: number;
-  open: boolean;
-  onToggle: (id: string) => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="overflow-hidden rounded-xl border border-border">
-      <button
-        type="button"
-        onClick={() => onToggle(id)}
-        className="flex w-full items-center gap-2 bg-accent/40 px-3 py-2.5 text-left transition-colors duration-150 hover:bg-accent/70"
-      >
-        <Icon className="size-4 text-info" />
-        <span className="flex-1 text-[13px] font-semibold">{title}</span>
-        <span className="text-[11px] tabular-nums text-muted-foreground">{coveredCount}/{total}</span>
-        <ChevronDown className={`size-4 text-muted-foreground transition-transform duration-200 ${open ? "rotate-180" : ""}`} />
-      </button>
-      {open && <div className="space-y-2 p-2.5">{children}</div>}
-    </div>
-  );
-}
-
 function PersonalizedOutlinePanel({
   outline,
-  scholarshipName,
   wordLimit,
   loading,
   status,
-  onRegenerate,
   covered,
   onToggleCovered,
 }: {
   outline?: PersonalizedOutlineResult;
-  scholarshipName?: string;
   wordLimit?: string;
   loading: boolean;
   status?: string | null;
-  onRegenerate: () => void;
   covered: Set<string>;
   onToggleCovered: (id: string) => void;
 }) {
   const [copyStatus, setCopyStatus] = useState("");
-  const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set(["core"]));
-  const toggleGroup = (id: string) =>
-    setOpenGroups((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
   const data = outline?.outline;
-
-  useEffect(() => {
-    if (!loading && data) {
-      setOpenGroups(new Set(["core"]));
-    }
-  }, [loading, Boolean(data), outline?.generatedForKey]);
 
   async function copyOutline() {
     const text = outlineToText(outline);
@@ -6593,160 +6949,80 @@ function PersonalizedOutlinePanel({
   }
 
   return (
-    <div className="text-foreground">
-      <div className="border-b border-border pb-4">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="inline-flex items-center gap-2 rounded-md bg-info/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-info">
-              <Sparkles className="size-3.5" />
-              Personalized Outline
-            </div>
-            <div className="mt-2 truncate font-display text-lg font-semibold leading-tight">
-              {scholarshipName || "Current scholarship"}
-            </div>
-            {wordLimit && (
-              <div className="mt-2 inline-flex items-center rounded-md border border-border bg-background px-2.5 py-1 text-xs text-muted-foreground">
+    <div className="relative text-foreground" aria-busy={loading}>
+        {wordLimit && (
+          <div className="border-b border-border pb-4">
+            <div className="min-w-0">
+              <div className="inline-flex items-center rounded-md border border-border bg-background px-2.5 py-1 text-xs text-muted-foreground">
                 {wordLimit}
               </div>
-            )}
+            </div>
           </div>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                onClick={onRegenerate}
-                disabled={loading}
-                aria-busy={loading}
-                className={`grid size-9 shrink-0 place-items-center rounded-md border border-border text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-90 ${loading ? "agent-loading text-info" : ""}`}
-                aria-label="Regenerate outline"
-              >
-                {loading ? <Spinner className="size-4" /> : <RefreshCw className="size-4" />}
-              </button>
-            </TooltipTrigger>
-            <TooltipContent>{loading ? "Generating outline" : "Regenerate outline"}</TooltipContent>
-          </Tooltip>
-        </div>
-      </div>
+        )}
 
-      {loading && (
-        <div className="mt-4 rounded-lg border border-info/20 bg-info/5 p-4 text-sm text-foreground/80">
-          <div className="flex items-center gap-2">
-            <span className="size-3 animate-spin rounded-full border-2 border-info/30 border-t-info" />
-            <span className="font-medium">Building your personalized outline...</span>
+        {status && (
+          <div className="mt-3 rounded-md bg-accent px-3 py-2 text-xs text-muted-foreground">
+            {status}
           </div>
-          <div className="mt-4 grid gap-2 text-xs text-muted-foreground">
-            {["Reading scholarship requirements", "Matching profile evidence", "Planning essay strategy", "Reviewing outline coverage"].map((item) => (
-              <div key={item} className="flex items-center gap-2">
-                <span className="size-1.5 rounded-full bg-info/70" />
-                <span>{item}</span>
-              </div>
-            ))}
+        )}
+
+        {!loading && !data && (
+          <div className="mt-5 rounded-lg border border-dashed border-border bg-background p-4 text-sm text-muted-foreground">
+            Add a scholarship prompt or requirement details to generate a personalized outline.
           </div>
-        </div>
-      )}
+        )}
 
-      {status && (
-        <div className="mt-3 rounded-md bg-accent px-3 py-2 text-xs text-muted-foreground">
-          {status}
-        </div>
-      )}
-
-      {!loading && !data && (
-        <div className="mt-5 rounded-lg border border-dashed border-border bg-background p-4 text-sm text-muted-foreground">
-          Add a scholarship prompt or requirement details to generate a personalized outline.
-        </div>
-      )}
-
-      {data &&
-        (() => {
-          type Pt = { id: string; label: string; detail?: string };
-          const points = buildOutlinePoints(outline);
-          const corePoints: Pt[] = points.filter((p) => p.group === "core");
-          const strategyPoints: Pt[] = points.filter((p) => p.group === "strategy");
-          const structurePoints: Pt[] = points.filter((p) => p.group === "structure");
-          const keyPoints: Pt[] = points.filter((p) => p.group === "keypoints");
+        {data &&
+          (() => {
           const sections = data.sections ?? [];
-          const total = points.length;
-          const coveredCount = points.filter((p) => covered.has(p.id)).length;
-          const cc = (pts: Pt[]) => pts.filter((p) => covered.has(p.id)).length;
-          const pct = total ? Math.round((coveredCount / total) * 100) : 0;
 
           return (
             <div className="mt-4 space-y-3">
-              <div className="rounded-xl border border-border bg-background p-3">
-                <div className="flex items-center justify-between text-[12px]">
-                  <span className="font-semibold uppercase tracking-[0.12em] text-muted-foreground">Coverage</span>
-                  <span className="font-semibold tabular-nums text-foreground">{coveredCount}/{total} covered</span>
-                </div>
-                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-border">
-                  <div className="h-full rounded-full bg-info transition-all duration-500" style={{ width: `${pct}%` }} />
-                </div>
-                <div className="mt-1.5 text-[11px] text-muted-foreground">AI-detected from your draft — tap any point to adjust.</div>
-              </div>
-
-              <OutlineGroup id="core" title="Core Message" icon={Target} total={corePoints.length} coveredCount={cc(corePoints)} open={openGroups.has("core")} onToggle={toggleGroup}>
-                {corePoints.map((p) => (
-                  <OutlineCheckRow key={p.id} id={p.id} label={p.label} detail={p.detail} covered={covered} onToggle={onToggleCovered} />
-                ))}
-              </OutlineGroup>
-
-              {!!structurePoints.length && (
-                <OutlineGroup id="structure" title="Structure" icon={ClipboardList} total={structurePoints.length} coveredCount={cc(structurePoints)} open={openGroups.has("structure")} onToggle={toggleGroup}>
-                  {sections.map((s, i) => (
-                    <OutlineCheckRow key={`p-sec-${i}`} id={`p-sec-${i}`} label={s.section_name || `Section ${i + 1}`} detail={s.purpose} covered={covered} onToggle={onToggleCovered}>
-                      {!!s.scholarship_requirement_addressed?.length && (
-                        <div className="mt-2 flex flex-wrap gap-1">
-                          {s.scholarship_requirement_addressed.map((item) => (
-                            <span key={item} className="rounded bg-info/10 px-1.5 py-0.5 text-[10px] font-medium text-info">{item}</span>
-                          ))}
-                        </div>
-                      )}
-                      {!!s.suggested_content?.length && (
-                        <ul className="mt-2 space-y-1 text-[12px] text-muted-foreground">
-                          {s.suggested_content.slice(0, 3).map((c) => (
-                            <li key={c} className="flex gap-1.5">
-                              <span className="mt-1.5 size-1 shrink-0 rounded-full bg-info/60" />
-                              {c}
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                      {s.estimated_word_count && <div className="mt-1.5 text-[11px] text-muted-foreground">~{s.estimated_word_count}</div>}
-                    </OutlineCheckRow>
-                  ))}
-                </OutlineGroup>
-              )}
-
-              {!!keyPoints.length && (
-                <OutlineGroup id="keypoints" title="Key Points to Hit" icon={ListChecks} total={keyPoints.length} coveredCount={cc(keyPoints)} open={openGroups.has("keypoints")} onToggle={toggleGroup}>
-                  {keyPoints.map((p) => (
-                    <OutlineCheckRow key={p.id} id={p.id} label={p.label} detail={p.detail} covered={covered} onToggle={onToggleCovered} />
-                  ))}
-                </OutlineGroup>
-              )}
-
-              {!!strategyPoints.length && (
-                <OutlineGroup id="strategy" title="Strategy Notes" icon={Lightbulb} total={strategyPoints.length} coveredCount={cc(strategyPoints)} open={openGroups.has("strategy")} onToggle={toggleGroup}>
-                  {strategyPoints.map((p) => (
-                    <OutlineCheckRow key={p.id} id={p.id} label={p.label} covered={covered} onToggle={onToggleCovered} />
-                  ))}
-                </OutlineGroup>
-              )}
-
-              {(data.recommended_opening || data.recommended_conclusion) && (
-                <div className="rounded-xl border border-border bg-background p-3">
-                  <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Opening &amp; Closing Tips</div>
-                  {data.recommended_opening && <p className="mt-2 text-[13px] leading-relaxed"><span className="font-medium">Opening:</span> {data.recommended_opening}</p>}
-                  {data.recommended_conclusion && <p className="mt-2 text-[13px] leading-relaxed"><span className="font-medium">Conclusion:</span> {data.recommended_conclusion}</p>}
+              {outline?.strategy?.tone_guidance && (
+                <div className="flex items-start gap-2.5 rounded-lg border border-info/20 bg-info/5 px-3 py-2.5">
+                  <span className="grid size-7 shrink-0 place-items-center rounded-md bg-info/10 text-info">
+                    <Lightbulb className="size-4" aria-hidden="true" />
+                  </span>
+                  <p className="pt-0.5 text-[13px] leading-relaxed text-muted-foreground">
+                    <span className="font-medium text-info">Recommended tip: </span>
+                    <strong className="font-semibold text-foreground">{outline.strategy.tone_guidance}</strong>
+                  </p>
                 </div>
               )}
 
-              {!!outline?.warnings?.length && (
-                <div className="rounded-xl border border-warning/30 bg-warning/10 p-3">
-                  <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-warning">Warnings</div>
-                  <MiniList items={outline.warnings} />
-                </div>
-              )}
+              {sections.map((s, i) => (
+                <OutlineCheckRow
+                  key={`p-sec-${i}`}
+                  id={`p-sec-${i}`}
+                  label={cleanOutlineSectionTitle(s.section_name || `Section ${i + 1}`)}
+                  labelPrefix={outlineSectionRole(i, sections.length)}
+                  detail={s.purpose}
+                  covered={covered}
+                  onToggle={onToggleCovered}
+                >
+                  {!!s.scholarship_requirement_addressed?.length && (
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {s.scholarship_requirement_addressed.map((item) => (
+                        <span key={item} className="rounded bg-info/10 px-1.5 py-0.5 text-[10px] font-medium text-info">{item}</span>
+                      ))}
+                    </div>
+                  )}
+                  {!!s.suggested_content?.length && (
+                    <ul className="mt-2 space-y-1 text-[12px] text-muted-foreground">
+                      {s.suggested_content.slice(0, 3).map((c) => (
+                        <li key={c} className="flex gap-1.5">
+                          <span className="mt-1.5 size-1 shrink-0 rounded-full bg-info/60" />
+                          {c}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {s.estimated_word_count && (
+                    <div className="mt-1.5 text-[11px] text-muted-foreground">{estimatedWordCountLabel(s.estimated_word_count)}</div>
+                  )}
+                </OutlineCheckRow>
+              ))}
+
               {!!outline?.missing_profile_info?.length && (
                 <div className="rounded-xl border border-border bg-background p-3">
                   <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Missing Profile Information</div>
@@ -6763,67 +7039,15 @@ function PersonalizedOutlinePanel({
               </div>
             </div>
           );
-        })()}
+          })()}
     </div>
   );
 }
 
-function PanelLabel({ children }: { children: React.ReactNode }) {
-  return <div className="text-[13px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">{children}</div>;
-}
-
-function PanelEmpty({ label, message }: { label: string; message: string }) {
+function PanelEmpty({ message }: { message: string }) {
   return (
-    <div className="space-y-3">
-      <PanelLabel>{label}</PanelLabel>
-      <div className="rounded-xl border border-dashed border-border bg-background p-4 text-[13px] leading-relaxed text-muted-foreground">
-        {message}
-      </div>
-    </div>
-  );
-}
-
-function ReadinessRow({ label, value }: { label: string; value: AnalysisScore }) {
-  const [open, setOpen] = useState(false);
-  const s = typeof value.score === "number" ? value.score : 0;
-  const hasDetail = !!value.coaching?.trim();
-  return (
-    <div className="rounded-lg border border-border bg-background p-3">
-      <button
-        type="button"
-        onClick={() => hasDetail && setOpen((o) => !o)}
-        className="flex w-full items-center justify-between gap-2 text-left"
-        aria-expanded={open}
-      >
-        <span className="flex items-center gap-1.5 text-[13px] font-medium">
-          {label}
-          {hasDetail && <ChevronDown className={`size-3.5 text-muted-foreground transition-transform duration-200 ${open ? "rotate-180" : ""}`} />}
-        </span>
-        <span className="text-[12px] font-semibold tabular-nums" style={{ color: scoreColor(s) }}>
-          {s}
-        </span>
-      </button>
-      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-border">
-        <div className="h-full rounded-full transition-all duration-500" style={{ width: `${s}%`, background: scoreColor(s) }} />
-      </div>
-      {value.level && <div className="mt-1.5 text-[11px] text-muted-foreground">{value.level}</div>}
-      {open && hasDetail && (
-        <div className="mt-2 border-t border-border pt-2 text-[12px] leading-relaxed text-muted-foreground animate-in fade-in slide-in-from-top-1 duration-150">
-          {value.coaching}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function EvaluationSkeleton() {
-  return (
-    <div className="space-y-3">
-      <Skeleton className="h-4 w-40" />
-      <Skeleton className="h-16 w-full rounded-xl" />
-      {[0, 1, 2, 3, 4].map((i) => (
-        <Skeleton key={i} className="h-14 w-full rounded-lg" />
-      ))}
+    <div className="rounded-xl border border-dashed border-border bg-background p-4 text-[13px] leading-relaxed text-muted-foreground">
+      {message}
     </div>
   );
 }
@@ -6900,451 +7124,299 @@ function CoachList({ label, items, tone, icon: Icon }: { label: string; items?: 
   );
 }
 
-function CoachAccordion({
-  id,
-  title,
-  score,
-  open,
-  onToggle,
-  icon: Icon,
-  children,
+function CriterionScoreButton({
+  criterion,
+  selected,
+  onSelect,
 }: {
-  id: string;
-  title: string;
-  score?: number;
-  open: boolean;
-  onToggle: (id: string) => void;
-  icon?: typeof Check;
-  children: React.ReactNode;
+  criterion: EssayCriterionReview;
+  selected: boolean;
+  onSelect: () => void;
 }) {
-  const hasScore = typeof score === "number";
+  const score = typeof criterion.score === "number" ? criterion.score : null;
+
   return (
-    <div className="overflow-hidden rounded-xl border border-border bg-background">
-      <button
-        type="button"
-        onClick={() => onToggle(id)}
-        aria-expanded={open}
-        className="flex w-full items-center gap-2 bg-accent/40 px-3 py-2.5 text-left transition-colors duration-150 hover:bg-accent/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/30"
+    <button
+      type="button"
+      onClick={onSelect}
+      aria-pressed={selected}
+      aria-controls="essay-review-criterion-detail"
+      className={`group h-full w-full min-w-0 rounded-lg border px-2 py-2.5 text-center transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info focus-visible:ring-offset-2 ${
+        selected
+          ? "border-info bg-info/10 shadow-sm"
+          : "border-transparent bg-muted/35 hover:border-info/30 hover:bg-info/5"
+      }`}
+    >
+      <span className={`flex min-h-9 items-center justify-center text-[11px] font-semibold leading-tight ${selected ? "text-info" : "text-foreground/85"}`}>
+        {criterion.label || labelize(criterion.criterion ?? "criterion")}
+      </span>
+      <span className="mt-1 block text-[10px] font-semibold tabular-nums text-muted-foreground">
+        {criterion.weight ?? 0}%
+      </span>
+      <span
+        className="mt-1.5 block text-[22px] font-bold leading-none tabular-nums"
+        style={score != null ? { color: scoreColor(score) } : undefined}
       >
-        {Icon && <Icon className="size-4 text-info" />}
-        <span className="min-w-0 flex-1 text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">{title}</span>
-        <span
-          className="shrink-0 text-[12px] font-semibold tabular-nums text-muted-foreground"
-          style={hasScore ? { color: scoreColor(score) } : undefined}
-        >
-          {hasScore ? `${score}/100` : "Not scored"}
-        </span>
-        <ChevronDown className={`size-4 shrink-0 text-muted-foreground transition-transform duration-200 ${open ? "rotate-180" : ""}`} />
-      </button>
-      {open && <div className="space-y-2.5 p-3">{children}</div>}
-    </div>
+        {score ?? "—"}
+      </span>
+    </button>
   );
 }
 
-function CoachScoreBar({ label, score }: { label: string; score: number }) {
-  return (
-    <div>
-      <div className="flex items-center justify-between text-[12px]">
-        <span className="font-medium">{label}</span>
-        <span className="font-semibold tabular-nums" style={{ color: scoreColor(score) }}>{score}</span>
-      </div>
-      <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-border">
-        <div className="h-full rounded-full transition-all duration-500" style={{ width: `${score}%`, background: scoreColor(score) }} />
-      </div>
-    </div>
-  );
-}
+function CriterionReviewDetails({ criterion }: { criterion: EssayCriterionReview }) {
+  const score = typeof criterion.score === "number" ? criterion.score : null;
+  const feedback = criterion.coach_feedback;
+  const action = criterion.priority_action;
+  const rubricBands = [
+    ["Excellent", criterion.rubric?.excellent],
+    ["Developing", criterion.rubric?.developing],
+    ["Weak", criterion.rubric?.weak],
+  ].filter((entry): entry is [string, string] => !!entry[1]);
 
-function RevisionPriorityCard({ item, index }: { item: RevisionPriority; index: number }) {
-  const impact = (item.impact ?? "").toLowerCase();
-  const impactClass = impact.includes("high")
-    ? "bg-destructive/10 text-destructive"
-    : impact.includes("low")
-      ? "bg-success/10 text-success"
-      : "bg-warning/10 text-warning";
   return (
-    <div className="rounded-lg border border-border bg-background p-3">
-      <div className="flex items-start gap-2">
-        <span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-info text-[11px] font-bold text-white">{index + 1}</span>
+    <section
+      id="essay-review-criterion-detail"
+      aria-live="polite"
+      className="overflow-hidden rounded-xl border border-border bg-background"
+    >
+      <div className="flex items-start gap-3 border-b border-border bg-accent/25 px-4 py-3.5">
         <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-semibold leading-snug">{item.priority}</div>
-          {item.why_it_matters && <div className="mt-0.5 text-[12px] leading-relaxed text-muted-foreground">{item.why_it_matters}</div>}
-          {item.how_to_fix && (
-            <div className="mt-1.5 text-[12px] leading-relaxed text-foreground/85">
-              <span className="font-medium text-foreground">How: </span>
-              {item.how_to_fix}
-            </div>
-          )}
-          {(item.impact || item.estimated_effort) && (
-            <div className="mt-2 flex flex-wrap gap-1">
-              {item.impact && <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${impactClass}`}>{item.impact} impact</span>}
-              {item.estimated_effort && <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{item.estimated_effort}</span>}
-            </div>
+          <div className="text-[15px] font-semibold">{criterion.label || labelize(criterion.criterion ?? "criterion")}</div>
+          <div className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground">
+            <span>{criterion.weight ?? 0}% ·</span>
+            {!!rubricBands.length ? (
+              <Tooltip delayDuration={150}>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    className="font-semibold text-foreground/80 underline decoration-dotted underline-offset-2 outline-none transition-colors hover:text-info focus-visible:text-info"
+                    aria-label={`Show the complete ${criterion.label || "criterion"} scoring rubric`}
+                  >
+                    {criterion.level || "Not scored"}
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent
+                  side="bottom"
+                  align="start"
+                  sideOffset={7}
+                  className="w-80 max-w-[calc(100vw-2rem)] p-3 text-left"
+                >
+                  <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-primary-foreground/70">Tailored scoring rubric</div>
+                  <div className="mt-2 space-y-2">
+                    {rubricBands.map(([label, description]) => (
+                      <div key={label} className="text-[11px] leading-relaxed text-primary-foreground/85">
+                        <span className="font-semibold text-primary-foreground">{label}: </span>{description}
+                      </div>
+                    ))}
+                  </div>
+                </TooltipContent>
+              </Tooltip>
+            ) : (
+              <span>{criterion.level || "Not scored"}</span>
+            )}
+          </div>
+          {criterion.rubric?.description && (
+            <p className="mt-2 text-[12px] leading-relaxed text-muted-foreground">{criterion.rubric.description}</p>
           )}
         </div>
+        <span className="shrink-0 text-[18px] font-bold tabular-nums" style={score != null ? { color: scoreColor(score) } : undefined}>
+          {score != null ? `${score}/100` : "Unavailable"}
+        </span>
       </div>
-    </div>
+
+      <div className="space-y-3 p-3">
+        {(feedback?.grounded_praise || feedback?.main_gap) && (
+          <section className="space-y-2 rounded-lg border border-info/20 bg-info/5 p-3">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-info">Scholarship Coach Feedback</div>
+            {feedback?.grounded_praise && (
+              <p className="text-[12px] leading-relaxed text-foreground/90">{feedback.grounded_praise}</p>
+            )}
+            {feedback?.main_gap && (
+              <p className="text-[12px] leading-relaxed"><span className="font-semibold">Main gap: </span>{feedback.main_gap}</p>
+            )}
+          </section>
+        )}
+
+        {action && (
+          <section className="space-y-2 rounded-lg border border-success/20 bg-success/5 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-success">Priority revision action</div>
+              {(action.impact || action.estimated_effort) && (
+                <div className="flex gap-1.5 text-[10px] font-semibold text-muted-foreground">
+                  {action.impact && <span className="rounded-full bg-background/80 px-2 py-0.5">{action.impact} impact</span>}
+                  {action.estimated_effort && <span className="rounded-full bg-background/80 px-2 py-0.5">{action.estimated_effort} effort</span>}
+                </div>
+              )}
+            </div>
+            {action.title && <div className="text-[13px] font-semibold">{action.title}</div>}
+            {action.location && <p className="text-[12px] leading-relaxed"><span className="font-semibold">Where: </span>{action.location}</p>}
+            {action.how_to_fix && <p className="text-[12px] leading-relaxed"><span className="font-semibold">How to fix it: </span>{action.how_to_fix}</p>}
+            {action.why_this_fixes_the_gap && (
+              <p className="text-[12px] leading-relaxed text-muted-foreground"><span className="font-semibold text-foreground">Why this fixes the gap: </span>{action.why_this_fixes_the_gap}</p>
+            )}
+            {action.evidence_safety && (
+              <p className="text-[11px] leading-relaxed text-muted-foreground">Evidence guardrail: {action.evidence_safety}</p>
+            )}
+          </section>
+        )}
+      </div>
+    </section>
   );
 }
 
-function WorkspaceCoachTab({
-  result,
-  loading,
-  coachSummary,
-  coachWarnings,
+function UnifiedEssayReview({
+  review,
   updatedAt,
   draftChanged,
   now,
 }: {
-  result: EssayCoachResult | null;
-  loading: boolean;
-  coachSummary: string | null;
-  coachWarnings: string[];
+  review: EssayReviewResult;
   updatedAt: number | null;
   draftChanged: boolean;
   now: number;
 }) {
-  const [showAllPriorities, setShowAllPriorities] = useState(false);
-  const [showAllParagraphFeedback, setShowAllParagraphFeedback] = useState(false);
-  const [openCoachSections, setOpenCoachSections] = useState<Set<string>>(() => new Set());
-  const hasContent = <T extends object>(obj: T | undefined | null): T | undefined =>
-    obj && Object.values(obj).some((v) => (Array.isArray(v) ? v.length > 0 : typeof v === "number" ? v > 0 : !!v))
-      ? obj
-      : undefined;
-  const alignment = hasContent(result?.alignment);
-  const align = alignment ? undefined : hasContent(result?.prompt_alignment);
-  const evidence = hasContent(result?.evidence_strength);
-  // Older targeted responses still use the two legacy sections. A unified
-  // coaching session supplies Evidence Strength and suppresses both duplicates.
-  const ground = evidence ? undefined : hasContent(result?.profile_grounding);
-  const narrativeStructure = hasContent(result?.narrative_structure);
-  const insight = hasContent(result?.insight);
-  const structure = narrativeStructure ? undefined : hasContent(result?.structure_feedback);
-  const specificity = evidence ? undefined : hasContent(result?.specificity_feedback);
-  const grammar = hasContent(result?.grammar_feedback);
-  const clarityConcision = hasContent(result?.clarity_concision_feedback);
-  const tone = hasContent(result?.tone_feedback);
-  const priorities = result?.revision_priorities ?? [];
-  const visiblePriorities = showAllPriorities ? priorities : priorities.slice(0, 2);
-  const hiddenPriorityCount = Math.max(0, priorities.length - 2);
-  const quickFixes = result?.quick_fixes ?? [];
-  const deeperTasks = result?.deeper_revision_tasks ?? [];
-  const scoreEntries = Object.entries(result?.overall_scores ?? {});
-  const paragraphFeedback = narrativeStructure?.paragraph_feedback ?? structure?.paragraph_feedback ?? [];
-  const visibleParagraphFeedback = showAllParagraphFeedback ? paragraphFeedback : paragraphFeedback.slice(0, 2);
-  const hiddenParagraphFeedbackCount = Math.max(0, paragraphFeedback.length - 2);
-  const hasData =
-    !loading &&
-    !!(result && (alignment || align || evidence || ground || narrativeStructure || insight || structure || specificity || tone || grammar || clarityConcision || priorities.length || scoreEntries.length));
-
-  function toggleCoachSection(id: string) {
-    setOpenCoachSections((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
+  const { user } = useUser();
+  const criteria = ESSAY_REVIEW_DIMENSIONS
+    .map((key) => review.criteria?.[key])
+    .filter((entry): entry is EssayCriterionReview => !!entry);
+  const criteriaByKey = ESSAY_REVIEW_DIMENSIONS.reduce<Partial<Record<EssayReviewDimension, EssayCriterionReview>>>((entries, key) => {
+    const criterion = review.criteria?.[key];
+    if (criterion) entries[key] = criterion;
+    return entries;
+  }, {});
+  const [selectedCriterionKey, setSelectedCriterionKey] = useState<EssayReviewDimension>(
+    () => ESSAY_REVIEW_DIMENSIONS.find((key) => !!review.criteria?.[key]) ?? "alignment",
+  );
+  useEffect(() => {
+    if (review.criteria?.[selectedCriterionKey]) return;
+    const firstAvailable = ESSAY_REVIEW_DIMENSIONS.find((key) => !!review.criteria?.[key]);
+    if (firstAvailable) setSelectedCriterionKey(firstAvailable);
+  }, [review, selectedCriterionKey]);
+  const selectedCriterion = criteriaByKey[selectedCriterionKey] ?? criteria[0];
+  const grammarCriterion = criteriaByKey.grammar;
+  const score = typeof review.overall_score === "number" ? review.overall_score : null;
+  const scoredVersions = (user?.drafts ?? []).filter((version) => typeof version.reviewOverall === "number");
 
   return (
     <div className="space-y-3">
-      <div className="flex items-start gap-3">
-        <div className="min-w-0">
-          <PanelLabel>Coach</PanelLabel>
-          <div className="mt-1 text-[12px] text-muted-foreground">
-            Last updated: {relativeTimeLabel(updatedAt, now)}
-          </div>
-          {draftChanged && (
-            <div className="mt-1 text-[12px] font-medium text-warning">
-              Essay changed since last coach run.
-            </div>
-          )}
-        </div>
+      <div>
+        <div className="text-[12px] text-muted-foreground">Last updated: {relativeTimeLabel(updatedAt, now)}</div>
+        {draftChanged && <div className="mt-1 text-[12px] font-medium text-warning">Essay changed since this review.</div>}
       </div>
 
-      {coachSummary && (
-        <div className="rounded-xl border border-info/20 bg-info/5 p-3 text-[13px] leading-relaxed text-foreground/85">
-          {coachSummary}
-        </div>
-      )}
+      <OverallEssayScoreCard score={score} versions={scoredVersions} />
 
-      {loading && <CoachSkeleton />}
-
-      {!loading && !hasData && !coachSummary && (
-        <div className="rounded-xl border border-dashed border-border bg-background p-4 text-[13px] leading-relaxed text-muted-foreground">
-          Run a coaching session to check how well your essay answers the scholarship prompt and whether it's grounded in your real profile.
-        </div>
-      )}
-
-      {!!coachWarnings.length && (
-        <div className="rounded-xl border border-warning/25 bg-warning/5 p-3">
-          <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-warning">Coaching notes</div>
-          <MiniList items={coachWarnings} />
-        </div>
-      )}
-
-      {!!priorities.length && (
-        <div className="space-y-2">
-          <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Top revision priorities</div>
-          {visiblePriorities.map((p, i) => (
-            <RevisionPriorityCard key={i} item={p} index={i} />
+      <div className="overflow-hidden rounded-xl border border-border bg-border">
+        <div className="hidden grid-cols-6 gap-px md:grid">
+          {ESSAY_REVIEW_SCORE_GROUPS.map((group) => (
+            <h3 key={group.label} className={`bg-background px-3 py-3 text-center text-[18px] font-bold leading-tight text-foreground ${group.columnClass}`}>
+              {group.label}
+            </h3>
           ))}
-          {hiddenPriorityCount > 0 && (
+          {ESSAY_REVIEW_SCORE_GROUPS.flatMap((group) => group.criteria).map((key) => {
+            const criterion = criteriaByKey[key];
+            if (!criterion) return null;
+            return (
+              <div key={key} className="min-w-0 bg-background p-1.5 pt-0">
+                <CriterionScoreButton
+                  criterion={criterion}
+                  selected={selectedCriterionKey === key}
+                  onSelect={() => setSelectedCriterionKey(key)}
+                />
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="grid gap-px md:hidden">
+          {ESSAY_REVIEW_SCORE_GROUPS.map((group) => {
+            const groupCriteria = group.criteria
+              .map((key) => [key, criteriaByKey[key]] as const)
+              .filter((entry): entry is readonly [EssayReviewDimension, EssayCriterionReview] => !!entry[1]);
+            if (!groupCriteria.length) return null;
+            return (
+              <section key={group.label} className="min-w-0 bg-background p-3">
+                <h3 className="text-center text-[18px] font-bold leading-tight text-foreground">{group.label}</h3>
+                <div className={`mt-3 grid gap-1.5 ${groupCriteria.length === 3 ? "grid-cols-3" : groupCriteria.length === 2 ? "grid-cols-2" : "grid-cols-1"}`}>
+                  {groupCriteria.map(([key, criterion]) => (
+                    <CriterionScoreButton
+                      key={key}
+                      criterion={criterion}
+                      selected={selectedCriterionKey === key}
+                      onSelect={() => setSelectedCriterionKey(key)}
+                    />
+                  ))}
+                </div>
+              </section>
+            );
+          })}
+        </div>
+
+        {grammarCriterion && (
+          <section className="flex items-center gap-3 border-t border-border bg-background p-3">
+            <div className="min-w-0 flex-1">
+              <h3 className="text-[15px] font-bold text-foreground">Grammar</h3>
+              <p className="mt-0.5 text-[10px] leading-relaxed text-muted-foreground">Spelling, punctuation, usage, and sentence-level correctness</p>
+            </div>
             <button
               type="button"
-              onClick={() => setShowAllPriorities((open) => !open)}
-              className="inline-flex items-center rounded-md px-2 py-1 text-[12px] font-semibold text-info transition-colors hover:bg-info/10 hover:text-info"
+              onClick={() => setSelectedCriterionKey("grammar")}
+              aria-pressed={selectedCriterionKey === "grammar"}
+              aria-controls="essay-review-criterion-detail"
+              className={`flex min-w-28 items-center justify-center gap-2 rounded-lg border px-3 py-2 text-left transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info focus-visible:ring-offset-2 ${
+                selectedCriterionKey === "grammar"
+                  ? "border-info bg-info/10 shadow-sm"
+                  : "border-transparent bg-muted/35 hover:border-info/30 hover:bg-info/5"
+              }`}
             >
-              {showAllPriorities ? "Show less ▲" : `Show ${hiddenPriorityCount} more ▼`}
+              <span className="flex flex-col items-center">
+                <span className="text-[10px] font-semibold tabular-nums text-muted-foreground">{grammarCriterion.weight ?? 0}%</span>
+                <span className="mt-1 text-[22px] font-bold leading-none tabular-nums" style={typeof grammarCriterion.score === "number" ? { color: scoreColor(grammarCriterion.score) } : undefined}>
+                  {typeof grammarCriterion.score === "number" ? grammarCriterion.score : "—"}
+                </span>
+              </span>
             </button>
-          )}
-        </div>
-      )}
+          </section>
+        )}
+      </div>
 
-      {!!quickFixes.length && (
-        <div className="rounded-xl border border-success/20 bg-success/5 p-3">
-          <CoachList label="Quick fixes" items={quickFixes} tone="success" icon={Check} />
-        </div>
-      )}
-
-      {!!deeperTasks.length && (
-        <div className="rounded-xl border border-info/20 bg-info/5 p-3">
-          <CoachList label="Deeper revision tasks" items={deeperTasks} tone="info" />
-        </div>
-      )}
-
-      {!!scoreEntries.length && (
-        <div className="space-y-2.5 rounded-xl border border-border bg-background p-3">
-          <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Scores</div>
-          {scoreEntries.map(([key, val]) => (
-            <CoachScoreBar key={key} label={labelize(key)} score={typeof val === "number" ? val : 0} />
-          ))}
-        </div>
-      )}
-
-      {alignment && (
-        <CoachAccordion id="alignment" title="Alignment (Prompt + Scholarship Values) Coach" score={alignment.alignment_score} open={openCoachSections.has("alignment")} onToggle={toggleCoachSection}>
-          {alignment.fit_summary && (
-            <div className="rounded-md bg-info/10 px-2.5 py-2 text-[12px] leading-relaxed text-foreground/85">
-              {alignment.fit_summary}
-            </div>
-          )}
-          <CoachList label="Prompt parts covered" items={alignment.covered_prompt_parts} tone="success" icon={Check} />
-          <CoachList label="Prompt parts weakly covered" items={alignment.weakly_covered_prompt_parts} tone="warning" />
-          <CoachList label="Prompt parts missing" items={alignment.missing_prompt_parts} tone="danger" />
-          <CoachList label="What this scholarship values" items={alignment.stated_scholarship_values} tone="muted" />
-          <CoachList label="What reviewers appear to evaluate" items={alignment.actual_evaluation_focus} tone="muted" />
-          <CoachList label="Scholarship values addressed" items={alignment.addressed_scholarship_values} tone="success" icon={Check} />
-          <CoachList label="Values missing or weak" items={alignment.weak_or_missing_scholarship_values} tone="warning" />
-          <CoachList label="Specific student-to-scholarship connections" items={alignment.student_fit_connections} tone="info" />
-          <CoachList label="Generic or unsupported fit claims" items={alignment.generic_or_unsupported_fit_claims} tone="danger" />
-          <CoachList label="Notes" items={alignment.comments} tone="muted" />
-          <CoachList label="Revision tasks" items={alignment.revision_tasks} tone="info" />
-        </CoachAccordion>
-      )}
-
-      {align && (
-        <CoachAccordion id="alignment" title="Prompt Alignment" score={align.alignment_score} open={openCoachSections.has("alignment")} onToggle={toggleCoachSection}>
-          <CoachList label="Covered" items={align.covered_requirements} tone="success" icon={Check} />
-          <CoachList label="Weakly covered" items={align.weakly_covered_requirements} tone="warning" />
-          <CoachList label="Missing" items={align.missing_requirements} tone="danger" />
-          <CoachList label="Notes" items={align.comments} tone="muted" />
-          <CoachList label="Revision tasks" items={align.revision_tasks} tone="info" />
-        </CoachAccordion>
-      )}
-
-      {ground && (
-        <CoachAccordion id="grounding" title="Profile Grounding" score={ground.grounding_score} open={openCoachSections.has("grounding")} onToggle={toggleCoachSection}>
-          <CoachList label="Supported by your profile" items={ground.supported_claims} tone="success" icon={Check} />
-          <CoachList label="Unsupported — verify or soften" items={ground.unsupported_or_risky_claims} tone="danger" />
-          <CoachList label="Strong evidence you haven't used" items={ground.unused_relevant_profile_evidence} tone="info" />
-          <CoachList label="Recommendations" items={ground.recommendations} tone="muted" />
-        </CoachAccordion>
-      )}
-
-      {evidence && (
-        <CoachAccordion id="evidence-strength" title="Evidence Strength Coach" score={evidence.evidence_strength_score} open={openCoachSections.has("evidence-strength")} onToggle={toggleCoachSection}>
-          <CoachList label="Supported by your draft or profile" items={evidence.supported_claims} tone="success" icon={Check} />
-          <CoachList label="Unsupported — verify or soften" items={evidence.unsupported_or_risky_claims} tone="danger" />
-          <CoachList label="Details that need verification" items={evidence.invented_or_unverifiable_details} tone="danger" />
-          <CoachList label="Vague statements" items={evidence.vague_statements} tone="warning" />
-          <CoachList label="Add concrete detail here" items={evidence.places_to_add_detail} tone="info" />
-          <CoachList label="Impact opportunities" items={evidence.impact_opportunities} tone="success" />
-          <CoachList label="Strong profile evidence you haven't used" items={evidence.unused_relevant_profile_evidence} tone="info" />
-          {evidence.recommended_experience_to_feature && (
-            <div className="rounded-md bg-info/10 px-2.5 py-2 text-[12px] leading-relaxed text-foreground/85">
-              <span className="font-semibold">Strongest experience to consider: </span>
-              {evidence.recommended_experience_to_feature}
-            </div>
-          )}
-          <CoachList label="Questions to answer with real details" items={evidence.recommended_questions} tone="muted" />
-          <CoachList label="Recommendations" items={evidence.recommendations} tone="muted" />
-        </CoachAccordion>
-      )}
-
-      {narrativeStructure && (
-        <CoachAccordion id="narrative-structure" title="Narrative Structure, Flow & Coherence Coach" score={narrativeStructure.narrative_structure_score} open={openCoachSections.has("narrative-structure")} onToggle={toggleCoachSection}>
-          {narrativeStructure.overall_narrative_assessment && (
-            <div className="rounded-md bg-info/10 px-2.5 py-2 text-[12px] leading-relaxed text-foreground/85">
-              {narrativeStructure.overall_narrative_assessment}
-            </div>
-          )}
-          {narrativeStructure.biggest_narrative_gap && (
-            <div className="rounded-md bg-warning/10 px-2.5 py-2 text-[12px] leading-relaxed text-foreground/85">
-              <span className="font-semibold">Biggest narrative gap: </span>
-              {narrativeStructure.biggest_narrative_gap}
-            </div>
-          )}
-          <div className="space-y-2 rounded-md border border-border/70 p-2.5">
-            <CoachScoreBar label="Structure & flow" score={narrativeStructure.structure_flow_score ?? 0} />
-            <CoachScoreBar label="Logical coherence" score={narrativeStructure.coherence_score ?? 0} />
-            <CoachScoreBar label="Narrative arc" score={narrativeStructure.narrative_arc_score ?? 0} />
-          </div>
-          {!!narrativeStructure.arc_progression?.length && (
-            <div className="space-y-1.5">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">Narrative progression</div>
-              {narrativeStructure.arc_progression.map((stage, i) => (
-                <div key={`${stage.stage ?? "stage"}-${i}`} className="rounded-md border border-border/70 p-2">
-                  <div className="text-[12px] font-semibold capitalize">
-                    {stage.stage || `Stage ${i + 1}`}
-                    {stage.status && <span className="ml-1 font-normal text-muted-foreground">· {stage.status}</span>}
-                  </div>
-                  {stage.evidence && <div className="mt-0.5 text-[12px] text-success">＋ {stage.evidence}</div>}
-                  {stage.issue && <div className="mt-0.5 text-[12px] text-warning">！ {stage.issue}</div>}
-                  {stage.suggestion && <div className="mt-0.5 text-[12px] leading-relaxed text-muted-foreground">{stage.suggestion}</div>}
-                </div>
-              ))}
-            </div>
-          )}
-          {!!paragraphFeedback.length && (
-            <div className="space-y-1.5">
-              {visibleParagraphFeedback.map((pf, i) => (
-                <div key={i} className="rounded-md border border-border/70 p-2">
-                  <div className="text-[12px] font-semibold">
-                    Paragraph {pf.paragraph_number || i + 1}
-                    {pf.priority ? <span className="ml-1 font-normal text-muted-foreground">· {pf.priority}</span> : null}
-                  </div>
-                  {pf.strength && <div className="mt-0.5 text-[12px] text-success">＋ {pf.strength}</div>}
-                  {pf.main_issue && <div className="mt-0.5 text-[12px] text-warning">！ {pf.main_issue}</div>}
-                  {pf.suggestion && <div className="mt-0.5 text-[12px] leading-relaxed text-muted-foreground">{pf.suggestion}</div>}
-                </div>
-              ))}
-              {hiddenParagraphFeedbackCount > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setShowAllParagraphFeedback((open) => !open)}
-                  className="inline-flex items-center rounded-md px-2 py-1 text-[12px] font-semibold text-info transition-colors hover:bg-info/10 hover:text-info"
-                  aria-expanded={showAllParagraphFeedback}
-                >
-                  {showAllParagraphFeedback ? "Show less ▲" : `Show ${hiddenParagraphFeedbackCount} more ▼`}
-                </button>
-              )}
-            </div>
-          )}
-          <CoachList label="Strong connections to preserve" items={narrativeStructure.logical_connections_to_preserve} tone="success" icon={Check} />
-          <CoachList label="Transition and flow issues" items={narrativeStructure.transition_and_flow_issues} tone="warning" />
-          <CoachList label="Coherence issues" items={narrativeStructure.coherence_issues} tone="warning" />
-          <CoachList label="Contradictions or timeline issues" items={narrativeStructure.contradictions_or_timeline_issues} tone="danger" />
-          <CoachList label="Missing reasoning" items={narrativeStructure.missing_reasoning} tone="danger" />
-          <CoachList label="Suggested reordering" items={narrativeStructure.recommended_reordering} tone="info" />
-          <CoachList label="Revision tasks" items={narrativeStructure.revision_tasks} tone="muted" />
-        </CoachAccordion>
-      )}
-
-      {insight && (
-        <CoachAccordion id="insight" title="Insight (Depth + Meaning + Reflection) Coach" score={insight.insight_score} open={openCoachSections.has("insight")} onToggle={toggleCoachSection}>
-          <CoachList label="Meaningful reflections already working" items={insight.meaningful_reflections} tone="success" icon={Check} />
-          <CoachList label="Surface-level or generic reflections" items={insight.surface_level_or_generic_reflections} tone="warning" />
-          <CoachList label="Lessons, realizations, or questions" items={insight.lessons_realizations_or_questions} tone="info" />
-          <CoachList label="Changes in mindset or behavior" items={insight.changes_in_mindset_or_behavior} tone="info" />
-          <CoachList label="Changes in values, goals, or responsibility" items={insight.changes_in_values_goals_or_responsibility} tone="info" />
-          <CoachList label="Why it mattered to the student" items={insight.significance_to_self} tone="success" />
-          <CoachList label="Why it mattered to others or a community" items={insight.significance_to_others_or_community} tone="success" />
-          <CoachList label="Connections to future direction" items={insight.future_direction_connections} tone="info" />
-          <CoachList label="Meaning or reflection still missing" items={insight.missing_meaning_or_reflection} tone="danger" />
-          <CoachList label="Questions to deepen the student's reflection" items={insight.recommended_reflection_questions} tone="muted" />
-          <CoachList label="Revision tasks" items={insight.revision_tasks} tone="muted" />
-        </CoachAccordion>
-      )}
-
-      {structure && (
-        <CoachAccordion id="structure-flow" title="Structure & Flow" score={structure.structure_score} open={openCoachSections.has("structure-flow")} onToggle={toggleCoachSection}>
-          {!!paragraphFeedback.length && (
-            <div className="space-y-1.5">
-              {visibleParagraphFeedback.map((pf, i) => (
-                <div key={i} className="rounded-md border border-border/70 p-2">
-                  <div className="text-[12px] font-semibold">
-                    Paragraph {pf.paragraph_number || i + 1}
-                    {pf.priority ? <span className="ml-1 font-normal text-muted-foreground">· {pf.priority}</span> : null}
-                  </div>
-                  {pf.strength && <div className="mt-0.5 text-[12px] text-success">＋ {pf.strength}</div>}
-                  {pf.main_issue && <div className="mt-0.5 text-[12px] text-warning">！ {pf.main_issue}</div>}
-                  {pf.suggestion && <div className="mt-0.5 text-[12px] leading-relaxed text-muted-foreground">{pf.suggestion}</div>}
-                </div>
-              ))}
-              {hiddenParagraphFeedbackCount > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setShowAllParagraphFeedback((open) => !open)}
-                  className="inline-flex items-center rounded-md px-2 py-1 text-[12px] font-semibold text-info transition-colors hover:bg-info/10 hover:text-info"
-                  aria-expanded={showAllParagraphFeedback}
-                >
-                  {showAllParagraphFeedback ? "Show less ▲" : `Show ${hiddenParagraphFeedbackCount} more ▼`}
-                </button>
-              )}
-            </div>
-          )}
-          <CoachList label="Flow issues" items={structure.flow_issues} tone="warning" />
-          <CoachList label="Suggested reordering" items={structure.recommended_reordering} tone="info" />
-          <CoachList label="Structure tasks" items={structure.revision_tasks} tone="muted" />
-        </CoachAccordion>
-      )}
-
-      {specificity && (
-        <CoachAccordion id="specificity" title="Specificity & Impact" score={specificity.specificity_score} open={openCoachSections.has("specificity")} onToggle={toggleCoachSection}>
-          <CoachList label="Vague statements" items={specificity.vague_statements} tone="warning" />
-          <CoachList label="Add concrete detail here" items={specificity.places_to_add_detail} tone="info" />
-          <CoachList label="Impact opportunities" items={specificity.impact_opportunities} tone="success" />
-          <CoachList label="Questions to answer" items={specificity.recommended_questions} tone="muted" />
-        </CoachAccordion>
-      )}
-
-      {clarityConcision && (
-        <CoachAccordion id="clarity-concision" title="Clarity & Concision Coach" score={clarityConcision.clarity_concision_score} open={openCoachSections.has("clarity-concision")} onToggle={toggleCoachSection}>
-          <CoachList label="Clear and direct wording to preserve" items={clarityConcision.clear_and_direct_sentences} tone="success" icon={Check} />
-          <CoachList label="Filler or repetition" items={clarityConcision.filler_or_repetition} tone="warning" />
-          <CoachList label="Wordiness" items={clarityConcision.wordiness} tone="warning" />
-          <CoachList label="Unclear phrasing" items={clarityConcision.unclear_phrasing} tone="danger" />
-          <CoachList label="Tangled sentence structure" items={clarityConcision.tangled_sentence_structure} tone="danger" />
-          <CoachList label="Revision tasks" items={clarityConcision.revision_tasks} tone="info" />
-        </CoachAccordion>
-      )}
-
-      {tone && (
-        <CoachAccordion id="tone" title="Tone & Authenticity Coach" score={tone.authenticity_score} open={openCoachSections.has("tone")} onToggle={toggleCoachSection}>
-          <CoachList label="Tone quality notes" items={tone.tone_quality_notes} tone="info" />
-          <CoachList label="Voice worth keeping" items={tone.voice_preservation_notes} tone="success" icon={Check} />
-          <CoachList label="AI-like phrases" items={tone.ai_like_phrases} tone="danger" />
-          <CoachList label="Generic phrases" items={tone.generic_phrases} tone="warning" />
-          <CoachList label="Overly polished or corporate phrases" items={tone.overly_polished_or_corporate_phrases} tone="warning" />
-          <CoachList label="Formulaic or performative phrases" items={tone.formulaic_or_performative_phrases} tone="warning" />
-          <CoachList label="Tone suggestions" items={tone.tone_improvement_suggestions} tone="info" />
-        </CoachAccordion>
-      )}
-
-      {grammar && (
-        <CoachAccordion id="grammar" title="Grammar Coach" score={grammar.grammar_score} open={openCoachSections.has("grammar")} onToggle={toggleCoachSection}>
-          <CoachList label="Spelling" items={grammar.spelling_issues} tone="danger" />
-          <CoachList label="Punctuation" items={grammar.punctuation_issues} tone="warning" />
-          <CoachList label="Capitalization" items={grammar.capitalization_issues} tone="warning" />
-          <CoachList label="Verb tense" items={grammar.verb_tense_issues} tone="warning" />
-          <CoachList label="Agreement" items={grammar.agreement_issues} tone="warning" />
-          <CoachList label="Other grammar issues" items={grammar.other_grammar_issues} tone="danger" />
-          <CoachList label="Sentence-level correctness" items={grammar.sentence_level_correctness_issues} tone="danger" />
-          <CoachList label="Revision tasks" items={grammar.revision_tasks} tone="info" />
-        </CoachAccordion>
-      )}
+      {selectedCriterion && <CriterionReviewDetails criterion={selectedCriterion} />}
     </div>
+  );
+}
+
+function WorkspaceEssayReviewTab({
+  review,
+  loading,
+  updatedAt,
+  draftChanged,
+  now,
+}: {
+  review: EssayReviewResult | null;
+  loading: boolean;
+  updatedAt: number | null;
+  draftChanged: boolean;
+  now: number;
+}) {
+  if (loading) {
+    return (
+      <CoachSkeleton />
+    );
+  }
+  if (!review || review.schema_version !== 3) {
+    return (
+      <PanelEmpty
+        message="No review yet. Select Evaluate to generate the weighted seven-criterion review for this draft."
+      />
+    );
+  }
+  return (
+    <UnifiedEssayReview
+      review={review}
+      updatedAt={updatedAt}
+      draftChanged={draftChanged}
+      now={now}
+    />
   );
 }
 
@@ -7365,42 +7437,43 @@ function Sparkline({ points }: { points: number[] }) {
   );
 }
 
-function ProgressCard({ versions }: { versions: EssayDraft[] }) {
-  const scored = versions.filter((v) => typeof v.coachOverall === "number");
-  if (!scored.length) return null;
-  const latest = scored[scored.length - 1];
+function OverallEssayScoreCard({ score, versions }: { score: number | null; versions: EssayDraft[] }) {
+  const scored = versions.filter((v) => typeof v.reviewOverall === "number");
+  const latest = scored[scored.length - 1] ?? null;
   const prev = scored.length > 1 ? scored[scored.length - 2] : null;
-  const overall = latest.coachOverall ?? 0;
-  const overallDelta = prev ? overall - (prev.coachOverall ?? 0) : null;
+  const overall = score ?? latest?.reviewOverall ?? null;
+  const overallDelta = prev && overall != null ? overall - (prev.reviewOverall ?? 0) : null;
   const deltas =
-    prev?.coachScores && latest.coachScores
-      ? Object.entries(latest.coachScores)
-          .map(([k, v]) => ({ key: k, delta: v - (prev.coachScores?.[k] ?? v) }))
+    prev?.reviewScores && latest?.reviewScores
+      ? Object.entries(latest.reviewScores)
+          .map(([k, v]) => ({ key: k, delta: v - (prev.reviewScores?.[k] ?? v) }))
           .filter((x) => x.delta !== 0)
           .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta))
       : [];
   return (
     <div className="space-y-3 rounded-xl border border-border bg-background p-3">
       <div className="flex items-center gap-3">
-        <ScoreRing score={overall} size={52} stroke={4} />
+        <ScoreRing score={overall} size={58} stroke={4} />
         <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-semibold">Overall coach score</div>
-          <div className="text-[12px] text-muted-foreground">
-            {prev && overallDelta != null ? (
-              <>
-                Draft {prev.version} → {latest.version}:{" "}
-                <span className="font-semibold" style={{ color: overallDelta >= 0 ? "var(--success)" : "var(--destructive)" }}>
-                  {overallDelta >= 0 ? `▲ +${overallDelta}` : `▼ ${overallDelta}`}
-                </span>{" "}
-                · {scored.length} drafts
-              </>
-            ) : (
-              `Draft ${latest.version} · first scored draft`
-            )}
-          </div>
+          <div className="text-[13px] font-semibold">Overall essay score</div>
+          <div className="text-[12px] text-muted-foreground">Criteria weights tailored for this scholarship and essay prompt</div>
         </div>
       </div>
-      {scored.length > 1 && <Sparkline points={scored.map((v) => v.coachOverall ?? 0)} />}
+
+      {latest && (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-2 text-[12px]">
+          <span className="text-muted-foreground">Draft {latest.version} · {latest.wordCount} words</span>
+          {prev && overallDelta != null ? (
+            <span className="font-semibold" style={{ color: overallDelta >= 0 ? "var(--success)" : "var(--destructive)" }}>
+              {overallDelta >= 0 ? `▲ +${overallDelta}` : `▼ ${overallDelta}`} since Draft {prev.version} · {scored.length} scored drafts
+            </span>
+          ) : (
+            <span className="text-muted-foreground">First scored draft</span>
+          )}
+        </div>
+      )}
+
+      {scored.length > 1 && <Sparkline points={scored.map((v) => v.reviewOverall ?? 0)} />}
       {deltas.length > 0 && (
         <div className="flex flex-wrap gap-1">
           {deltas.slice(0, 5).map((x) => (
@@ -7411,72 +7484,6 @@ function ProgressCard({ versions }: { versions: EssayDraft[] }) {
               {x.delta > 0 ? `▲ +${x.delta}` : `▼ ${x.delta}`} {labelize(x.key)}
             </span>
           ))}
-        </div>
-      )}
-      <div className="space-y-1 border-t border-border pt-2">
-        {[...scored].reverse().slice(0, 6).map((v) => (
-          <div key={v.id} className="flex items-center justify-between text-[12px]">
-            <span className="text-muted-foreground">Draft {v.version} · {v.wordCount} words</span>
-            <span className="font-semibold tabular-nums" style={{ color: scoreColor(v.coachOverall ?? 0) }}>{v.coachOverall}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function WorkspaceEvaluationTab({ isEvaluating }: { isEvaluating: boolean }) {
-  const { user } = useUser();
-  const [localEvaluating, setLocalEvaluating] = useState(false);
-  const [evalStatus, setEvalStatus] = useState<string | null>(null);
-  const evaluating = isEvaluating || localEvaluating;
-  const analysis = user?.lastAnalysis;
-  const entries = Object.entries(analysis?.readiness_index ?? {});
-  const score = overallEssayScore(analysis);
-  const scoredVersions = (user?.drafts ?? []).filter((v) => typeof v.coachOverall === "number");
-
-  return (
-    <div className="space-y-3">
-      <PanelLabel>Progress &amp; Evaluation</PanelLabel>
-
-      {scoredVersions.length > 0 && <ProgressCard versions={scoredVersions} />}
-
-      <CoachRunButton
-        label="Run deep evaluation"
-        loadingLabel="Evaluating…"
-        onRunningChange={setLocalEvaluating}
-        onStatus={setEvalStatus}
-        className="flex w-full items-center justify-center gap-2 rounded-lg border border-border px-3 py-2 text-[13px] font-semibold text-foreground transition-colors duration-150 hover:bg-accent disabled:opacity-50"
-      />
-      {evalStatus && <div className="rounded-md bg-accent px-3 py-2 text-[12px] text-muted-foreground">{evalStatus}</div>}
-
-      {evaluating && <EvaluationSkeleton />}
-
-      {!evaluating && entries.length > 0 && (
-        <>
-          <div className="flex items-center gap-3 rounded-xl border border-border bg-background p-3">
-            <ScoreRing score={score} size={52} stroke={4} />
-            <div className="min-w-0">
-              <div className="text-[13px] font-semibold">Readiness index</div>
-              <div className="text-[12px] text-muted-foreground">{score != null ? levelWord(score) : "Not scored yet"}</div>
-            </div>
-          </div>
-          <div className="space-y-2">
-            {entries.map(([key, value]) => (
-              <ReadinessRow key={key} label={labelize(key)} value={value} />
-            ))}
-          </div>
-          {analysis?.coaching_brief?.coach_message && (
-            <div className="rounded-xl border border-info/20 bg-info/5 p-3 text-[13px] leading-relaxed text-foreground/85">
-              {analysis.coaching_brief.coach_message}
-            </div>
-          )}
-        </>
-      )}
-
-      {!evaluating && !entries.length && scoredVersions.length === 0 && (
-        <div className="rounded-xl border border-dashed border-border bg-background p-4 text-[13px] leading-relaxed text-muted-foreground">
-          Run the coach to start tracking your draft scores, or run a deep evaluation for the readiness index and coach message.
         </div>
       )}
     </div>
@@ -7553,8 +7560,6 @@ function WorkspaceHighlightsTab({
   onAcceptAllQuickFixes,
   quickFixCount,
   coachLoading,
-  coachSummary,
-  coachWarnings,
 }: {
   isEvaluating: boolean;
   suggestions: Suggestion[];
@@ -7564,25 +7569,14 @@ function WorkspaceHighlightsTab({
   onAcceptAllQuickFixes: () => void;
   quickFixCount: number;
   coachLoading: boolean;
-  coachSummary: string | null;
-  coachWarnings: string[];
 }) {
-  const { user } = useUser();
-  const analysis = user?.lastAnalysis;
-  const priorities = analysis?.revision_priorities ?? [];
   const counts = countByCategory(suggestions);
-  const hasBackend = priorities.length > 0;
 
   if (isEvaluating) return <HighlightsSkeleton />;
 
   return (
     <div className="space-y-3">
-      <div className="flex items-start gap-3">
-        <div className="min-w-0">
-          <PanelLabel>Sentence Fixes</PanelLabel>
-          <div className="mt-1 text-[12px] font-semibold text-muted-foreground">{suggestions.length} open</div>
-        </div>
-      </div>
+      <div className="text-[12px] font-semibold text-muted-foreground">{suggestions.length} open</div>
 
       {quickFixCount > 0 && (
         <button
@@ -7596,26 +7590,11 @@ function WorkspaceHighlightsTab({
         </button>
       )}
 
-      {coachSummary && (
-        <div className="rounded-xl border border-info/20 bg-info/5 p-3 text-[13px] leading-relaxed text-foreground/85">
-          {coachSummary}
-        </div>
-      )}
-
-      {!!coachWarnings.length && (
-        <div className="rounded-xl border border-warning/25 bg-warning/5 p-3">
-          <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-warning">Coaching notes</div>
-          <MiniList items={coachWarnings} />
-        </div>
-      )}
-
       {coachLoading && <HighlightsSkeleton />}
 
       {!coachLoading && !suggestions.length && (
         <div className="rounded-xl border border-dashed border-border bg-background p-4 text-[13px] leading-relaxed text-muted-foreground">
-          {coachSummary
-            ? "No sentence-level fixes to show right now. Keep writing, then run the coach again."
-            : "Write your draft, then run the writing coach for grammar, clarity, tone, and specificity suggestions. Quick fixes also appear here as you type."}
+          No sentence-level fixes are available for this draft. Run the main coaching session after making changes.
         </div>
       )}
 
@@ -7636,23 +7615,6 @@ function WorkspaceHighlightsTab({
         );
       })}
 
-      {!!hasBackend && (
-        <div className="space-y-3 border-t border-border pt-3">
-          {!!priorities.length && (
-            <div className="rounded-xl border border-warning/25 bg-warning/5 p-3">
-              <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-warning">Top revision priorities</div>
-              <ol className="mt-2 space-y-1.5 text-[13px] leading-relaxed">
-                {priorities.slice(0, 4).map((item, i) => (
-                  <li key={item} className="flex gap-2">
-                    <span className="font-semibold text-warning">{i + 1}.</span>
-                    <span>{item}</span>
-                  </li>
-                ))}
-              </ol>
-            </div>
-          )}
-        </div>
-      )}
     </div>
   );
 }
@@ -7729,546 +7691,7 @@ function StepEssayOutline() {
   );
 }
 
-/* ---------------- Step 8: Essay Upload (paste OR PDF) ---------------- */
-
-function StepEssayUpload() {
-  const { user, updateProfile } = useUser();
-  const draft = user?.essayDraft ?? "";
-  const wordCount = draft.trim() ? draft.trim().split(/\s+/).length : 0;
-  const [pdfStatus, setPdfStatus] = useState<string | null>(null);
-  const [analysisStatus, setAnalysisStatus] = useState<string | null>(null);
-
-  async function handlePdf(file: File) {
-    setPdfStatus(`Extracting text from ${file.name}…`);
-    try {
-      const w = window as unknown as {
-        pdfjsLib?: {
-          GlobalWorkerOptions?: { workerSrc?: string };
-          getDocument: (opts: { data: ArrayBuffer }) => { promise: Promise<PdfDoc> };
-        };
-      };
-      type PdfDoc = {
-        numPages: number;
-        getPage: (n: number) => Promise<{
-          getTextContent: () => Promise<{ items: { str?: string }[] }>;
-        }>;
-      };
-
-      if (!w.pdfjsLib) {
-        await new Promise<void>((resolve, reject) => {
-          const s = document.createElement("script");
-          s.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.min.mjs";
-          s.type = "module";
-          s.onload = () => resolve();
-          s.onerror = () => reject(new Error("Failed to load PDF parser"));
-          document.head.appendChild(s);
-        });
-      }
-      if (!w.pdfjsLib) throw new Error("PDF parser unavailable");
-      if (w.pdfjsLib.GlobalWorkerOptions) {
-        w.pdfjsLib.GlobalWorkerOptions.workerSrc =
-          "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.worker.min.mjs";
-      }
-
-      const buf = await file.arrayBuffer();
-      const pdf: PdfDoc = await w.pdfjsLib.getDocument({ data: buf }).promise;
-      const pages: string[] = [];
-      for (let p = 1; p <= pdf.numPages; p++) {
-        const page = await pdf.getPage(p);
-        const tc = await page.getTextContent();
-        pages.push(tc.items.map((i) => i.str ?? "").join(" "));
-      }
-      updateProfile({ essayDraft: normalizePdfDraftText(pages) });
-      setPdfStatus(`Imported ${pdf.numPages} pages from ${file.name}.`);
-    } catch (e) {
-      setPdfStatus(`Could not parse PDF: ${(e as Error).message}`);
-    }
-  }
-
-
-  function saveAsDraft() {
-    const prev = user?.drafts ?? [];
-    const nextVersion = (prev[prev.length - 1]?.version ?? 0) + 1;
-    const newDraft: EssayDraft = {
-      id: crypto.randomUUID(),
-      version: nextVersion,
-      content: draft,
-      wordCount,
-      savedAt: new Date().toISOString(),
-    };
-    updateProfile({ drafts: [...prev, newDraft] });
-  }
-
-  return (
-    <div className="space-y-6">
-      <Card className="bg-secondary/40">
-        <div className="text-xs uppercase tracking-widest text-muted-foreground">Essay prompt</div>
-        <p className="mt-2 font-display italic text-lg">
-          "{user?.activeScholarship?.essayPrompts || "Paste the scholarship prompt in the import step."}"
-        </p>
-        <p className="mt-2 text-xs text-muted-foreground">
-          Paste your draft below — or upload a PDF and we'll pull the text out for you.
-        </p>
-      </Card>
-
-      <Card>
-        <SectionLabel>Upload a PDF (optional)</SectionLabel>
-        <div className="mt-2 flex items-center gap-3 rounded-lg border-2 border-dashed border-border p-4">
-          <input
-            type="file"
-            accept="application/pdf,.pdf"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) handlePdf(f);
-            }}
-            className="text-sm"
-          />
-          {pdfStatus && <span className="text-xs text-muted-foreground">{pdfStatus}</span>}
-        </div>
-      </Card>
-
-      <Card>
-        <div className="flex items-center justify-between text-xs text-muted-foreground">
-          <span className="font-mono">your-essay-draft.txt</span>
-          <span>{wordCount} words · Draft v{(user?.drafts?.length ?? 0) + 1}</span>
-        </div>
-        <textarea
-          value={draft}
-          onChange={(e) => updateProfile({ essayDraft: e.target.value })}
-          rows={16}
-          placeholder="Paste or write your essay here…"
-          className="mt-3 w-full rounded-lg border border-border bg-background p-4 font-display text-[15px] leading-relaxed"
-        />
-      </Card>
-
-      <Card>
-        <div className="flex flex-wrap gap-2">
-          <button
-            onClick={saveAsDraft}
-            disabled={wordCount < 30}
-            className="rounded-lg bg-card border border-border px-4 py-2 text-sm hover:bg-accent disabled:opacity-40"
-          >
-            Save as new draft
-          </button>
-          <CoachRunButton
-            label={
-              wordCount < 30
-                ? "Write at least a paragraph to send to the coach"
-                : "Send to AI Coach for evaluation"
-            }
-            loadingLabel="Analyzing…"
-            disabled={wordCount < 30}
-            onStatus={setAnalysisStatus}
-            className="flex-1 rounded-lg bg-primary text-primary-foreground py-2 text-sm font-medium hover:opacity-90 disabled:opacity-40"
-          />
-        </div>
-        {analysisStatus && <p className="mt-3 text-xs text-muted-foreground">{analysisStatus}</p>}
-      </Card>
-    </div>
-  );
-}
-
-/* ---------------- Step 9: Application Evaluation (combined eval + scores) ---------------- */
-
-const SCORE_DESCRIPTIONS: Record<string, string> = {
-  Clarity: "How easily a reader can follow your argument and identify each sentence's purpose.",
-  Specificity: "Concrete sensory details, names, numbers, and moments instead of vague generalities.",
-  Leadership: "Evidence you initiated something, organized people, or carried responsibility — not just participated.",
-  Storytelling: "Pacing, scene-building, and emotional arc — does the essay carry the reader through a change?",
-  Impact: "Quantified outcomes (people helped, dollars raised, lives changed) and what the reader can verify.",
-  "Scholarship alignment": "How clearly your goals and identity match the sponsor's stated mission and values.",
-  Grammar: "Sentence-level correctness, punctuation, and consistent verb tense.",
-  Structure: "Paragraph order, transitions, and a strong opener / closer.",
-};
-
-function StepScores() {
-  const { user } = useUser();
-  const analysis = user?.lastAnalysis;
-  const cats = Object.entries(analysis?.readiness_index ?? {})
-    .filter(([, entry]) => typeof entry?.score === "number")
-    .map(([key, entry]) => ({
-      name: key.replace(/_/g, " "),
-      score: entry.score ?? 0,
-      description: entry.coaching || entry.level || "Reviewed by the Scholar-E coach.",
-    }));
-  const overall = cats.length
-    ? Math.round(cats.reduce((a, c) => a + c.score, 0) / cats.length)
-    : 0;
-  const [open, setOpen] = useState<string | null>(null);
-  const stages = [
-    "Analyzer + Retriever agents",
-    "Content / structure / voice / grammar coaches",
-    "Reviewer simulation agent",
-    "Combiner agent synthesis",
-    "Critic agent quality check",
-  ];
-  const critique = analysis?.critique;
-
-  return (
-    <div className="space-y-6">
-      {!analysis && (
-        <Card>
-          <div className="font-medium">No evaluation yet</div>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Run the AI coach from step 8 (Upload Essay Draft) first. Your scores will appear here.
-          </p>
-        </Card>
-      )}
-
-      {!!analysis && (
-      <>
-      <Card>
-        <div className="flex items-center gap-3">
-          <div className="size-10 rounded-full bg-gold text-gold-foreground grid place-items-center font-display">AI</div>
-          <div>
-            <div className="font-medium">Scholar-E Coach evaluated your essay</div>
-            <div className="text-xs text-muted-foreground">
-              Draft {analysis.draft_number ?? 1} evaluated by the Scholar-E AI coaching agents.
-            </div>
-          </div>
-        </div>
-        <div className="mt-4 grid sm:grid-cols-5 gap-2 text-xs">
-          {stages.map((s) => (
-            <div key={s} className="rounded-lg bg-success/10 text-success p-2 flex items-center gap-1.5">
-              <Check className="size-3.5 shrink-0" strokeWidth={2.5} />
-              <span className="truncate">{s}</span>
-            </div>
-          ))}
-        </div>
-      </Card>
-
-      {critique && Object.keys(critique).length > 0 && (
-        <Card>
-          <div className="flex items-center justify-between">
-            <div className="text-xs uppercase tracking-widest text-muted-foreground">
-              Critic agent quality check
-            </div>
-            <Pill tone={critique.verdict === "needs_revision" ? "warn" : "success"}>
-              {critique.verdict === "needs_revision" ? "Revised by critic" : "Approved"}
-            </Pill>
-          </div>
-          <div className="mt-3 grid sm:grid-cols-3 gap-3 text-sm">
-            <div>
-              <div className="text-xs text-muted-foreground">Confidence</div>
-              <div className="font-display text-2xl">{critique.confidence ?? "—"}</div>
-            </div>
-            <div>
-              <div className="text-xs text-muted-foreground">Grounding</div>
-              <div className="font-medium">{critique.grounding_pass === false ? "Fail" : "Pass"}</div>
-            </div>
-            <div>
-              <div className="text-xs text-muted-foreground">Review passes</div>
-              <div className="font-medium">{critique.attempt ?? 1}</div>
-            </div>
-          </div>
-          {(critique.issues?.length ?? 0) > 0 && (
-            <ul className="mt-3 list-disc pl-5 text-sm text-muted-foreground space-y-1">
-              {critique.issues!.map((issue) => (
-                <li key={issue}>{issue}</li>
-              ))}
-            </ul>
-          )}
-        </Card>
-      )}
-
-      <Card className="grid md:grid-cols-3 gap-6 items-center">
-        <div className="md:col-span-1 text-center">
-          <div className="font-display text-7xl text-primary">{overall}</div>
-          <div className="text-xs text-muted-foreground uppercase tracking-widest">Overall essay score</div>
-          <Pill tone={overall >= 80 ? "success" : "warn"}>{overall >= 80 ? "Ready to polish" : "Promising — needs revision"}</Pill>
-        </div>
-        <div className="md:col-span-2 grid sm:grid-cols-2 gap-3">
-          {cats.map((c) => {
-            const isOpen = open === c.name;
-            return (
-              <button
-                key={c.name}
-                onClick={() => setOpen(isOpen ? null : c.name)}
-                className="text-left rounded-xl border border-border hover:bg-accent transition-colors p-3"
-              >
-                <div className="flex items-baseline justify-between text-sm">
-                  <span className="border-b border-dotted border-muted-foreground/50">{c.name}</span>
-                  <span className="font-mono text-xs">{c.score}</span>
-                </div>
-                <div className="mt-1 h-1.5 rounded-full bg-secondary overflow-hidden">
-                  <div
-                    className="h-full"
-                    style={{
-                      width: `${c.score}%`,
-                      background: c.score >= 80 ? "var(--success)" : c.score >= 65 ? "var(--gold)" : "var(--warning)",
-                    }}
-                  />
-                </div>
-                {isOpen && (
-                  <p className="mt-2 text-xs text-muted-foreground leading-relaxed">
-                    {c.description}
-                  </p>
-                )}
-              </button>
-            );
-          })}
-        </div>
-      </Card>
-
-      {analysis.growth_report?.has_previous_draft && (
-        <Card>
-          <div className="text-xs uppercase tracking-widest text-muted-foreground">Growth across drafts</div>
-          <p className="mt-2 text-sm">{analysis.growth_report.growth_message}</p>
-          {(analysis.growth_report.improvements?.length ?? 0) > 0 && (
-            <ul className="mt-3 space-y-2 text-sm">
-              {analysis.growth_report.improvements!.map((item) => (
-                <li key={item} className="flex gap-2">
-                  <span className="text-success shrink-0">↑</span>
-                  <span>{item}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Card>
-      )}
-
-      <Card>
-        <div className="text-xs uppercase tracking-widest text-muted-foreground">Top three things to fix</div>
-        <ol className="mt-3 space-y-3 text-sm">
-          {(analysis.revision_priorities?.length
-            ? analysis.revision_priorities
-            : [analysis.coaching_brief?.recommended_action, analysis.coaching_brief?.biggest_opportunity, analysis.feedback].filter(
-                (item): item is string => !!item,
-              )
-          ).slice(0, 3).map((item, i) => (
-            <li key={String(item)} className="flex gap-3">
-              <span className="font-display text-gold">{i + 1}.</span>
-              {item}
-            </li>
-          ))}
-        </ol>
-      </Card>
-      </>
-      )}
-    </div>
-  );
-}
-
-/* ---------------- Step 10: Highlights (accept/decline) ---------------- */
-
-function StepHighlights() {
-  const { user } = useUser();
-  const analysis = user?.lastAnalysis;
-  const priorities = analysis?.revision_priorities ?? [];
-  const reviewers = analysis?.reviewer_comments ?? [];
-  const reports = analysis?.coaching_reports ?? {};
-  const draft = user?.essayDraft ?? "";
-  const [showPackage, setShowPackage] = useState(false);
-
-  const strategy = reports.strategy as Record<string, string> | undefined;
-  const alignmentReport = reports.alignment as unknown as
-    | {
-        alignment_score?: number;
-        fit_summary?: string;
-        revision_tasks?: string[];
-      }
-    | undefined;
-  const discovery = reports.discovery as Record<string, string> | undefined;
-  const evidenceStrength = reports.evidence_strength as unknown as
-    | {
-        evidence_strength_score?: number;
-        recommended_experience_to_feature?: string;
-        recommendations?: string[];
-      }
-    | undefined;
-  const narrativeStructureReport = reports.narrative_structure_flow_coherence as unknown as
-    | {
-        narrative_structure_score?: number;
-        overall_narrative_assessment?: string;
-        biggest_narrative_gap?: string;
-      }
-    | undefined;
-  const insightReport = reports.insight as unknown as
-    | {
-        insight_score?: number;
-        missing_meaning_or_reflection?: string[];
-        revision_tasks?: string[];
-      }
-    | undefined;
-  const narrative = narrativeStructureReport ? undefined : reports.narrative as Record<string, string> | undefined;
-
-  return (
-    <div className="space-y-6">
-    <div className="grid lg:grid-cols-5 gap-6">
-      <Card className="lg:col-span-3">
-        <div className="text-xs uppercase tracking-widest text-muted-foreground flex items-center justify-between">
-          <span>Your essay draft</span>
-          <span className="font-mono">{draft.trim() ? draft.trim().split(/\s+/).length : 0} words</span>
-        </div>
-        <div className="mt-4 font-display text-[15px] leading-relaxed text-foreground/90 whitespace-pre-wrap">
-          {draft || "Paste your essay in the previous step to review it here."}
-        </div>
-      </Card>
-
-      <Card className="lg:col-span-2 h-fit sticky top-24">
-        <div className="flex items-center justify-between">
-          <Pill tone={analysis ? "info" : "warn"}>{analysis ? "Backend feedback" : "No analysis yet"}</Pill>
-          {analysis?.coaching_brief?.current_strength_level && (
-            <span className="text-xs text-muted-foreground uppercase tracking-widest">
-              {analysis.coaching_brief.current_strength_level}
-            </span>
-          )}
-        </div>
-        <div className="mt-4 text-sm">
-          {analysis?.coaching_brief?.coach_message ||
-            analysis?.feedback ||
-            "Send your draft to the AI coach to receive revision guidance."}
-        </div>
-        {priorities.length > 0 && (
-          <div className="mt-5">
-            <div className="text-xs uppercase tracking-widest text-muted-foreground">Revision priorities</div>
-            <ol className="mt-3 space-y-3 text-sm">
-              {priorities.map((item, i) => (
-                <li key={item} className="flex gap-3">
-                  <span className="font-display text-gold">{i + 1}.</span>
-                  <span>{item}</span>
-                </li>
-              ))}
-            </ol>
-          </div>
-        )}
-        {reviewers.length > 0 && (
-          <div className="mt-5">
-            <div className="text-xs uppercase tracking-widest text-muted-foreground">Reviewer comments</div>
-            <div className="mt-3 space-y-3">
-              {reviewers.map((item, i) => (
-                <div key={i} className="rounded-xl border border-border bg-secondary/50 p-3 text-sm">
-                  <div className="text-xs uppercase tracking-widest text-muted-foreground mb-1">
-                    {item.persona || "Reviewer"}
-                  </div>
-                  <div>{item.comment}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </Card>
-    </div>
-
-    {!analysis && (
-      <Card>
-        <p className="text-sm text-muted-foreground">
-          Run the AI coach from step 8 first to receive alignment, narrative, and reviewer feedback.
-        </p>
-      </Card>
-    )}
-
-    {!!analysis && (alignmentReport || strategy || evidenceStrength || discovery || narrativeStructureReport || insightReport || narrative) && (
-      <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-4">
-        {strategy && (
-          <Card>
-            <div className="text-xs uppercase tracking-widest text-muted-foreground">Opportunity strategy</div>
-            <p className="mt-2 text-sm">{strategy.strategic_insight}</p>
-            {strategy.reflection_vs_story_ratio && (
-              <p className="mt-2 text-xs text-muted-foreground">{strategy.reflection_vs_story_ratio}</p>
-            )}
-          </Card>
-        )}
-        {alignmentReport && (
-          <Card>
-            <div className="text-xs uppercase tracking-widest text-muted-foreground">Alignment (Prompt + Scholarship Values) Coach</div>
-            {typeof alignmentReport.alignment_score === "number" && (
-              <p className="mt-2 text-sm font-semibold">{alignmentReport.alignment_score}/100</p>
-            )}
-            {alignmentReport.fit_summary && <p className="mt-2 text-sm">{alignmentReport.fit_summary}</p>}
-            {!!alignmentReport.revision_tasks?.[0] && (
-              <p className="mt-2 text-xs text-muted-foreground">Next: {alignmentReport.revision_tasks[0]}</p>
-            )}
-          </Card>
-        )}
-        {discovery && (
-          <Card>
-            <div className="text-xs uppercase tracking-widest text-muted-foreground">Experience discovery</div>
-            <p className="mt-2 text-sm">{discovery.coaching_message}</p>
-            {discovery.recommended_experience_to_feature && (
-              <p className="mt-2 text-xs text-muted-foreground">
-                Feature: {discovery.recommended_experience_to_feature}
-              </p>
-            )}
-          </Card>
-        )}
-        {evidenceStrength && (
-          <Card>
-            <div className="text-xs uppercase tracking-widest text-muted-foreground">Evidence Strength Coach</div>
-            {typeof evidenceStrength.evidence_strength_score === "number" && (
-              <p className="mt-2 text-sm font-semibold">{evidenceStrength.evidence_strength_score}/100</p>
-            )}
-            {evidenceStrength.recommended_experience_to_feature && (
-              <p className="mt-2 text-xs text-muted-foreground">
-                Strongest experience: {evidenceStrength.recommended_experience_to_feature}
-              </p>
-            )}
-            {!!evidenceStrength.recommendations?.[0] && (
-              <p className="mt-2 text-xs text-muted-foreground">Next: {evidenceStrength.recommendations[0]}</p>
-            )}
-          </Card>
-        )}
-        {narrativeStructureReport && (
-          <Card>
-            <div className="text-xs uppercase tracking-widest text-muted-foreground">Narrative Structure, Flow & Coherence Coach</div>
-            {typeof narrativeStructureReport.narrative_structure_score === "number" && (
-              <p className="mt-2 text-sm font-semibold">{narrativeStructureReport.narrative_structure_score}/100</p>
-            )}
-            {narrativeStructureReport.overall_narrative_assessment && (
-              <p className="mt-2 text-sm">{narrativeStructureReport.overall_narrative_assessment}</p>
-            )}
-            {narrativeStructureReport.biggest_narrative_gap && (
-              <p className="mt-2 text-xs text-muted-foreground">Gap: {narrativeStructureReport.biggest_narrative_gap}</p>
-            )}
-          </Card>
-        )}
-        {insightReport && (
-          <Card>
-            <div className="text-xs uppercase tracking-widest text-muted-foreground">Insight (Depth + Meaning + Reflection) Coach</div>
-            {typeof insightReport.insight_score === "number" && (
-              <p className="mt-2 text-sm font-semibold">{insightReport.insight_score}/100</p>
-            )}
-            {!!insightReport.missing_meaning_or_reflection?.[0] && (
-              <p className="mt-2 text-sm">Needs depth: {insightReport.missing_meaning_or_reflection[0]}</p>
-            )}
-            {!!insightReport.revision_tasks?.[0] && (
-              <p className="mt-2 text-xs text-muted-foreground">Next: {insightReport.revision_tasks[0]}</p>
-            )}
-          </Card>
-        )}
-        {narrative && (
-          <Card>
-            <div className="text-xs uppercase tracking-widest text-muted-foreground">Narrative coach</div>
-            <p className="mt-2 text-sm">{narrative.overall_narrative_coaching}</p>
-            {narrative.biggest_narrative_gap && (
-              <p className="mt-2 text-xs text-muted-foreground">Gap: {narrative.biggest_narrative_gap}</p>
-            )}
-          </Card>
-        )}
-      </div>
-    )}
-
-    {analysis?.final_application_package && (
-      <Card>
-        <button
-          type="button"
-          onClick={() => setShowPackage((v) => !v)}
-          className="w-full text-left text-xs uppercase tracking-widest text-muted-foreground"
-        >
-          Full coaching package {showPackage ? "▲" : "▼"}
-        </button>
-        {showPackage && (
-          <pre className="mt-4 max-h-96 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-foreground/80">
-            {analysis.final_application_package}
-          </pre>
-        )}
-      </Card>
-    )}
-    </div>
-  );
-}
-
-/* ---------------- Step 11: Revise — multiple drafts ---------------- */
+/* ---------------- Step 5: Revise — multiple drafts ---------------- */
 
 function StepRevise() {
   const { user, updateProfile } = useUser();
@@ -8373,71 +7796,26 @@ function StepRevise() {
   );
 }
 
-/* ---------------- Step 12: Resubmit — with improvement tips ---------------- */
-
-function StepResubmit() {
-  const { user } = useUser();
-  const [status, setStatus] = useState<string | null>(null);
-  const tips = user?.lastAnalysis?.revision_priorities ?? [
-    "Revise the draft using the feedback from the previous step.",
-    "Add evidence from your profile where the scholarship asks for fit.",
-    "Run the AI coach again to compare the new draft with the prior review.",
-  ];
-
-  return (
-    <div className="space-y-6">
-      <Card>
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="font-display text-2xl">Resubmit your latest draft</div>
-            <div className="text-xs text-muted-foreground mt-1">
-              {user?.activeScholarship?.name || "Current scholarship"} · {user?.essayDraft?.trim().split(/\s+/).filter(Boolean).length ?? 0} words
-            </div>
-          </div>
-          <Pill tone="info">AI coach review</Pill>
-        </div>
-        <div className="mt-5">
-          <CoachRunButton
-            label="Get coaching again"
-            loadingLabel="Reviewing revised draft..."
-            disabled={!user?.essayDraft?.trim()}
-            onStatus={setStatus}
-            className="rounded-full bg-primary text-primary-foreground px-5 py-2 text-sm hover:opacity-90 disabled:opacity-40"
-          />
-          {status && <p className="mt-3 text-xs text-muted-foreground">{status}</p>}
-        </div>
-      </Card>
-
-      <Card>
-        <div className="text-xs uppercase tracking-widest text-gold">Ways to improve your score further</div>
-        <ul className="mt-3 space-y-3 text-sm">
-          {tips.map((t, i) => (
-            <li key={t} className="flex gap-3">
-              <span className="font-display text-gold shrink-0">{i + 1}.</span>
-              <span>{t}</span>
-            </li>
-          ))}
-        </ul>
-      </Card>
-
-      <Card className="bg-success/10 border-success/30">
-        <div className="text-sm font-medium text-success">
-          {user?.lastAnalysis?.coaching_brief?.recommended_action || "Coach feedback will update after each review."}
-        </div>
-        <p className="text-sm text-foreground/80 mt-1">
-          {user?.lastAnalysis?.coaching_brief?.coach_message ||
-            "Continue to the final submission check when your materials and draft are ready."}
-        </p>
-      </Card>
-    </div>
-  );
+function essayReviewPriorityActions(review?: EssayReviewResult | null): string[] {
+  if (!review?.criteria) return [];
+  return ESSAY_REVIEW_DIMENSIONS
+    .map((key) => review.criteria[key]?.priority_action?.title)
+    .filter((item): item is string => !!item?.trim());
 }
 
-/* ---------------- Step 13: Final Check ---------------- */
+function lowEssayReviewCriteria(review?: EssayReviewResult | null): string[] {
+  if (!review?.criteria) return [];
+  return ESSAY_REVIEW_DIMENSIONS
+    .map((key) => review.criteria[key])
+    .filter((entry): entry is EssayCriterionReview => typeof entry?.score === "number" && (entry.score ?? 0) < 70)
+    .map((entry) => `${entry.label || labelize(entry.criterion ?? "criterion")} (${entry.score}/100)`);
+}
+
+/* ---------------- Step 6: Final Check ---------------- */
 
 function StepFinalCheck() {
   const { user } = useUser();
-  const analysis = user?.lastAnalysis;
+  const review = user?.essayReviewResult?.schema_version === 3 ? user.essayReviewResult : null;
   const docs = user?.documents ?? [];
   const hasDoc = (kind: string) => docs.some((doc) => doc.kind.toLowerCase().includes(kind));
   const checklist = [
@@ -8462,17 +7840,14 @@ function StepFinalCheck() {
     { item: "Transcript uploaded or identified", done: hasDoc("transcript") },
     { item: "Recommendation letter uploaded or identified", done: hasDoc("recommendation") || hasDoc("rec") },
     { item: "Essay draft added", done: !!user?.essayDraft?.trim() },
-    { item: "AI coach review completed", done: !!analysis },
+    { item: "Essay review completed", done: !!review },
   ];
   const blockers = [
-    ...(analysis?.revision_priorities ?? []).slice(0, 3),
+    ...essayReviewPriorityActions(review).slice(0, 3),
     ...checklist.filter((c) => !c.done).map((c) => c.item),
   ].filter((item, i, arr) => arr.indexOf(item) === i);
   const done = checklist.filter((x) => x.done).length;
-  const readiness = analysis?.readiness_index ?? {};
-  const lowDims = Object.entries(readiness)
-    .filter(([, entry]) => typeof entry?.score === "number" && (entry.score ?? 0) < 70)
-    .map(([key, entry]) => `${key.replace(/_/g, " ")} (${entry.score}/100)`);
+  const lowDims = lowEssayReviewCriteria(review);
 
   return (
     <div className="space-y-6">
@@ -8529,25 +7904,22 @@ function StepFinalCheck() {
   );
 }
 
-/* ---------------- Step 14: Tracker ---------------- */
+/* ---------------- Step 7: Tracker ---------------- */
 
 function StepTracker() {
   const columns = ["Interested", "Drafting", "Submitted", "Awarded"] as const;
   const { user } = useUser();
   const scholarship = user?.activeScholarship;
-  const readiness = user?.lastAnalysis?.readiness_index ?? {};
-  const scores = Object.values(readiness)
-    .map((entry) => entry.score)
-    .filter((score): score is number => typeof score === "number");
-  const average = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : 0;
-  const activeColumn = user?.lastAnalysis ? "Drafting" : scholarship?.name ? "Interested" : "Interested";
+  const review = user?.essayReviewResult?.schema_version === 3 ? user.essayReviewResult : null;
+  const score = typeof review?.overall_score === "number" ? review.overall_score : 0;
+  const activeColumn = review ? "Drafting" : scholarship?.name ? "Interested" : "Interested";
 
   return (
     <div className="space-y-6">
       <div className="grid sm:grid-cols-3 gap-4">
         <Card><div className="text-xs text-muted-foreground uppercase tracking-widest">Active</div><div className="font-display text-3xl mt-1">{scholarship?.name ? 1 : 0}</div></Card>
-        <Card><div className="text-xs text-muted-foreground uppercase tracking-widest">Readiness</div><div className="font-display text-3xl mt-1">{average || "—"}</div></Card>
-        <Card><div className="text-xs text-muted-foreground uppercase tracking-widest">Latest review</div><div className="font-display text-3xl mt-1">{user?.lastAnalysis ? "Done" : "Needed"}</div><div className="text-xs text-muted-foreground">{scholarship?.name || "No scholarship imported"}</div></Card>
+        <Card><div className="text-xs text-muted-foreground uppercase tracking-widest">Essay score</div><div className="font-display text-3xl mt-1">{score || "—"}</div></Card>
+        <Card><div className="text-xs text-muted-foreground uppercase tracking-widest">Latest review</div><div className="font-display text-3xl mt-1">{review ? "Done" : "Needed"}</div><div className="text-xs text-muted-foreground">{scholarship?.name || "No scholarship imported"}</div></Card>
       </div>
 
       <div className="grid md:grid-cols-4 gap-4">
@@ -8563,8 +7935,8 @@ function StepTracker() {
                   <div className="text-sm font-medium leading-tight">{scholarship.name}</div>
                   <div className="text-xs text-muted-foreground mt-0.5">{scholarship.type || "Scholarship"}</div>
                   <div className="mt-2 flex items-center justify-between text-xs">
-                    <Pill tone="gold">{average ? `${average}/100 readiness` : "Needs review"}</Pill>
-                    <span className="text-muted-foreground">{user?.lastAnalysis ? "AI reviewed" : "Not reviewed"}</span>
+                    <Pill tone="gold">{score ? `${score}/100 essay score` : "Needs review"}</Pill>
+                    <span className="text-muted-foreground">{review ? "AI reviewed" : "Not reviewed"}</span>
                   </div>
                 </div>
               ) : (

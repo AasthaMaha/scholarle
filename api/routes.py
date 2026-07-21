@@ -7,19 +7,17 @@ import json
 import re
 import time
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Optional
 
 import pypdf
-from langchain_core.documents import Document
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pydantic import BaseModel, Field
 from fastapi import HTTPException, UploadFile
 
 from config import settings
-from essay_coaching_service import run_essay_workspace_coach, run_selection_rewrite
+from essay_editor_service import run_editor_check as run_editor_check_service
+from essay_editor_service import run_selection_rewrite
 from essay_mechanics import apply_deterministic_mechanics
 from prompt_adaptation import format_brief_for_prompt, resolve_writing_brief
-from graph.builder import build_application_graph
 from graph.fit_builder import build_fit_analysis_graph
 from graph.opportunity_builder import build_opportunity_extraction_graph
 from graph.profile_builder import build_profile_extraction_graph
@@ -45,17 +43,6 @@ from persistence.services import (
 from persistence.vector_service import VectorService
 from unified_coaching_service import run_unified_coaching_session
 from utils.opportunity_sources import resolve_opportunity_sources
-
-
-class AnalyzeRequest(BaseModel):
-    user_id: str = Field(default="", max_length=100)
-    cv_text: str = Field(..., min_length=1, max_length=50000)
-    essay_text: str = Field(..., min_length=1, max_length=20000)
-    scholarship_name: str = Field(..., min_length=1, max_length=500)
-    scholarship_type: str = Field(..., min_length=1, max_length=200)
-    prompt: str = Field(..., min_length=1, max_length=10000)
-    previous_readiness: Optional[Dict[str, int]] = None
-    draft_number: int = Field(default=1, ge=1, le=50)
 
 
 class ProfileAutofillResponse(BaseModel):
@@ -208,22 +195,16 @@ class WikiDiscoverResponse(BaseModel):
     result_note: str = ""
 
 
-class EssayCoachRequest(BaseModel):
+class EditorCheckRequest(BaseModel):
     user_id: str = Field(default="", max_length=100)
-    student_profile: dict = Field(default_factory=dict)
     clean_scholarship_record: dict = Field(default_factory=dict)
-    essay_prompt: str = Field(default="", max_length=12000)
     essay_draft: str = Field(default="", max_length=20000)
-    personalized_outline: dict = Field(default_factory=dict)
     user_notes: str = Field(default="", max_length=5000)
-    word_limit: str = Field(default="", max_length=120)
     outline_points: list[dict] = Field(default_factory=list)
-    mode: str = Field(default="full", max_length=40)
-    writing_support_level: str = Field(default="grammar_only", max_length=40)
 
 
 class CoachingSessionRequest(BaseModel):
-    """One-button Step 4 session: mechanics → parallel evaluate + coach."""
+    """One-button Page 4 session: mechanics → one weighted essay review."""
 
     user_id: str = Field(default="", max_length=100)
     cv_text: str = Field(default="", max_length=50000)
@@ -231,16 +212,12 @@ class CoachingSessionRequest(BaseModel):
     scholarship_name: str = Field(default="", max_length=500)
     scholarship_type: str = Field(default="", max_length=200)
     prompt: str = Field(..., min_length=1, max_length=10000)
-    previous_readiness: Optional[Dict[str, int]] = None
-    draft_number: int = Field(default=1, ge=1, le=50)
+    previous_manager_plan: Optional[dict] = None
     student_profile: dict = Field(default_factory=dict)
     clean_scholarship_record: dict = Field(default_factory=dict)
     essay_prompt: str = Field(default="", max_length=12000)
-    personalized_outline: dict = Field(default_factory=dict)
-    user_notes: str = Field(default="", max_length=5000)
     word_limit: str = Field(default="", max_length=120)
     outline_points: list[dict] = Field(default_factory=list)
-    writing_support_level: str = Field(default="sentence_polish", max_length=40)
 
 
 class RewriteRequest(BaseModel):
@@ -264,50 +241,48 @@ class OutlineGenerateRequest(BaseModel):
 
 
 class OutlineSection(BaseModel):
-    section_name: str = ""
+    section_name: str = Field(
+        default="",
+        description=(
+            "A short descriptive noun phrase for the section, never a question, prompt directive, or copy of the "
+            "question in scholarship_requirement_addressed. Do not add 'Introduction:' or 'Conclusion:' prefixes; "
+            "the interface adds those structural labels."
+        ),
+    )
     purpose: str = ""
     suggested_content: list[str] = Field(default_factory=list)
     profile_evidence_to_use: list[str] = Field(default_factory=list)
-    scholarship_requirement_addressed: list[str] = Field(default_factory=list)
+    scholarship_requirement_addressed: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Concise, standalone questions from the essay prompt or scholarship focus that this section answers. "
+            "Every item must be phrased as a direct question ending in a question mark, without category headings."
+        ),
+    )
     estimated_word_count: str = ""
     coaching_notes: list[str] = Field(default_factory=list)
 
 
 class PersonalizedOutline(BaseModel):
-    outline_title: str = ""
-    thesis_or_core_message: str = ""
     sections: list[OutlineSection] = Field(default_factory=list)
-    recommended_opening: str = ""
-    recommended_conclusion: str = ""
-    questions_for_student: list[str] = Field(default_factory=list)
 
 
 class OutlineStrategy(BaseModel):
-    recommended_strategy: str = ""
-    central_message: str = ""
-    tone_guidance: str = ""
-
-
-class CoverageCheck(BaseModel):
-    requirement: str = ""
-    covered: bool = False
-    where_covered: str = ""
-    notes: str = ""
+    tone_guidance: str = Field(
+        default="",
+        description=(
+            "Exactly one concise sentence recommending a tone tailored to the student, essay prompt, and scholarship. "
+            "Do not include a label such as 'Tone' or 'Recommended tip'."
+        ),
+    )
 
 
 class OutlineGenerateResponse(BaseModel):
     status: str = "success"
     outline: PersonalizedOutline = Field(default_factory=PersonalizedOutline)
     strategy: OutlineStrategy = Field(default_factory=OutlineStrategy)
-    coverage_check: list[CoverageCheck] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     missing_profile_info: list[str] = Field(default_factory=list)
-
-
-def _text_to_chunks(text: str, source: str) -> list:
-    doc = Document(page_content=text.strip(), metadata={"source": source})
-    splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
-    return splitter.split_documents([doc])
 
 
 def _stable_source_id(prefix: str, value: object) -> str:
@@ -352,27 +327,6 @@ def _persist_domain_record(save_fn, *args, **kwargs):
         return None
 
 
-def _build_opportunity_text(
-    scholarship_name: str,
-    scholarship_type: str,
-    prompt: str,
-) -> str:
-    return (
-        f"Scholarship: {scholarship_name}\n"
-        f"Type: {scholarship_type}\n\n"
-        f"{prompt.strip()}"
-    )
-
-
-def _profile_store_path(profile_text: str) -> Path:
-    profile_hash = hashlib.sha256(profile_text.strip().encode("utf-8")).hexdigest()[:16]
-    return Path(settings.profile_vector_db_path) / profile_hash
-
-
-def _has_existing_chroma_store(path: Path) -> bool:
-    return (path / "chroma.sqlite3").exists()
-
-
 def extract_text_from_pdf(file_bytes: bytes) -> str:
     try:
         reader = pypdf.PdfReader(io.BytesIO(file_bytes))
@@ -398,78 +352,6 @@ def _gather_opportunity_source_text(request: OpportunityExtractRequest):
     )
 
 
-def run_application_pipeline(
-    user_id: str,
-    opportunity_text: str,
-    student_draft: str,
-    profile_text: str,
-    previous_readiness: Optional[Dict[str, int]] = None,
-    draft_number: int = 1,
-) -> dict:
-    vector_service = _safe_vector_service()
-    profile_docs = _text_to_chunks(profile_text, "uploaded_cv")
-
-    _upsert_memory(
-        vector_service,
-        user_id=user_id,
-        source_type="profile_summary",
-        source_id="current-profile",
-        title="Current student profile",
-        canonical_text=profile_text,
-        structured_json={"profile_text": profile_text},
-        collection_name="user_profile_memory",
-    )
-    _upsert_memory(
-        vector_service,
-        user_id=user_id,
-        source_type="opportunity",
-        source_id=_stable_source_id("opportunity", opportunity_text),
-        title="Current scholarship opportunity",
-        canonical_text=opportunity_text,
-        structured_json={"opportunity_text": opportunity_text},
-        collection_name="user_opportunity_memory",
-    )
-    if student_draft.strip():
-        _upsert_memory(
-            vector_service,
-            user_id=user_id,
-            source_type="essay_draft",
-            source_id=_stable_source_id(f"essay-draft-{draft_number}", student_draft),
-            title=f"Essay draft {draft_number}",
-            canonical_text=student_draft,
-            structured_json={"draft_number": draft_number, "essay_text": student_draft},
-            collection_name="user_application_memory",
-        )
-
-    graph = build_application_graph(vector_service, user_id)
-    result = graph.invoke(
-        {
-            "opportunity_text": opportunity_text,
-            "student_profile_docs": profile_docs,
-            "student_draft": student_draft,
-            "previous_readiness": previous_readiness or {},
-            "draft_number": draft_number,
-        }
-    )
-    feedback_text = build_feedback_memory_text(
-        {
-            "summary": result.get("feedback", ""),
-            "strengths": result.get("revision_priorities", []),
-        }
-    )
-    _upsert_memory(
-        vector_service,
-        user_id=user_id,
-        source_type="coaching_feedback",
-        source_id=_stable_source_id(f"coaching-{draft_number}", result.get("feedback", "")),
-        title=f"Coaching feedback draft {draft_number}",
-        canonical_text=feedback_text,
-        structured_json=result,
-        collection_name="user_feedback_memory",
-    )
-    return result
-
-
 def _outline_fallback(request: OutlineGenerateRequest, message: str = "") -> dict:
     scholarship = request.clean_scholarship_record or {}
     prompt = request.essay_prompt.strip() or scholarship.get("essayPrompts") or scholarship.get("requirementsPreview") or ""
@@ -483,54 +365,130 @@ def _outline_fallback(request: OutlineGenerateRequest, message: str = "") -> dic
     if not prompt:
         warnings.append("Add an essay prompt or scholarship writing requirement to generate a more personalized outline.")
 
-    name = request.scholarship_name or scholarship.get("name") or "this scholarship"
     return {
         "status": "success",
         "outline": {
-            "outline_title": f"Essay plan for {name}",
-            "thesis_or_core_message": "Connect your strongest real profile evidence to the scholarship prompt and stated selection priorities.",
             "sections": [
                 {
                     "section_name": "Opening motivation tied to the prompt",
-                    "purpose": "Introduce the specific motivation or problem that makes this opportunity relevant.",
+                    "purpose": "Open with a specific real moment, project, question, or responsibility that introduces the motivation or problem connecting you to this opportunity. This would place the reader in a concrete context and help them quickly understand why the opportunity matters to you.",
                     "suggested_content": ["Use one concrete real experience from your profile.", "Name the academic, service, or career direction the essay will explain."],
                     "profile_evidence_to_use": ["Use a real profile detail you have already provided."],
-                    "scholarship_requirement_addressed": ["Essay prompt or writing requirement"],
+                    "scholarship_requirement_addressed": [
+                        "What experience or motivation connects you to this opportunity?"
+                    ],
                     "estimated_word_count": request.word_limit or "Adjust to the final word limit.",
                     "coaching_notes": ["Do not invent a dramatic story. Avoid generic openings."],
                 },
                 {
                     "section_name": "Evidence of preparation and fit",
-                    "purpose": "Show the experiences, skills, coursework, research, work, or leadership that support your claim.",
+                    "purpose": "Use two or three strong experiences, skills, courses, research projects, work responsibilities, or leadership examples from your profile, then explain what each one demonstrates. This would give the reader concrete reasons to trust your preparation and recognize your fit with the scholarship.",
                     "suggested_content": ["Choose two or three strongest facts from your profile.", "Explain what each fact proves about readiness or alignment."],
                     "profile_evidence_to_use": ["Academic background", "Skills", "Leadership, research, work, or projects if provided"],
-                    "scholarship_requirement_addressed": ["Selection criteria", "Eligibility or application themes"],
+                    "scholarship_requirement_addressed": [
+                        "What evidence demonstrates your preparation and fit?"
+                    ],
                     "estimated_word_count": "Middle section",
                     "coaching_notes": ["Use evidence, not a list of achievements."],
                 },
                 {
                     "section_name": "Future goals and scholarship alignment",
-                    "purpose": "Explain how the scholarship connects to your next step and the impact you want to make.",
+                    "purpose": "Connect the scholarship to your next step, reflect on the impact you want to make, and close by explaining why that direction matters. This would leave the reader with a clear understanding of your future purpose and how the scholarship would help you pursue it.",
                     "suggested_content": ["Tie goals to the scholarship mission or benefits.", "End with a contribution-focused statement."],
                     "profile_evidence_to_use": ["Career goal or academic goal if provided"],
-                    "scholarship_requirement_addressed": ["Career goals", "Community impact", "Scholarship purpose"],
+                    "scholarship_requirement_addressed": [
+                        "How would this scholarship support your future goals and intended impact?"
+                    ],
                     "estimated_word_count": "Closing section",
                     "coaching_notes": ["Keep the ending specific to the scholarship."],
                 },
             ],
-            "recommended_opening": "Begin with a specific real moment, project, question, or responsibility that connects to the prompt.",
-            "recommended_conclusion": "Close by reinforcing what the scholarship would help you do next and why that matters.",
-            "questions_for_student": ["What real experience best proves your fit for this scholarship?", "What detail from your profile should the essay definitely include?"],
         },
         "strategy": {
-            "recommended_strategy": "Use a profile-grounded, scholarship-specific argument rather than a broad personal statement.",
-            "central_message": "Your preparation and goals match the opportunity's purpose.",
-            "tone_guidance": "Specific, reflective, confident, and evidence-based.",
+            "tone_guidance": "Maintain a reflective and sincere tone, emphasizing your personal growth and commitment to community engagement.",
         },
-        "coverage_check": [],
         "warnings": warnings,
         "missing_profile_info": [],
     }
+
+
+_DIRECT_QUESTION_START = re.compile(
+    r"^(?:what|when|where|why|how|which|who|whose|is|are|was|were|do|does|did|can|could|will|would|"
+    r"has|have|had|to what extent|in what ways)\b",
+    flags=re.IGNORECASE,
+)
+_IMPERATIVE_PROMPT_START = re.compile(
+    r"^(?:describe|explain|discuss|share|identify|tell|write|provide|outline|reflect)\b",
+    flags=re.IGNORECASE,
+)
+
+
+def _is_direct_question(value: object) -> bool:
+    text = " ".join(str(value or "").split())
+    return bool(
+        text.endswith("?")
+        and _DIRECT_QUESTION_START.match(text)
+        and not _IMPERATIVE_PROMPT_START.match(text)
+    )
+
+
+def _coerce_direct_question(value: object) -> str:
+    """Last-resort grammatical repair after the model's correction pass."""
+    text = " ".join(str(value or "").split()).strip()
+    if not text:
+        return "What does this section need to address?"
+    if ":" in text:
+        heading, remainder = text.split(":", 1)
+        if len(heading.split()) <= 10 and _IMPERATIVE_PROMPT_START.match(remainder.strip()):
+            text = remainder.strip()
+    clean = text.rstrip(".?!").strip()
+    if _DIRECT_QUESTION_START.match(clean) and not _IMPERATIVE_PROMPT_START.match(clean):
+        return f"{clean}?"
+    experience_match = re.match(
+        r"describe\s+(?:a|an)\s+(?:time|occasion|instance)\s+when\s+you\s+(.+)",
+        clean,
+        re.IGNORECASE,
+    )
+    if experience_match:
+        return f"What experience shows how you {experience_match.group(1).strip()}?"
+    directive_match = re.match(
+        r"(?:describe|explain|discuss|share|identify|provide|outline|reflect on)\s+(.+)",
+        clean,
+        re.IGNORECASE,
+    )
+    if directive_match:
+        return f"What would you explain about {directive_match.group(1).strip()}?"
+    return f"What does this section need to address about {clean[0].lower()}{clean[1:]}?"
+
+
+def _outline_contract_violations(data: dict, writing_brief: dict) -> list[str]:
+    sections = ((data or {}).get("outline") or {}).get("sections") or []
+    violations: list[str] = []
+    prompt_driven = writing_brief.get("mode") == "prompt_driven"
+    expected_asks = writing_brief.get("prompt_asks") or []
+    if prompt_driven and len(sections) != len(expected_asks):
+        violations.append(f"Expected {len(expected_asks)} ordered sections but received {len(sections)}.")
+    for index, section in enumerate(sections):
+        title = " ".join(str(section.get("section_name") or "").split())
+        questions = section.get("scholarship_requirement_addressed") or []
+        if title.endswith("?"):
+            violations.append(f"Section {index + 1} title is a question instead of a descriptive phrase.")
+        if prompt_driven and len(questions) != 1:
+            violations.append(f"Section {index + 1} must contain exactly one prompt question.")
+        for question in questions:
+            if not _is_direct_question(question):
+                violations.append(f"Section {index + 1} contains a malformed prompt question: {question!r}.")
+            if title.rstrip("?").casefold() == str(question).strip().rstrip("?").casefold():
+                violations.append(f"Section {index + 1} title duplicates its prompt question.")
+    return violations
+
+
+def _normalize_outline_requirement_questions(data: dict) -> dict:
+    sections = ((data or {}).get("outline") or {}).get("sections") or []
+    for section in sections:
+        questions = section.get("scholarship_requirement_addressed") or []
+        section["scholarship_requirement_addressed"] = [_coerce_direct_question(question) for question in questions]
+    return data
 
 
 def generate_personalized_outline(request: OutlineGenerateRequest) -> dict:
@@ -550,9 +508,7 @@ def generate_personalized_outline(request: OutlineGenerateRequest) -> dict:
         return _outline_fallback(request)
 
     model = llm._get_client().with_structured_output(OutlineGenerateResponse)
-    try:
-        result = model.invoke(
-            [
+    messages = [
                 (
                     "system",
                     "You are an AI scholarship essay planning team coaching a student. Create a personalized, "
@@ -561,10 +517,27 @@ def generate_personalized_outline(request: OutlineGenerateRequest) -> dict:
                     "brief, selection criteria, and word limit. "
                     "Do not invent student experiences or scholarship requirements. Do not write the full essay. Do not "
                     "make the outline generic. "
-                    "If WRITING MODE is prompt_driven: every section must map to one or more asks in the selected essay prompt. "
+                    "If WRITING MODE is prompt_driven: every section must map to one distinct ask in the selected essay prompt. "
+                    "Create exactly one section for each distinct item in PROMPT / FOCUS ASKS, preserve their order, and "
+                    "never merge two asks into one section. Each section must contain exactly one corresponding "
+                    "scholarship_requirement_addressed question. "
                     "If WRITING MODE is scholarship_guided: there is no formal prompt — structure the outline around the "
                     "scholarship mission, selection criteria, and materials, and say so in coaching notes. "
-                    "Section names should reflect the actual asks (not generic 'Paragraph 1'). "
+                    "Write each section_name as a short descriptive noun phrase, such as 'Outcome and Impact' or "
+                    "'Reflection and Growth'. A section name must never be a question, end in '?', or repeat its purple "
+                    "scholarship_requirement_addressed question. Do not prefix a section name with 'Introduction:' or "
+                    "'Conclusion:' because the interface adds those labels. "
+                    "For each section, write purpose as one cohesive guidance paragraph. Begin with a direct coaching action "
+                    "that explains what the student could include and how to present it, then explain the intended effect on "
+                    "the reader or scholarship reviewer using 'would'. Never use the word 'should' in a section purpose. "
+                    "Incorporate opening guidance directly into the first section's purpose and closing guidance directly "
+                    "into the final section's purpose. "
+                    "Return tone_guidance as exactly one concise sentence tailored to the student, prompt, and scholarship. "
+                    "Do not prefix it with 'Tone:' or 'Recommended tip:'. "
+                    "For scholarship_requirement_addressed, rewrite every mapped prompt ask or scholarship focus as a "
+                    "concise, standalone direct question ending in '?'. Remove category names, numbered-option labels, and "
+                    "instructional prefixes such as 'Describe' or 'Explain'. For example, convert 'Leadership: Describe a "
+                    "time you led a team' to 'When did you lead a team?'. Use the same question format in every section. "
                     "VOICE: Address the student directly in the second person ('you', 'your'). Never write in the first "
                     "person from the student's point of view — do not use 'I', 'me', 'my', or 'we'. For example, write "
                     "'Open with your experience tutoring…' or 'Use your research on…', never 'Open with my experience' or "
@@ -575,8 +548,14 @@ def generate_personalized_outline(request: OutlineGenerateRequest) -> dict:
                     "human",
                     "Generate the final personalized outline through these internal steps: identify relevant profile evidence, "
                     "analyze the writing brief / prompt asks, choose an essay strategy adapted to those asks, draft a structured "
-                    "outline where each section covers specific asks, then review coverage against the asks. "
+                    "outline, and ensure every prompt ask is assigned to at least one specific section. "
+                    "In prompt-driven mode, return one section per distinct prompt ask in the supplied order; do not combine "
+                    "asks even when the source prompt places them in the same sentence. "
                     "Keep confirmed requirements separate from suggestions. Use meaningful section names tied to the brief. "
+                    "Make every section purpose a single, specific coaching paragraph that combines the writing action with "
+                    "what it would help the reader understand, feel, or conclude. Do not return separate opening or closing tips. "
+                    "Phrase every scholarship_requirement_addressed item as a short question, never as a heading, label, "
+                    "statement, or copied directive. "
                     "Write ALL guidance addressed to the student in the second person ('you', 'your') — never first person ('I', 'my', 'me', 'we').\n\n"
                     f"{format_brief_for_prompt(writing_brief)}\n\n"
                     f"Scholarship name:\n{request.scholarship_name or scholarship.get('name', '')}\n\n"
@@ -588,8 +567,28 @@ def generate_personalized_outline(request: OutlineGenerateRequest) -> dict:
                     f"User notes:\n{request.user_notes}",
                 ),
             ]
-        )
+    try:
+        result = model.invoke(messages)
         data = result.model_dump() if hasattr(result, "model_dump") else result.dict()
+        violations = _outline_contract_violations(data, writing_brief)
+        if violations:
+            violation_list = "\n- ".join(violations)
+            repair_result = model.invoke(
+                [
+                    *messages,
+                    (
+                        "human",
+                        "Correct the candidate outline below and return the complete structured outline again. "
+                        "Resolve every listed contract violation without changing supported student facts or scholarship "
+                        "requirements. A direct question must use interrogative grammar; never turn an instruction such as "
+                        "'Describe a time...' into 'Describe a time...?'.\n\n"
+                        f"CONTRACT VIOLATIONS:\n- {violation_list}\n\n"
+                        f"CANDIDATE OUTLINE:\n{json.dumps(data, indent=2, default=str)}",
+                    ),
+                ]
+            )
+            data = repair_result.model_dump() if hasattr(repair_result, "model_dump") else repair_result.dict()
+        data = _normalize_outline_requirement_questions(data)
     except Exception as exc:
         fallback = _outline_fallback(request, f"Outline generation failed, so Scholar-E created a basic guide instead: {exc}")
         fallback["status"] = "error"
@@ -630,7 +629,7 @@ def generate_personalized_outline(request: OutlineGenerateRequest) -> dict:
     return data
 
 
-def analyze_application(request: AnalyzeRequest) -> dict:
+def run_editor_check(request: EditorCheckRequest) -> dict:
     if not settings.openai_api_key:
         raise HTTPException(
             status_code=400,
@@ -640,76 +639,16 @@ def analyze_application(request: AnalyzeRequest) -> dict:
             ),
         )
 
-    opportunity_text = _build_opportunity_text(
-        request.scholarship_name,
-        request.scholarship_type,
-        request.prompt,
-    )
-
-    result, _ = run_agent_with_persistence(
-        user_id=request.user_id,
-        agent_name="essay_application_coaching",
-        input_json={
-            "cv_text_chars": len(request.cv_text),
-            "essay_text_chars": len(request.essay_text),
-            "scholarship_name": request.scholarship_name,
-            "scholarship_type": request.scholarship_type,
-            "prompt_chars": len(request.prompt),
-            "draft_number": request.draft_number,
-        },
-        run_fn=lambda _: run_application_pipeline(
-            user_id=default_user_id(request.user_id),
-            opportunity_text=opportunity_text,
-            student_draft=request.essay_text,
-            profile_text=request.cv_text,
-            previous_readiness=request.previous_readiness,
-            draft_number=request.draft_number,
-        ),
-    )
-
-    return {
-        "coaching_brief": result.get("coaching_brief", {}),
-        "readiness_index": result.get("readiness_index", {}),
-        "growth_report": result.get("growth_report", {}),
-        "reviewer_comments": result.get("reviewer_comments", []),
-        "coaching_reports": result.get("coaching_reports", {}),
-        "eligibility_matrix": result.get("eligibility_matrix", {}),
-        "feedback": result.get("feedback", ""),
-        "opportunity_analysis": result.get("opportunity_analysis", {}),
-        "critique": result.get("critique", {}),
-        "final_application_package": result.get("final_application_package", ""),
-        "revision_priorities": result.get("revision_priorities", []),
-        "ranked_revision_actions": result.get("ranked_revision_actions", []),
-        "draft_number": result.get("draft_number", request.draft_number),
-    }
-
-
-def run_essay_coach(request: EssayCoachRequest) -> dict:
-    if not settings.openai_api_key:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Missing OPENAI_API_KEY. Add a .env file in the project root "
-                "with OPENAI_API_KEY=your_key, then restart the server."
-            ),
-        )
-
-    return run_essay_workspace_coach(
-        student_profile=request.student_profile,
-        clean_scholarship_record=request.clean_scholarship_record,
-        essay_prompt=request.essay_prompt,
+    return run_editor_check_service(
         essay_draft=request.essay_draft,
-        personalized_outline=request.personalized_outline,
+        clean_scholarship_record=request.clean_scholarship_record,
         user_notes=request.user_notes,
-        word_limit=request.word_limit,
         outline_points=request.outline_points,
-        mode=request.mode or "full",
-        writing_support_level=request.writing_support_level or "grammar_only",
     )
 
 
 def run_workspace_coaching_session(request: CoachingSessionRequest) -> dict:
-    """Mechanics first, then one shared specialist/evaluator coaching graph."""
+    """Mechanics first, then one Manager-led criterion review graph."""
     if not settings.openai_api_key:
         raise HTTPException(
             status_code=400,
@@ -732,38 +671,18 @@ def run_workspace_coaching_session(request: CoachingSessionRequest) -> dict:
         clean_scholarship_record=request.clean_scholarship_record,
         essay_prompt=essay_prompt,
         essay_draft=cleaned_draft,
-        personalized_outline=request.personalized_outline,
-        user_notes=request.user_notes,
         word_limit=request.word_limit,
         outline_points=request.outline_points,
-        writing_support_level=request.writing_support_level or "sentence_polish",
         profile_text=request.cv_text,
         scholarship_name=request.scholarship_name,
         scholarship_type=request.scholarship_type,
         opportunity_prompt=request.prompt,
-        previous_readiness=request.previous_readiness,
-        draft_number=request.draft_number,
+        previous_manager_plan=request.previous_manager_plan,
     )
-    evaluation = merged.get("evaluation")
-    coach_pack = merged.get("coach_pack")
+    review = merged.get("review")
     warnings = list(merged.get("warnings") or [])
-
-    evaluation_ok = bool(evaluation) and str(evaluation.get("status", "")).lower() != "error"
-    coach_ok = bool(coach_pack) and str(coach_pack.get("status", "")).lower() != "error"
-
-    # A branch can return a structured error package without raising. Treat it
-    # as a failed component while preserving its useful explanation/warnings.
-    if coach_pack and not coach_ok:
-        warnings.extend(str(item) for item in coach_pack.get("warnings", []) if item)
-    if evaluation and not evaluation_ok:
-        detail = evaluation.get("message") or evaluation.get("feedback")
-        if detail:
-            warnings.append(f"evaluation failed: {detail}")
-
-    status = "success"
-    if not evaluation_ok and not coach_ok:
-        status = "error"
-    elif not evaluation_ok or not coach_ok:
+    status = str((review or {}).get("status") or "error").lower()
+    if status not in {"success", "partial", "error"}:
         status = "partial"
 
     return {
@@ -772,13 +691,8 @@ def run_workspace_coaching_session(request: CoachingSessionRequest) -> dict:
         "status": status,
         "mechanics": mechanics,
         "cleaned_draft": cleaned_draft,
-        "evaluation": evaluation,
-        "coach_pack": coach_pack,
-        "components": {
-            "mechanics": "success",
-            "evaluation": "success" if evaluation_ok else "error",
-            "coach": "success" if coach_ok else "error",
-        },
+        "review": review,
+        "outline_coverage": merged.get("outline_coverage") or {},
         "agents": merged.get("agent_status", {}),
         "warnings": list(dict.fromkeys(warnings)),
         "duration_ms": round((time.perf_counter() - started_at) * 1000),

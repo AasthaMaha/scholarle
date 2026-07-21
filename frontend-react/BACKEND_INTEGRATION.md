@@ -1,49 +1,23 @@
-# Scholar-E Backend Integration
+# Backend Integration
 
-This React/Lovable UI is a frontend shell only. AI analysis, LangGraph orchestration, retrieval, embeddings, and Chroma vector-store reuse stay in the Python/FastAPI backend.
+The Essay Workspace uses one canonical evaluation path:
 
-## Local Development
+- `POST /api/apply/coaching-session`
+  - applies deterministic mechanics cleanup
+  - runs the Manager-led seven-criterion Essay Review
+  - returns `review.schema_version === 3`
 
-Run the Python backend from the project root:
+Background editor support is intentionally narrow:
 
-```bash
-.venv/bin/python server.py
-```
+- `POST /api/apply/editor-check`
+  - returns grammar sentence suggestions
+  - returns optional outline coverage ids
+  - does not run the full evaluation pipeline
 
-Run the React frontend from this folder:
+Selected-text tools are separate:
 
-```bash
-cd frontend-react
-npm install
-npm run dev
-```
+- `POST /api/apply/rewrite-selection`
+  - rewrites, expands, shortens, or adjusts tone for selected text only
 
-The Vite dev server proxies `/api/*` to `http://127.0.0.1:8000`, so the frontend can call:
-
-```text
-POST /api/analyze
-```
-
-without moving backend logic into React.
-
-## Wired Backend Flow
-
-The journey route now:
-
-- stores the active scholarship in `user.activeScholarship`
-- converts the student profile into backend-ready text
-- sends profile, essay, scholarship name/type, and prompt to `/api/analyze`
-- stores the FastAPI response in `user.lastAnalysis`
-- renders backend readiness scores, reviewer comments, and revision priorities
-
-The integration helper is:
-
-```text
-src/lib/api/scholarE.ts
-```
-
-The shared frontend state additions are in:
-
-```text
-src/lib/userStore.tsx
-```
+The frontend stores the latest full evaluation in `user.essayReviewResult`.
+Legacy `lastAnalysis` data is ignored and removed during store hydration.
