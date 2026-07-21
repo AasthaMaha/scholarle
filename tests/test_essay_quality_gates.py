@@ -7,17 +7,18 @@ from essay_editor_service import (
 )
 from essay_mechanics import apply_deterministic_mechanics
 from nodes.coaching.readiness import READINESS_DIMENSIONS
-from nodes.coaching.criterion_review import normalize_manager_plan, weighted_overall_score
+from nodes.coaching.criterion_review import (
+    CRITERION_AUDIT_PLAYBOOKS,
+    build_criterion_review_prompt,
+    criterion_audit_is_complete,
+    normalize_criterion_review,
+    normalize_manager_plan,
+    weighted_overall_score,
+)
 from templates.essay_coach import (
     COACH_GUARDRAILS,
     EDIT_RISK_TIERS,
-    build_alignment_prompt,
-    build_clarity_concision_prompt,
-    build_evidence_strength_prompt,
     build_grammar_prompt,
-    build_insight_prompt,
-    build_narrative_structure_prompt,
-    build_tone_authenticity_prompt,
 )
 
 
@@ -70,94 +71,77 @@ def test_clean_suggestions_rejects_overlong_rewrites():
     assert cleaned == []
 
 
-def test_evidence_strength_prompt_merges_grounding_specificity_and_discovery():
-    system, human = build_evidence_strength_prompt(
-        essay_draft="I led our tutoring program.",
-        profile_text="Tutored 12 students for 40 hours.",
-        scholarship_context="Values community impact.",
+def _complete_audit(criterion: str) -> dict:
+    return {
+        key: ([] if isinstance(example, list) else "none")
+        for key, example in CRITERION_AUDIT_PLAYBOOKS[criterion]["schema"].items()
+    }
+
+
+def test_active_specialists_have_complete_private_audit_playbooks():
+    assert set(CRITERION_AUDIT_PLAYBOOKS) == set(READINESS_DIMENSIONS)
+    for criterion in READINESS_DIMENSIONS:
+        playbook = CRITERION_AUDIT_PLAYBOOKS[criterion]
+        assert playbook["instructions"]
+        assert playbook["schema"]
+        prompt = build_criterion_review_prompt(
+            criterion,
+            "PROFILE: Real profile evidence\nDRAFT: Real essay evidence",
+            normalize_manager_plan({})["criteria"][criterion],
+        )
+        assert "PRIVATE CRITERION AUDIT" in prompt
+        assert "not hidden reasoning" in prompt
+        assert "SCHOLARSHIP COACH FEEDBACK" in prompt
+        assert "exactly one main_gap" in prompt
+        for field in playbook["schema"]:
+            assert field in prompt
+
+
+def test_active_evidence_coach_compares_full_profile_and_surfaces_strongest_gap():
+    prompt = build_criterion_review_prompt(
+        "evidence_strength",
+        (
+            "ESSAY PROMPT: Describe your community impact.\n"
+            "SCHOLARSHIP: Values sustained service.\n"
+            "PROFILE: Tutored 12 students for 40 hours.\n"
+            "DRAFT: I led our tutoring program."
+        ),
+        normalize_manager_plan({})["criteria"]["evidence_strength"],
     )
 
-    assert "profile grounding, experience discovery, specificity, and impact" in system
-    assert "unsupported_or_risky_claims" in system
-    assert "invented_or_unverifiable_details" in system
-    assert "unused_relevant_profile_evidence" in system
-    assert "recommended_experience_to_feature" in system
-    assert "never supply or imply answers" in system
-    assert "Tutored 12 students for 40 hours." in human
+    assert "Compare the entire relevant student profile with the essay" in prompt
+    assert "Rank profile experiences by relevance" in prompt
+    assert "strongest_relevant_profile_evidence" in prompt
+    assert "strongest_evidence_used" in prompt
+    assert "unused_relevant_profile_evidence" in prompt
+    assert "most consequential gap" in prompt
+    assert "surface it in the reviewer feedback and priority action" in prompt
+    assert "Tutored 12 students for 40 hours." in prompt
 
 
-def test_alignment_prompt_merges_prompt_coverage_and_scholarship_strategy():
-    system, human = build_alignment_prompt(
-        essay_draft="My research made me want to serve rural communities.",
-        essay_prompt="Explain your goals and community impact.",
-        profile_text="Research assistant in a rural health laboratory.",
-        scholarship_context="Prioritizes service and rural health research.",
+def test_normalized_private_audit_is_available_to_backend_validation():
+    criterion = "evidence_strength"
+    review = normalize_criterion_review(
+        criterion,
+        {
+            "audit": _complete_audit(criterion),
+            "score": 70,
+            "coach_feedback": {
+                "grounded_praise": "The tutoring claim gives the draft a real foundation.",
+                "main_gap": "The draft omits the profile's 12-student and 40-hour details.",
+            },
+            "priority_action": {
+                "title": "Add the tutoring evidence",
+                "location": "Tutoring paragraph",
+                "how_to_fix": "Add the truthful student count and hours from the profile.",
+                "why_this_fixes_the_gap": "It makes the impact concrete.",
+            },
+        },
+        normalize_manager_plan({})["criteria"][criterion],
     )
 
-    assert "prompt-coverage analysis and scholarship-strategy analysis" in system
-    assert "covered_prompt_parts" in system
-    assert "stated_scholarship_values" in system
-    assert "student_fit_connections" in system
-    assert "generic_or_unsupported_fit_claims" in system
-    assert "unless stated" in system
-    assert "Research assistant in a rural health laboratory." in human
-
-
-def test_narrative_structure_prompt_merges_flow_arc_and_coherence():
-    system, human = build_narrative_structure_prompt(
-        essay_draft="I saw the problem. I started a program. It changed how I lead.",
-        essay_prompt="Describe a challenge and what you learned.",
-        personalized_outline="Context, action, reflection, takeaway",
-        profile_text="Founded a peer tutoring program.",
-    )
-
-    assert "paragraph-structure analysis and narrative-arc analysis" in system
-    assert "context and motivation to action, reflection, and" in system
-    assert "contradictions_or_timeline_issues" in system
-    assert "missing_reasoning" in system
-    assert "ideas, timeline, motivations, people, events, and claims" in system
-    assert "Do not judge how profound, meaningful, or transformative" in system
-    assert "Founded a peer tutoring program." in human
-
-
-def test_insight_prompt_owns_depth_meaning_change_and_reflection():
-    system, human = build_insight_prompt(
-        essay_draft="Mentoring changed how I listen before making decisions.",
-        essay_prompt="Describe what you learned from serving others.",
-        profile_text="Mentored twelve students.",
-        scholarship_context="Values thoughtful community leadership.",
-    )
-
-    assert "depth, meaning, reflection, learning, change, and" in system
-    assert "surface_level_or_generic_reflections" in system
-    assert "changes_in_mindset_or_behavior" in system
-    assert "significance_to_others_or_community" in system
-    assert "future_direction_connections" in system
-    assert "Narrative Structure owns where reflection appears" in system
-    assert "Mentored twelve students." in human
-
-
-def test_tone_authenticity_prompt_covers_voice_and_ai_language_risks():
-    system, human = build_tone_authenticity_prompt(
-        essay_draft="I leveraged transformative synergies to uplift my community.",
-        profile_text="Volunteers at the neighborhood food pantry.",
-        scholarship_context="Values sincere community service.",
-    )
-
-    assert "Tone & Authenticity Coach" in system
-    assert "sincere" in system
-    assert "thoughtful" in system
-    assert "confident" in system
-    assert "respectful" in system
-    assert "genuinely student-written" in system
-    assert "overly polished" in system
-    assert "corporate" in system
-    assert "formulaic" in system
-    assert "performative" in system
-    assert "AI-like" in system
-    assert "overly_polished_or_corporate_phrases" in system
-    assert "formulaic_or_performative_phrases" in system
-    assert "Volunteers at the neighborhood food pantry." in human
+    assert criterion_audit_is_complete(criterion, review)
+    assert "strongest_relevant_profile_evidence" in review["_internal_audit"]
 
 
 def test_grammar_prompt_owns_sentence_level_correctness_only():
@@ -179,23 +163,6 @@ def test_grammar_prompt_owns_sentence_level_correctness_only():
     assert '"suggestion_type" must be exactly "grammar"' in system
     assert "Do not evaluate clarity, concision" in system
     assert "i has lead the club for two years" in human
-
-
-def test_clarity_concision_prompt_owns_directness_without_grammar_overlap():
-    system, human = build_clarity_concision_prompt(
-        essay_draft="In order to help, I was able to provide assistance.",
-        writing_support_level="sentence_polish",
-    )
-
-    assert "Clarity & Concision Coach" in system
-    assert "easy to understand, direct, and free of filler" in system
-    assert "repetition" in system
-    assert "wordiness" in system
-    assert "unclear phrasing" in system
-    assert "tangled sentence structure" in system
-    assert "the Grammar Coach owns correctness" in system
-    assert 'exactly "clarity" or "concision"' in system
-    assert "In order to help" in human
 
 
 def test_readiness_dimensions_match_standard_specialists():
@@ -480,6 +447,7 @@ def test_manager_first_review_runs_seven_criterion_lanes_and_weights_once(monkey
         return unified.normalize_criterion_review(
             key,
             {
+                "audit": _complete_audit(key),
                 "score": scores[key],
                 "coach_feedback": {
                     "grounded_praise": f"Grounded praise for {key}",
@@ -545,6 +513,7 @@ def test_manager_first_review_runs_seven_criterion_lanes_and_weights_once(monkey
         assert criterion["coach_feedback"]["main_gap"] == f"Gap {key}"
         assert criterion["priority_action"]["how_to_fix"] == f"Specific fix for {key}"
         assert "Directly fixes gap" in criterion["priority_action"]["why_this_fixes_the_gap"]
+        assert "_internal_audit" not in criterion
     assert result["outline_coverage"]["covered_point_ids"] == ["p-sec-0"]
     assert "evaluation" not in result
     assert "coach_pack" not in result

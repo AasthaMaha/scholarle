@@ -20,6 +20,7 @@ from essay_editor_service import run_outline_coverage
 from nodes.coaching.criterion_review import (
     audit_failed_criteria,
     correction_guidance_for,
+    criterion_audit_is_complete,
     normalize_criterion_review,
     normalize_manager_plan,
     run_action_guardrail,
@@ -130,6 +131,9 @@ def _programmatic_failed_criteria(reviews: dict) -> list[str]:
         if not review.get("available"):
             failed.append(key)
             continue
+        if not criterion_audit_is_complete(key, review):
+            failed.append(key)
+            continue
         required = (
             feedback.get("grounded_praise"),
             feedback.get("main_gap"),
@@ -151,19 +155,35 @@ def _build_review_result(
 ) -> dict:
     overall_score = weighted_overall_score(reviews)
     missing = [key for key in READINESS_DIMENSIONS if not reviews[key].get("available")]
-    audit_ok = bool(qa.get("approved")) and bool(guardrail.get("approved"))
+    validation_failed = _programmatic_failed_criteria(reviews)
+    audit_ok = (
+        bool(qa.get("approved"))
+        and bool(guardrail.get("approved"))
+        and not validation_failed
+    )
     available_count = len(READINESS_DIMENSIONS) - len(missing)
     status = "success" if not missing and audit_ok else "partial" if available_count else "error"
     quality_review = {
         "qa": qa,
         "guardrail": guardrail,
+        "programmatic_failed_criteria": validation_failed,
         "approved": audit_ok,
+    }
+    # Specialists and critics use the detailed audits internally. The student
+    # receives only the concise reviewer-voice package for each criterion.
+    public_reviews = {
+        key: {
+            field: value
+            for field, value in review.items()
+            if field != "_internal_audit"
+        }
+        for key, review in reviews.items()
     }
     return {
         "schema_version": 3,
         "status": status,
         "overall_score": overall_score,
-        "criteria": reviews,
+        "criteria": public_reviews,
         "manager_plan": manager_plan,
         "quality_review": quality_review,
     }
@@ -331,8 +351,9 @@ def run_unified_coaching_session(
                 guidance = (
                     guidance + " " if guidance else ""
                 ) + (
-                    "Return every required field: a valid score, grounded praise, exactly one "
-                    "main gap, and one specific action that directly fixes that gap."
+                    "Return every required private criterion-audit field, a valid score, "
+                    "grounded praise, exactly one main gap, and one specific action that "
+                    "directly fixes that gap."
                 )
             retry_jobs[f"{key}_retry"] = (
                 lambda criterion=key, notes=guidance: run_criterion_review_agent(

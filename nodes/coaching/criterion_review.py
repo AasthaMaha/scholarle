@@ -1,10 +1,11 @@
 """Manager-first, criterion-owned essay review for the Essay Workspace.
 
 The Manager owns only the scholarship-specific rubric and weights. Seven
-criterion agents then independently act as scholarship coaches: each gives
-grounded reviewer-perspective feedback, scores the criterion, and recommends
-one aligned revision action. QA and Guardrail critics audit the resulting
-criterion packages; Python owns normalization and the weighted overall score.
+criterion agents then independently act as scholarship coaches: each completes
+a private structured audit, gives grounded reviewer-perspective feedback, scores
+the criterion, and recommends one aligned revision action. QA and Guardrail
+critics inspect the audit-to-output chain; Python owns normalization and the
+weighted overall score.
 """
 
 from __future__ import annotations
@@ -67,6 +68,145 @@ CRITERION_DEFINITIONS: dict[str, dict[str, str]] = {
             "sentence-level mechanics."
         ),
         "reviewer_lens": "Do mechanical errors distract me or reduce confidence in the submission?",
+    },
+}
+
+
+# These playbooks are internal evidence inventories, not student-facing reports
+# and not requests for hidden chain-of-thought. Each criterion coach completes
+# its own concise audit before selecting the one strength and one gap that matter
+# most for the public reviewer-voice feedback.
+CRITERION_AUDIT_PLAYBOOKS: dict[str, dict[str, Any]] = {
+    "alignment": {
+        "instructions": (
+            "Audit every distinct prompt ask and every scholarship value or priority explicitly supported "
+            "by the submission. Map real student goals, values, and experiences to those priorities; flag "
+            "generic fit claims and distinguish covered, weakly covered, and missing requirements."
+        ),
+        "schema": {
+            "covered_prompt_parts": ["prompt ask and the draft evidence that answers it"],
+            "weakly_covered_prompt_parts": ["prompt ask and what remains incomplete"],
+            "missing_prompt_parts": ["unanswered prompt ask"],
+            "stated_scholarship_values": ["value explicitly supported by scholarship materials"],
+            "addressed_scholarship_values": ["value and grounded student connection"],
+            "weak_or_missing_scholarship_values": ["value and missing connection"],
+            "student_fit_connections": ["scholarship priority mapped to a real student fact"],
+            "generic_or_unsupported_fit_claims": ["draft claim and why it is generic or unsupported"],
+            "strongest_alignment_strength": "strongest grounded alignment already present",
+            "highest_priority_alignment_gap": "single most consequential alignment gap",
+        },
+    },
+    "evidence_strength": {
+        "instructions": (
+            "Compare the entire relevant student profile with the essay. Check claim support, specificity, "
+            "credibility, and demonstrated impact. Rank profile experiences by relevance to this prompt and "
+            "scholarship, identify the strongest relevant experience, and state whether the draft uses it well. "
+            "Do not force a prestigious experience that fits less well than the draft's current evidence. If the "
+            "strongest unused experience is the most consequential gap, surface it in the reviewer feedback and "
+            "priority action. Treat unverified details as verification flags, never accusations."
+        ),
+        "schema": {
+            "supported_claims": ["essay claim mapped to explicit profile evidence"],
+            "unsupported_or_risky_claims": ["claim not supported by submitted material"],
+            "invented_or_unverifiable_details": ["specific essay detail with no visible profile source"],
+            "unused_relevant_profile_evidence": ["real profile evidence that could strengthen this essay"],
+            "strongest_relevant_profile_evidence": "single strongest prompt-relevant profile experience, or none",
+            "strongest_evidence_used": "yes, partly, no, or no relevant profile evidence",
+            "vague_statements": ["exact or tightly paraphrased vague statement"],
+            "places_to_add_detail": ["draft location and truthful detail type needed"],
+            "impact_opportunities": ["action missing who benefited, what changed, or a measurable outcome"],
+            "highest_priority_evidence_gap": "single most consequential evidence gap",
+        },
+    },
+    "insight": {
+        "instructions": (
+            "Audit depth, meaning, reflection, learning, realization, change, responsibility, significance, and "
+            "future direction. Separate genuine draft-supported reflection from generic lessons. Do not invent "
+            "growth, prescribe an emotion, or rescore narrative placement, evidence strength, or alignment."
+        ),
+        "schema": {
+            "meaningful_reflections": ["grounded reflection and the experience it interprets"],
+            "surface_level_or_generic_reflections": ["shallow statement and why it lacks depth"],
+            "lessons_realizations_or_questions": ["draft-supported learning, realization, or question"],
+            "changes_in_mindset_or_behavior": ["explicit supported change"],
+            "changes_in_values_goals_or_responsibility": ["explicit supported change"],
+            "significance_to_self": ["why the experience mattered personally"],
+            "significance_to_others_or_community": ["why it mattered beyond the student"],
+            "future_direction_connections": ["grounded connection to future direction"],
+            "missing_meaning_or_reflection": ["draft moment that reports events without explaining meaning"],
+            "highest_priority_insight_gap": "single most consequential insight gap",
+        },
+    },
+    "narrative_structure_flow_coherence": {
+        "instructions": (
+            "Audit the structural presence, placement, sequencing, and connection of context, motivation, action, "
+            "reflection, and takeaway. Review paragraph roles, transitions, pacing, chronology, logical continuity, "
+            "contradictions, and missing reasoning. Judge where reflection appears and how it connects, not how "
+            "profound it is; Insight owns reflection depth."
+        ),
+        "schema": {
+            "arc_progression": ["stage, status, draft evidence, and structural issue"],
+            "paragraph_roles": ["paragraph number, purpose, strength, and structural issue"],
+            "transition_and_flow_issues": ["exact paragraphs or ideas that do not flow"],
+            "coherence_issues": ["ideas, motivations, people, events, or claims not logically connected"],
+            "contradictions_or_timeline_issues": ["apparent inconsistency stated cautiously"],
+            "missing_reasoning": ["logical step the reader needs"],
+            "logical_connections_to_preserve": ["effective cause-and-effect link, transition, or callback"],
+            "recommended_reordering": ["reordering only when clearly beneficial"],
+            "highest_priority_narrative_gap": "single most consequential structure or coherence gap",
+        },
+    },
+    "tone_authenticity": {
+        "instructions": (
+            "Audit sincerity, thoughtfulness, confidence, respect, and a genuinely student-written voice. Identify "
+            "distinctive language worth preserving and flag only grounded examples of generic, overly polished, "
+            "corporate, formulaic, performative, or AI-like wording. Do not assume polished writing is AI-generated."
+        ),
+        "schema": {
+            "authentic_voice_strengths": ["distinctive sincere wording or voice quality to preserve"],
+            "tone_quality_notes": ["grounded note on sincerity, confidence, thoughtfulness, or respect"],
+            "ai_like_phrases": ["exact phrase and specific reason it feels AI-like"],
+            "generic_phrases": ["cliche, filler, or interchangeable wording"],
+            "overly_polished_or_corporate_phrases": ["exact wording and why it feels unnatural"],
+            "formulaic_or_performative_phrases": ["exact wording and why it feels templated or performative"],
+            "voice_preservation_notes": ["student voice qualities that revisions must retain"],
+            "highest_priority_tone_gap": "single most consequential tone or authenticity gap",
+        },
+    },
+    "clarity_concision": {
+        "instructions": (
+            "Audit sentence- and phrase-level directness and readability. Identify representative clear wording and "
+            "specific filler, repetition, unnecessary wording, unclear phrasing, or convoluted sentence structure. "
+            "Preserve meaning and voice; do not rescore grammar or essay-level narrative organization."
+        ),
+        "schema": {
+            "clear_and_direct_sentences": ["representative wording that is already easy to understand"],
+            "filler_or_repetition": ["exact wording and the repeated or unnecessary content"],
+            "unnecessary_wording": ["wordy phrase and what makes it indirect"],
+            "unclear_phrasing": ["exact wording and what a reader may not understand"],
+            "convoluted_sentence_structure": ["sentence and the structural source of confusion"],
+            "meaning_or_voice_to_preserve": ["meaning or distinctive wording that must survive revision"],
+            "highest_priority_clarity_gap": "single most consequential clarity or concision gap",
+        },
+    },
+    "grammar": {
+        "instructions": (
+            "Audit spelling, punctuation, capitalization, verb tense, agreement, grammar, and sentence-level "
+            "correctness. Identify exact issues and recurring patterns, but do not rescore clarity, concision, tone, "
+            "content, evidence, narrative structure, or alignment. Prefer the smallest correction that preserves "
+            "meaning and voice."
+        ),
+        "schema": {
+            "correct_mechanics_to_preserve": ["representative sentence-level correctness strength"],
+            "spelling_issues": ["exact error and correction rule"],
+            "punctuation_issues": ["exact error and correction rule"],
+            "capitalization_issues": ["exact error and correction rule"],
+            "verb_tense_issues": ["exact error and correction rule"],
+            "agreement_issues": ["exact error and correction rule"],
+            "other_grammar_issues": ["exact sentence-level correctness issue and rule"],
+            "recurring_correctness_patterns": ["pattern the student should learn to correct"],
+            "highest_priority_grammar_gap": "single most consequential correctness gap",
+        },
     },
 }
 
@@ -237,6 +377,7 @@ def normalize_criterion_review(
     criterion_plan: dict,
 ) -> dict:
     raw = _as_dict(raw)
+    audit = _as_dict(raw.get("audit") or raw.get("_internal_audit"))
     feedback = _as_dict(raw.get("coach_feedback"))
     action = _as_dict(raw.get("priority_action"))
     score_value = raw.get("score")
@@ -259,6 +400,10 @@ def normalize_criterion_review(
     if effort not in {"Quick", "Moderate", "Deep"}:
         effort = "Moderate"
     return {
+        # This evidence inventory is intentionally retained only while the
+        # backend critics validate the result. The orchestration service strips
+        # it before constructing the public Essay Review response.
+        "_internal_audit": audit,
         "criterion": criterion,
         "label": READINESS_LABELS[criterion],
         "weight": int(criterion_plan.get("weight", DEFAULT_WEIGHTS[criterion])),
@@ -295,15 +440,25 @@ def normalize_criterion_review(
     }
 
 
-def run_criterion_review_agent(
+def criterion_audit_is_complete(criterion: str, review: Any) -> bool:
+    """Return whether a normalized review contains its required private audit."""
+    review = _as_dict(review)
+    audit = _as_dict(review.get("_internal_audit"))
+    required_keys = set(CRITERION_AUDIT_PLAYBOOKS[criterion]["schema"])
+    return required_keys.issubset(audit)
+
+
+def build_criterion_review_prompt(
     criterion: str,
     shared_context: str,
     criterion_plan: dict,
     *,
     correction_guidance: str = "",
     prior_review: dict | None = None,
-) -> dict:
+) -> str:
+    """Build the active coach prompt, including its private structured audit."""
     definition = CRITERION_DEFINITIONS[criterion]
+    playbook = CRITERION_AUDIT_PLAYBOOKS[criterion]
     correction_block = ""
     if correction_guidance:
         correction_block = f"""
@@ -315,29 +470,48 @@ PRIOR CRITERION OUTPUT:
 
 Correct only the identified problems while preserving grounded valid findings.
 """
-    prompt = f"""
+    return f"""
 You are the {READINESS_LABELS[criterion]} Scholarship Coach: an experienced
 scholarship reviewer speaking directly and constructively to the student. You
 are one combined role, not a separate specialist and reviewer simulation.
 Complete the work in this exact order:
 
-1. SCHOLARSHIP COACH FEEDBACK:
-   - Start with grounded_praise. Give sincere, empathetic, confidence-building
-     praise tied to a specific real detail, passage, or genuine foundation in
-     the draft. Be restrained: never use generic or over-the-top enthusiasm.
-   - Then identify exactly one main_gap: the most consequential gap for this
-     criterion. Weave the exact draft passage, location, tight paraphrase, or
-     clearly described omission into the explanation, and explain why it matters
-     from a scholarship reviewer's perspective.
+1. PRIVATE CRITERION AUDIT:
+   - First complete the entire criterion-specific evidence inventory below.
+   - This audit contains concise, checkable findings, not hidden reasoning or a
+     transcript of your thought process. Use empty lists or "none" when there is
+     no grounded finding; never omit a required key.
+   - Use the audit to compare the submission against the Manager's tailored
+     rubric and decide which strength and gap matter most.
+   - Never refer to this audit or your process in the student-facing fields.
+
+   AUDIT METHOD:
+   {playbook['instructions']}
+
+   REQUIRED AUDIT SHAPE:
+   {json.dumps(playbook['schema'], indent=2)}
+   Replace the descriptions in this shape with actual grounded findings. Do not
+   echo the example descriptions as if they were findings.
+
+2. SCHOLARSHIP COACH FEEDBACK:
+   - Start with grounded_praise. Select the strongest relevant positive finding
+     from the audit and give sincere, empathetic, confidence-building praise
+     tied to a specific real detail, passage, or genuine foundation in the
+     draft. Be restrained: never use generic or over-the-top enthusiasm.
+   - Then identify exactly one main_gap: the most consequential audited gap for
+     this criterion. Weave the exact draft passage, location, tight paraphrase,
+     or clearly described omission into the explanation, and explain why it
+     matters from a scholarship reviewer's perspective.
    - Do not create a separate evidence list or reviewer-reaction section.
    Reviewer question: {definition['reviewer_lens']}
-2. RUBRIC SCORE: only after the feedback, assign a 0-100 score using the
-   Manager's tailored rubric. The criterion weight must not change the raw score.
-3. PRIORITY ACTION: give exactly one specific action that directly fixes the one
-   main gap. Identify the exact revision location and the concrete change. Make
-   it as specific as the essay, profile, prompt, and scholarship information
-   allow. When a needed detail is absent, ask for the type of true detail the
-   student should add; never invent the detail.
+3. RUBRIC SCORE: only after the audit and feedback, assign a 0-100 score using
+   the Manager's tailored rubric. The criterion weight must not change the raw
+   score, and the score must be traceable to the audit.
+4. PRIORITY ACTION: give exactly one specific action that directly fixes the one
+   main gap selected from the audit. Identify the exact revision location and
+   the concrete change. Make it as specific as the essay, profile, prompt, and
+   scholarship information allow. When a needed detail is absent, ask for the
+   type of true detail the student should add; never invent the detail.
 
 CRITERION FOCUS:
 {definition['focus']}
@@ -350,8 +524,10 @@ SHARED SUBMISSION CONTEXT:
 {_grounding_rules()}
 {correction_block}
 
-Return ONLY valid JSON:
+Return ONLY valid JSON. Include every key in the criterion's required audit
+shape, then the student-facing package:
 {{
+  "audit": {json.dumps(playbook['schema'], indent=2)},
   "score": 0,
   "coach_feedback": {{
     "grounded_praise": "specific, restrained, empathetic praise with draft evidence woven in",
@@ -368,6 +544,23 @@ Return ONLY valid JSON:
   }}
 }}
 """
+
+
+def run_criterion_review_agent(
+    criterion: str,
+    shared_context: str,
+    criterion_plan: dict,
+    *,
+    correction_guidance: str = "",
+    prior_review: dict | None = None,
+) -> dict:
+    prompt = build_criterion_review_prompt(
+        criterion,
+        shared_context,
+        criterion_plan,
+        correction_guidance=correction_guidance,
+        prior_review=prior_review,
+    )
     raw = safe_json_parse(llm.generate(prompt))
     return normalize_criterion_review(criterion, raw, criterion_plan)
 
@@ -388,7 +581,15 @@ CRITERION PACKAGES:
 {_grounding_rules()}
 
 For every criterion check this chain:
-submitted evidence -> grounded praise plus one main gap -> score -> priority action.
+submitted evidence -> complete private criterion audit -> grounded praise plus
+one main gap -> score -> priority action.
+Confirm that every required audit field is present and contains concise,
+checkable findings grounded in the submitted materials. Confirm that the audit
+actually applies the criterion's full playbook rather than jumping directly to
+the visible feedback. Confirm that the praise selects the strongest relevant
+positive finding and the main gap selects the single most consequential issue
+under the tailored rubric. Confirm that all visible conclusions are traceable
+to that audit.
 Confirm that the praise is specific, evidence-grounded, empathetic, restrained,
 and not overenthusiastic. Confirm that there is exactly one criterion-specific
 main gap, with its draft evidence, location, or omission woven into the feedback
@@ -420,6 +621,7 @@ Return ONLY valid JSON:
 def run_action_guardrail(shared_context: str, reviews: dict) -> dict:
     action_packages = {
         key: {
+            "criterion_audit": _as_dict(review).get("_internal_audit", {}),
             "coach_feedback": _as_dict(review).get("coach_feedback", {}),
             "priority_action": _as_dict(review).get("priority_action", {}),
         }
@@ -439,7 +641,8 @@ COACH GAPS AND PRIORITY ACTIONS:
 
 Reject an action if it invents or assumes facts, encourages exaggeration,
 replaces the student's voice, supplies missing personal reflection, is too vague
-to execute, or fails to directly address its criterion's single main gap.
+to execute, fails to directly address its criterion's single main gap, or cannot
+be traced to the criterion audit and submission context.
 
 Return ONLY valid JSON:
 {{

@@ -596,19 +596,27 @@ present, positioned effectively, and logically connected.
 
 Each of the seven criterion agents is one Scholarship Coach that speaks from an
 experienced scholarship reviewer's perspective. Inside one model call, it first
-gives restrained, evidence-grounded praise followed by exactly one main gap,
-then assigns the tailored-rubric score and gives exactly one specific revision
-action that directly fixes that gap. Evidence is woven into the praise and gap,
-not returned as a separate list. There is no separate Specialist Assessment,
+completes a detailed, criterion-specific structured audit. It then selects the
+strongest grounded positive finding and the single most consequential gap,
+assigns the tailored-rubric score, and gives exactly one specific revision action
+that directly fixes that gap. Evidence Strength compares the full relevant
+profile with the draft, identifies the strongest prompt-relevant experience and
+whether the essay uses it well, and surfaces an omitted experience only when that
+omission is the most consequential evidence gap. The private audits are available
+to backend quality control but are stripped from the public API response. The
+student sees concise feedback with evidence woven into its praise and gap, not a
+separate evidence inventory. There is no separate Specialist Assessment,
 Evaluator, or Reviewer Simulation agent in the Page 4 session. The seven lanes
 run in parallel; conditional Outline Coverage may run beside them but is not scored.
 
 After the criterion wave, QA Critic and Guardrail Critic run in parallel. QA
-checks the evidence → coach feedback → score → action chain.
-Guardrail checks all seven actions for invented facts, voice replacement, unsafe
-assumptions, and vague instructions. Only failed criteria receive one bounded
-repair attempt. Python validates the result and calculates the sole overall
-score as the Manager-weighted average; an LLM never estimates that aggregate.
+checks the evidence → private audit → coach feedback → score → action chain.
+Guardrail checks that all seven actions trace back to their audits and submission
+context and do not invent facts, replace the student's voice, make unsafe
+assumptions, or give vague instructions. Only failed criteria receive one bounded
+repair attempt. Python validates the complete audit and visible fields, then
+calculates the sole overall score as the Manager-weighted average; an LLM never
+estimates that aggregate.
 
 The Page 4 endpoint has one canonical schema-v3 review contract. It returns the
 overall score, seven criterion packages, Manager plan, and quality audit, plus

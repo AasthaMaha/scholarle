@@ -770,6 +770,207 @@ function JourneyNavigationTutorial({
   );
 }
 
+const ESSAY_WORKSPACE_TUTORIAL_KEY = "scholar-e:essay-workspace-tutorial:v1";
+
+const ESSAY_WORKSPACE_TUTORIAL_STEPS = [
+  {
+    target: "upload",
+    title: "Upload an existing draft",
+    description: "If you have an existing document of your draft, upload it here.",
+  },
+  {
+    target: "editor",
+    title: "Start writing here",
+    description: "If you do not have an existing draft, start typing or paste your essay here.",
+  },
+  {
+    target: "evaluate",
+    title: "Evaluate your draft",
+    description: "Select Evaluate to receive scores and specific feedback for every criterion. After each revision, select it again to see how your criterion and overall scores change.",
+  },
+] as const;
+
+function EssayWorkspaceTutorial({
+  onFinish,
+  onSkip,
+}: {
+  onFinish: () => void;
+  onSkip: () => void;
+}) {
+  const [stepIndex, setStepIndex] = useState(0);
+  const [spotlight, setSpotlight] = useState({ left: 8, top: 8, width: 56, height: 56 });
+  const [compact, setCompact] = useState(false);
+  const [leaving, setLeaving] = useState(false);
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  const exitTimer = useRef<number | null>(null);
+  const step = ESSAY_WORKSPACE_TUTORIAL_STEPS[stepIndex];
+
+  useEffect(() => {
+    cardRef.current?.focus();
+  }, [stepIndex]);
+
+  useEffect(() => {
+    const keepFocusInTutorial = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        return;
+      }
+      if (event.key !== "Tab" || !cardRef.current) return;
+      const focusable = Array.from(
+        cardRef.current.querySelectorAll<HTMLElement>("button:not([disabled]), [href], [tabindex]:not([tabindex='-1'])"),
+      );
+      if (!focusable.length) {
+        event.preventDefault();
+        cardRef.current.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && (document.activeElement === first || document.activeElement === cardRef.current)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", keepFocusInTutorial);
+    return () => document.removeEventListener("keydown", keepFocusInTutorial);
+  }, []);
+
+  useEffect(() => {
+    let frame = 0;
+    const target = document.querySelector<HTMLElement>(`[data-essay-workspace-tour="${step.target}"]`);
+    target?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    const startedAt = window.performance.now();
+    const measure = () => {
+      const currentTarget = document.querySelector<HTMLElement>(`[data-essay-workspace-tour="${step.target}"]`);
+      if (currentTarget) {
+        const rect = currentTarget.getBoundingClientRect();
+        const padding = step.target === "editor" ? 8 : 12;
+        const left = Math.max(8, rect.left - padding);
+        const top = Math.max(8, rect.top - padding);
+        const right = Math.min(window.innerWidth - 8, rect.right + padding);
+        const bottom = Math.min(window.innerHeight - 8, rect.bottom + padding);
+        setSpotlight({
+          left,
+          top,
+          width: Math.max(48, right - left),
+          height: Math.max(48, bottom - top),
+        });
+      }
+      setCompact(window.innerWidth < 768);
+      if (window.performance.now() - startedAt < 450) frame = window.requestAnimationFrame(measure);
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    window.addEventListener("scroll", measure, true);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure, true);
+    };
+  }, [step.target]);
+
+  useEffect(() => () => {
+    if (exitTimer.current !== null) window.clearTimeout(exitTimer.current);
+  }, []);
+
+  function close(callback: () => void) {
+    setLeaving(true);
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    exitTimer.current = window.setTimeout(callback, reduceMotion ? 0 : 200);
+  }
+
+  const cardWidth = compact ? window.innerWidth - 32 : Math.min(352, window.innerWidth - 32);
+  const cardHeightEstimate = 260;
+  const spaceRight = window.innerWidth - (spotlight.left + spotlight.width);
+  const spaceLeft = spotlight.left;
+  const cardStyle: React.CSSProperties = compact
+    ? { left: 16, right: 16, bottom: 16 }
+    : spaceRight >= cardWidth + 32
+      ? {
+          left: spotlight.left + spotlight.width + 20,
+          top: Math.max(16, Math.min(spotlight.top, window.innerHeight - cardHeightEstimate - 16)),
+          width: cardWidth,
+        }
+      : spaceLeft >= cardWidth + 32
+        ? {
+            left: spotlight.left - cardWidth - 20,
+            top: Math.max(16, Math.min(spotlight.top, window.innerHeight - cardHeightEstimate - 16)),
+            width: cardWidth,
+          }
+        : {
+            left: Math.max(16, Math.min(spotlight.left, window.innerWidth - cardWidth - 16)),
+            top: Math.max(16, Math.min(spotlight.top + spotlight.height + 16, window.innerHeight - cardHeightEstimate - 16)),
+            width: cardWidth,
+          };
+
+  return (
+    <div className={`fixed inset-0 z-[70] transition-opacity duration-200 motion-reduce:transition-none ${leaving ? "opacity-0" : "opacity-100"}`}>
+      <div className="absolute inset-0 pointer-events-auto" aria-hidden="true" />
+      <div
+        className="pointer-events-none fixed rounded-2xl border border-info/60 shadow-[0_0_0_9999px_rgba(20,28,48,0.46),0_10px_30px_rgba(31,42,68,0.22)] transition-[left,top,width,height] duration-300 ease-out motion-reduce:transition-none"
+        style={spotlight}
+        aria-hidden="true"
+      />
+      <div
+        ref={cardRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="essay-workspace-tutorial-title"
+        aria-describedby="essay-workspace-tutorial-description"
+        tabIndex={-1}
+        className="fixed z-10 rounded-2xl border border-border bg-card p-5 shadow-xl outline-none motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-200"
+        style={cardStyle}
+      >
+        <div className="text-xs font-semibold uppercase tracking-[0.16em] text-info">
+          Step {stepIndex + 1} of {ESSAY_WORKSPACE_TUTORIAL_STEPS.length}
+        </div>
+        <h2 id="essay-workspace-tutorial-title" className="mt-2 font-display text-xl font-bold">
+          {step.title}
+        </h2>
+        <p id="essay-workspace-tutorial-description" className="mt-2 text-sm leading-6 text-muted-foreground">
+          {step.description}
+        </p>
+        <div className="sr-only" aria-live="polite">
+          Essay Workspace tutorial step {stepIndex + 1} of {ESSAY_WORKSPACE_TUTORIAL_STEPS.length}
+        </div>
+        <div className="mt-5 flex items-center justify-between gap-3">
+          <button
+            type="button"
+            onClick={() => close(onSkip)}
+            className="text-sm font-medium text-muted-foreground hover:text-foreground"
+          >
+            Skip tour
+          </button>
+          <div className="flex items-center gap-2">
+            {stepIndex > 0 && (
+              <button
+                type="button"
+                onClick={() => setStepIndex((current) => current - 1)}
+                className="rounded-full border border-border px-4 py-2 text-sm font-medium hover:bg-accent"
+              >
+                Back
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                if (stepIndex === ESSAY_WORKSPACE_TUTORIAL_STEPS.length - 1) close(onFinish);
+                else setStepIndex((current) => current + 1);
+              }}
+              className="rounded-full bg-info px-4 py-2 text-sm font-medium text-white hover:opacity-90"
+            >
+              {stepIndex === ESSAY_WORKSPACE_TUTORIAL_STEPS.length - 1 ? "Got it" : "Next"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TopBar({
   step,
   stepIdx,
@@ -4778,6 +4979,347 @@ function WordCountMeter({ wordCount, characterCount, target }: { wordCount: numb
   );
 }
 
+function OutlineWorkspaceLoadingOverlay({ loading }: { loading: boolean }) {
+  const [progress, setProgress] = useState(0);
+  const [visible, setVisible] = useState(false);
+  const [region, setRegion] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  const wasLoading = useRef(false);
+
+  useEffect(() => {
+    let progressTimer: number | undefined;
+    let completionTimer: number | undefined;
+
+    if (loading) {
+      wasLoading.current = true;
+      setVisible(true);
+      setProgress(10);
+      const startedAt = Date.now();
+      progressTimer = window.setInterval(() => {
+        const elapsedSeconds = (Date.now() - startedAt) / 1000;
+        let nextProgress: number;
+        if (elapsedSeconds < 2) nextProgress = 10 + (elapsedSeconds / 2) * 20;
+        else if (elapsedSeconds < 5) nextProgress = 30 + ((elapsedSeconds - 2) / 3) * 25;
+        else if (elapsedSeconds < 10) nextProgress = 55 + ((elapsedSeconds - 5) / 5) * 30;
+        else nextProgress = Math.min(95, 85 + (elapsedSeconds - 10));
+        setProgress(Math.round(nextProgress));
+      }, 250);
+    } else if (wasLoading.current) {
+      setProgress(100);
+      completionTimer = window.setTimeout(() => {
+        wasLoading.current = false;
+        setVisible(false);
+        setRegion(null);
+      }, 300);
+    } else {
+      setProgress(0);
+      setVisible(false);
+      setRegion(null);
+    }
+
+    return () => {
+      if (progressTimer !== undefined) window.clearInterval(progressTimer);
+      if (completionTimer !== undefined) window.clearTimeout(completionTimer);
+    };
+  }, [loading]);
+
+  useEffect(() => {
+    if (!visible) return;
+    let frame = 0;
+    const startedAt = window.performance.now();
+    const measure = () => {
+      const target = document.querySelector<HTMLElement>("[data-outline-loading-region]");
+      if (target) {
+        const rect = target.getBoundingClientRect();
+        const left = Math.max(0, rect.left);
+        const top = Math.max(0, rect.top);
+        const right = Math.min(window.innerWidth, rect.right);
+        const bottom = Math.min(window.innerHeight, rect.bottom);
+        setRegion({
+          left,
+          top,
+          width: Math.max(0, right - left),
+          height: Math.max(0, bottom - top),
+        });
+      }
+      if (window.performance.now() - startedAt < 600) frame = window.requestAnimationFrame(measure);
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    window.addEventListener("scroll", measure, true);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure, true);
+    };
+  }, [visible]);
+
+  if (!visible) return null;
+
+  const activeStep = progress < 30 ? 0 : progress < 55 ? 1 : progress < 85 ? 2 : 3;
+  const cardWidth = region ? Math.max(280, Math.min(576, region.width - 32)) : 576;
+  const cardLeft = region
+    ? region.left + Math.max(16, (region.width - cardWidth) / 2)
+    : Math.max(16, (window.innerWidth - cardWidth) / 2);
+  const requestedTop = (region?.top ?? 0) + 120;
+  const cardTop = region
+    ? Math.max(region.top + 16, Math.min(requestedTop, region.top + region.height - 300))
+    : 120;
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] cursor-wait bg-black/20 backdrop-grayscale"
+      role="status"
+      aria-live="polite"
+      aria-label={`Building your personalized outline, ${progress}% complete`}
+    >
+      {region && (
+        <div
+          className="fixed bg-[#cccccc]"
+          style={{ left: region.left, top: region.top, width: region.width, height: region.height }}
+          aria-hidden="true"
+        />
+      )}
+      <div
+        className="fixed z-10 rounded-xl border border-info/25 bg-background p-5 shadow-lg"
+        style={{ left: cardLeft, top: cardTop, width: cardWidth }}
+      >
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <span className="size-4 shrink-0 animate-spin rounded-full border-2 border-info/25 border-t-info" />
+            <span className="truncate text-[15px] font-semibold text-foreground">Building your personalized outline…</span>
+          </div>
+          <span className="shrink-0 text-[14px] font-semibold tabular-nums text-info">{progress}%</span>
+        </div>
+
+        <div
+          className="mt-4 h-2 overflow-hidden rounded-full bg-info/10"
+          role="progressbar"
+          aria-label="Personalized outline generation progress"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={progress}
+        >
+          <div
+            className="h-full rounded-full bg-info transition-[width] duration-300 ease-out"
+            style={{ width: `${progress}%` }}
+          />
+        </div>
+
+        <div className="mt-5 space-y-2.5">
+          {[
+            "Reading scholarship and essay requirements",
+            "Matching profile evidence",
+            "Planning essay sections",
+            "Verifying complete coverage of requirements",
+          ].map((item, index) => {
+            const completed = progress === 100 || index < activeStep;
+            const active = progress < 100 && index === activeStep;
+            return (
+              <div key={item} className={`flex items-center gap-2.5 text-[13px] ${completed || active ? "text-foreground" : "text-muted-foreground"}`}>
+                {completed ? (
+                  <span className="grid size-4 shrink-0 place-items-center rounded-full bg-success text-white">
+                    <Check className="size-3" aria-hidden="true" />
+                  </span>
+                ) : active ? (
+                  <span className="size-4 shrink-0 animate-spin rounded-full border-2 border-info/25 border-t-info" />
+                ) : (
+                  <span className="size-4 shrink-0 rounded-full border border-border bg-background" />
+                )}
+                <span className={active ? "font-semibold" : ""}>{item}</span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EssayReviewWorkspaceLoadingOverlay({
+  loading,
+  progress,
+}: {
+  loading: boolean;
+  progress: number;
+}) {
+  const [region, setRegion] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+
+  useEffect(() => {
+    if (!loading) {
+      setRegion(null);
+      return;
+    }
+    let frame = 0;
+    const startedAt = window.performance.now();
+    const measure = () => {
+      const target = document.querySelector<HTMLElement>("[data-essay-review-loading-region]");
+      if (target) {
+        const rect = target.getBoundingClientRect();
+        const left = Math.max(0, rect.left);
+        const top = Math.max(0, rect.top);
+        const right = Math.min(window.innerWidth, rect.right);
+        const bottom = Math.min(window.innerHeight, rect.bottom);
+        setRegion({
+          left,
+          top,
+          width: Math.max(0, right - left),
+          height: Math.max(0, bottom - top),
+        });
+      }
+      if (window.performance.now() - startedAt < 600) frame = window.requestAnimationFrame(measure);
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    window.addEventListener("scroll", measure, true);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure, true);
+    };
+  }, [loading]);
+
+  if (!loading) return null;
+
+  const displayedProgress = Math.max(1, Math.min(100, Math.round(progress)));
+  const evaluationSteps = [
+    {
+      title: "Alignment",
+      description: "Evaluating how directly your essay answers the prompt and connects with the scholarship’s values and priorities.",
+    },
+    {
+      title: "Evidence Strength",
+      description: "Evaluating whether your essay uses the strongest relevant experiences from your profile and supports them with explicit details, examples, achievements, and measurable outcomes.",
+    },
+    {
+      title: "Insight",
+      description: "Evaluating the depth of your writing, including the meaning of your experiences and what you learned, realized, questioned, or changed.",
+    },
+    {
+      title: "Narrative Structure, Flow & Coherence",
+      description: "Evaluating your essay’s organization, progression, transitions, timeline, and logical consistency.",
+    },
+    {
+      title: "Tone & Authenticity",
+      description: "Evaluating whether your voice sounds sincere, confident, respectful, and authentic.",
+    },
+    {
+      title: "Clarity & Concision",
+      description: "Evaluating whether your sentences are direct, easy to understand, and free from unnecessary wording or convoluted phrasing.",
+    },
+    {
+      title: "Grammar",
+      description: "Evaluating spelling, punctuation, capitalization, verb tense, agreement, and sentence-level correctness.",
+    },
+    {
+      title: "Preparing specific revision guidance",
+      description: "Preparing one clear, specific revision action for each criterion based on its score and feedback.",
+    },
+    {
+      title: "Your essay review is ready",
+      description: "",
+    },
+  ];
+  const activeStep = displayedProgress < 15
+    ? 0
+    : displayedProgress < 25
+      ? 1
+      : displayedProgress < 35
+        ? 2
+        : displayedProgress < 50
+          ? 3
+          : displayedProgress < 60
+            ? 4
+            : displayedProgress < 70
+              ? 5
+              : displayedProgress < 85
+                ? 6
+                : displayedProgress < 100
+                  ? 7
+                  : 8;
+  const cardWidth = region ? Math.max(280, Math.min(576, region.width - 32)) : 576;
+  const cardLeft = region
+    ? region.left + Math.max(16, (region.width - cardWidth) / 2)
+    : Math.max(16, (window.innerWidth - cardWidth) / 2);
+  const requestedTop = (region?.top ?? 0) + 120;
+  const cardTop = region
+    ? Math.max(region.top + 16, Math.min(requestedTop, window.innerHeight - 536))
+    : 120;
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] cursor-wait bg-black/20 backdrop-grayscale"
+      role="status"
+      aria-live="polite"
+      aria-label={`Reviewing your essay, ${displayedProgress}% complete`}
+    >
+      {region && (
+        <div
+          className="fixed bg-[#cccccc]"
+          style={{ left: region.left, top: region.top, width: region.width, height: region.height }}
+          aria-hidden="true"
+        />
+      )}
+      <div
+        className="fixed z-10 max-h-[calc(100vh-32px)] overflow-y-auto rounded-xl border border-info/25 bg-background p-5 shadow-lg"
+        style={{
+          left: cardLeft,
+          top: cardTop,
+          width: cardWidth,
+          maxHeight: Math.max(240, window.innerHeight - cardTop - 16),
+        }}
+      >
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <span className="size-4 shrink-0 animate-spin rounded-full border-2 border-info/25 border-t-info" />
+            <span className="truncate text-[15px] font-semibold text-foreground">Reviewing your essay…</span>
+          </div>
+          <span className="shrink-0 text-[14px] font-semibold tabular-nums text-info">{displayedProgress}%</span>
+        </div>
+
+        <div
+          className="mt-4 h-2 overflow-hidden rounded-full bg-info/10"
+          role="progressbar"
+          aria-label="Essay evaluation progress"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={displayedProgress}
+        >
+          <div
+            className="h-full rounded-full bg-info transition-[width] duration-500 ease-out"
+            style={{ width: `${displayedProgress}%` }}
+          />
+        </div>
+
+        <div className="mt-5 space-y-2.5">
+          {evaluationSteps.map((step, index) => {
+            const completed = index < activeStep || (displayedProgress === 100 && index === activeStep);
+            const active = index === activeStep;
+            return (
+              <div key={step.title} className={`flex items-start gap-2.5 text-[13px] ${completed || active ? "text-foreground" : "text-muted-foreground"}`}>
+                {completed ? (
+                  <span className="mt-0.5 grid size-4 shrink-0 place-items-center rounded-full bg-success text-white">
+                    <Check className="size-3" aria-hidden="true" />
+                  </span>
+                ) : active ? (
+                  <span className="mt-0.5 size-4 shrink-0 animate-spin rounded-full border-2 border-info/25 border-t-info" />
+                ) : (
+                  <span className="mt-0.5 size-4 shrink-0 rounded-full border border-border bg-background" />
+                )}
+                <div className="min-w-0">
+                  <div className={active ? "font-semibold" : ""}>{step.title}</div>
+                  {active && step.description && (
+                    <p className="mt-1 leading-relaxed text-muted-foreground">{step.description}</p>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   const { user, updateProfile } = useUser();
   const editorApiRef = useRef<EssayEditorHandle | null>(null);
@@ -4817,7 +5359,6 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   }, [activeScholarshipName, essayTitle, updateProfile, user]);
   const [panelResizing, setPanelResizing] = useState(false);
   const [isEvaluating, setIsEvaluating] = useState(false);
-  const [sessionPhase, setSessionPhase] = useState("");
   const [sessionProgress, setSessionProgress] = useState(0);
   const [reviewReady, setReviewReady] = useState(false);
   const [mechanicsNote, setMechanicsNote] = useState<string | null>(null);
@@ -4831,6 +5372,8 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   const [promptConfirmed, setPromptConfirmed] = useState(false);
   const [promptPickerOpen, setPromptPickerOpen] = useState(false);
   const [pendingPromptIndex, setPendingPromptIndex] = useState(0);
+  const [workspaceTutorialActive, setWorkspaceTutorialActive] = useState(false);
+  const workspaceTutorialHandled = useRef(false);
 
   const rawPromptBlob =
     user?.activeScholarship?.essayPrompts
@@ -4921,6 +5464,39 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     setPromptPickerOpen(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.email, rawPromptBlob, outlineKey]);
+
+  useEffect(() => {
+    if (
+      workspaceTutorialHandled.current
+      || outlineLoading
+      || promptPickerOpen
+      || !promptConfirmed
+      || !user?.personalizedOutline?.outline
+    ) return;
+    try {
+      if (window.localStorage.getItem(ESSAY_WORKSPACE_TUTORIAL_KEY) === "complete") {
+        workspaceTutorialHandled.current = true;
+        return;
+      }
+    } catch {
+      // The tour can still run once in this visit when storage is unavailable.
+    }
+    const timer = window.setTimeout(() => {
+      workspaceTutorialHandled.current = true;
+      setWorkspaceTutorialActive(true);
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [outlineLoading, promptConfirmed, promptPickerOpen, user?.personalizedOutline?.generatedForKey, user?.personalizedOutline?.outline]);
+
+  function closeWorkspaceTutorial() {
+    workspaceTutorialHandled.current = true;
+    try {
+      window.localStorage.setItem(ESSAY_WORKSPACE_TUTORIAL_KEY, "complete");
+    } catch {
+      // Dismissing the tour should still work when storage is unavailable.
+    }
+    setWorkspaceTutorialActive(false);
+  }
 
   async function runOutlineGeneration(promptOverride?: string) {
     if (!user || outlineLoading) return;
@@ -5179,15 +5755,12 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     setCoachLoading(true);
     setReviewReady(false);
     setSessionProgress(6);
-    setSessionPhase("Cleaning spelling…");
     setMechanicsNote(null);
     setAnalysisStatus(null);
     setPanelOpen(true);
+    setActiveTab("coach");
 
     try {
-      setSessionPhase("Running seven criterion reviews…");
-      setSessionProgress(28);
-
       // One backend request owns mechanics and one Manager-led review graph.
       // Seven criterion agents evaluate, simulate the reviewer, score, and
       // propose one aligned action in parallel.
@@ -5216,7 +5789,6 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
       persistEssayReview(review, workingDraft);
       setReviewReady(true);
 
-      setSessionPhase(review?.status === "partial" ? "Partial essay review ready…" : "Essay review ready…");
       setSessionProgress(100);
       setActiveTab("coach");
       await new Promise((resolve) => window.setTimeout(resolve, 200));
@@ -5228,7 +5800,6 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
       setIsEvaluating(false);
       setCoachLoading(false);
       setSessionProgress(0);
-      setSessionPhase("");
     }
   }
 
@@ -5369,7 +5940,8 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   }, [reviewResult]);
 
   return (
-    <div className="w-full border-t border-border bg-background">
+    <div className="relative w-full border-t border-border bg-background" aria-busy={outlineLoading || isEvaluating}>
+      <div inert={outlineLoading || isEvaluating || workspaceTutorialActive ? true : undefined}>
       {/* Zone 1 — slim top bar (Grammarly-style) */}
       <header className="sticky top-0 z-20 border-b border-border bg-background/90 backdrop-blur">
         <div className="mx-auto flex h-14 max-w-[1440px] items-center gap-2 px-3 md:px-4">
@@ -5416,7 +5988,11 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
 
             <Tooltip>
               <TooltipTrigger asChild>
-                <label className="grid size-9 cursor-pointer place-items-center rounded-lg text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground">
+                <label
+                  data-essay-workspace-tour="upload"
+                  aria-label="Upload PDF draft"
+                  className="grid size-9 cursor-pointer place-items-center rounded-lg text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground"
+                >
                   <FileUp className="size-4" />
                   <input
                     type="file"
@@ -5448,6 +6024,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
             </Tooltip>
 
             <button
+              data-essay-workspace-tour="evaluate"
               type="button"
               onClick={() => void runCoachingSession()}
               disabled={wordCount < 30 || !promptConfirmed || coachLoading || isEvaluating}
@@ -5637,7 +6214,10 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
       {/* Zone 2 (editor) + Zone 3 (sidebar) */}
       <div className="mx-auto flex max-w-[1440px] flex-col items-stretch lg:flex-row lg:items-start">
         <div className="flex min-h-[60vh] min-w-0 flex-1 flex-col lg:h-[calc(100vh-120px)] lg:min-h-0">
-          <div className={`mx-auto flex min-h-0 w-full flex-1 flex-col transition-[max-width] duration-300 ${panelOpen ? "max-w-[760px]" : "max-w-[960px]"}`}>
+          <div
+            data-essay-workspace-tour="editor"
+            className={`mx-auto flex min-h-0 w-full flex-1 flex-col transition-[max-width] duration-300 ${panelOpen ? "max-w-[760px]" : "max-w-[960px]"}`}
+          >
             <EssayEditor
               ref={editorApiRef}
               value={draft}
@@ -5696,10 +6276,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
               promptConfirmed={promptConfirmed}
               outlineLoading={outlineLoading}
               outlineStatus={outlineStatus}
-              sessionPhase={sessionPhase}
-              sessionProgress={sessionProgress}
               reviewReady={reviewReady}
-              sessionRunning={isEvaluating}
               suggestions={suggestions}
               onAccept={acceptSuggestion}
               onDismiss={dismissSuggestion}
@@ -5727,6 +6304,16 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
           </button>
         )}
       </div>
+      </div>
+
+      <OutlineWorkspaceLoadingOverlay loading={outlineLoading} />
+      <EssayReviewWorkspaceLoadingOverlay loading={isEvaluating} progress={sessionProgress} />
+      {workspaceTutorialActive && (
+        <EssayWorkspaceTutorial
+          onFinish={closeWorkspaceTutorial}
+          onSkip={closeWorkspaceTutorial}
+        />
+      )}
     </div>
   );
 }
@@ -5740,10 +6327,7 @@ function EssayWorkspacePanel({
   promptConfirmed,
   outlineLoading,
   outlineStatus,
-  sessionPhase,
-  sessionProgress,
   reviewReady,
-  sessionRunning,
   suggestions,
   onAccept,
   onDismiss,
@@ -5766,10 +6350,7 @@ function EssayWorkspacePanel({
   promptConfirmed: boolean;
   outlineLoading: boolean;
   outlineStatus: string | null;
-  sessionPhase: string;
-  sessionProgress: number;
   reviewReady: boolean;
-  sessionRunning: boolean;
   suggestions: Suggestion[];
   onAccept: (s: Suggestion) => void;
   onDismiss: (s: Suggestion) => void;
@@ -5794,7 +6375,7 @@ function EssayWorkspacePanel({
 
   return (
     <aside
-      aria-busy={sessionRunning}
+      aria-busy={isEvaluating}
       className="relative flex w-full shrink-0 flex-col border-t border-border bg-card lg:sticky lg:top-[56px] lg:h-[calc(100vh-120px)] lg:overflow-hidden lg:border-l lg:border-t-0"
     >
       <div className="sticky top-0 z-10 flex items-center gap-1 border-b border-border bg-card/95 p-2 backdrop-blur">
@@ -5831,7 +6412,12 @@ function EssayWorkspacePanel({
           <ChevronRight className="size-4" />
         </button>
       </div>
-      <div key={activeTab} className="min-h-0 flex-1 animate-in fade-in slide-in-from-bottom-1 overflow-y-auto p-4 duration-200">
+      <div
+        key={activeTab}
+        data-outline-loading-region={activeTab === "outline" ? true : undefined}
+        data-essay-review-loading-region={activeTab === "coach" ? true : undefined}
+        className="min-h-0 flex-1 animate-in fade-in slide-in-from-bottom-1 overflow-y-auto p-4 duration-200"
+      >
         {activeTab === "outline" && (
           <PersonalizedOutlinePanel
             outline={user?.personalizedOutline}
@@ -5864,30 +6450,6 @@ function EssayWorkspacePanel({
           />
         )}
       </div>
-      {sessionRunning && (
-        <div className="sticky bottom-0 z-20 border-t border-border bg-card/95 px-4 py-2.5 backdrop-blur">
-          <div className="flex items-center justify-between gap-3 text-[12px] font-medium text-muted-foreground">
-            <span className="min-w-0 leading-snug">
-              {sessionPhase
-                || (reviewReady ? "Essay review ready…" : "Running essay review…")}
-            </span>
-            <span className="shrink-0 tabular-nums text-foreground">{sessionProgress}%</span>
-          </div>
-          <div
-            className="mt-2 h-1.5 overflow-hidden rounded-full bg-border"
-            role="progressbar"
-            aria-label="Coaching session progress"
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={sessionProgress}
-          >
-            <div
-              className="h-full rounded-full bg-info transition-[width] duration-500 ease-out"
-              style={{ width: `${sessionProgress}%` }}
-            />
-          </div>
-        </div>
-      )}
     </aside>
   );
 }
@@ -6021,45 +6583,7 @@ function PersonalizedOutlinePanel({
   onToggleCovered: (id: string) => void;
 }) {
   const [copyStatus, setCopyStatus] = useState("");
-  const [outlineProgress, setOutlineProgress] = useState(0);
-  const [showLoadingOverlay, setShowLoadingOverlay] = useState(false);
-  const outlineWasLoading = useRef(false);
   const data = outline?.outline;
-
-  useEffect(() => {
-    let progressTimer: number | undefined;
-    let completionTimer: number | undefined;
-
-    if (loading) {
-      outlineWasLoading.current = true;
-      setShowLoadingOverlay(true);
-      setOutlineProgress(10);
-      const startedAt = Date.now();
-      progressTimer = window.setInterval(() => {
-        const elapsedSeconds = (Date.now() - startedAt) / 1000;
-        let nextProgress: number;
-        if (elapsedSeconds < 2) nextProgress = 10 + (elapsedSeconds / 2) * 20;
-        else if (elapsedSeconds < 5) nextProgress = 30 + ((elapsedSeconds - 2) / 3) * 25;
-        else if (elapsedSeconds < 10) nextProgress = 55 + ((elapsedSeconds - 5) / 5) * 30;
-        else nextProgress = Math.min(95, 85 + (elapsedSeconds - 10));
-        setOutlineProgress(Math.round(nextProgress));
-      }, 250);
-    } else if (outlineWasLoading.current) {
-      setOutlineProgress(100);
-      completionTimer = window.setTimeout(() => {
-        outlineWasLoading.current = false;
-        setShowLoadingOverlay(false);
-      }, 300);
-    } else {
-      setOutlineProgress(0);
-      setShowLoadingOverlay(false);
-    }
-
-    return () => {
-      if (progressTimer !== undefined) window.clearInterval(progressTimer);
-      if (completionTimer !== undefined) window.clearTimeout(completionTimer);
-    };
-  }, [loading]);
 
   async function copyOutline() {
     const text = outlineToText(outline);
@@ -6070,67 +6594,7 @@ function PersonalizedOutlinePanel({
   }
 
   return (
-    <div className={`relative text-foreground ${showLoadingOverlay ? "min-h-[320px]" : ""}`} aria-busy={showLoadingOverlay}>
-      {showLoadingOverlay && (
-        <div className="absolute inset-0 z-20 bg-muted px-4 pb-5 pt-[120px]">
-          <div className="sticky top-[120px] mx-auto max-w-xl rounded-xl border border-info/25 bg-background p-5 shadow-lg">
-            <div className="flex items-center justify-between gap-4">
-              <div className="flex min-w-0 items-center gap-2.5">
-                <span className="size-4 shrink-0 animate-spin rounded-full border-2 border-info/25 border-t-info" />
-                <span className="truncate text-[15px] font-semibold text-foreground">Building your personalized outline…</span>
-              </div>
-              <span className="shrink-0 text-[14px] font-semibold tabular-nums text-info">{outlineProgress}%</span>
-            </div>
-
-            <div
-              className="mt-4 h-2 overflow-hidden rounded-full bg-info/10"
-              role="progressbar"
-              aria-label="Personalized outline generation progress"
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuenow={outlineProgress}
-            >
-              <div
-                className="h-full rounded-full bg-info transition-[width] duration-300 ease-out"
-                style={{ width: `${outlineProgress}%` }}
-              />
-            </div>
-
-            <div className="mt-5 space-y-2.5">
-              {[
-                "Reading scholarship and essay requirements",
-                "Matching profile evidence",
-                "Planning essay sections",
-                "Verifying complete coverage of requirements",
-              ].map((item, index) => {
-                const activeStep = outlineProgress < 30 ? 0 : outlineProgress < 55 ? 1 : outlineProgress < 85 ? 2 : 3;
-                const completed = outlineProgress === 100 || index < activeStep;
-                const active = outlineProgress < 100 && index === activeStep;
-                return (
-                  <div key={item} className={`flex items-center gap-2.5 text-[13px] ${completed || active ? "text-foreground" : "text-muted-foreground"}`}>
-                    {completed ? (
-                      <span className="grid size-4 shrink-0 place-items-center rounded-full bg-success text-white">
-                        <Check className="size-3" aria-hidden="true" />
-                      </span>
-                    ) : active ? (
-                      <span className="size-4 shrink-0 animate-spin rounded-full border-2 border-info/25 border-t-info" />
-                    ) : (
-                      <span className="size-4 shrink-0 rounded-full border border-border bg-background" />
-                    )}
-                    <span className={active ? "font-semibold" : ""}>{item}</span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      )}
-
-      <div
-        className={`transition-opacity duration-200 ${showLoadingOverlay ? "pointer-events-none select-none opacity-0" : "opacity-100"}`}
-        aria-hidden={showLoadingOverlay}
-        inert={showLoadingOverlay ? true : undefined}
-      >
+    <div className="relative text-foreground" aria-busy={loading}>
         {wordLimit && (
           <div className="border-b border-border pb-4">
             <div className="min-w-0">
@@ -6221,7 +6685,6 @@ function PersonalizedOutlinePanel({
             </div>
           );
           })()}
-      </div>
     </div>
   );
 }
