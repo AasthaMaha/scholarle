@@ -25,16 +25,55 @@ def _split_prompt_asks(essay_prompt: str) -> list[str]:
     if not text:
         return []
 
+    # A selected option sometimes retains its surrounding chooser text, for
+    # example "Choose one of the following: 1. Leadership: Describe...".
+    # Remove that wrapper so the option label does not become part of an ask.
+    if re.match(r"^(?:choose|select)\s+one\b", text, flags=re.IGNORECASE):
+        text = re.sub(r"^.*?\b\d+[.)]\s*", "", text, count=1, flags=re.IGNORECASE)
+
+    def split_compound_questions(value: str) -> list[str]:
+        pieces = re.split(
+            r",?\s+(?:and|also)\s+(?=(?:what|how|why|when|where|who|which)\b)",
+            value,
+            flags=re.IGNORECASE,
+        )
+        if len(pieces) == 1:
+            return [value.strip()]
+        questions = []
+        for piece in pieces:
+            clean = piece.strip().rstrip(".?!")
+            if clean:
+                questions.append(f"{clean[0].upper()}{clean[1:]}?")
+        return questions
+
+    def clean_ask(value: str) -> str:
+        clean = value.strip(" \n\t-•")
+        if ":" in clean:
+            heading, remainder = clean.split(":", 1)
+            if len(heading.split()) <= 10 and re.match(
+                r"\s*(?:describe|explain|discuss|share|tell|identify|what|how|why|when|where|who|which)\b",
+                remainder,
+                flags=re.IGNORECASE,
+            ):
+                clean = remainder.strip()
+        return clean
+
+    def expand(values: list[str]) -> list[str]:
+        expanded = []
+        for value in values:
+            expanded.extend(split_compound_questions(clean_ask(value)))
+        return [value for value in expanded if value][:8]
+
     numbered = re.split(r"(?:^|\n)\s*(?:\d+[.)]|[A-D][.)]|[-*•])\s+", text)
     parts = [part.strip(" \n\t-•") for part in numbered if part and part.strip()]
     if len(parts) > 1:
-        return parts[:8]
+        return expand(parts)
 
     sentences = re.split(r"(?<=[.!?])\s+(?=[A-Z])", text)
-    asks = [s.strip() for s in sentences if len(s.strip()) > 24]
+    asks = [s.strip() for s in sentences if s.strip().endswith("?") or len(s.strip()) > 24]
     if len(asks) > 1:
-        return asks[:8]
-    return [text]
+        return expand(asks)
+    return expand([text])
 
 
 def resolve_writing_brief(

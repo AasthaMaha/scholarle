@@ -421,8 +421,6 @@ export type PersonalizedOutlineResult = {
   status?: "success" | "error" | string;
   message?: string;
   outline?: {
-    outline_title?: string;
-    thesis_or_core_message?: string;
     sections?: Array<{
       section_name?: string;
       purpose?: string;
@@ -432,21 +430,11 @@ export type PersonalizedOutlineResult = {
       estimated_word_count?: string;
       coaching_notes?: string[];
     }>;
-    recommended_opening?: string;
-    recommended_conclusion?: string;
-    questions_for_student?: string[];
   };
   strategy?: {
     recommended_strategy?: string;
-    central_message?: string;
     tone_guidance?: string;
   };
-  coverage_check?: Array<{
-    requirement?: string;
-    covered?: boolean;
-    where_covered?: string;
-    notes?: string;
-  }>;
   warnings?: string[];
   missing_profile_info?: string[];
   generatedForKey?: string;

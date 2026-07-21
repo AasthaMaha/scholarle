@@ -273,6 +273,26 @@ def test_resolve_writing_brief_is_prompt_driven():
     assert len(brief["prompt_asks"]) >= 2
 
 
+def test_resolve_writing_brief_separates_compound_questions_and_option_heading():
+    from prompt_adaptation import resolve_writing_brief
+
+    brief = resolve_writing_brief(
+        essay_prompt=(
+            "Choose one of the following: 1. Personal Commitment to Mediation and Peacebuilding: "
+            "Describe a time when you helped resolve a disagreement. What steps did you take? "
+            "What was the outcome, and what did you learn from the experience?"
+        ),
+        clean_scholarship_record={"name": "Demo Scholarship"},
+    )
+
+    assert brief["prompt_asks"] == [
+        "Describe a time when you helped resolve a disagreement.",
+        "What steps did you take?",
+        "What was the outcome?",
+        "What did you learn from the experience?",
+    ]
+
+
 def test_resolve_writing_brief_scholarship_guided_without_prompt():
     from prompt_adaptation import resolve_writing_brief
 
@@ -302,7 +322,7 @@ def _coaching_session_request():
         student_profile={"careerGoal": "Mechanical engineer"},
         clean_scholarship_record={"name": "Engineering Scholars Award"},
         essay_prompt="Describe your leadership and community impact.",
-        outline_points=[{"id": "p-core", "label": "Leadership impact"}],
+        outline_points=[{"id": "p-sec-0", "label": "Leadership impact"}],
     )
 
 
@@ -322,7 +342,7 @@ def test_unified_coaching_session_runs_one_merged_graph_on_cleaned_draft(monkeyp
                 "manager_plan": {},
                 "quality_review": {},
             },
-            "outline_coverage": {"covered_point_ids": ["p-core"]},
+            "outline_coverage": {"covered_point_ids": ["p-sec-0"]},
             "warnings": [],
             "agent_status": {"alignment": "success", "manager": "success"},
         }
@@ -335,7 +355,7 @@ def test_unified_coaching_session_runs_one_merged_graph_on_cleaned_draft(monkeyp
     assert result["status"] == "success"
     assert result["review"]["schema_version"] == 3
     assert result["review"]["overall_score"] == 70
-    assert result["outline_coverage"]["covered_point_ids"] == ["p-core"]
+    assert result["outline_coverage"]["covered_point_ids"] == ["p-sec-0"]
     assert "components" not in result
     assert "evaluation" not in result
     assert "coach_pack" not in result
@@ -453,7 +473,7 @@ def test_manager_first_review_runs_seven_criterion_lanes_and_weights_once(monkey
 
     monkeypatch.setattr(unified, "run_manager_agent", fake_manager)
     monkeypatch.setattr(unified, "run_criterion_review_agent", fake_criterion)
-    monkeypatch.setattr(unified, "run_outline_coverage", lambda *_args: {"covered_point_ids": ["p-core"]})
+    monkeypatch.setattr(unified, "run_outline_coverage", lambda *_args: {"covered_point_ids": ["p-sec-0"]})
     monkeypatch.setattr(
         unified,
         "run_criterion_qa",
@@ -478,7 +498,7 @@ def test_manager_first_review_runs_seven_criterion_lanes_and_weights_once(monkey
         clean_scholarship_record={"name": "Engineering Award"},
         essay_prompt="Describe your leadership and impact.",
         essay_draft="I mentor younger robotics students each week and have learned to lead by listening.",
-        outline_points=[{"id": "p-core", "label": "Leadership impact"}],
+        outline_points=[{"id": "p-sec-0", "label": "Leadership impact"}],
         scholarship_name="Engineering Award",
         opportunity_prompt="Describe your leadership and impact.",
     )
@@ -498,7 +518,7 @@ def test_manager_first_review_runs_seven_criterion_lanes_and_weights_once(monkey
         assert criterion["coach_feedback"]["main_gap"] == f"Gap {key}"
         assert criterion["priority_action"]["how_to_fix"] == f"Specific fix for {key}"
         assert "Directly fixes gap" in criterion["priority_action"]["why_this_fixes_the_gap"]
-    assert result["outline_coverage"]["covered_point_ids"] == ["p-core"]
+    assert result["outline_coverage"]["covered_point_ids"] == ["p-sec-0"]
     assert "evaluation" not in result
     assert "coach_pack" not in result
     assert result["agent_status"]["manager"] == "success"

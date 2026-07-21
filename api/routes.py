@@ -226,42 +226,40 @@ class OutlineGenerateRequest(BaseModel):
 
 
 class OutlineSection(BaseModel):
-    section_name: str = ""
+    section_name: str = Field(
+        default="",
+        description=(
+            "A short descriptive noun phrase for the section, never a question, prompt directive, or copy of the "
+            "question in scholarship_requirement_addressed."
+        ),
+    )
     purpose: str = ""
     suggested_content: list[str] = Field(default_factory=list)
     profile_evidence_to_use: list[str] = Field(default_factory=list)
-    scholarship_requirement_addressed: list[str] = Field(default_factory=list)
+    scholarship_requirement_addressed: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Concise, standalone questions from the essay prompt or scholarship focus that this section answers. "
+            "Every item must be phrased as a direct question ending in a question mark, without category headings."
+        ),
+    )
     estimated_word_count: str = ""
     coaching_notes: list[str] = Field(default_factory=list)
 
 
 class PersonalizedOutline(BaseModel):
-    outline_title: str = ""
-    thesis_or_core_message: str = ""
     sections: list[OutlineSection] = Field(default_factory=list)
-    recommended_opening: str = ""
-    recommended_conclusion: str = ""
-    questions_for_student: list[str] = Field(default_factory=list)
 
 
 class OutlineStrategy(BaseModel):
     recommended_strategy: str = ""
-    central_message: str = ""
     tone_guidance: str = ""
-
-
-class CoverageCheck(BaseModel):
-    requirement: str = ""
-    covered: bool = False
-    where_covered: str = ""
-    notes: str = ""
 
 
 class OutlineGenerateResponse(BaseModel):
     status: str = "success"
     outline: PersonalizedOutline = Field(default_factory=PersonalizedOutline)
     strategy: OutlineStrategy = Field(default_factory=OutlineStrategy)
-    coverage_check: list[CoverageCheck] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     missing_profile_info: list[str] = Field(default_factory=list)
 
@@ -346,51 +344,49 @@ def _outline_fallback(request: OutlineGenerateRequest, message: str = "") -> dic
     if not prompt:
         warnings.append("Add an essay prompt or scholarship writing requirement to generate a more personalized outline.")
 
-    name = request.scholarship_name or scholarship.get("name") or "this scholarship"
     return {
         "status": "success",
         "outline": {
-            "outline_title": f"Essay plan for {name}",
-            "thesis_or_core_message": "Connect your strongest real profile evidence to the scholarship prompt and stated selection priorities.",
             "sections": [
                 {
                     "section_name": "Opening motivation tied to the prompt",
-                    "purpose": "Introduce the specific motivation or problem that makes this opportunity relevant.",
+                    "purpose": "Open with a specific real moment, project, question, or responsibility that introduces the motivation or problem connecting you to this opportunity. This would place the reader in a concrete context and help them quickly understand why the opportunity matters to you.",
                     "suggested_content": ["Use one concrete real experience from your profile.", "Name the academic, service, or career direction the essay will explain."],
                     "profile_evidence_to_use": ["Use a real profile detail you have already provided."],
-                    "scholarship_requirement_addressed": ["Essay prompt or writing requirement"],
+                    "scholarship_requirement_addressed": [
+                        "What experience or motivation connects you to this opportunity?"
+                    ],
                     "estimated_word_count": request.word_limit or "Adjust to the final word limit.",
                     "coaching_notes": ["Do not invent a dramatic story. Avoid generic openings."],
                 },
                 {
                     "section_name": "Evidence of preparation and fit",
-                    "purpose": "Show the experiences, skills, coursework, research, work, or leadership that support your claim.",
+                    "purpose": "Use two or three strong experiences, skills, courses, research projects, work responsibilities, or leadership examples from your profile, then explain what each one demonstrates. This would give the reader concrete reasons to trust your preparation and recognize your fit with the scholarship.",
                     "suggested_content": ["Choose two or three strongest facts from your profile.", "Explain what each fact proves about readiness or alignment."],
                     "profile_evidence_to_use": ["Academic background", "Skills", "Leadership, research, work, or projects if provided"],
-                    "scholarship_requirement_addressed": ["Selection criteria", "Eligibility or application themes"],
+                    "scholarship_requirement_addressed": [
+                        "What evidence demonstrates your preparation and fit?"
+                    ],
                     "estimated_word_count": "Middle section",
                     "coaching_notes": ["Use evidence, not a list of achievements."],
                 },
                 {
                     "section_name": "Future goals and scholarship alignment",
-                    "purpose": "Explain how the scholarship connects to your next step and the impact you want to make.",
+                    "purpose": "Connect the scholarship to your next step, reflect on the impact you want to make, and close by explaining why that direction matters. This would leave the reader with a clear understanding of your future purpose and how the scholarship would help you pursue it.",
                     "suggested_content": ["Tie goals to the scholarship mission or benefits.", "End with a contribution-focused statement."],
                     "profile_evidence_to_use": ["Career goal or academic goal if provided"],
-                    "scholarship_requirement_addressed": ["Career goals", "Community impact", "Scholarship purpose"],
+                    "scholarship_requirement_addressed": [
+                        "How would this scholarship support your future goals and intended impact?"
+                    ],
                     "estimated_word_count": "Closing section",
                     "coaching_notes": ["Keep the ending specific to the scholarship."],
                 },
             ],
-            "recommended_opening": "Begin with a specific real moment, project, question, or responsibility that connects to the prompt.",
-            "recommended_conclusion": "Close by reinforcing what the scholarship would help you do next and why that matters.",
-            "questions_for_student": ["What real experience best proves your fit for this scholarship?", "What detail from your profile should the essay definitely include?"],
         },
         "strategy": {
             "recommended_strategy": "Use a profile-grounded, scholarship-specific argument rather than a broad personal statement.",
-            "central_message": "Your preparation and goals match the opportunity's purpose.",
             "tone_guidance": "Specific, reflective, confident, and evidence-based.",
         },
-        "coverage_check": [],
         "warnings": warnings,
         "missing_profile_info": [],
     }
@@ -424,10 +420,24 @@ def generate_personalized_outline(request: OutlineGenerateRequest) -> dict:
                     "brief, selection criteria, and word limit. "
                     "Do not invent student experiences or scholarship requirements. Do not write the full essay. Do not "
                     "make the outline generic. "
-                    "If WRITING MODE is prompt_driven: every section must map to one or more asks in the selected essay prompt. "
+                    "If WRITING MODE is prompt_driven: every section must map to one distinct ask in the selected essay prompt. "
+                    "Create exactly one section for each distinct item in PROMPT / FOCUS ASKS, preserve their order, and "
+                    "never merge two asks into one section. Each section must contain exactly one corresponding "
+                    "scholarship_requirement_addressed question. "
                     "If WRITING MODE is scholarship_guided: there is no formal prompt — structure the outline around the "
                     "scholarship mission, selection criteria, and materials, and say so in coaching notes. "
-                    "Section names should reflect the actual asks (not generic 'Paragraph 1'). "
+                    "Write each section_name as a short descriptive noun phrase, such as 'Outcome and Impact' or "
+                    "'Reflection and Growth'. A section name must never be a question, end in '?', or repeat its purple "
+                    "scholarship_requirement_addressed question. "
+                    "For each section, write purpose as one cohesive guidance paragraph. Begin with a direct coaching action "
+                    "that explains what the student could include and how to present it, then explain the intended effect on "
+                    "the reader or scholarship reviewer using 'would'. Never use the word 'should' in a section purpose. "
+                    "Incorporate opening guidance directly into the first section's purpose and closing guidance directly "
+                    "into the final section's purpose. "
+                    "For scholarship_requirement_addressed, rewrite every mapped prompt ask or scholarship focus as a "
+                    "concise, standalone direct question ending in '?'. Remove category names, numbered-option labels, and "
+                    "instructional prefixes such as 'Describe' or 'Explain'. For example, convert 'Leadership: Describe a "
+                    "time you led a team' to 'When did you lead a team?'. Use the same question format in every section. "
                     "VOICE: Address the student directly in the second person ('you', 'your'). Never write in the first "
                     "person from the student's point of view — do not use 'I', 'me', 'my', or 'we'. For example, write "
                     "'Open with your experience tutoring…' or 'Use your research on…', never 'Open with my experience' or "
@@ -438,8 +448,14 @@ def generate_personalized_outline(request: OutlineGenerateRequest) -> dict:
                     "human",
                     "Generate the final personalized outline through these internal steps: identify relevant profile evidence, "
                     "analyze the writing brief / prompt asks, choose an essay strategy adapted to those asks, draft a structured "
-                    "outline where each section covers specific asks, then review coverage against the asks. "
+                    "outline, and ensure every prompt ask is assigned to at least one specific section. "
+                    "In prompt-driven mode, return one section per distinct prompt ask in the supplied order; do not combine "
+                    "asks even when the source prompt places them in the same sentence. "
                     "Keep confirmed requirements separate from suggestions. Use meaningful section names tied to the brief. "
+                    "Make every section purpose a single, specific coaching paragraph that combines the writing action with "
+                    "what it would help the reader understand, feel, or conclude. Do not return separate opening or closing tips. "
+                    "Phrase every scholarship_requirement_addressed item as a short question, never as a heading, label, "
+                    "statement, or copied directive. "
                     "Write ALL guidance addressed to the student in the second person ('you', 'your') — never first person ('I', 'my', 'me', 'we').\n\n"
                     f"{format_brief_for_prompt(writing_brief)}\n\n"
                     f"Scholarship name:\n{request.scholarship_name or scholarship.get('name', '')}\n\n"

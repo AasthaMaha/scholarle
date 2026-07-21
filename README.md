@@ -403,19 +403,20 @@ The payload includes:
 
 The backend returns:
 
-- outline title
-- core message
 - sections
 - suggested content
 - profile evidence to use
-- scholarship requirements addressed
+- prompt or scholarship-focus questions addressed
+- section guidance that explains the intended effect on the reader
 - coaching notes
-- opening and conclusion guidance
-- questions for the student
 - warnings
 
 The essay prompt is used internally for generation but is not displayed in the
 personalized outline output.
+
+For a formal essay prompt, the outline keeps each distinct prompt ask in its
+original order and assigns it to its own section. Section titles are short
+descriptive phrases; the purple requirement labels are concise questions.
 
 ---
 
@@ -857,14 +858,12 @@ generate_personalized_outline(...)
 
 This is not a LangGraph node, but it is an LLM agent-style flow. It creates:
 
-- thesis/core message
 - essay sections
 - suggested content
 - profile evidence to use
-- requirements addressed
+- prompt or scholarship-focus questions addressed
+- section guidance that combines a writing action with its intended effect on the reader
 - coaching notes
-- opening/conclusion guidance
-- questions for the student
 
 Used by:
 

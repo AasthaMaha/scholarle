@@ -28,7 +28,6 @@ import {
   Save,
   ShieldCheck,
   Sparkles,
-  Target,
   UserRound,
   Wand2,
 } from "lucide-react";
@@ -4798,6 +4797,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   const [manualUnchecked, setManualUnchecked] = useState<Set<string>>(() => new Set());
   const draft = user?.essayDraft ?? "";
   const essayTitle = user?.essayTitle ?? "";
+  const activeScholarshipName = user?.activeScholarship?.name?.trim() ?? "";
   const wordCount = draft.trim() ? draft.trim().split(/\s+/).filter(Boolean).length : 0;
   const characterCount = draft.length;
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("outline");
@@ -4810,6 +4810,11 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
       ? saved
       : Math.min(Math.max(420, minimum), Math.round(window.innerWidth * 0.55));
   });
+
+  useEffect(() => {
+    if (!user || essayTitle.trim() || !activeScholarshipName) return;
+    updateProfile({ essayTitle: activeScholarshipName });
+  }, [activeScholarshipName, essayTitle, updateProfile, user]);
   const [panelResizing, setPanelResizing] = useState(false);
   const [isEvaluating, setIsEvaluating] = useState(false);
   const [sessionPhase, setSessionPhase] = useState("");
@@ -4837,7 +4842,6 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   const essayPrompt =
     availablePrompts[Math.min(selectedPromptIndex, Math.max(0, availablePrompts.length - 1))] || rawPromptBlob;
   const hasMultiplePrompts = availablePrompts.length > 1;
-  const hasOutline = !!user?.personalizedOutline?.outline?.sections?.length;
 
   useEffect(() => {
     if (selectedPromptIndex >= availablePrompts.length) {
@@ -4921,13 +4925,8 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   async function runOutlineGeneration(promptOverride?: string) {
     if (!user || outlineLoading) return;
     const promptForOutline = (promptOverride ?? essayPrompt).trim();
-    // Empty prompt is allowed: backend adapts to scholarship-guided mode.
     setOutlineLoading(true);
-    setOutlineStatus(
-      promptForOutline
-        ? "Building an outline adapted to your selected essay prompt…"
-        : "Building a scholarship-guided outline (no formal prompt)…",
-    );
+    setOutlineStatus("Building an outline adapted to your selected essay prompt…");
     setPanelOpen(true);
     setActiveTab("outline");
     const scholarship = user.activeScholarship ?? {};
@@ -4960,10 +4959,10 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     }
   }
 
-  async function confirmEssayPrompt(index?: number, options?: { allowEmpty?: boolean }) {
+  async function confirmEssayPrompt(index?: number) {
     const nextIndex = typeof index === "number" ? index : pendingPromptIndex;
     const nextPrompt = (availablePrompts[nextIndex] || rawPromptBlob).trim();
-    if (!nextPrompt && !options?.allowEmpty) {
+    if (!nextPrompt) {
       setOutlineStatus("Add an essay prompt, or continue without a formal prompt.");
       return;
     }
@@ -4973,17 +4972,13 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     setPromptPickerOpen(false);
     setPanelOpen(true);
     setActiveTab("outline");
-    setOutlineStatus(
-      nextPrompt
-        ? "Prompt confirmed — generating an outline adapted to this prompt…"
-        : "No formal prompt — generating a scholarship-guided outline…",
-    );
+    setOutlineStatus("Prompt confirmed — generating an outline adapted to this prompt…");
     await runOutlineGeneration(nextPrompt);
   }
 
-  async function continueWithoutFormalPrompt() {
-    // Clear any stale pasted materials masquerading as a prompt so agents use
-    // scholarship-guided adaptation instead.
+  function continueWithoutFormalPrompt() {
+    // Clear any stale pasted materials masquerading as a prompt so evaluation
+    // uses scholarship-guided adaptation without generating an outline.
     if (!user) return;
     if (rawPromptBlob.trim()) {
       updateProfile({
@@ -4993,7 +4988,11 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     }
     setSelectedPromptIndex(0);
     setPendingPromptIndex(0);
-    await confirmEssayPrompt(0, { allowEmpty: true });
+    setPromptConfirmed(true);
+    setPromptPickerOpen(false);
+    setPanelOpen(true);
+    setActiveTab("outline");
+    setOutlineStatus("No formal prompt selected. Evaluation will use the scholarship mission and selection criteria.");
   }
 
   // Lightweight autosave indicator — the working draft is continuously synced to
@@ -5570,13 +5569,13 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
             </button>
             <button
               type="button"
-              onClick={() => void continueWithoutFormalPrompt()}
+              onClick={continueWithoutFormalPrompt}
               className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-border bg-background px-4 py-2.5 text-sm font-semibold text-foreground transition-colors hover:bg-accent"
             >
               Continue without a formal prompt
             </button>
             <p className="text-center text-[12px] text-muted-foreground">
-              Without a prompt, outline and coaching adapt to the scholarship mission and selection criteria.
+              Without a prompt, evaluation adapts to the scholarship mission and selection criteria; no outline is generated.
             </p>
           </DialogFooter>
         </DialogContent>
@@ -5584,10 +5583,16 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
 
       <section className="border-b border-border bg-card">
         <div className="mx-auto max-w-[1440px] space-y-3 px-4 py-3 md:px-6">
-          {hasMultiplePrompts && promptConfirmed && (
+          {promptConfirmed && (
             <div className="rounded-xl border border-info/20 bg-info/5 p-3">
               <div className="flex items-center justify-between gap-2">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-info">Working on prompt {selectedPromptIndex + 1}</div>
+                <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-info">
+                  {essayPrompt.trim()
+                    ? hasMultiplePrompts
+                      ? `Working on prompt ${selectedPromptIndex + 1}`
+                      : "Working on essay prompt"
+                    : "Scholarship-guided writing focus"}
+                </div>
                 <button
                   type="button"
                   onClick={() => {
@@ -5599,34 +5604,11 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
                   Change prompt
                 </button>
               </div>
-              <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground line-clamp-2">{essayPrompt}</p>
+              <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground line-clamp-2">
+                {essayPrompt || "No formal prompt selected; evaluation uses the scholarship mission and selection criteria."}
+              </p>
             </div>
           )}
-
-          <div className="flex items-center gap-3">
-            <label htmlFor="workspace-essay-prompt" className="shrink-0 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-              {hasMultiplePrompts ? "Selected prompt" : "Essay prompt"}
-            </label>
-            <input
-              id="workspace-essay-prompt"
-              type="text"
-              value={hasMultiplePrompts ? essayPrompt : rawPromptBlob}
-              onChange={(event) => updateEssayPrompt(event.target.value)}
-              readOnly={hasMultiplePrompts}
-              placeholder="Paste or enter the scholarship essay prompt here."
-              className="h-10 min-w-0 flex-1 rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground/60 focus:border-info focus:ring-2 focus:ring-info/10 read-only:bg-muted/30"
-            />
-            <button
-              type="button"
-              onClick={() => void runOutlineGeneration()}
-              disabled={outlineLoading || !promptConfirmed}
-              aria-busy={outlineLoading}
-              className={`inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-lg bg-primary px-5 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${outlineLoading ? "agent-loading" : ""}`}
-            >
-              {outlineLoading ? <Spinner className="size-4" /> : hasOutline ? <RefreshCw className="size-4" /> : <Sparkles className="size-4" />}
-              {outlineLoading ? "Generating Outline…" : hasOutline ? "Regenerate Outline" : "Generate Outline"}
-            </button>
-          </div>
           {!promptConfirmed && (
             <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-info/30 bg-info/10 px-3 py-2.5">
               <p className="text-[12px] font-medium text-foreground">
@@ -5646,10 +5628,9 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
           )}
           {promptConfirmed && !essayPrompt.trim() && (
             <p className="text-xs text-muted-foreground">
-              Scholarship-guided mode: outline and coaching adapt to mission/criteria. Add a prompt anytime to regenerate.
+              Scholarship-guided mode: evaluation adapts to the mission and selection criteria. Use Change prompt to add a formal prompt and build an outline.
             </p>
           )}
-          {outlineStatus && <p className="text-xs text-muted-foreground">{outlineStatus}</p>}
         </div>
       </section>
 
@@ -5713,6 +5694,8 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
               onCollapse={() => setPanelOpen(false)}
               essayPrompt={essayPrompt}
               promptConfirmed={promptConfirmed}
+              outlineLoading={outlineLoading}
+              outlineStatus={outlineStatus}
               sessionPhase={sessionPhase}
               sessionProgress={sessionProgress}
               reviewReady={reviewReady}
@@ -5755,6 +5738,8 @@ function EssayWorkspacePanel({
   onCollapse,
   essayPrompt,
   promptConfirmed,
+  outlineLoading,
+  outlineStatus,
   sessionPhase,
   sessionProgress,
   reviewReady,
@@ -5779,6 +5764,8 @@ function EssayWorkspacePanel({
   onCollapse: () => void;
   essayPrompt: string;
   promptConfirmed: boolean;
+  outlineLoading: boolean;
+  outlineStatus: string | null;
   sessionPhase: string;
   sessionProgress: number;
   reviewReady: boolean;
@@ -5797,48 +5784,7 @@ function EssayWorkspacePanel({
   covered: Set<string>;
   onToggleCovered: (id: string) => void;
 }) {
-  const { user, updateProfile } = useUser();
-  const [outlineLoading, setOutlineLoading] = useState(false);
-  const [outlineStatus, setOutlineStatus] = useState<string | null>(null);
-  const outlineKey = useMemo(() => {
-    const scholarship = user?.activeScholarship ?? {};
-    return JSON.stringify({
-      scholarshipName: scholarship.name ?? "",
-      scholarshipUrl: scholarship.url ?? scholarship.officialWebsite ?? "",
-      prompt: essayPrompt,
-      requirementsPreview: scholarship.requirementsPreview ?? "",
-      updatedAt: scholarship.extractionCompletedAt ?? "",
-      profileName: user?.name ?? "",
-      educationLevel: user?.educationLevel ?? "",
-      careerGoal: user?.careerGoal ?? "",
-      highSchool: user?.highSchool ?? {},
-      undergrad: user?.undergrad ?? {},
-      graduate: user?.graduate ?? {},
-      researchExperience: user?.researchExperience ?? [],
-      workExperience: user?.workExperience ?? [],
-      optional: user?.optional ?? {},
-      prompts: user?.prompts ?? {},
-    });
-  }, [essayPrompt, user]);
-
-  async function runOutlineGeneration(force = false) {
-    if (!user || outlineLoading || !essayPrompt.trim()) return;
-    if (!force && user.personalizedOutline?.generatedForKey === outlineKey) return;
-    setOutlineLoading(true);
-    setOutlineStatus("Building your personalized outline from the selected prompt and your profile...");
-    try {
-      const result = await generatePersonalizedOutline(buildOutlinePayload(user, essayPrompt));
-      updateProfile({ personalizedOutline: { ...result, generatedForKey: outlineKey } });
-      setOutlineStatus(result.status === "error" ? "A fallback outline is ready." : "Personalized outline ready.");
-    } catch (error) {
-      setOutlineStatus(error instanceof Error ? error.message : "Could not generate the outline.");
-    } finally {
-      setOutlineLoading(false);
-    }
-  }
-
-  // Outline is generated from the confirmed prompt via the landing popup confirm
-  // action or the explicit Generate Outline button — not auto-raced on mount.
+  const { user } = useUser();
 
   const tabs: Array<{ id: WorkspaceTab; label: string; icon: typeof ListChecks; count?: number }> = [
     { id: "outline", label: "Outline", icon: ListChecks },
@@ -5889,11 +5835,9 @@ function EssayWorkspacePanel({
         {activeTab === "outline" && (
           <PersonalizedOutlinePanel
             outline={user?.personalizedOutline}
-            scholarshipName={user?.activeScholarship?.name}
             wordLimit={buildOutlinePayload(user, essayPrompt).word_limit}
             loading={outlineLoading}
             status={outlineStatus}
-            onRegenerate={() => void runOutlineGeneration(true)}
             covered={covered}
             onToggleCovered={onToggleCovered}
           />
@@ -5951,15 +5895,11 @@ function EssayWorkspacePanel({
 function outlineToText(outline?: PersonalizedOutlineResult) {
   const data = outline?.outline;
   if (!data) return "";
+  const sections = data.sections ?? [];
   const lines = [
-    data.outline_title,
-    "",
-    "Core message:",
-    data.thesis_or_core_message,
-    "",
-    ...(data.sections ?? []).flatMap((section, index) => [
+    ...sections.flatMap((section, index) => [
       `Section ${index + 1}: ${section.section_name}`,
-      `Purpose: ${section.purpose}`,
+      `Guidance: ${section.purpose}`,
       "Suggested content:",
       ...(section.suggested_content ?? []).map((item) => `- ${item}`),
       "Profile evidence to use:",
@@ -5971,13 +5911,15 @@ function outlineToText(outline?: PersonalizedOutlineResult) {
       ...(section.coaching_notes ?? []).map((item) => `- ${item}`),
       "",
     ]),
-    "Recommended opening:",
-    data.recommended_opening,
-    "",
-    "Recommended conclusion:",
-    data.recommended_conclusion,
   ];
   return lines.filter(Boolean).join("\n").trim();
+}
+
+function estimatedWordCountLabel(value: string): string {
+  const estimate = value.trim();
+  if (!/\d/.test(estimate)) return estimate;
+  const approximate = estimate.startsWith("~") ? estimate : `~${estimate}`;
+  return /\bwords?\b/i.test(approximate) ? approximate : `${approximate} words`;
 }
 
 function MiniList({ items }: { items?: string[] }) {
@@ -6047,7 +5989,7 @@ function OutlineGroup({
 }: {
   id: string;
   title: string;
-  icon: typeof Target;
+  icon: typeof ClipboardList;
   total: number;
   coveredCount: number;
   open: boolean;
@@ -6073,25 +6015,21 @@ function OutlineGroup({
 
 function PersonalizedOutlinePanel({
   outline,
-  scholarshipName,
   wordLimit,
   loading,
   status,
-  onRegenerate,
   covered,
   onToggleCovered,
 }: {
   outline?: PersonalizedOutlineResult;
-  scholarshipName?: string;
   wordLimit?: string;
   loading: boolean;
   status?: string | null;
-  onRegenerate: () => void;
   covered: Set<string>;
   onToggleCovered: (id: string) => void;
 }) {
   const [copyStatus, setCopyStatus] = useState("");
-  const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set(["core"]));
+  const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set(["strategy"]));
   const toggleGroup = (id: string) =>
     setOpenGroups((prev) => {
       const next = new Set(prev);
@@ -6103,7 +6041,7 @@ function PersonalizedOutlinePanel({
 
   useEffect(() => {
     if (!loading && data) {
-      setOpenGroups(new Set(["core"]));
+      setOpenGroups(new Set(["strategy"]));
     }
   }, [loading, Boolean(data), outline?.generatedForKey]);
 
@@ -6117,39 +6055,15 @@ function PersonalizedOutlinePanel({
 
   return (
     <div className="text-foreground">
-      <div className="border-b border-border pb-4">
-        <div className="flex items-start justify-between gap-3">
+      {wordLimit && (
+        <div className="border-b border-border pb-4">
           <div className="min-w-0">
-            <div className="inline-flex items-center gap-2 rounded-md bg-info/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-info">
-              <Sparkles className="size-3.5" />
-              Personalized Outline
+            <div className="inline-flex items-center rounded-md border border-border bg-background px-2.5 py-1 text-xs text-muted-foreground">
+              {wordLimit}
             </div>
-            <div className="mt-2 truncate font-display text-lg font-semibold leading-tight">
-              {scholarshipName || "Current scholarship"}
-            </div>
-            {wordLimit && (
-              <div className="mt-2 inline-flex items-center rounded-md border border-border bg-background px-2.5 py-1 text-xs text-muted-foreground">
-                {wordLimit}
-              </div>
-            )}
           </div>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                onClick={onRegenerate}
-                disabled={loading}
-                aria-busy={loading}
-                className={`grid size-9 shrink-0 place-items-center rounded-md border border-border text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-90 ${loading ? "agent-loading text-info" : ""}`}
-                aria-label="Regenerate outline"
-              >
-                {loading ? <Spinner className="size-4" /> : <RefreshCw className="size-4" />}
-              </button>
-            </TooltipTrigger>
-            <TooltipContent>{loading ? "Generating outline" : "Regenerate outline"}</TooltipContent>
-          </Tooltip>
         </div>
-      </div>
+      )}
 
       {loading && (
         <div className="mt-4 rounded-lg border border-info/20 bg-info/5 p-4 text-sm text-foreground/80">
@@ -6184,70 +6098,12 @@ function PersonalizedOutlinePanel({
         (() => {
           type Pt = { id: string; label: string; detail?: string };
           const points = buildOutlinePoints(outline);
-          const corePoints: Pt[] = points.filter((p) => p.group === "core");
           const strategyPoints: Pt[] = points.filter((p) => p.group === "strategy");
-          const structurePoints: Pt[] = points.filter((p) => p.group === "structure");
-          const keyPoints: Pt[] = points.filter((p) => p.group === "keypoints");
           const sections = data.sections ?? [];
-          const total = points.length;
-          const coveredCount = points.filter((p) => covered.has(p.id)).length;
           const cc = (pts: Pt[]) => pts.filter((p) => covered.has(p.id)).length;
-          const pct = total ? Math.round((coveredCount / total) * 100) : 0;
 
           return (
             <div className="mt-4 space-y-3">
-              <div className="rounded-xl border border-border bg-background p-3">
-                <div className="flex items-center justify-between text-[12px]">
-                  <span className="font-semibold uppercase tracking-[0.12em] text-muted-foreground">Coverage</span>
-                  <span className="font-semibold tabular-nums text-foreground">{coveredCount}/{total} covered</span>
-                </div>
-                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-border">
-                  <div className="h-full rounded-full bg-info transition-all duration-500" style={{ width: `${pct}%` }} />
-                </div>
-                <div className="mt-1.5 text-[11px] text-muted-foreground">AI-detected from your draft — tap any point to adjust.</div>
-              </div>
-
-              <OutlineGroup id="core" title="Core Message" icon={Target} total={corePoints.length} coveredCount={cc(corePoints)} open={openGroups.has("core")} onToggle={toggleGroup}>
-                {corePoints.map((p) => (
-                  <OutlineCheckRow key={p.id} id={p.id} label={p.label} detail={p.detail} covered={covered} onToggle={onToggleCovered} />
-                ))}
-              </OutlineGroup>
-
-              {!!structurePoints.length && (
-                <OutlineGroup id="structure" title="Structure" icon={ClipboardList} total={structurePoints.length} coveredCount={cc(structurePoints)} open={openGroups.has("structure")} onToggle={toggleGroup}>
-                  {sections.map((s, i) => (
-                    <OutlineCheckRow key={`p-sec-${i}`} id={`p-sec-${i}`} label={s.section_name || `Section ${i + 1}`} detail={s.purpose} covered={covered} onToggle={onToggleCovered}>
-                      {!!s.scholarship_requirement_addressed?.length && (
-                        <div className="mt-2 flex flex-wrap gap-1">
-                          {s.scholarship_requirement_addressed.map((item) => (
-                            <span key={item} className="rounded bg-info/10 px-1.5 py-0.5 text-[10px] font-medium text-info">{item}</span>
-                          ))}
-                        </div>
-                      )}
-                      {!!s.suggested_content?.length && (
-                        <ul className="mt-2 space-y-1 text-[12px] text-muted-foreground">
-                          {s.suggested_content.slice(0, 3).map((c) => (
-                            <li key={c} className="flex gap-1.5">
-                              <span className="mt-1.5 size-1 shrink-0 rounded-full bg-info/60" />
-                              {c}
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                      {s.estimated_word_count && <div className="mt-1.5 text-[11px] text-muted-foreground">~{s.estimated_word_count}</div>}
-                    </OutlineCheckRow>
-                  ))}
-                </OutlineGroup>
-              )}
-
-              {!!keyPoints.length && (
-                <OutlineGroup id="keypoints" title="Key Points to Hit" icon={ListChecks} total={keyPoints.length} coveredCount={cc(keyPoints)} open={openGroups.has("keypoints")} onToggle={toggleGroup}>
-                  {keyPoints.map((p) => (
-                    <OutlineCheckRow key={p.id} id={p.id} label={p.label} detail={p.detail} covered={covered} onToggle={onToggleCovered} />
-                  ))}
-                </OutlineGroup>
-              )}
-
               {!!strategyPoints.length && (
                 <OutlineGroup id="strategy" title="Strategy Notes" icon={Lightbulb} total={strategyPoints.length} coveredCount={cc(strategyPoints)} open={openGroups.has("strategy")} onToggle={toggleGroup}>
                   {strategyPoints.map((p) => (
@@ -6256,20 +6112,31 @@ function PersonalizedOutlinePanel({
                 </OutlineGroup>
               )}
 
-              {(data.recommended_opening || data.recommended_conclusion) && (
-                <div className="rounded-xl border border-border bg-background p-3">
-                  <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Opening &amp; Closing Tips</div>
-                  {data.recommended_opening && <p className="mt-2 text-[13px] leading-relaxed"><span className="font-medium">Opening:</span> {data.recommended_opening}</p>}
-                  {data.recommended_conclusion && <p className="mt-2 text-[13px] leading-relaxed"><span className="font-medium">Conclusion:</span> {data.recommended_conclusion}</p>}
-                </div>
-              )}
+              {sections.map((s, i) => (
+                <OutlineCheckRow key={`p-sec-${i}`} id={`p-sec-${i}`} label={s.section_name || `Section ${i + 1}`} detail={s.purpose} covered={covered} onToggle={onToggleCovered}>
+                  {!!s.scholarship_requirement_addressed?.length && (
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {s.scholarship_requirement_addressed.map((item) => (
+                        <span key={item} className="rounded bg-info/10 px-1.5 py-0.5 text-[10px] font-medium text-info">{item}</span>
+                      ))}
+                    </div>
+                  )}
+                  {!!s.suggested_content?.length && (
+                    <ul className="mt-2 space-y-1 text-[12px] text-muted-foreground">
+                      {s.suggested_content.slice(0, 3).map((c) => (
+                        <li key={c} className="flex gap-1.5">
+                          <span className="mt-1.5 size-1 shrink-0 rounded-full bg-info/60" />
+                          {c}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {s.estimated_word_count && (
+                    <div className="mt-1.5 text-[11px] text-muted-foreground">{estimatedWordCountLabel(s.estimated_word_count)}</div>
+                  )}
+                </OutlineCheckRow>
+              ))}
 
-              {!!outline?.warnings?.length && (
-                <div className="rounded-xl border border-warning/30 bg-warning/10 p-3">
-                  <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-warning">Warnings</div>
-                  <MiniList items={outline.warnings} />
-                </div>
-              )}
               {!!outline?.missing_profile_info?.length && (
                 <div className="rounded-xl border border-border bg-background p-3">
                   <div className="text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Missing Profile Information</div>
@@ -6291,17 +6158,10 @@ function PersonalizedOutlinePanel({
   );
 }
 
-function PanelLabel({ children }: { children: React.ReactNode }) {
-  return <div className="text-[13px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">{children}</div>;
-}
-
-function PanelEmpty({ label, message }: { label: string; message: string }) {
+function PanelEmpty({ message }: { message: string }) {
   return (
-    <div className="space-y-3">
-      <PanelLabel>{label}</PanelLabel>
-      <div className="rounded-xl border border-dashed border-border bg-background p-4 text-[13px] leading-relaxed text-muted-foreground">
-        {message}
-      </div>
+    <div className="rounded-xl border border-dashed border-border bg-background p-4 text-[13px] leading-relaxed text-muted-foreground">
+      {message}
     </div>
   );
 }
@@ -6554,8 +6414,7 @@ function UnifiedEssayReview({
   return (
     <div className="space-y-3">
       <div>
-        <PanelLabel>Essay Review</PanelLabel>
-        <div className="mt-1 text-[12px] text-muted-foreground">Last updated: {relativeTimeLabel(updatedAt, now)}</div>
+        <div className="text-[12px] text-muted-foreground">Last updated: {relativeTimeLabel(updatedAt, now)}</div>
         {draftChanged && <div className="mt-1 text-[12px] font-medium text-warning">Essay changed since this review.</div>}
       </div>
 
@@ -6655,16 +6514,12 @@ function WorkspaceEssayReviewTab({
 }) {
   if (loading) {
     return (
-      <div className="space-y-3">
-        <PanelLabel>Essay Review</PanelLabel>
-        <CoachSkeleton />
-      </div>
+      <CoachSkeleton />
     );
   }
   if (!review || review.schema_version !== 3) {
     return (
       <PanelEmpty
-        label="Essay Review"
         message="No review yet. Select Evaluate to generate the weighted seven-criterion review for this draft."
       />
     );
@@ -6835,12 +6690,7 @@ function WorkspaceHighlightsTab({
 
   return (
     <div className="space-y-3">
-      <div className="flex items-start gap-3">
-        <div className="min-w-0">
-          <PanelLabel>Sentence Fixes</PanelLabel>
-          <div className="mt-1 text-[12px] font-semibold text-muted-foreground">{suggestions.length} open</div>
-        </div>
-      </div>
+      <div className="text-[12px] font-semibold text-muted-foreground">{suggestions.length} open</div>
 
       {quickFixCount > 0 && (
         <button

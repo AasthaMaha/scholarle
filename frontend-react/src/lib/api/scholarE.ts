@@ -505,39 +505,22 @@ export async function runWorkspaceCoachingSession(
   return data as CoachingSessionResult;
 }
 
-export type OutlinePointGroup = "core" | "strategy" | "structure" | "keypoints";
+export type OutlinePointGroup = "strategy" | "structure";
 export type OutlinePoint = { id: string; label: string; detail?: string; group: OutlinePointGroup };
 
 /**
  * Deterministic flat list of checkable outline points ({id,label,group}). Single
- * source of truth for point ids — used by the outline panel (render + progress),
+ * source of truth for point ids — used by the outline panel,
  * the coach payload (sent to the coverage agent), and coverage mapping.
  */
 export function buildOutlinePoints(outline?: PersonalizedOutlineResult): OutlinePoint[] {
   const data = outline?.outline;
   if (!data) return [];
-  const points: OutlinePoint[] = [
-    { id: "p-core", label: data.outline_title || "Core message", detail: data.thesis_or_core_message, group: "core" },
-  ];
+  const points: OutlinePoint[] = [];
   if (outline?.strategy?.recommended_strategy) points.push({ id: "p-strat", label: outline.strategy.recommended_strategy, group: "strategy" });
-  if (outline?.strategy?.central_message) points.push({ id: "p-central", label: outline.strategy.central_message, group: "strategy" });
   if (outline?.strategy?.tone_guidance) points.push({ id: "p-tone", label: `Tone: ${outline.strategy.tone_guidance}`, group: "strategy" });
   const sections = data.sections ?? [];
   sections.forEach((s, i) => points.push({ id: `p-sec-${i}`, label: s.section_name || `Section ${i + 1}`, group: "structure" }));
-  let keyPoints: OutlinePoint[] = (outline?.coverage_check ?? []).map((c, i) => ({
-    id: `p-kp-${i}`,
-    label: c.requirement || `Requirement ${i + 1}`,
-    detail: c.where_covered || c.notes || undefined,
-    group: "keypoints",
-  }));
-  if (!keyPoints.length) {
-    keyPoints = (data.questions_for_student ?? []).map((q, i) => ({ id: `p-q-${i}`, label: q, group: "keypoints" }));
-  }
-  if (!keyPoints.length) {
-    const reqs = Array.from(new Set(sections.flatMap((s) => s.scholarship_requirement_addressed ?? [])));
-    keyPoints = reqs.map((r, i) => ({ id: `p-req-${i}`, label: r, group: "keypoints" }));
-  }
-  points.push(...keyPoints);
   return points;
 }
 
