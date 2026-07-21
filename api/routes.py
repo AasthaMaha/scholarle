@@ -4,6 +4,7 @@
 import hashlib
 import io
 import json
+import re
 import time
 from pathlib import Path
 from typing import Optional
@@ -230,7 +231,8 @@ class OutlineSection(BaseModel):
         default="",
         description=(
             "A short descriptive noun phrase for the section, never a question, prompt directive, or copy of the "
-            "question in scholarship_requirement_addressed."
+            "question in scholarship_requirement_addressed. Do not add 'Introduction:' or 'Conclusion:' prefixes; "
+            "the interface adds those structural labels."
         ),
     )
     purpose: str = ""
@@ -252,8 +254,13 @@ class PersonalizedOutline(BaseModel):
 
 
 class OutlineStrategy(BaseModel):
-    recommended_strategy: str = ""
-    tone_guidance: str = ""
+    tone_guidance: str = Field(
+        default="",
+        description=(
+            "Exactly one concise sentence recommending a tone tailored to the student, essay prompt, and scholarship. "
+            "Do not include a label such as 'Tone' or 'Recommended tip'."
+        ),
+    )
 
 
 class OutlineGenerateResponse(BaseModel):
@@ -384,12 +391,90 @@ def _outline_fallback(request: OutlineGenerateRequest, message: str = "") -> dic
             ],
         },
         "strategy": {
-            "recommended_strategy": "Use a profile-grounded, scholarship-specific argument rather than a broad personal statement.",
-            "tone_guidance": "Specific, reflective, confident, and evidence-based.",
+            "tone_guidance": "Maintain a reflective and sincere tone, emphasizing your personal growth and commitment to community engagement.",
         },
         "warnings": warnings,
         "missing_profile_info": [],
     }
+
+
+_DIRECT_QUESTION_START = re.compile(
+    r"^(?:what|when|where|why|how|which|who|whose|is|are|was|were|do|does|did|can|could|will|would|"
+    r"has|have|had|to what extent|in what ways)\b",
+    flags=re.IGNORECASE,
+)
+_IMPERATIVE_PROMPT_START = re.compile(
+    r"^(?:describe|explain|discuss|share|identify|tell|write|provide|outline|reflect)\b",
+    flags=re.IGNORECASE,
+)
+
+
+def _is_direct_question(value: object) -> bool:
+    text = " ".join(str(value or "").split())
+    return bool(
+        text.endswith("?")
+        and _DIRECT_QUESTION_START.match(text)
+        and not _IMPERATIVE_PROMPT_START.match(text)
+    )
+
+
+def _coerce_direct_question(value: object) -> str:
+    """Last-resort grammatical repair after the model's correction pass."""
+    text = " ".join(str(value or "").split()).strip()
+    if not text:
+        return "What does this section need to address?"
+    if ":" in text:
+        heading, remainder = text.split(":", 1)
+        if len(heading.split()) <= 10 and _IMPERATIVE_PROMPT_START.match(remainder.strip()):
+            text = remainder.strip()
+    clean = text.rstrip(".?!").strip()
+    if _DIRECT_QUESTION_START.match(clean) and not _IMPERATIVE_PROMPT_START.match(clean):
+        return f"{clean}?"
+    experience_match = re.match(
+        r"describe\s+(?:a|an)\s+(?:time|occasion|instance)\s+when\s+you\s+(.+)",
+        clean,
+        re.IGNORECASE,
+    )
+    if experience_match:
+        return f"What experience shows how you {experience_match.group(1).strip()}?"
+    directive_match = re.match(
+        r"(?:describe|explain|discuss|share|identify|provide|outline|reflect on)\s+(.+)",
+        clean,
+        re.IGNORECASE,
+    )
+    if directive_match:
+        return f"What would you explain about {directive_match.group(1).strip()}?"
+    return f"What does this section need to address about {clean[0].lower()}{clean[1:]}?"
+
+
+def _outline_contract_violations(data: dict, writing_brief: dict) -> list[str]:
+    sections = ((data or {}).get("outline") or {}).get("sections") or []
+    violations: list[str] = []
+    prompt_driven = writing_brief.get("mode") == "prompt_driven"
+    expected_asks = writing_brief.get("prompt_asks") or []
+    if prompt_driven and len(sections) != len(expected_asks):
+        violations.append(f"Expected {len(expected_asks)} ordered sections but received {len(sections)}.")
+    for index, section in enumerate(sections):
+        title = " ".join(str(section.get("section_name") or "").split())
+        questions = section.get("scholarship_requirement_addressed") or []
+        if title.endswith("?"):
+            violations.append(f"Section {index + 1} title is a question instead of a descriptive phrase.")
+        if prompt_driven and len(questions) != 1:
+            violations.append(f"Section {index + 1} must contain exactly one prompt question.")
+        for question in questions:
+            if not _is_direct_question(question):
+                violations.append(f"Section {index + 1} contains a malformed prompt question: {question!r}.")
+            if title.rstrip("?").casefold() == str(question).strip().rstrip("?").casefold():
+                violations.append(f"Section {index + 1} title duplicates its prompt question.")
+    return violations
+
+
+def _normalize_outline_requirement_questions(data: dict) -> dict:
+    sections = ((data or {}).get("outline") or {}).get("sections") or []
+    for section in sections:
+        questions = section.get("scholarship_requirement_addressed") or []
+        section["scholarship_requirement_addressed"] = [_coerce_direct_question(question) for question in questions]
+    return data
 
 
 def generate_personalized_outline(request: OutlineGenerateRequest) -> dict:
@@ -409,9 +494,7 @@ def generate_personalized_outline(request: OutlineGenerateRequest) -> dict:
         return _outline_fallback(request)
 
     model = llm._get_client().with_structured_output(OutlineGenerateResponse)
-    try:
-        result = model.invoke(
-            [
+    messages = [
                 (
                     "system",
                     "You are an AI scholarship essay planning team coaching a student. Create a personalized, "
@@ -428,12 +511,15 @@ def generate_personalized_outline(request: OutlineGenerateRequest) -> dict:
                     "scholarship mission, selection criteria, and materials, and say so in coaching notes. "
                     "Write each section_name as a short descriptive noun phrase, such as 'Outcome and Impact' or "
                     "'Reflection and Growth'. A section name must never be a question, end in '?', or repeat its purple "
-                    "scholarship_requirement_addressed question. "
+                    "scholarship_requirement_addressed question. Do not prefix a section name with 'Introduction:' or "
+                    "'Conclusion:' because the interface adds those labels. "
                     "For each section, write purpose as one cohesive guidance paragraph. Begin with a direct coaching action "
                     "that explains what the student could include and how to present it, then explain the intended effect on "
                     "the reader or scholarship reviewer using 'would'. Never use the word 'should' in a section purpose. "
                     "Incorporate opening guidance directly into the first section's purpose and closing guidance directly "
                     "into the final section's purpose. "
+                    "Return tone_guidance as exactly one concise sentence tailored to the student, prompt, and scholarship. "
+                    "Do not prefix it with 'Tone:' or 'Recommended tip:'. "
                     "For scholarship_requirement_addressed, rewrite every mapped prompt ask or scholarship focus as a "
                     "concise, standalone direct question ending in '?'. Remove category names, numbered-option labels, and "
                     "instructional prefixes such as 'Describe' or 'Explain'. For example, convert 'Leadership: Describe a "
@@ -467,8 +553,28 @@ def generate_personalized_outline(request: OutlineGenerateRequest) -> dict:
                     f"User notes:\n{request.user_notes}",
                 ),
             ]
-        )
+    try:
+        result = model.invoke(messages)
         data = result.model_dump() if hasattr(result, "model_dump") else result.dict()
+        violations = _outline_contract_violations(data, writing_brief)
+        if violations:
+            violation_list = "\n- ".join(violations)
+            repair_result = model.invoke(
+                [
+                    *messages,
+                    (
+                        "human",
+                        "Correct the candidate outline below and return the complete structured outline again. "
+                        "Resolve every listed contract violation without changing supported student facts or scholarship "
+                        "requirements. A direct question must use interrogative grammar; never turn an instruction such as "
+                        "'Describe a time...' into 'Describe a time...?'.\n\n"
+                        f"CONTRACT VIOLATIONS:\n- {violation_list}\n\n"
+                        f"CANDIDATE OUTLINE:\n{json.dumps(data, indent=2, default=str)}",
+                    ),
+                ]
+            )
+            data = repair_result.model_dump() if hasattr(repair_result, "model_dump") else repair_result.dict()
+        data = _normalize_outline_requirement_questions(data)
     except Exception as exc:
         fallback = _outline_fallback(request, f"Outline generation failed, so Scholar-E created a basic guide instead: {exc}")
         fallback["status"] = "error"

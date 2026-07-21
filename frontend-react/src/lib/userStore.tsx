@@ -432,7 +432,6 @@ export type PersonalizedOutlineResult = {
     }>;
   };
   strategy?: {
-    recommended_strategy?: string;
     tone_guidance?: string;
   };
   warnings?: string[];

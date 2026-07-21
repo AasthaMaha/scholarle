@@ -5898,7 +5898,7 @@ function outlineToText(outline?: PersonalizedOutlineResult) {
   const sections = data.sections ?? [];
   const lines = [
     ...sections.flatMap((section, index) => [
-      `Section ${index + 1}: ${section.section_name}`,
+      outlineSectionHeading(section.section_name || `Section ${index + 1}`, index, sections.length),
       `Guidance: ${section.purpose}`,
       "Suggested content:",
       ...(section.suggested_content ?? []).map((item) => `- ${item}`),
@@ -5913,6 +5913,23 @@ function outlineToText(outline?: PersonalizedOutlineResult) {
     ]),
   ];
   return lines.filter(Boolean).join("\n").trim();
+}
+
+function outlineSectionRole(index: number, total: number): string {
+  if (total === 1) return "Introduction & Conclusion";
+  if (index === 0) return "Introduction";
+  if (index === total - 1) return "Conclusion";
+  return "";
+}
+
+function cleanOutlineSectionTitle(title: string): string {
+  return title.replace(/^(?:introduction(?:\s*&\s*conclusion)?|conclusion)\s*:\s*/i, "").trim();
+}
+
+function outlineSectionHeading(title: string, index: number, total: number): string {
+  const role = outlineSectionRole(index, total);
+  const cleanTitle = cleanOutlineSectionTitle(title);
+  return role ? `${role}: ${cleanTitle}` : `Section ${index + 1}: ${cleanTitle}`;
 }
 
 function estimatedWordCountLabel(value: string): string {
@@ -5940,6 +5957,7 @@ function MiniList({ items }: { items?: string[] }) {
 function OutlineCheckRow({
   id,
   label,
+  labelPrefix,
   detail,
   covered,
   onToggle,
@@ -5947,6 +5965,7 @@ function OutlineCheckRow({
 }: {
   id: string;
   label: string;
+  labelPrefix?: string;
   detail?: string;
   covered: Set<string>;
   onToggle: (id: string) => void;
@@ -5954,7 +5973,13 @@ function OutlineCheckRow({
 }) {
   const done = covered.has(id);
   return (
-    <div className="rounded-lg border border-border bg-background p-2.5">
+    <div
+      className={`rounded-lg border p-2.5 transition-colors duration-150 ${
+        done
+          ? "border-border bg-muted/20"
+          : "border-border bg-background hover:border-info/30"
+      }`}
+    >
       <div className="flex items-start gap-2">
         <button
           type="button"
@@ -5968,47 +5993,14 @@ function OutlineCheckRow({
           <Check className="size-3" />
         </button>
         <div className="min-w-0 flex-1">
-          <div className={`text-[13px] font-medium leading-snug ${done ? "text-muted-foreground line-through" : "text-foreground"}`}>{label}</div>
-          {detail && <div className="mt-0.5 text-[12px] leading-relaxed text-muted-foreground">{detail}</div>}
+          <div className={`text-[14px] leading-snug ${done ? "text-muted-foreground line-through" : "text-foreground"}`}>
+            {labelPrefix && <span className="font-bold">{labelPrefix}: </span>}
+            <strong className="font-semibold">{label}</strong>
+          </div>
+          {detail && <div className="mt-1 text-[12px] leading-relaxed text-muted-foreground">{detail}</div>}
           {children}
         </div>
       </div>
-    </div>
-  );
-}
-
-function OutlineGroup({
-  id,
-  title,
-  icon: Icon,
-  total,
-  coveredCount,
-  open,
-  onToggle,
-  children,
-}: {
-  id: string;
-  title: string;
-  icon: typeof ClipboardList;
-  total: number;
-  coveredCount: number;
-  open: boolean;
-  onToggle: (id: string) => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="overflow-hidden rounded-xl border border-border">
-      <button
-        type="button"
-        onClick={() => onToggle(id)}
-        className="flex w-full items-center gap-2 bg-accent/40 px-3 py-2.5 text-left transition-colors duration-150 hover:bg-accent/70"
-      >
-        <Icon className="size-4 text-info" />
-        <span className="flex-1 text-[13px] font-semibold">{title}</span>
-        <span className="text-[11px] tabular-nums text-muted-foreground">{coveredCount}/{total}</span>
-        <ChevronDown className={`size-4 text-muted-foreground transition-transform duration-200 ${open ? "rotate-180" : ""}`} />
-      </button>
-      {open && <div className="space-y-2 p-2.5">{children}</div>}
     </div>
   );
 }
@@ -6029,21 +6021,45 @@ function PersonalizedOutlinePanel({
   onToggleCovered: (id: string) => void;
 }) {
   const [copyStatus, setCopyStatus] = useState("");
-  const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set(["strategy"]));
-  const toggleGroup = (id: string) =>
-    setOpenGroups((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+  const [outlineProgress, setOutlineProgress] = useState(0);
+  const [showLoadingOverlay, setShowLoadingOverlay] = useState(false);
+  const outlineWasLoading = useRef(false);
   const data = outline?.outline;
 
   useEffect(() => {
-    if (!loading && data) {
-      setOpenGroups(new Set(["strategy"]));
+    let progressTimer: number | undefined;
+    let completionTimer: number | undefined;
+
+    if (loading) {
+      outlineWasLoading.current = true;
+      setShowLoadingOverlay(true);
+      setOutlineProgress(10);
+      const startedAt = Date.now();
+      progressTimer = window.setInterval(() => {
+        const elapsedSeconds = (Date.now() - startedAt) / 1000;
+        let nextProgress: number;
+        if (elapsedSeconds < 2) nextProgress = 10 + (elapsedSeconds / 2) * 20;
+        else if (elapsedSeconds < 5) nextProgress = 30 + ((elapsedSeconds - 2) / 3) * 25;
+        else if (elapsedSeconds < 10) nextProgress = 55 + ((elapsedSeconds - 5) / 5) * 30;
+        else nextProgress = Math.min(95, 85 + (elapsedSeconds - 10));
+        setOutlineProgress(Math.round(nextProgress));
+      }, 250);
+    } else if (outlineWasLoading.current) {
+      setOutlineProgress(100);
+      completionTimer = window.setTimeout(() => {
+        outlineWasLoading.current = false;
+        setShowLoadingOverlay(false);
+      }, 300);
+    } else {
+      setOutlineProgress(0);
+      setShowLoadingOverlay(false);
     }
-  }, [loading, Boolean(data), outline?.generatedForKey]);
+
+    return () => {
+      if (progressTimer !== undefined) window.clearInterval(progressTimer);
+      if (completionTimer !== undefined) window.clearTimeout(completionTimer);
+    };
+  }, [loading]);
 
   async function copyOutline() {
     const text = outlineToText(outline);
@@ -6054,66 +6070,117 @@ function PersonalizedOutlinePanel({
   }
 
   return (
-    <div className="text-foreground">
-      {wordLimit && (
-        <div className="border-b border-border pb-4">
-          <div className="min-w-0">
-            <div className="inline-flex items-center rounded-md border border-border bg-background px-2.5 py-1 text-xs text-muted-foreground">
-              {wordLimit}
+    <div className={`relative text-foreground ${showLoadingOverlay ? "min-h-[320px]" : ""}`} aria-busy={showLoadingOverlay}>
+      {showLoadingOverlay && (
+        <div className="absolute inset-0 z-20 bg-muted px-4 pb-5 pt-[120px]">
+          <div className="sticky top-[120px] mx-auto max-w-xl rounded-xl border border-info/25 bg-background p-5 shadow-lg">
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex min-w-0 items-center gap-2.5">
+                <span className="size-4 shrink-0 animate-spin rounded-full border-2 border-info/25 border-t-info" />
+                <span className="truncate text-[15px] font-semibold text-foreground">Building your personalized outline…</span>
+              </div>
+              <span className="shrink-0 text-[14px] font-semibold tabular-nums text-info">{outlineProgress}%</span>
+            </div>
+
+            <div
+              className="mt-4 h-2 overflow-hidden rounded-full bg-info/10"
+              role="progressbar"
+              aria-label="Personalized outline generation progress"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={outlineProgress}
+            >
+              <div
+                className="h-full rounded-full bg-info transition-[width] duration-300 ease-out"
+                style={{ width: `${outlineProgress}%` }}
+              />
+            </div>
+
+            <div className="mt-5 space-y-2.5">
+              {[
+                "Reading scholarship and essay requirements",
+                "Matching profile evidence",
+                "Planning essay sections",
+                "Verifying complete coverage of requirements",
+              ].map((item, index) => {
+                const activeStep = outlineProgress < 30 ? 0 : outlineProgress < 55 ? 1 : outlineProgress < 85 ? 2 : 3;
+                const completed = outlineProgress === 100 || index < activeStep;
+                const active = outlineProgress < 100 && index === activeStep;
+                return (
+                  <div key={item} className={`flex items-center gap-2.5 text-[13px] ${completed || active ? "text-foreground" : "text-muted-foreground"}`}>
+                    {completed ? (
+                      <span className="grid size-4 shrink-0 place-items-center rounded-full bg-success text-white">
+                        <Check className="size-3" aria-hidden="true" />
+                      </span>
+                    ) : active ? (
+                      <span className="size-4 shrink-0 animate-spin rounded-full border-2 border-info/25 border-t-info" />
+                    ) : (
+                      <span className="size-4 shrink-0 rounded-full border border-border bg-background" />
+                    )}
+                    <span className={active ? "font-semibold" : ""}>{item}</span>
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>
       )}
 
-      {loading && (
-        <div className="mt-4 rounded-lg border border-info/20 bg-info/5 p-4 text-sm text-foreground/80">
-          <div className="flex items-center gap-2">
-            <span className="size-3 animate-spin rounded-full border-2 border-info/30 border-t-info" />
-            <span className="font-medium">Building your personalized outline...</span>
-          </div>
-          <div className="mt-4 grid gap-2 text-xs text-muted-foreground">
-            {["Reading scholarship requirements", "Matching profile evidence", "Planning essay strategy", "Reviewing outline coverage"].map((item) => (
-              <div key={item} className="flex items-center gap-2">
-                <span className="size-1.5 rounded-full bg-info/70" />
-                <span>{item}</span>
+      <div
+        className={`transition-opacity duration-200 ${showLoadingOverlay ? "pointer-events-none select-none opacity-0" : "opacity-100"}`}
+        aria-hidden={showLoadingOverlay}
+        inert={showLoadingOverlay ? true : undefined}
+      >
+        {wordLimit && (
+          <div className="border-b border-border pb-4">
+            <div className="min-w-0">
+              <div className="inline-flex items-center rounded-md border border-border bg-background px-2.5 py-1 text-xs text-muted-foreground">
+                {wordLimit}
               </div>
-            ))}
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {status && (
-        <div className="mt-3 rounded-md bg-accent px-3 py-2 text-xs text-muted-foreground">
-          {status}
-        </div>
-      )}
+        {status && (
+          <div className="mt-3 rounded-md bg-accent px-3 py-2 text-xs text-muted-foreground">
+            {status}
+          </div>
+        )}
 
-      {!loading && !data && (
-        <div className="mt-5 rounded-lg border border-dashed border-border bg-background p-4 text-sm text-muted-foreground">
-          Add a scholarship prompt or requirement details to generate a personalized outline.
-        </div>
-      )}
+        {!loading && !data && (
+          <div className="mt-5 rounded-lg border border-dashed border-border bg-background p-4 text-sm text-muted-foreground">
+            Add a scholarship prompt or requirement details to generate a personalized outline.
+          </div>
+        )}
 
-      {data &&
-        (() => {
-          type Pt = { id: string; label: string; detail?: string };
-          const points = buildOutlinePoints(outline);
-          const strategyPoints: Pt[] = points.filter((p) => p.group === "strategy");
+        {data &&
+          (() => {
           const sections = data.sections ?? [];
-          const cc = (pts: Pt[]) => pts.filter((p) => covered.has(p.id)).length;
 
           return (
             <div className="mt-4 space-y-3">
-              {!!strategyPoints.length && (
-                <OutlineGroup id="strategy" title="Strategy Notes" icon={Lightbulb} total={strategyPoints.length} coveredCount={cc(strategyPoints)} open={openGroups.has("strategy")} onToggle={toggleGroup}>
-                  {strategyPoints.map((p) => (
-                    <OutlineCheckRow key={p.id} id={p.id} label={p.label} covered={covered} onToggle={onToggleCovered} />
-                  ))}
-                </OutlineGroup>
+              {outline?.strategy?.tone_guidance && (
+                <div className="flex items-start gap-2.5 rounded-lg border border-info/20 bg-info/5 px-3 py-2.5">
+                  <span className="grid size-7 shrink-0 place-items-center rounded-md bg-info/10 text-info">
+                    <Lightbulb className="size-4" aria-hidden="true" />
+                  </span>
+                  <p className="pt-0.5 text-[13px] leading-relaxed text-muted-foreground">
+                    <span className="font-medium text-info">Recommended tip: </span>
+                    <strong className="font-semibold text-foreground">{outline.strategy.tone_guidance}</strong>
+                  </p>
+                </div>
               )}
 
               {sections.map((s, i) => (
-                <OutlineCheckRow key={`p-sec-${i}`} id={`p-sec-${i}`} label={s.section_name || `Section ${i + 1}`} detail={s.purpose} covered={covered} onToggle={onToggleCovered}>
+                <OutlineCheckRow
+                  key={`p-sec-${i}`}
+                  id={`p-sec-${i}`}
+                  label={cleanOutlineSectionTitle(s.section_name || `Section ${i + 1}`)}
+                  labelPrefix={outlineSectionRole(i, sections.length)}
+                  detail={s.purpose}
+                  covered={covered}
+                  onToggle={onToggleCovered}
+                >
                   {!!s.scholarship_requirement_addressed?.length && (
                     <div className="mt-2 flex flex-wrap gap-1">
                       {s.scholarship_requirement_addressed.map((item) => (
@@ -6153,7 +6220,8 @@ function PersonalizedOutlinePanel({
               </div>
             </div>
           );
-        })()}
+          })()}
+      </div>
     </div>
   );
 }

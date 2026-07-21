@@ -505,23 +505,21 @@ export async function runWorkspaceCoachingSession(
   return data as CoachingSessionResult;
 }
 
-export type OutlinePointGroup = "strategy" | "structure";
-export type OutlinePoint = { id: string; label: string; detail?: string; group: OutlinePointGroup };
+export type OutlinePoint = { id: string; label: string; detail?: string };
 
 /**
- * Deterministic flat list of checkable outline points ({id,label,group}). Single
- * source of truth for point ids — used by the outline panel,
- * the coach payload (sent to the coverage agent), and coverage mapping.
+ * Deterministic flat list of checkable essay-section points ({id,label}).
+ * Single source of truth for point ids used by the coach payload and coverage
+ * mapping. Global tone guidance is advice, not a checkable coverage point.
  */
 export function buildOutlinePoints(outline?: PersonalizedOutlineResult): OutlinePoint[] {
   const data = outline?.outline;
   if (!data) return [];
-  const points: OutlinePoint[] = [];
-  if (outline?.strategy?.recommended_strategy) points.push({ id: "p-strat", label: outline.strategy.recommended_strategy, group: "strategy" });
-  if (outline?.strategy?.tone_guidance) points.push({ id: "p-tone", label: `Tone: ${outline.strategy.tone_guidance}`, group: "strategy" });
   const sections = data.sections ?? [];
-  sections.forEach((s, i) => points.push({ id: `p-sec-${i}`, label: s.section_name || `Section ${i + 1}`, group: "structure" }));
-  return points;
+  return sections.map((section, index) => ({
+    id: `p-sec-${index}`,
+    label: section.section_name || `Section ${index + 1}`,
+  }));
 }
 
 export type SelectionRewritePayload = {
