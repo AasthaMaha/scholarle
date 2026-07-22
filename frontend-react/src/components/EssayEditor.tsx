@@ -16,6 +16,7 @@ import {
   AlignRight,
   ArrowRight,
   Bold,
+  ChevronDown,
   Copy,
   Expand,
   Italic,
@@ -51,6 +52,7 @@ type Props = {
   onRichChange?: (value: string) => void;
   suggestions: Suggestion[];
   onDismiss: (s: Suggestion) => void;
+  onAddToDictionary?: (s: Suggestion) => void;
   onAutoCheck?: () => void;
   onRequestRewrite?: (action: RewriteAction, text: string, surrounding: string) => Promise<{ rewritten_text: string; note: string }>;
   className?: string;
@@ -74,7 +76,7 @@ const DEFAULT_EDITOR_TYPOGRAPHY: EditorTypography = {
 };
 
 const EDITOR_TYPOGRAPHY_STORAGE_KEY = "scholar-e:essay-editor-typography";
-const EDITOR_FONT_SIZES = [14, 16, 18, 20, 22, 24] as const;
+const EDITOR_FONT_SIZES = [12, 14, 16, 18, 20] as const;
 
 function validEditorTypography(value: unknown): EditorTypography {
   if (!value || typeof value !== "object") return DEFAULT_EDITOR_TYPOGRAPHY;
@@ -244,6 +246,39 @@ function rangeRect(backdrop: HTMLElement | null, start: number, end: number): DO
   return rects.length ? rects[0] : range.getBoundingClientRect();
 }
 
+function paragraphLikeRect(editor: HTMLElement | null): DOMRect | null {
+  if (!editor) return null;
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0) return null;
+  const range = selection.getRangeAt(0);
+  if (!editor.contains(range.startContainer)) return null;
+
+  const startContainer = range.startContainer as Node & { parentElement?: HTMLElement | null };
+  let element: HTMLElement | null =
+    startContainer.nodeType === Node.ELEMENT_NODE
+      ? (startContainer as HTMLElement)
+      : startContainer.parentElement ?? null;
+
+  while (element && element !== editor) {
+    if (["P", "LI", "H2", "BLOCKQUOTE", "DIV"].includes(element.tagName)) {
+      const visibleText = (element.innerText || element.textContent || "")
+        .replace(/\u00a0/g, " ")
+        .replace(/[\s\u200b]+/g, " ")
+        .trim();
+      if (visibleText) {
+        const rect = element.getBoundingClientRect();
+        if (rect.width || rect.height) return rect;
+      }
+    }
+    element = element.parentElement;
+  }
+
+  const caretRange = range.cloneRange();
+  caretRange.collapse(true);
+  const rect = caretRange.getClientRects()[0] ?? caretRange.getBoundingClientRect();
+  return rect.width || rect.height ? rect : null;
+}
+
 function escapeHtml(text: string) {
   return text
     .replace(/&/g, "&amp;")
@@ -293,7 +328,7 @@ function sanitizeRichHtml(html: string) {
 let flashSeq = 0;
 
 export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEditor(
-  { value, onChange, richValue, onRichChange, suggestions, onDismiss, onAutoCheck, onRequestRewrite, className = "" },
+  { value, onChange, richValue, onRichChange, suggestions, onDismiss, onAddToDictionary, onAutoCheck, onRequestRewrite, className = "" },
   ref,
 ) {
   const editorRef = useRef<HTMLDivElement | null>(null);
@@ -323,6 +358,12 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
   const [typographyLoaded, setTypographyLoaded] = useState(false);
   const pendingFlash = useRef<{ start: number; len: number; pulse: boolean } | null>(null);
   const lastSyncedHtml = useRef("");
+  const gutterFrame = useRef<number | null>(null);
+  const documentHydrated = useRef(false);
+  const onChangeRef = useRef(onChange);
+  const onRichChangeRef = useRef(onRichChange);
+  onChangeRef.current = onChange;
+  onRichChangeRef.current = onRichChange;
 
   // Overlays use position:fixed with viewport coords; an ancestor `transform`
   // (the full-bleed wrapper) would otherwise become their containing block, so
@@ -382,19 +423,66 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
     }
   }, []);
 
+  const scheduleGutterUpdate = useCallback(() => {
+    if (gutterFrame.current !== null) return;
+    gutterFrame.current = window.requestAnimationFrame(() => {
+      gutterFrame.current = null;
+      updateGutter();
+    });
+  }, []);
+
   useEffect(syncScroll, [value, syncScroll]);
+
+  useEffect(
+    () => () => {
+      if (gutterFrame.current !== null) window.cancelAnimationFrame(gutterFrame.current);
+    },
+    [],
+  );
 
   useLayoutEffect(() => {
     const editor = editorRef.current;
     if (!editor) return;
     const currentText = normalizeEditorText(editor.innerText ?? "");
-    if (currentText === value && editor.innerHTML === lastSyncedHtml.current) return;
-    if (currentText === value && editor.innerHTML) return;
-    const html = richValue && normalizeEditorText(editor.innerText ?? "") === value
-      ? sanitizeRichHtml(richValue)
-      : sanitizeRichHtml(richValue && normalizeEditorText(new DOMParser().parseFromString(richValue, "text/html").body.innerText) === value ? richValue : plainTextToHtml(value));
-    editor.innerHTML = html || "<br>";
-    lastSyncedHtml.current = editor.innerHTML;
+    const savedHtml = richValue?.trim() ? sanitizeRichHtml(richValue) : "";
+
+    function restoreHtml(html: string, deriveText: boolean) {
+      editor.innerHTML = html || "<br>";
+      const canonicalHtml = sanitizeRichHtml(editor.innerHTML);
+      if (editor.innerHTML !== canonicalHtml) editor.innerHTML = canonicalHtml || "<br>";
+      lastSyncedHtml.current = canonicalHtml;
+
+      // Keep the persisted rich document canonical after sanitization. When a
+      // saved rich document is restored, its rendered text is authoritative too.
+      if (canonicalHtml !== (richValue ?? "")) onRichChangeRef.current?.(canonicalHtml);
+      if (deriveText) {
+        const restoredText = normalizeEditorText(editor.innerText ?? "");
+        if (restoredText !== value) onChangeRef.current(restoredText);
+      }
+    }
+
+    // Navigation unmounts the editor. On the next mount, restore the saved,
+    // sanitized rich document directly instead of rejecting its formatting
+    // because of harmless whitespace or line-break differences.
+    if (!documentHydrated.current) {
+      documentHydrated.current = true;
+      restoreHtml(savedHtml || sanitizeRichHtml(plainTextToHtml(value)), !!savedHtml);
+      return;
+    }
+
+    // A different prompt (or another external source) may provide a new saved
+    // rich document while this editor instance remains mounted.
+    if (savedHtml && savedHtml !== lastSyncedHtml.current) {
+      restoreHtml(savedHtml, true);
+      return;
+    }
+
+    if (currentText === value) return;
+
+    // An intentional plain-text replacement (for example PDF import or Load
+    // example) has no matching new rich document. Rebuild and persist a fresh
+    // sanitized rich representation so stale formatting cannot return later.
+    restoreHtml(sanitizeRichHtml(plainTextToHtml(value)), false);
   }, [richValue, value]);
 
   useLayoutEffect(() => {
@@ -440,6 +528,7 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
     onRichChange?.(html);
     onChange(text);
     syncScroll();
+    scheduleGutterUpdate();
   }
 
   function addFlash(start: number, len: number, pulse: boolean) {
@@ -551,6 +640,7 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
       requestAnimationFrame(() => addFlash(s.start, s.end - s.start, true));
       editorRef.current?.focus();
       setSelectionByOffsets(s.start, s.end);
+      scheduleGutterUpdate();
     },
   }));
 
@@ -598,8 +688,11 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
     ] as const).find(([command]) => document.queryCommandState(command))?.[1] ?? "left";
     setActiveAlignment(nextAlignment);
     const selection = getSelectionOffsets();
-    if (!selection) return;
-    updateGutter();
+    if (!selection) {
+      updateGutter();
+      return;
+    }
+    scheduleGutterUpdate();
     if (selection.start === selection.end) {
       setSelBar(null);
       return;
@@ -619,14 +712,12 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
   }
 
   function updateGutter() {
-    const selection = getSelectionOffsets();
-    if (!selection) return;
-    const rect = rangeRect(backdropRef.current, selection.start, selection.start);
+    const rect = paragraphLikeRect(editorRef.current);
     if (!rect) {
       setGutter(null);
       return;
     }
-    setGutter({ top: rect.top });
+    setGutter({ top: rect.top + rect.height / 2 });
   }
 
   function replaceRange(start: number, end: number, text: string, pulse = false) {
@@ -716,6 +807,7 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
     const end = after === -1 ? value.length : after;
     editorRef.current?.focus();
     setSelectionByOffsets(start, end);
+    scheduleGutterUpdate();
     void requestRewrite("rewrite");
   }
 
@@ -734,6 +826,24 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
     document.addEventListener("mousedown", onDocClick);
     return () => document.removeEventListener("mousedown", onDocClick);
   }, []);
+
+  useEffect(() => {
+    function onSelectionChange() {
+      const editor = editorRef.current;
+      const selection = window.getSelection();
+      if (!editor || !selection || selection.rangeCount === 0) {
+        updateGutter();
+        return;
+      }
+      if (!editor.contains(selection.anchorNode) && !editor.contains(selection.focusNode)) {
+        updateGutter();
+        return;
+      }
+      scheduleGutterUpdate();
+    }
+    document.addEventListener("selectionchange", onSelectionChange);
+    return () => document.removeEventListener("selectionchange", onSelectionChange);
+  }, [scheduleGutterUpdate]);
 
   const formattingTools = [
     { label: "Bold", icon: Bold, run: () => runEditorCommand("bold") },
@@ -809,11 +919,14 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
           suppressContentEditableWarning
           onInput={syncFromEditor}
           onPaste={() => onAutoCheck?.()}
-          onScroll={syncScroll}
+          onScroll={() => {
+            syncScroll();
+            scheduleGutterUpdate();
+          }}
           onClick={handleClick}
           onKeyUp={refreshSelectionUi}
           onMouseUp={refreshSelectionUi}
-          onFocus={updateGutter}
+          onFocus={scheduleGutterUpdate}
           aria-label="Essay draft editor"
           className={`absolute inset-0 block h-full w-full overflow-y-auto whitespace-pre-wrap break-words border-0 bg-transparent text-foreground caret-foreground outline-none empty:before:content-[''] [&_h2]:mb-2 [&_h2]:mt-3 [&_h2]:text-2xl [&_h2]:font-semibold [&_h2]:leading-9 [&_h2]:text-foreground ${EDITOR_BOX}`}
           style={typographyStyle}
@@ -838,7 +951,7 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
       </div>
 
       {/* Bottom formatting toolbar */}
-      <div className="flex flex-wrap items-center gap-0.5 border-t border-border px-2 py-1.5">
+      <div className="flex flex-wrap items-center justify-center gap-1 px-2 py-1.5">
         {formattingTools.map((tool) => {
           const Icon = tool.icon;
           return (
@@ -856,42 +969,46 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
             </button>
           );
         })}
-        <div className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
-
-        <label className="inline-flex h-8 items-center gap-1 rounded-md border border-border bg-background px-2 text-[12px] text-muted-foreground">
-          <span className="sr-only">Font size</span>
-          <select
-            aria-label="Font size"
-            value={typography.fontSize}
-            onChange={(event) =>
-              setTypography((current) => ({ ...current, fontSize: Number(event.target.value) }))
-            }
-            className="cursor-pointer bg-transparent font-medium text-foreground outline-none"
-          >
-            {EDITOR_FONT_SIZES.map((size) => (
-              <option key={size} value={size}>
-                {size} px
-              </option>
-            ))}
-          </select>
+        <label className="inline-flex h-8 items-center gap-1 rounded-md px-1.5 text-[12px] text-muted-foreground transition-colors hover:bg-accent">
+          <span>Font size:</span>
+          <span className="relative inline-flex items-center">
+            <select
+              aria-label="Font size"
+              value={typography.fontSize}
+              onChange={(event) =>
+                setTypography((current) => ({ ...current, fontSize: Number(event.target.value) }))
+              }
+              className="cursor-pointer appearance-none bg-transparent pr-5 font-medium text-foreground outline-none"
+            >
+              {EDITOR_FONT_SIZES.map((size) => (
+                <option key={size} value={size}>
+                  {size}
+                </option>
+              ))}
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-0 size-3.5 text-muted-foreground" aria-hidden="true" />
+          </span>
         </label>
 
-        <label className="inline-flex h-8 items-center rounded-md border border-border bg-background px-2 text-[12px] text-muted-foreground">
+        <label className="inline-flex h-8 items-center rounded-md px-1.5 text-[12px] text-muted-foreground transition-colors hover:bg-accent">
           <span className="sr-only">Font family</span>
-          <select
-            aria-label="Font family"
-            value={typography.fontFamily}
-            onChange={(event) =>
-              setTypography((current) => ({ ...current, fontFamily: event.target.value as EditorFontFamily }))
-            }
-            className="cursor-pointer bg-transparent font-medium text-foreground outline-none"
-          >
-            <option value="serif">Serif</option>
-            <option value="sans">Sans serif</option>
-          </select>
+          <span className="relative inline-flex items-center">
+            <select
+              aria-label="Font family"
+              value={typography.fontFamily}
+              onChange={(event) =>
+                setTypography((current) => ({ ...current, fontFamily: event.target.value as EditorFontFamily }))
+              }
+              className="cursor-pointer appearance-none bg-transparent pr-5 font-medium text-foreground outline-none"
+            >
+              <option value="serif">Serif</option>
+              <option value="sans">Sans serif</option>
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-0 size-3.5 text-muted-foreground" aria-hidden="true" />
+          </span>
         </label>
 
-        <div className="ml-0.5 inline-flex items-center overflow-hidden rounded-md border border-border bg-background" aria-label="Text alignment">
+        <div className="ml-0.5 inline-flex items-center gap-0.5" aria-label="Text alignment">
           {([
             { value: "left", label: "Align left", icon: AlignLeft, command: "justifyLeft" },
             { value: "center", label: "Align center", icon: AlignCenter, command: "justifyCenter" },
@@ -912,7 +1029,7 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
                   runEditorCommand(option.command);
                   setActiveAlignment(option.value);
                 }}
-                className={`grid size-8 place-items-center border-l border-border first:border-l-0 transition-colors ${
+                className={`grid size-8 place-items-center rounded-md transition-colors ${
                   selected ? "bg-info/10 text-info" : "text-muted-foreground hover:bg-accent hover:text-foreground"
                 }`}
               >
@@ -980,22 +1097,32 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
           <p className="mt-1.5 text-[12px] leading-relaxed text-muted-foreground">{card.sugg.explanation}</p>
           <div className="mt-2 rounded-lg border border-border bg-background p-2 text-[13px]">
             <span className="text-muted-foreground line-through decoration-muted-foreground/50">{card.sugg.original.trim() || "␠"}</span>
-            <span className="mx-1.5 text-muted-foreground">→</span>
-            <span className="font-medium text-foreground">{card.sugg.replacement.trim() || "(removed)"}</span>
+            {card.sugg.replacementAvailable !== false && (
+              <>
+                <span className="mx-1.5 text-muted-foreground">→</span>
+                <span className="font-medium text-foreground">{card.sugg.replacement.trim() || "(removed)"}</span>
+              </>
+            )}
           </div>
           <div className="mt-2.5 flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                const next = applySuggestion(value, card.sugg);
-                pendingFlash.current = { start: card.sugg.start, len: card.sugg.replacement.length, pulse: false };
-                onChange(next);
-                setCard(null);
-              }}
-              className="flex-1 rounded-lg bg-info px-3 py-1.5 text-[12px] font-semibold text-white transition-opacity hover:opacity-90"
-            >
-              Accept
-            </button>
+            {card.sugg.replacementAvailable !== false && (
+              <button
+                type="button"
+                onClick={() => {
+                  const next = applySuggestion(value, card.sugg);
+                  pendingFlash.current = { start: card.sugg.start, len: card.sugg.replacement.length, pulse: false };
+                  onChange(next);
+                  setCard(null);
+                }}
+                className={`flex-1 rounded-lg px-3 py-1.5 text-[12px] font-semibold transition-colors ${
+                  card.sugg.suggestionType === "spelling_name"
+                    ? "border border-border text-muted-foreground hover:bg-accent hover:text-foreground"
+                    : "bg-info text-white hover:opacity-90"
+                }`}
+              >
+                {card.sugg.suggestionType === "spelling_name" ? "Use suggestion" : "Accept"}
+              </button>
+            )}
             <button
               type="button"
               onClick={() => {
@@ -1006,15 +1133,35 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
             >
               Ignore
             </button>
-            <button
-              type="button"
-              onClick={() => void navigator.clipboard?.writeText(card.sugg.replacement)}
-              title="Copy suggested text"
-              aria-label="Copy suggested text"
-              className="grid size-8 place-items-center rounded-lg border border-border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            >
-              <Copy className="size-3.5" />
-            </button>
+            {card.sugg.engineSource === "language_tool"
+              && /^\p{L}[\p{L}'’-]*$/u.test(card.sugg.original.trim())
+              && onAddToDictionary && (
+              <button
+                type="button"
+                onClick={() => {
+                  onAddToDictionary(card.sugg);
+                  setCard(null);
+                }}
+                className={`rounded-lg border px-2 py-1.5 text-[11px] font-medium transition-colors ${
+                  card.sugg.suggestionType === "spelling_name"
+                    ? "border-info bg-info text-white hover:opacity-90"
+                    : "border-border text-muted-foreground hover:bg-accent hover:text-foreground"
+                }`}
+              >
+                Add word
+              </button>
+            )}
+            {card.sugg.replacementAvailable !== false && (
+              <button
+                type="button"
+                onClick={() => void navigator.clipboard?.writeText(card.sugg.replacement)}
+                title="Copy suggested text"
+                aria-label="Copy suggested text"
+                className="grid size-8 place-items-center rounded-lg border border-border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              >
+                <Copy className="size-3.5" />
+              </button>
+            )}
           </div>
         </div>,
           document.body,

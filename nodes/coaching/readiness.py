@@ -7,7 +7,6 @@ READINESS_DIMENSIONS = [
     "narrative_structure_flow_coherence",
     "tone_authenticity",
     "clarity_concision",
-    "grammar",
 ]
 
 READINESS_LABELS = {
@@ -17,7 +16,6 @@ READINESS_LABELS = {
     "narrative_structure_flow_coherence": "Narrative Structure, Flow & Coherence",
     "tone_authenticity": "Tone & Authenticity",
     "clarity_concision": "Clarity & Concision",
-    "grammar": "Grammar",
     "revision_progress": "Revision Progress",
 }
 

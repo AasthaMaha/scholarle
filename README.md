@@ -1,15 +1,20 @@
 ## Setup
 
-1. Create / activate your environment, then install dependencies:
+1. Install Python 3.10+, Node 20+, and Java 17+.
+
+2. Create / activate your environment, then install dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-2. Add a `.env` file at the project root.
-3. ``` conda activate <your_virtual_enviroment>```
-4. ``` cd ./frontend-react ```
-5. ``` npm run dev ```
+   The first backend start downloads and warms the local LanguageTool runtime;
+   later spelling and grammar checks reuse that process.
+
+3. Add a `.env` file at the project root.
+4. ``` conda activate <your_virtual_enviroment>```
+5. ``` cd ./frontend-react ```
+6. ``` npm run dev ```
 
 
 
@@ -102,7 +107,10 @@ POST /api/opportunity/extract
 POST /api/fit/analyze
 POST /api/apply/generate-outline
 POST /api/apply/coaching-session
+POST /api/apply/editor-warmup
 POST /api/apply/editor-check
+POST /api/apply/contextual-grammar
+POST /api/apply/outline-coverage
 POST /api/apply/rewrite-selection
 ```
 
@@ -463,24 +471,56 @@ Main service function:
 run_unified_coaching_session(...)
 ```
 
-The full review returns the schema-v3 Essay Review only: one weighted overall
-score, seven criterion packages, Manager plan, QA/Guardrail audit, optional
+The full review returns the schema-v4 Essay Review only: one weighted overall
+score, six criterion packages, Manager plan, QA/Guardrail audit, optional
 outline coverage, agent statuses, and warnings.
 
 ---
 
 ## 10. Background Editor Check
 
-Background editor support is intentionally narrow. Paste/upload auto-checks call:
+Background editor support is intentionally narrow. After the student pauses
+typing, the changed paragraph is checked through:
 
 ```text
 POST /api/apply/editor-check
 ```
 
-This endpoint returns grammar sentence suggestions and optional outline coverage.
-It does not run the full seven-criterion evaluation.
+The backend starts LanguageTool asynchronously as soon as the API launches, so
+other endpoints become available immediately. Entering the Journey also sends
+an idempotent early warm-up request:
 
-Sentence suggestions are returned as text anchors, not raw character offsets.
+```text
+POST /api/apply/editor-warmup
+```
+
+If a check arrives during the one-time warm-up, the frontend quietly retries
+while keeping the editor usable and its immediate browser mechanics active.
+
+This endpoint runs the reusable local LanguageTool service for spelling, grammar,
+and punctuation. It returns exact text offsets and every change requires the
+student's individual approval. Profile terms plus the student's personal
+dictionary are protected.
+
+The slower meaning-dependent pass is separate so it cannot delay LanguageTool:
+
+```text
+POST /api/apply/contextual-grammar
+```
+
+The frontend merges the two result streams, keeps LanguageTool when findings
+overlap, and preserves unaffected underlines while the changed paragraph is being
+rechecked. Neither endpoint runs the six-criterion evaluation.
+
+Conditional outline coverage is kept separate:
+
+```text
+POST /api/apply/outline-coverage
+```
+
+Sentence suggestions include their text anchors and character offsets for the
+checked draft revision. The frontend discards a response if the text has changed
+before that response arrives.
 
 Backend returns each suggestion with:
 
@@ -562,7 +602,7 @@ POST /api/apply/coaching-session
 
 The endpoint evaluates the submitted draft exactly as written, then runs one
 Manager-first review. Grammar corrections remain optional fixes. The Manager sees the scholarship and essay
-prompt—but not the student's draft—and creates a tailored rubric plus seven
+prompt—but not the student's draft—and creates a tailored rubric plus six
 criterion weights totaling 100. The rubric and weights are then supplied to
 these parallel criterion-review lanes:
 
@@ -574,7 +614,6 @@ regenerates it.
   Coach, and Insight (Depth + Meaning + Reflection) Coach.
 - **Structure:** Narrative Structure, Flow & Coherence Coach.
 - **Voice:** Tone & Authenticity Coach and Clarity & Concision Coach.
-- **Grammar:** Grammar Coach.
 - **Conditional:** Outline Coverage Coach.
 
 Eligibility is intentionally handled
@@ -594,7 +633,7 @@ realizations, changes in mindset or behavior, personal/community significance,
 and future direction. Narrative Structure only judges whether reflection is
 present, positioned effectively, and logically connected.
 
-Each of the seven criterion agents is one Scholarship Coach that speaks from an
+Each of the six criterion agents is one Scholarship Coach that speaks from an
 experienced scholarship reviewer's perspective. Inside one model call, it first
 completes a detailed, criterion-specific structured audit. It then selects the
 strongest grounded positive finding and the single most consequential gap,
@@ -606,27 +645,27 @@ omission is the most consequential evidence gap. The private audits are availabl
 to backend quality control but are stripped from the public API response. The
 student sees concise feedback with evidence woven into its praise and gap, not a
 separate evidence inventory. There is no separate Specialist Assessment,
-Evaluator, or Reviewer Simulation agent in the Page 4 session. The seven lanes
+Evaluator, or Reviewer Simulation agent in the Page 4 session. The six lanes
 run in parallel; conditional Outline Coverage may run beside them but is not scored.
 
 After the criterion wave, QA Critic and Guardrail Critic run in parallel. QA
 checks the evidence → private audit → coach feedback → score → action chain.
-Guardrail checks that all seven actions trace back to their audits and submission
+Guardrail checks that all six actions trace back to their audits and submission
 context and do not invent facts, replace the student's voice, make unsafe
 assumptions, or give vague instructions. Only failed criteria receive one bounded
 repair attempt. Python validates the complete audit and visible fields, then
 calculates the sole overall score as the Manager-weighted average; an LLM never
 estimates that aggregate.
 
-The Page 4 endpoint has one canonical schema-v3 review contract. It returns the
-overall score, seven criterion packages, Manager plan, and quality audit, plus
+The Page 4 endpoint has one canonical schema-v4 review contract. It returns the
+overall score, six criterion packages, Manager plan, and quality audit, plus
 optional outline coverage, agent statuses, and warnings.
 It does not return the former `evaluation`, `coach_pack`, or `components`
 compatibility envelopes.
 
-Page 4 displays the overall score and all seven criterion packages together in
+Page 4 displays the overall score and all six criterion packages together in
 one **Essay Review** tab. The former separate Evaluation tab is removed. Each
-criterion card shows its score, weight, unified Scholarship Coach feedback, and
+criterion card shows its score, weight, unified Essay Coach feedback, and
 one aligned how-to-fix action. Outline and editor Fixes remain
 separate tools because they are not duplicate evaluation outputs.
 
@@ -641,11 +680,13 @@ The only supporting Page 4 endpoints are:
 
 ```text
 POST /api/apply/editor-check
+POST /api/apply/outline-coverage
 POST /api/apply/rewrite-selection
 ```
 
-`editor-check` is background-only grammar and outline coverage. It does not
-evaluate the essay. `rewrite-selection` only transforms selected text.
+`editor-check` is background-only spelling and contextual grammar. It does not
+evaluate the essay. `outline-coverage` updates outline checkmarks independently,
+and `rewrite-selection` only transforms selected text.
 
 The retired analyze and essay-coach routes are removed.
 
@@ -896,17 +937,16 @@ run_unified_coaching_session(...)
 
 | Stage | Agent | Function |
 | --- | --- | --- |
-| Serial setup | Manager Agent | Assigns seven scholarship/prompt-specific weights totaling 100 and creates the locked tailored rubric without seeing the draft. |
+| Serial setup | Manager Agent | Assigns six scholarship/prompt-specific weights totaling 100 and creates the locked tailored rubric without seeing the draft. |
 | Content | Alignment (Prompt + Scholarship Values) Coach | Combines full prompt coverage with evidence-backed fit to the scholarship's stated values, selection priorities, and opportunity-specific goals. |
 | Content | Evidence Strength Coach | Combines profile grounding, experience discovery, specificity, and impact; flags unsupported or unverifiable details and surfaces stronger real profile evidence. |
 | Content | Insight (Depth + Meaning + Reflection) Coach | Evaluates reflection depth, lessons and realizations, personal change, significance to self or others, and grounded connections to future direction. |
 | Structure | Narrative Structure, Flow & Coherence Coach | Combines paragraph organization, transitions, narrative arc, logical continuity, timeline consistency, contradictions, and missing reasoning. |
 | Voice | Tone & Authenticity Coach | Protects the student's voice; evaluates sincerity, thoughtfulness, confidence, respect, and genuinely student-written language; flags generic, overly polished, corporate, formulaic, performative, and AI-like phrasing. |
 | Voice | Clarity & Concision Coach | Evaluates whether sentences are understandable, direct, and free of filler, repetition, wordiness, unclear phrasing, and tangled construction. |
-| Grammar | Grammar Coach | Evaluates spelling, punctuation, capitalization, verb tense, agreement, grammar, and sentence-level correctness. |
 | Every criterion lane | Scholarship Coach role | Combines criterion expertise with the scholarship reviewer's perspective, giving grounded praise, one main gap, a score, and one directly aligned action. |
 | Conditional | Outline Coverage Coach | Checks which personalized outline points are covered by the draft. |
-| Parallel quality control | QA Critic | Audits evidence grounding, unified coach feedback, rubric score, and action consistency across all seven criteria. |
+| Parallel quality control | QA Critic | Audits evidence grounding, unified coach feedback, rubric score, and action consistency across all six criteria. |
 | Parallel quality control | Guardrail Critic | Rejects criterion actions that invent facts, replace the student's voice, make unsafe assumptions, or lack specific instructions. |
 | Deterministic finalizer | Backend code | Validates all fields and calculates one weighted overall score from the Manager's weights. |
 
@@ -926,13 +966,18 @@ essay_editor_service.py
 
 | Tool | Function |
 | --- | --- |
-| Background editor check | Returns grammar sentence suggestions and optional outline coverage. |
+| LanguageTool editor check | Returns individually reviewable spelling, grammar, and punctuation suggestions with exact offsets. |
+| Contextual grammar check | Adds slower, meaning-dependent grammar suggestions without delaying LanguageTool. |
+| Outline coverage check | Updates outline checkmarks independently from sentence Fixes. |
 | Selection Rewrite Agent | Rewrites, shortens, expands, or improves tone for selected text only. |
 
 Used by:
 
 ```text
 POST /api/apply/editor-check
+POST /api/apply/editor-warmup
+POST /api/apply/contextual-grammar
+POST /api/apply/outline-coverage
 POST /api/apply/rewrite-selection
 ```
 
@@ -965,6 +1010,6 @@ nodes/coaching/readiness.py
 
 - Profile agents build the student profile.
 - Scholarship agents discover, extract, clean, and analyze opportunities.
-- Essay Workspace Evaluation agents score the draft with the Manager-led schema-v3 review.
+- Essay Workspace Evaluation agents score the draft with the Manager-led schema-v4 review.
 - Targeted editor tools support grammar checks, outline coverage, and selected-text rewrites.
 - Critic and guardrail agents protect against hallucinated or unsupported coaching.

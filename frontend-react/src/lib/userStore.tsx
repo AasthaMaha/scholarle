@@ -8,6 +8,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import type { EssayFixCacheEntry } from "@/lib/fixCache";
 
 export type EducationLevel = "high_school" | "undergrad" | "grad" | "phd";
 
@@ -289,7 +290,7 @@ export type EssayManagerPlan = {
 };
 
 export type EssayReviewResult = {
-  schema_version: 3;
+  schema_version: 4;
   status: "success" | "partial" | "error";
   overall_score?: number | null;
   criteria: Record<string, EssayCriterionReview>;
@@ -512,11 +513,16 @@ export type UserProfile = {
   essayDraftHtml?: string;
   essayDraftsByPromptId?: Record<string, string>;
   essayDraftHtmlByPromptId?: Record<string, string>;
+  // Student-approved words that sentence-level spelling checks must preserve.
+  personalDictionary?: string[];
+  // Prompt-scoped, locally persisted Fixes results and student ignore choices.
+  essayFixesByPromptId?: Record<string, EssayFixCacheEntry>;
+  ignoredEssayFixesByPromptId?: Record<string, string[]>;
   // last journey step index, so the student resumes where they left off
   lastStep?: number;
   // scholarship currently being analyzed
   activeScholarship?: ActiveScholarship;
-  // latest schema-v3 Essay Review, persisted across remounts
+  // latest schema-v4 six-criterion Essay Review, persisted across remounts
   essayReviewResult?: EssayReviewResult;
   essayReviewUpdatedAt?: number;
   essayReviewDraftAtRun?: string;
@@ -606,7 +612,7 @@ function withoutLegacyEssayReviewData(user: UserProfile): UserProfile {
   });
 
   const reviewSchema = (current.essayReviewResult as { schema_version?: number } | undefined)?.schema_version;
-  const currentReview = reviewSchema === 3
+  const currentReview = reviewSchema === 4
     ? current
     : {
         ...current,

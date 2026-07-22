@@ -14,7 +14,9 @@ from pydantic import BaseModel, Field
 from fastapi import HTTPException, UploadFile
 
 from config import settings
+from essay_editor_service import run_contextual_grammar_check as run_contextual_grammar_check_service
 from essay_editor_service import run_editor_check as run_editor_check_service
+from essay_editor_service import run_outline_coverage_check as run_outline_coverage_check_service
 from essay_editor_service import run_selection_rewrite
 from prompt_adaptation import format_brief_for_prompt, resolve_writing_brief
 from graph.fit_builder import build_fit_analysis_graph
@@ -195,10 +197,15 @@ class WikiDiscoverResponse(BaseModel):
 
 
 class EditorCheckRequest(BaseModel):
-    user_id: str = Field(default="", max_length=100)
-    clean_scholarship_record: dict = Field(default_factory=dict)
     essay_draft: str = Field(default="", max_length=20000)
     user_notes: str = Field(default="", max_length=5000)
+    protected_terms: list[str] = Field(default_factory=list, max_length=500)
+    draft_revision: str = Field(default="", max_length=100)
+
+
+class OutlineCoverageRequest(BaseModel):
+    clean_scholarship_record: dict = Field(default_factory=dict)
+    essay_draft: str = Field(default="", max_length=20000)
     outline_points: list[dict] = Field(default_factory=list)
 
 
@@ -629,6 +636,24 @@ def generate_personalized_outline(request: OutlineGenerateRequest) -> dict:
 
 
 def run_editor_check(request: EditorCheckRequest) -> dict:
+    return run_editor_check_service(
+        essay_draft=request.essay_draft,
+        user_notes=request.user_notes,
+        protected_terms=request.protected_terms,
+        draft_revision=request.draft_revision,
+    )
+
+
+def run_contextual_grammar_check(request: EditorCheckRequest) -> dict:
+    return run_contextual_grammar_check_service(
+        essay_draft=request.essay_draft,
+        user_notes=request.user_notes,
+        protected_terms=request.protected_terms,
+        draft_revision=request.draft_revision,
+    )
+
+
+def run_outline_coverage_check(request: OutlineCoverageRequest) -> dict:
     if not settings.openai_api_key:
         raise HTTPException(
             status_code=400,
@@ -637,11 +662,9 @@ def run_editor_check(request: EditorCheckRequest) -> dict:
                 "with OPENAI_API_KEY=your_key, then restart the server."
             ),
         )
-
-    return run_editor_check_service(
+    return run_outline_coverage_check_service(
         essay_draft=request.essay_draft,
         clean_scholarship_record=request.clean_scholarship_record,
-        user_notes=request.user_notes,
         outline_points=request.outline_points,
     )
 

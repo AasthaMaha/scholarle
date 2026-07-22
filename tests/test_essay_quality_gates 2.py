@@ -6,7 +6,11 @@ from essay_editor_service import (
     _resolve_writing_support_level,
 )
 from nodes.coaching.readiness import READINESS_DIMENSIONS
-from nodes.coaching.criterion_review import normalize_manager_plan, weighted_overall_score
+from nodes.coaching.criterion_review import (
+    CRITERION_AUDIT_PLAYBOOKS,
+    normalize_manager_plan,
+    weighted_overall_score,
+)
 from templates.essay_coach import (
     COACH_GUARDRAILS,
     EDIT_RISK_TIERS,
@@ -27,6 +31,13 @@ class _Item:
         self.suggestion_type = stype
         self.severity = severity
         self.reason = reason
+
+
+def _complete_audit(criterion: str) -> dict:
+    return {
+        key: ([] if isinstance(example, list) else "none")
+        for key, example in CRITERION_AUDIT_PLAYBOOKS[criterion]["schema"].items()
+    }
 
 
 def test_resolve_writing_support_forces_grammar_for_evaluate_modes():
@@ -205,7 +216,6 @@ def test_readiness_dimensions_match_standard_specialists():
         "narrative_structure_flow_coherence",
         "tone_authenticity",
         "clarity_concision",
-        "grammar",
     ]
 
 
@@ -298,7 +308,7 @@ def test_unified_coaching_session_reviews_submitted_draft_without_rewriting(monk
         seen["draft"] = kwargs["essay_draft"]
         return {
             "review": {
-                "schema_version": 2,
+                "schema_version": 4,
                 "status": "success",
                 "overall_score": 70,
                 "criteria": {},
@@ -316,7 +326,7 @@ def test_unified_coaching_session_reviews_submitted_draft_without_rewriting(monk
     result = routes.run_workspace_coaching_session(_coaching_session_request())
 
     assert result["status"] == "success"
-    assert result["review"]["schema_version"] == 2
+    assert result["review"]["schema_version"] == 4
     assert result["review"]["overall_score"] == 70
     assert result["outline_coverage"]["covered_point_ids"] == ["p-core"]
     assert "components" not in result
@@ -336,7 +346,7 @@ def test_unified_coaching_session_preserves_partial_review_and_warning(monkeypat
     def fake_unified(**_kwargs):
         return {
             "review": {
-                "schema_version": 2,
+                "schema_version": 4,
                 "status": "partial",
                 "overall_score": 62,
                 "criteria": {},
@@ -344,8 +354,8 @@ def test_unified_coaching_session_preserves_partial_review_and_warning(monkeypat
                 "quality_review": {"approved": False},
             },
             "outline_coverage": {},
-            "warnings": ["grammar criterion timed out"],
-            "agent_status": {"grammar": "error"},
+            "warnings": ["clarity_concision criterion timed out"],
+            "agent_status": {"clarity_concision": "error"},
         }
 
     monkeypatch.setattr(routes.settings, "openai_api_key", "test-key")
@@ -355,13 +365,13 @@ def test_unified_coaching_session_preserves_partial_review_and_warning(monkeypat
 
     assert result["status"] == "partial"
     assert result["review"]["overall_score"] == 62
-    assert result["agents"]["grammar"] == "error"
-    assert any("grammar criterion timed out" in warning for warning in result["warnings"])
+    assert result["agents"]["clarity_concision"] == "error"
+    assert any("clarity_concision criterion timed out" in warning for warning in result["warnings"])
     assert "evaluation" not in result
     assert "coach_pack" not in result
 
 
-def test_manager_first_review_runs_seven_criterion_lanes_and_weights_once(monkeypatch):
+def test_manager_first_review_runs_six_criterion_lanes_and_weights_once(monkeypatch):
     import unified_coaching_service as unified
 
     monkeypatch.setattr(
@@ -376,12 +386,11 @@ def test_manager_first_review_runs_seven_criterion_lanes_and_weights_once(monkey
     )
     weights = {
         "alignment": 25,
-        "evidence_strength": 20,
+        "evidence_strength": 25,
         "insight": 20,
         "narrative_structure_flow_coherence": 15,
         "tone_authenticity": 8,
         "clarity_concision": 7,
-        "grammar": 5,
     }
     scores = {
         "alignment": 60,
@@ -390,7 +399,6 @@ def test_manager_first_review_runs_seven_criterion_lanes_and_weights_once(monkey
         "narrative_structure_flow_coherence": 90,
         "tone_authenticity": 85,
         "clarity_concision": 75,
-        "grammar": 95,
     }
     manager_contexts = []
 
@@ -417,21 +425,17 @@ def test_manager_first_review_runs_seven_criterion_lanes_and_weights_once(monkey
         return unified.normalize_criterion_review(
             key,
             {
+                "audit": _complete_audit(key),
                 "score": scores[key],
-                "assessment": {
-                    "what_is_working": f"Working {key}",
+                "coach_feedback": {
+                    "grounded_praise": f"Grounded praise for {key}",
                     "main_gap": f"Gap {key}",
-                    "essay_evidence": ["I mentor younger robotics students each week."],
-                },
-                "reviewer_feedback": {
-                    "likely_reaction": f"Reviewer reaction for {key}",
-                    "main_concern": f"Reviewer concern for {key}",
                 },
                 "priority_action": {
                     "title": f"Fix {key}",
                     "location": "Paragraph 1",
                     "how_to_fix": f"Specific fix for {key}",
-                    "why_this_addresses_the_reviewer": f"Resolves concern for {key}",
+                    "why_this_fixes_the_gap": f"Directly fixes gap for {key}",
                     "evidence_safety": "Use only a real detail.",
                     "impact": "High",
                     "estimated_effort": "Moderate",
@@ -447,7 +451,7 @@ def test_manager_first_review_runs_seven_criterion_lanes_and_weights_once(monkey
         unified,
         "run_criterion_qa",
         lambda _context, _plan, reviews: {
-            "approved": len(reviews) == 7,
+            "approved": len(reviews) == 6,
             "failed_criteria": [],
             "issues": [],
         },
@@ -456,7 +460,7 @@ def test_manager_first_review_runs_seven_criterion_lanes_and_weights_once(monkey
         unified,
         "run_action_guardrail",
         lambda _context, reviews: {
-            "approved": len(reviews) == 7,
+            "approved": len(reviews) == 6,
             "unsafe_criteria": [],
             "issues": [],
         },
@@ -474,23 +478,22 @@ def test_manager_first_review_runs_seven_criterion_lanes_and_weights_once(monkey
 
     assert len(manager_contexts) == 1
     assert "I mentor younger robotics students" not in manager_contexts[0]
-    assert len(criterion_calls) == 7
+    assert len(criterion_calls) == 6
     assert {call[0] for call in criterion_calls} == set(READINESS_DIMENSIONS)
-    assert result["review"]["schema_version"] == 2
-    assert result["review"]["overall_score"] == 75
+    assert result["review"]["schema_version"] == 4
+    assert result["review"]["overall_score"] == 74
     assert result["review"]["manager_plan"]["weight_total"] == 100
-    assert len(result["review"]["criteria"]) == 7
+    assert len(result["review"]["criteria"]) == 6
     for key, criterion in result["review"]["criteria"].items():
         assert criterion["score"] == scores[key]
         assert criterion["weight"] == weights[key]
-        assert criterion["reviewer_feedback"]["main_concern"] == f"Reviewer concern for {key}"
+        assert criterion["coach_feedback"]["main_gap"] == f"Gap {key}"
         assert criterion["priority_action"]["how_to_fix"] == f"Specific fix for {key}"
-        assert "Resolves concern" in criterion["priority_action"]["why_this_addresses_the_reviewer"]
+        assert "Directly fixes gap" in criterion["priority_action"]["why_this_fixes_the_gap"]
     assert result["outline_coverage"]["covered_point_ids"] == ["p-core"]
     assert "evaluation" not in result
     assert "coach_pack" not in result
     assert result["agent_status"]["manager"] == "success"
-    assert result["agent_status"]["grammar"] == "success"
     assert result["agent_status"]["clarity_concision"] == "success"
     assert result["agent_status"]["evidence_strength"] == "success"
     assert result["agent_status"]["narrative_structure_flow_coherence"] == "success"

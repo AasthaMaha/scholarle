@@ -1,9 +1,14 @@
 """Quality-gate unit tests for essay coaching architecture."""
 
+import essay_editor_service as editor_service
+
 from essay_editor_service import (
     SentenceSuggestion,
     _clean_sentence_suggestions,
+    _language_tool_suggestions,
     _resolve_writing_support_level,
+    run_contextual_grammar_check,
+    run_editor_check,
 )
 from nodes.coaching.readiness import READINESS_DIMENSIONS
 from nodes.coaching.criterion_review import (
@@ -70,6 +75,517 @@ def test_clean_suggestions_rejects_overlong_rewrites():
     assert cleaned == []
 
 
+def test_contextual_grammar_does_not_capitalize_i_inside_abbreviation():
+    cleaned = _clean_sentence_suggestions(
+        "Use a concrete example (i.e., tutoring).",
+        [_Item("i", "I", "grammar")],
+        writing_support_level="grammar_only",
+    )
+
+    assert cleaned == []
+
+
+def test_contextual_grammar_rejects_uncertain_independent_suggestion(monkeypatch):
+    draft = "A luxury underrepresented students cannot afford."
+    monkeypatch.setattr(editor_service, "language_tool_status", lambda: {"ready": True})
+    monkeypatch.setattr(editor_service, "_language_tool_suggestions", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        editor_service,
+        "_run_grammar",
+        lambda *_args, **_kwargs: {
+            "grammar_score": 62,
+            "sentence_suggestions": [
+                SentenceSuggestion(
+                    original_text="students",
+                    suggested_text="student",
+                    suggestion_type="grammar",
+                    reason="The plural noun cannot be used here.",
+                    severity="medium",
+                )
+            ],
+        },
+    )
+
+    result = run_contextual_grammar_check(essay_draft=draft, draft_revision="draft-1")
+
+    assert result["sentence_suggestions"] == []
+
+
+def test_contextual_grammar_keeps_supported_grammar_fix_when_language_tool_matches(monkeypatch):
+    draft = "This scholarship would gave me freedom."
+    gave_start = draft.index("gave")
+    monkeypatch.setattr(editor_service, "language_tool_status", lambda: {"ready": True})
+    monkeypatch.setattr(
+        editor_service,
+        "_language_tool_suggestions",
+        lambda *_args, **_kwargs: [
+            {
+                "original_text": "gave",
+                "suggested_text": "give",
+                "suggestion_type": "grammar",
+                "reason": "Use the base form after a modal verb.",
+                "severity": "high",
+                "risk_tier": "C0",
+                "source": "language_tool",
+                "confidence": "high",
+                "replacement_available": True,
+                "start_offset": gave_start,
+                "end_offset": gave_start + 4,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        editor_service,
+        "_run_grammar",
+        lambda *_args, **_kwargs: {
+            "grammar_score": 58,
+            "sentence_suggestions": [
+                SentenceSuggestion(
+                    original_text="gave",
+                    suggested_text="give",
+                    suggestion_type="grammar",
+                    reason="The modal verb requires the base form.",
+                    severity="high",
+                    confidence="high",
+                )
+            ],
+        },
+    )
+
+    result = run_contextual_grammar_check(essay_draft=draft, draft_revision="draft-2")
+
+    assert result["sentence_suggestions"][0]["suggested_text"] == "give"
+
+
+def test_contextual_grammar_keeps_high_confidence_independent_finding(monkeypatch):
+    draft = "I began using my knowledge to find solutions to problem."
+    monkeypatch.setattr(editor_service, "_language_tool_suggestions", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        editor_service,
+        "_run_grammar",
+        lambda *_args, **_kwargs: {
+            "grammar_score": 70,
+            "candidate_reviews": [],
+            "sentence_suggestions": [
+                SentenceSuggestion(
+                    original_text="problem",
+                    suggested_text="problems",
+                    suggestion_type="grammar",
+                    reason="A plural count noun is required after ‘solutions to’.",
+                    severity="high",
+                    confidence="high",
+                )
+            ],
+        },
+    )
+
+    result = run_contextual_grammar_check(essay_draft=draft, draft_revision="draft-independent")
+
+    assert result["sentence_suggestions"][0]["original_text"] == "problem"
+    assert result["sentence_suggestions"][0]["suggested_text"] == "problems"
+    assert result["replaces_language_tool"] is True
+
+
+def test_full_contextual_scan_reviews_and_reanchors_every_paragraph(monkeypatch):
+    draft = (
+        "I began using my knowledge to find solutions to problem.\n\n"
+        "Community is where that requirement come to life.\n\n"
+        "This scholarship would support my education but also strengthened my service."
+    )
+    corrections = {
+        "problem": ("problems", "Use a plural noun here."),
+        "come": ("comes", "The singular subject requires a singular verb."),
+        "strengthened": ("strengthen", "A modal requires the parallel base form."),
+    }
+    monkeypatch.setattr(editor_service, "_language_tool_suggestions", lambda *_args, **_kwargs: [])
+
+    def grammar_for_segment(segment, *_args, **_kwargs):
+        suggestions = []
+        for original, (replacement, reason) in corrections.items():
+            if original in segment:
+                suggestions.append(SentenceSuggestion(
+                    original_text=original,
+                    suggested_text=replacement,
+                    suggestion_type="grammar",
+                    reason=reason,
+                    severity="high",
+                    confidence="high",
+                ))
+        return {"grammar_score": 70, "candidate_reviews": [], "sentence_suggestions": suggestions}
+
+    monkeypatch.setattr(editor_service, "_run_grammar", grammar_for_segment)
+
+    result = run_contextual_grammar_check(
+        essay_draft=draft,
+        draft_revision="full:replacement-draft",
+    )
+
+    assert [(item["original_text"], item["suggested_text"]) for item in result["sentence_suggestions"]] == [
+        ("problem", "problems"),
+        ("come", "comes"),
+        ("strengthened", "strengthen"),
+    ]
+    for item in result["sentence_suggestions"]:
+        assert draft[item["start_offset"]:item["end_offset"]] == item["original_text"]
+
+
+def test_contextual_completeness_retry_turns_every_diagnosed_issue_into_a_suggestion(monkeypatch):
+    draft = (
+        "At my core, I am commmitted to service. This scholarship would not only "
+        "support my education but also strengthened my ability to give back."
+    )
+    spelling_start = draft.index("commmitted")
+    spelling = {
+        "original_text": "commmitted",
+        "suggested_text": "committed",
+        "suggestion_type": "spelling",
+        "reason": "Possible spelling mistake.",
+        "severity": "medium",
+        "risk_tier": "C0",
+        "source": "language_tool",
+        "confidence": "high",
+        "replacement_available": True,
+        "start_offset": spelling_start,
+        "end_offset": spelling_start + len("commmitted"),
+        "requires_contextual_review": False,
+    }
+    monkeypatch.setattr(editor_service, "_language_tool_suggestions", lambda *_args, **_kwargs: [spelling])
+    calls = []
+
+    def incomplete_then_complete(_draft, notes, *_args, **_kwargs):
+        calls.append(notes)
+        base = {
+            "grammar_score": 80,
+            "spelling_issues": ["commmitted"],
+            "verb_tense_issues": ["strengthened"],
+            "candidate_reviews": [],
+        }
+        if len(calls) == 1:
+            return {**base, "sentence_suggestions": []}
+        return {
+            **base,
+            "sentence_suggestions": [SentenceSuggestion(
+                original_text="strengthened",
+                suggested_text="strengthen",
+                suggestion_type="grammar",
+                reason="The modal requires the parallel base form.",
+                severity="high",
+                confidence="high",
+            )],
+        }
+
+    monkeypatch.setattr(editor_service, "_run_grammar", incomplete_then_complete)
+
+    result = run_contextual_grammar_check(essay_draft=draft, draft_revision="paragraph:retry")
+
+    assert len(calls) == 2
+    assert "INDEPENDENT CONTEXTUAL QA" in calls[1]
+    assert [(item["original_text"], item["suggested_text"]) for item in result["sentence_suggestions"]] == [
+        ("commmitted", "committed"),
+        ("strengthened", "strengthen"),
+    ]
+
+
+def test_contextual_qa_finds_missed_agreement_and_rejects_plural_false_positive(monkeypatch):
+    draft = (
+        "Community is where that requirement come to life. "
+        "Waiting is a luxury underrepresented students cannot afford."
+    )
+    students_start = draft.index("a luxury underrepresented students")
+    false_candidate = {
+        "original_text": "a luxury underrepresented students",
+        "suggested_text": "a luxury underrepresented student",
+        "suggestion_type": "grammar",
+        "reason": "Possible article agreement issue.",
+        "severity": "high",
+        "risk_tier": "C0",
+        "source": "language_tool",
+        "confidence": "high",
+        "replacement_available": True,
+        "start_offset": students_start,
+        "end_offset": students_start + len("a luxury underrepresented students"),
+        "requires_contextual_review": True,
+    }
+    monkeypatch.setattr(editor_service, "_language_tool_suggestions", lambda *_args, **_kwargs: [false_candidate])
+    calls = []
+
+    def initial_then_qa(_draft, notes, *_args, **_kwargs):
+        calls.append(notes)
+        if len(calls) == 1:
+            return {"grammar_score": 100, "sentence_suggestions": [], "candidate_reviews": []}
+        return {
+            "grammar_score": 90,
+            "agreement_issues": ["requirement come"],
+            "sentence_suggestions": [SentenceSuggestion(
+                original_text="come",
+                suggested_text="comes",
+                suggestion_type="grammar",
+                reason="The singular subject requires a singular verb.",
+                severity="high",
+                confidence="high",
+            )],
+            "candidate_reviews": [{
+                "candidate_index": 0,
+                "verdict": "reject",
+                "reason": "Students is the subject of cannot afford and is correctly plural.",
+                "confidence": "high",
+            }],
+        }
+
+    monkeypatch.setattr(editor_service, "_run_grammar", initial_then_qa)
+
+    result = run_contextual_grammar_check(essay_draft=draft, draft_revision="paragraph:qa")
+
+    assert len(calls) == 2
+    assert "INDEPENDENT CONTEXTUAL QA" in calls[1]
+    assert [(item["original_text"], item["suggested_text"]) for item in result["sentence_suggestions"]] == [
+        ("come", "comes"),
+    ]
+
+
+def test_contextual_grammar_rejects_language_tool_false_positive(monkeypatch):
+    draft = "Waiting is a luxury underrepresented students cannot afford."
+    start = draft.index("students")
+    candidate = {
+        "original_text": "students",
+        "suggested_text": "student",
+        "suggestion_type": "grammar",
+        "reason": "Possible article agreement issue.",
+        "severity": "high",
+        "risk_tier": "C0",
+        "source": "language_tool",
+        "confidence": "high",
+        "replacement_available": True,
+        "start_offset": start,
+        "end_offset": start + len("students"),
+        "requires_contextual_review": True,
+    }
+    monkeypatch.setattr(editor_service, "_language_tool_suggestions", lambda *_args, **_kwargs: [candidate])
+    monkeypatch.setattr(
+        editor_service,
+        "_run_grammar",
+        lambda *_args, **_kwargs: {
+            "grammar_score": 100,
+            "sentence_suggestions": [],
+            "candidate_reviews": [
+                {
+                    "candidate_index": 0,
+                    "verdict": "reject",
+                    "reason": "Students is the subject of cannot afford and is correctly plural.",
+                    "confidence": "high",
+                }
+            ],
+        },
+    )
+
+    result = run_contextual_grammar_check(essay_draft=draft, draft_revision="draft-reject")
+
+    assert result["sentence_suggestions"] == []
+    assert result["replaces_language_tool"] is True
+
+
+class _LanguageToolMatch:
+    def __init__(
+        self,
+        offset,
+        length,
+        replacements,
+        *,
+        category="TYPOS",
+        issue_type="misspelling",
+        message="Possible spelling mistake.",
+        rule_id="MORFOLOGIK_RULE_EN_US",
+    ):
+        self.offset = offset
+        self.error_length = length
+        self.replacements = replacements
+        self.category = category
+        self.rule_issue_type = issue_type
+        self.message = message
+        self.rule_id = rule_id
+
+
+class _LanguageTool:
+    def __init__(self, matches):
+        self.matches = matches
+
+    def check(self, _text):
+        return self.matches
+
+
+def test_language_tool_returns_individually_reviewable_spelling_and_grammar(monkeypatch):
+    draft = "I recieve support. This scholarship would gave me freedom."
+    matches = [
+        _LanguageToolMatch(2, 7, ["receive"]),
+        _LanguageToolMatch(
+            draft.index("gave"),
+            4,
+            ["give"],
+            category="GRAMMAR",
+            issue_type="grammar",
+            message="The modal verb requires the base form.",
+            rule_id="MD_BASEFORM",
+        ),
+    ]
+    monkeypatch.setattr(editor_service, "_get_language_tool", lambda: _LanguageTool(matches))
+
+    suggestions = _language_tool_suggestions(draft)
+
+    assert [item["suggested_text"] for item in suggestions] == ["receive", "give"]
+    assert all(item["source"] == "language_tool" for item in suggestions)
+    assert all(item["replacement_available"] is True for item in suggestions)
+    assert suggestions[1]["start_offset"] == draft.index("gave")
+
+
+def test_language_tool_detects_accidentally_split_word(monkeypatch):
+    draft = "We repaired the syst em together."
+    start = draft.index("syst em")
+    monkeypatch.setattr(
+        editor_service,
+        "_get_language_tool",
+        lambda: _LanguageTool([_LanguageToolMatch(start, 7, ["system"])]),
+    )
+
+    suggestion = _language_tool_suggestions(draft)[0]
+
+    assert suggestion["original_text"] == "syst em"
+    assert suggestion["suggested_text"] == "system"
+
+
+def test_language_tool_unknown_word_is_review_only_without_replacement(monkeypatch):
+    draft = "The intvghjm mattered."
+    start = draft.index("intvghjm")
+    monkeypatch.setattr(
+        editor_service,
+        "_get_language_tool",
+        lambda: _LanguageTool([_LanguageToolMatch(start, 8, [])]),
+    )
+
+    unknown = _language_tool_suggestions(draft)[0]
+
+    assert unknown["suggested_text"] == ""
+    assert unknown["replacement_available"] is False
+    assert unknown["confidence"] == "low"
+
+
+def test_profile_and_personal_dictionary_terms_are_protected(monkeypatch):
+    draft = "Brianna led SEGA students."
+    matches = [
+        _LanguageToolMatch(0, 7, ["Brian"]),
+        _LanguageToolMatch(draft.index("SEGA"), 4, ["SAGA"]),
+    ]
+    monkeypatch.setattr(editor_service, "_get_language_tool", lambda: _LanguageTool(matches))
+
+    assert _language_tool_suggestions(draft, protected_terms=["Brianna", "SEGA"]) == []
+
+
+def test_capitalized_unknown_is_treated_as_a_possible_name(monkeypatch):
+    draft = "I volunteered in Morogoro, Tanzania."
+    start = draft.index("Morogoro")
+    monkeypatch.setattr(
+        editor_service,
+        "_get_language_tool",
+        lambda: _LanguageTool([_LanguageToolMatch(start, 8, ["Morocco"])]),
+    )
+
+    suggestion = _language_tool_suggestions(draft)[0]
+
+    assert suggestion["original_text"] == "Morogoro"
+    assert suggestion["suggested_text"] == "Morocco"
+    assert suggestion["suggestion_type"] == "spelling_name"
+    assert suggestion["confidence"] == "low"
+    assert suggestion["risk_tier"] == "C1"
+    assert "name or place" in suggestion["reason"]
+
+
+def test_possible_name_is_suppressed_when_added_to_dictionary(monkeypatch):
+    draft = "I volunteered in Morogoro, Tanzania."
+    start = draft.index("Morogoro")
+    monkeypatch.setattr(
+        editor_service,
+        "_get_language_tool",
+        lambda: _LanguageTool([_LanguageToolMatch(start, 8, ["Morocco"])]),
+    )
+
+    assert _language_tool_suggestions(draft, protected_terms=["Morogoro"]) == []
+
+
+def test_language_tool_and_contextual_ai_fail_independently(monkeypatch):
+    deterministic = [{
+        "original_text": "recieve",
+        "suggested_text": "receive",
+        "suggestion_type": "spelling",
+        "reason": "Possible spelling mistake.",
+        "severity": "medium",
+        "risk_tier": "C0",
+        "source": "language_tool",
+        "confidence": "high",
+        "replacement_available": True,
+        "start_offset": 2,
+        "end_offset": 9,
+    }]
+    monkeypatch.setattr(editor_service, "_language_tool_suggestions", lambda *_args, **_kwargs: deterministic)
+    monkeypatch.setattr(
+        editor_service,
+        "_run_grammar",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("AI unavailable")),
+    )
+
+    language_tool_result = run_editor_check(essay_draft="I recieve support.", draft_revision="draft-7")
+    contextual_result = run_contextual_grammar_check(essay_draft="I recieve support.", draft_revision="draft-7")
+
+    assert language_tool_result["status"] == "success"
+    assert language_tool_result["sentence_suggestions"] == deterministic
+    assert language_tool_result["draft_revision"] == "draft-7"
+    assert contextual_result["status"] == "error"
+    assert any("Contextual grammar check unavailable" in warning for warning in contextual_result["warnings"])
+
+
+def test_editor_check_reports_warming_without_showing_an_error(monkeypatch):
+    def warming(*_args, **_kwargs):
+        raise editor_service.LanguageToolNotReadyError("warming")
+
+    monkeypatch.setattr(editor_service, "_language_tool_suggestions", warming)
+
+    result = run_editor_check(essay_draft="A draft is available.", draft_revision="warm-1")
+
+    assert result["status"] == "warming"
+    assert result["warnings"] == []
+    assert result["retry_after_ms"] == 750
+    assert result["draft_revision"] == "warm-1"
+
+
+def test_language_tool_warmup_starts_once_without_waiting(monkeypatch):
+    started = []
+
+    class _BackgroundThread:
+        def __init__(self, *, target, name, daemon):
+            self.target = target
+            self.name = name
+            self.daemon = daemon
+            self._alive = False
+
+        def start(self):
+            self._alive = True
+            started.append(self.name)
+
+        def is_alive(self):
+            return self._alive
+
+    monkeypatch.setattr(editor_service, "Thread", _BackgroundThread)
+    monkeypatch.setattr(editor_service, "_language_tool_instance", None)
+    monkeypatch.setattr(editor_service, "_language_tool_error", None)
+    monkeypatch.setattr(editor_service, "_language_tool_state", "idle")
+    monkeypatch.setattr(editor_service, "_language_tool_warmup_thread", None)
+
+    first = editor_service.start_language_tool_warmup()
+    second = editor_service.start_language_tool_warmup()
+
+    assert first == {"status": "warming", "ready": False, "error": None}
+    assert second["status"] == "warming"
+    assert started == ["scholar-e-language-tool-warmup"]
+
+
 def _complete_audit(criterion: str) -> dict:
     return {
         key: ([] if isinstance(example, list) else "none")
@@ -90,7 +606,7 @@ def test_active_specialists_have_complete_private_audit_playbooks():
         )
         assert "PRIVATE CRITERION AUDIT" in prompt
         assert "not hidden reasoning" in prompt
-        assert "SCHOLARSHIP COACH FEEDBACK" in prompt
+        assert "ESSAY COACH FEEDBACK" in prompt
         assert "exactly one main_gap" in prompt
         for field in playbook["schema"]:
             assert field in prompt
@@ -172,7 +688,6 @@ def test_readiness_dimensions_match_standard_specialists():
         "narrative_structure_flow_coherence",
         "tone_authenticity",
         "clarity_concision",
-        "grammar",
     ]
 
 
@@ -312,7 +827,7 @@ def test_unified_coaching_session_reviews_submitted_draft_without_rewriting(monk
         seen["draft"] = kwargs["essay_draft"]
         return {
             "review": {
-                "schema_version": 3,
+                "schema_version": 4,
                 "status": "success",
                 "overall_score": 70,
                 "criteria": {},
@@ -330,7 +845,7 @@ def test_unified_coaching_session_reviews_submitted_draft_without_rewriting(monk
     result = routes.run_workspace_coaching_session(_coaching_session_request())
 
     assert result["status"] == "success"
-    assert result["review"]["schema_version"] == 3
+    assert result["review"]["schema_version"] == 4
     assert result["review"]["overall_score"] == 70
     assert result["outline_coverage"]["covered_point_ids"] == ["p-sec-0"]
     assert "components" not in result
@@ -350,7 +865,7 @@ def test_unified_coaching_session_preserves_partial_review_and_warning(monkeypat
     def fake_unified(**_kwargs):
         return {
             "review": {
-                "schema_version": 3,
+                "schema_version": 4,
                 "status": "partial",
                 "overall_score": 62,
                 "criteria": {},
@@ -358,8 +873,8 @@ def test_unified_coaching_session_preserves_partial_review_and_warning(monkeypat
                 "quality_review": {"approved": False},
             },
             "outline_coverage": {},
-            "warnings": ["grammar criterion timed out"],
-            "agent_status": {"grammar": "error"},
+            "warnings": ["clarity_concision criterion timed out"],
+            "agent_status": {"clarity_concision": "error"},
         }
 
     monkeypatch.setattr(routes.settings, "openai_api_key", "test-key")
@@ -369,13 +884,13 @@ def test_unified_coaching_session_preserves_partial_review_and_warning(monkeypat
 
     assert result["status"] == "partial"
     assert result["review"]["overall_score"] == 62
-    assert result["agents"]["grammar"] == "error"
-    assert any("grammar criterion timed out" in warning for warning in result["warnings"])
+    assert result["agents"]["clarity_concision"] == "error"
+    assert any("clarity_concision criterion timed out" in warning for warning in result["warnings"])
     assert "evaluation" not in result
     assert "coach_pack" not in result
 
 
-def test_manager_first_review_runs_seven_criterion_lanes_and_weights_once(monkeypatch):
+def test_manager_first_review_runs_six_criterion_lanes_and_weights_once(monkeypatch):
     import unified_coaching_service as unified
 
     monkeypatch.setattr(
@@ -390,12 +905,11 @@ def test_manager_first_review_runs_seven_criterion_lanes_and_weights_once(monkey
     )
     weights = {
         "alignment": 25,
-        "evidence_strength": 20,
+        "evidence_strength": 25,
         "insight": 20,
         "narrative_structure_flow_coherence": 15,
         "tone_authenticity": 8,
         "clarity_concision": 7,
-        "grammar": 5,
     }
     scores = {
         "alignment": 60,
@@ -404,7 +918,6 @@ def test_manager_first_review_runs_seven_criterion_lanes_and_weights_once(monkey
         "narrative_structure_flow_coherence": 90,
         "tone_authenticity": 85,
         "clarity_concision": 75,
-        "grammar": 95,
     }
     manager_contexts = []
 
@@ -457,7 +970,7 @@ def test_manager_first_review_runs_seven_criterion_lanes_and_weights_once(monkey
         unified,
         "run_criterion_qa",
         lambda _context, _plan, reviews: {
-            "approved": len(reviews) == 7,
+            "approved": len(reviews) == 6,
             "failed_criteria": [],
             "issues": [],
         },
@@ -466,7 +979,7 @@ def test_manager_first_review_runs_seven_criterion_lanes_and_weights_once(monkey
         unified,
         "run_action_guardrail",
         lambda _context, reviews: {
-            "approved": len(reviews) == 7,
+            "approved": len(reviews) == 6,
             "unsafe_criteria": [],
             "issues": [],
         },
@@ -484,12 +997,12 @@ def test_manager_first_review_runs_seven_criterion_lanes_and_weights_once(monkey
 
     assert len(manager_contexts) == 1
     assert "I mentor younger robotics students" not in manager_contexts[0]
-    assert len(criterion_calls) == 7
+    assert len(criterion_calls) == 6
     assert {call[0] for call in criterion_calls} == set(READINESS_DIMENSIONS)
-    assert result["review"]["schema_version"] == 3
-    assert result["review"]["overall_score"] == 75
+    assert result["review"]["schema_version"] == 4
+    assert result["review"]["overall_score"] == 74
     assert result["review"]["manager_plan"]["weight_total"] == 100
-    assert len(result["review"]["criteria"]) == 7
+    assert len(result["review"]["criteria"]) == 6
     for key, criterion in result["review"]["criteria"].items():
         assert criterion["score"] == scores[key]
         assert criterion["weight"] == weights[key]
@@ -502,7 +1015,6 @@ def test_manager_first_review_runs_seven_criterion_lanes_and_weights_once(monkey
     assert "evaluation" not in result
     assert "coach_pack" not in result
     assert result["agent_status"]["manager"] == "success"
-    assert result["agent_status"]["grammar"] == "success"
     assert result["agent_status"]["clarity_concision"] == "success"
     assert result["agent_status"]["evidence_strength"] == "success"
     assert result["agent_status"]["narrative_structure_flow_coherence"] == "success"

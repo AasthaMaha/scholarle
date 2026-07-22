@@ -1,7 +1,7 @@
 """One Manager-first review pipeline for the Page 4 Essay Workspace.
 
-Mechanical pre-correction remains owned by the API route. This service receives
-that cleaned draft, creates one scholarship-specific rubric, runs seven
+This service receives the submitted draft exactly as written, creates one
+scholarship-specific rubric, runs six
 criterion-owned review agents in parallel, audits their result, and calculates
 one deterministic weighted overall score.
 """
@@ -180,7 +180,7 @@ def _build_review_result(
         for key, review in reviews.items()
     }
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "status": status,
         "overall_score": overall_score,
         "criteria": public_reviews,
@@ -203,7 +203,7 @@ def run_unified_coaching_session(
     opportunity_prompt: str = "",
     previous_manager_plan: Optional[dict] = None,
 ) -> dict:
-    """Run the Manager, seven criterion lanes, and two parallel critics."""
+    """Run the Manager, six criterion lanes, and two parallel critics."""
     essay_draft = (essay_draft or "").strip()
     if not essay_draft:
         return {
@@ -311,7 +311,8 @@ def run_unified_coaching_session(
             outline_points or [],
             scholarship_details,
         )
-    first_wave = _run_parallel(jobs, warnings, agent_status, max_workers=8)
+    # Six scored specialists plus optional Outline Coverage can all run in one wave.
+    first_wave = _run_parallel(jobs, warnings, agent_status, max_workers=7)
     reviews = {
         key: (
             first_wave[key]
@@ -364,7 +365,7 @@ def run_unified_coaching_session(
                     prior_review=reviews[criterion],
                 )
             )
-        repaired = _run_parallel(retry_jobs, warnings, agent_status, max_workers=7)
+        repaired = _run_parallel(retry_jobs, warnings, agent_status, max_workers=6)
         for key in failed_ordered:
             candidate = repaired.get(f"{key}_retry")
             if isinstance(candidate, dict):

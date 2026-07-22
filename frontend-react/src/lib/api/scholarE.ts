@@ -485,6 +485,11 @@ export type EditorSentenceSuggestion = {
   reason: string;
   severity: "low" | "medium" | "high" | string;
   risk_tier?: "C0" | "C1" | "C2" | "C3" | string;
+  source?: "language_tool" | "contextual_grammar" | string;
+  confidence?: "low" | "medium" | "high" | string;
+  replacement_available?: boolean;
+  start_offset?: number | null;
+  end_offset?: number | null;
 };
 
 export type GrammarFeedback = {
@@ -503,33 +508,77 @@ export type EditorCheckResult = {
   status: string;
   sentence_suggestions?: EditorSentenceSuggestion[];
   grammar_feedback?: GrammarFeedback;
-  outline_coverage?: { covered_point_ids?: string[] };
   warnings?: string[];
+  draft_revision?: string;
+  language_tool_status?: "idle" | "warming" | "ready" | "error" | string;
+  retry_after_ms?: number;
+  replaces_language_tool?: boolean;
+  fix_pipeline_version?: string;
 };
 
 export type EditorCheckPayload = {
-  clean_scholarship_record: ActiveScholarship;
   essay_draft: string;
   user_notes: string;
-  outline_points: Array<{ id: string; label: string }>;
+  protected_terms: string[];
+  draft_revision: string;
 };
 
-export function buildEditorCheckPayload(user: UserProfile | null): EditorCheckPayload {
-  const scholarship = user?.activeScholarship ?? {};
-  const workflowScholarship = scholarshipForEssayWorkflow(scholarship);
+function protectedTermsForFixes(user: UserProfile | null): string[] {
+  const terms = new Set<string>(user?.personalDictionary ?? []);
+  const addCapitalizedTerms = (value: unknown) => {
+    if (typeof value !== "string") return;
+    const matches = value.match(/\b(?:[A-Z]{2,}|[A-Z][A-Za-z'’-]{2,})\b/g) ?? [];
+    matches.forEach((term) => terms.add(term));
+  };
+  const addTrustedFields = (value: unknown) => {
+    if (typeof value === "string") {
+      addCapitalizedTerms(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach(addTrustedFields);
+      return;
+    }
+    if (value && typeof value === "object") {
+      Object.values(value).forEach(addTrustedFields);
+    }
+  };
+  addCapitalizedTerms(user?.name);
+  addCapitalizedTerms(user?.location);
+  addCapitalizedTerms(user?.nationality);
+  addCapitalizedTerms(user?.activeScholarship?.name);
+  addCapitalizedTerms(user?.activeScholarship?.organization);
+  addCapitalizedTerms(user?.activeScholarship?.country);
+  addCapitalizedTerms(user?.activeScholarship?.locationRequirement);
+  addTrustedFields(user?.highSchool);
+  addTrustedFields(user?.undergrad);
+  addTrustedFields(user?.graduate);
+  addTrustedFields(user?.educationHistory);
+  addTrustedFields(user?.researchExperience);
+  addTrustedFields(user?.workExperience);
+  addTrustedFields(user?.optional);
+  return [...terms].filter(Boolean).slice(0, 500);
+}
+
+export function buildEditorCheckPayload(
+  user: UserProfile | null,
+  essayDraft = user?.essayDraft ?? "",
+  draftRevision = "",
+): EditorCheckPayload {
   return {
-    clean_scholarship_record: workflowScholarship,
-    essay_draft: user?.essayDraft ?? "",
-    user_notes: scholarship.additionalNotes || "",
-    outline_points: buildOutlinePoints(user?.personalizedOutline).map((p) => ({ id: p.id, label: p.label })),
+    essay_draft: essayDraft,
+    user_notes: user?.activeScholarship?.additionalNotes || "",
+    protected_terms: protectedTermsForFixes(user),
+    draft_revision: draftRevision,
   };
 }
 
-export async function runEditorCheck(payload: EditorCheckPayload): Promise<EditorCheckResult> {
+export async function runEditorCheck(payload: EditorCheckPayload, signal?: AbortSignal): Promise<EditorCheckResult> {
   const response = await fetch(`${API_BASE}/api/apply/editor-check`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+    signal,
   });
 
   const data = await response.json().catch(() => null);
@@ -539,6 +588,67 @@ export async function runEditorCheck(payload: EditorCheckPayload): Promise<Edito
   }
 
   return data as EditorCheckResult;
+}
+
+export async function warmEditorTools(signal?: AbortSignal): Promise<void> {
+  const response = await fetch(`${API_BASE}/api/apply/editor-warmup`, {
+    method: "POST",
+    signal,
+  });
+  if (!response.ok) {
+    throw new Error("Scholar-E editor tools could not be warmed.");
+  }
+}
+
+export async function runContextualGrammarCheck(payload: EditorCheckPayload, signal?: AbortSignal): Promise<EditorCheckResult> {
+  const response = await fetch(`${API_BASE}/api/apply/contextual-grammar`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    signal,
+  });
+
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    const detail = data?.detail;
+    throw new Error(typeof detail === "string" ? detail : "Scholar-E contextual grammar check failed.");
+  }
+
+  return data as EditorCheckResult;
+}
+
+export type OutlineCoverageResult = {
+  status: string;
+  outline_coverage?: { covered_point_ids?: string[] };
+  warnings?: string[];
+};
+
+export type OutlineCoveragePayload = {
+  clean_scholarship_record: ActiveScholarship;
+  essay_draft: string;
+  outline_points: Array<{ id: string; label: string }>;
+};
+
+export function buildOutlineCoveragePayload(user: UserProfile | null, essayDraft = user?.essayDraft ?? ""): OutlineCoveragePayload {
+  return {
+    clean_scholarship_record: scholarshipForEssayWorkflow(user?.activeScholarship ?? {}),
+    essay_draft: essayDraft,
+    outline_points: buildOutlinePoints(user?.personalizedOutline).map((point) => ({ id: point.id, label: point.label })),
+  };
+}
+
+export async function runOutlineCoverageCheck(payload: OutlineCoveragePayload): Promise<OutlineCoverageResult> {
+  const response = await fetch(`${API_BASE}/api/apply/outline-coverage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    const detail = data?.detail;
+    throw new Error(typeof detail === "string" ? detail : "Scholar-E outline coverage check failed.");
+  }
+  return data as OutlineCoverageResult;
 }
 
 export type CoachingSessionPayload = {

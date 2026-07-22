@@ -1,6 +1,6 @@
 """Manager-first, criterion-owned essay review for the Essay Workspace.
 
-The Manager owns only the scholarship-specific rubric and weights. Seven
+The Manager owns only the scholarship-specific rubric and weights. Six
 criterion agents then independently act as scholarship coaches: each completes
 a private structured audit, gives grounded reviewer-perspective feedback, scores
 the criterion, and recommends one aligned revision action. QA and Guardrail
@@ -61,13 +61,6 @@ CRITERION_DEFINITIONS: dict[str, dict[str, str]] = {
             "phrasing, or tangled sentence structure."
         ),
         "reviewer_lens": "Can I understand every point quickly without rereading?",
-    },
-    "grammar": {
-        "focus": (
-            "Uses correct spelling, punctuation, capitalization, verb tense, agreement, grammar, and "
-            "sentence-level mechanics."
-        ),
-        "reviewer_lens": "Do mechanical errors distract me or reduce confidence in the submission?",
     },
 }
 
@@ -177,7 +170,8 @@ CRITERION_AUDIT_PLAYBOOKS: dict[str, dict[str, Any]] = {
         "instructions": (
             "Audit sentence- and phrase-level directness and readability. Identify representative clear wording and "
             "specific filler, repetition, unnecessary wording, unclear phrasing, or convoluted sentence structure. "
-            "Preserve meaning and voice; do not rescore grammar or essay-level narrative organization."
+            "Preserve meaning and voice; sentence-level Grammar Fixes owns correctness, and the Narrative "
+            "Structure, Flow & Coherence criterion owns essay-level organization."
         ),
         "schema": {
             "clear_and_direct_sentences": ["representative wording that is already easy to understand"],
@@ -189,36 +183,16 @@ CRITERION_AUDIT_PLAYBOOKS: dict[str, dict[str, Any]] = {
             "highest_priority_clarity_gap": "single most consequential clarity or concision gap",
         },
     },
-    "grammar": {
-        "instructions": (
-            "Audit spelling, punctuation, capitalization, verb tense, agreement, grammar, and sentence-level "
-            "correctness. Identify exact issues and recurring patterns, but do not rescore clarity, concision, tone, "
-            "content, evidence, narrative structure, or alignment. Prefer the smallest correction that preserves "
-            "meaning and voice."
-        ),
-        "schema": {
-            "correct_mechanics_to_preserve": ["representative sentence-level correctness strength"],
-            "spelling_issues": ["exact error and correction rule"],
-            "punctuation_issues": ["exact error and correction rule"],
-            "capitalization_issues": ["exact error and correction rule"],
-            "verb_tense_issues": ["exact error and correction rule"],
-            "agreement_issues": ["exact error and correction rule"],
-            "other_grammar_issues": ["exact sentence-level correctness issue and rule"],
-            "recurring_correctness_patterns": ["pattern the student should learn to correct"],
-            "highest_priority_grammar_gap": "single most consequential correctness gap",
-        },
-    },
 }
 
 
 DEFAULT_WEIGHTS = {
-    "alignment": 20,
-    "evidence_strength": 20,
-    "insight": 15,
+    "alignment": 25,
+    "evidence_strength": 25,
+    "insight": 20,
     "narrative_structure_flow_coherence": 15,
-    "tone_authenticity": 10,
-    "clarity_concision": 10,
-    "grammar": 10,
+    "tone_authenticity": 8,
+    "clarity_concision": 7,
 }
 
 
@@ -250,7 +224,7 @@ def _as_text_list(value: Any) -> list[str]:
 
 
 def _normalize_weights(raw_weights: dict[str, Any]) -> dict[str, int]:
-    """Normalize Manager weights to seven bounded integers totaling 100."""
+    """Normalize Manager weights to six bounded integers totaling 100."""
     parsed: dict[str, float] = {}
     for key in READINESS_DIMENSIONS:
         try:
@@ -329,7 +303,7 @@ def run_manager_agent(manager_context: str) -> dict:
     prompt = f"""
 You are the Manager Agent for a scholarship essay review system.
 
-Using ONLY the scholarship information and essay prompt below, tailor all seven
+Using ONLY the scholarship information and essay prompt below, tailor all six
 required criteria and assign their importance weights. You must not evaluate a
 student essay. Weight means importance to this opportunity, not scoring leniency.
 
@@ -340,11 +314,11 @@ REQUIRED CRITERIA:
 {json.dumps(CRITERION_DEFINITIONS, indent=2)}
 
 RULES:
-- Include exactly the seven required criterion keys.
+- Include exactly the six required criterion keys.
 - Give every criterion an integer weight from 5 through 30.
-- All seven weights must total exactly 100.
+- All six weights must total exactly 100.
 - Tailor each rubric to the scholarship's stated priorities and every prompt part.
-- Keep Grammar as essay correctness; do not turn it into a content criterion.
+- Grammar is handled separately as sentence-level Fixes and is not a scored criterion.
 - Do not add eligibility as an essay-quality criterion.
 
 Return ONLY valid JSON:
@@ -352,7 +326,7 @@ Return ONLY valid JSON:
   "manager_summary": "brief explanation of the opportunity's scoring emphasis",
   "criteria": {{
     "alignment": {{
-      "weight": 20,
+      "weight": 25,
       "weight_rationale": "why this matters for this exact opportunity",
       "description": "tailored criterion standard",
       "excellent": "observable 80-100 performance",
@@ -363,8 +337,7 @@ Return ONLY valid JSON:
     "insight": {{}},
     "narrative_structure_flow_coherence": {{}},
     "tone_authenticity": {{}},
-    "clarity_concision": {{}},
-    "grammar": {{}}
+    "clarity_concision": {{}}
   }}
 }}
 """
@@ -493,7 +466,7 @@ Complete the work in this exact order:
    Replace the descriptions in this shape with actual grounded findings. Do not
    echo the example descriptions as if they were findings.
 
-2. SCHOLARSHIP COACH FEEDBACK:
+2. ESSAY COACH FEEDBACK:
    - Start with grounded_praise. Select the strongest relevant positive finding
      from the audit and give sincere, empathetic, confidence-building praise
      tied to a specific real detail, passage, or genuine foundation in the
@@ -567,7 +540,7 @@ def run_criterion_review_agent(
 
 def run_criterion_qa(shared_context: str, manager_plan: dict, reviews: dict) -> dict:
     prompt = f"""
-You are the QA Critic for a scholarship essay review. Audit the seven criterion
+You are the QA Critic for a scholarship essay review. Audit the six criterion
 packages; do not rescore the essay and do not create new feedback.
 
 SUBMISSION CONTEXT:
@@ -597,7 +570,7 @@ from the scholarship reviewer's perspective. Confirm the score matches the
 tailored rubric and is independent of the weight. Confirm the action is one
 precise, executable revision that directly fixes that same gap, uses the essay,
 profile, prompt, and scholarship context where relevant, and invents nothing.
-Also confirm all seven criteria are present and distinct.
+Also confirm all six criteria are present and distinct.
 
 Return ONLY valid JSON:
 {{

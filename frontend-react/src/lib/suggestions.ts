@@ -1,11 +1,10 @@
-// Client-side writing-suggestion engine.
+// Anchored Essay Workspace Fixes.
 //
-// The backend coaching pipeline returns prose-level feedback that is NOT anchored
-// to character ranges, so it cannot drive inline underlines. This module runs a
-// set of deterministic heuristics over the essay text and returns anchored,
-// auto-fixable suggestions (Grammarly-style) that the editor can underline and
-// the sidebar can list. Every suggestion carries a concrete replacement so the
-// "Accept" action always has something to apply.
+// A small deterministic browser layer provides immediate, unquestionably local
+// mechanics feedback. Debounced backend results add LanguageTool spelling,
+// grammar, and punctuation findings followed by a contextual AI pass. Unknown
+// words may intentionally have no replacement: the student can ignore them or
+// add them to a personal dictionary.
 
 export type SuggestionCategory = "correctness" | "clarity" | "engagement" | "tone";
 export type EditRiskTier = "C0" | "C1" | "C2" | "C3";
@@ -23,9 +22,12 @@ export type Suggestion = {
   source?: "auto" | "coach";
   riskTier?: EditRiskTier;
   suggestionType?: string;
+  confidence?: "low" | "medium" | "high" | string;
+  engineSource?: string;
+  replacementAvailable?: boolean;
 };
 
-// Raw sentence suggestion returned by the backend Grammar or Clarity & Concision Coach.
+// Raw sentence suggestion returned by the background Fixes endpoint.
 export type CoachSentenceSuggestion = {
   original_text: string;
   suggested_text: string;
@@ -33,6 +35,11 @@ export type CoachSentenceSuggestion = {
   reason: string;
   severity: "low" | "medium" | "high" | string;
   risk_tier?: string;
+  source?: string;
+  confidence?: string;
+  replacement_available?: boolean;
+  start_offset?: number | null;
+  end_offset?: number | null;
 };
 
 export const CATEGORY_ORDER: SuggestionCategory[] = ["correctness", "clarity", "engagement", "tone"];
@@ -63,78 +70,6 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function matchCase(sample: string, replacement: string): string {
-  if (sample && sample[0] === sample[0].toUpperCase() && sample[0] !== sample[0].toLowerCase()) {
-    return replacement.charAt(0).toUpperCase() + replacement.slice(1);
-  }
-  return replacement;
-}
-
-const MISSPELLINGS: Record<string, string> = {
-  teh: "the",
-  recieve: "receive",
-  seperate: "separate",
-  definately: "definitely",
-  occured: "occurred",
-  untill: "until",
-  wich: "which",
-  becuase: "because",
-  thier: "their",
-  goverment: "government",
-  enviroment: "environment",
-  succesful: "successful",
-  begining: "beginning",
-  beleive: "believe",
-};
-
-const WORDY_PHRASES: Record<string, string> = {
-  "in order to": "to",
-  "due to the fact that": "because",
-  "in spite of the fact that": "although",
-  "a large number of": "many",
-  "a majority of": "most",
-  "at this point in time": "now",
-  "in the event that": "if",
-  "for the purpose of": "to",
-  "with regard to": "about",
-  "with regards to": "about",
-  "in a timely manner": "promptly",
-  "make use of": "use",
-  "has the ability to": "can",
-  "a great deal of": "much",
-};
-
-const CLICHES: Record<string, string> = {
-  "at the end of the day": "ultimately",
-  "last but not least": "finally",
-  "in today's society": "today",
-  "think outside the box": "be creative",
-  "when all is said and done": "ultimately",
-  "each and every": "every",
-  "first and foremost": "first",
-};
-
-function buildPhraseRule(
-  map: Record<string, string>,
-  category: SuggestionCategory,
-  title: string,
-  explanation: string,
-  riskTier: EditRiskTier = "C1",
-): Rule {
-  const alternation = Object.keys(map)
-    .sort((a, b) => b.length - a.length)
-    .map(escapeRegExp)
-    .join("|");
-  return {
-    category,
-    title,
-    explanation,
-    riskTier,
-    regex: new RegExp(`\\b(${alternation})\\b`, "gi"),
-    replace: (m) => matchCase(m[0], map[m[0].toLowerCase()] ?? m[0]),
-  };
-}
-
 const RULES: Rule[] = [
   // --- Correctness (red) / C0 mechanics ---
   {
@@ -155,13 +90,19 @@ const RULES: Rule[] = [
   },
   {
     category: "correctness",
-    title: 'Capitalize "I"',
-    explanation: 'The pronoun "I" is always capitalized.',
+    title: "Punctuation",
+    explanation: "Remove the accidental repeated or conflicting punctuation mark.",
     riskTier: "C0",
-    // Match the standalone pronoun, but not the first letter of abbreviations
-    // such as "i.e.".
-    regex: /\bi\b(?!\s*\.\s*e\s*\.)/g,
-    replace: () => "I",
+    // Consolidate unquestionably accidental punctuation while preserving
+    // conventional ellipses, ?!, !?, and intentional double hyphens.
+    regex: /(?<!\.)\.{2}(?!\.)|([!?;,:])\1+|\.[!?]|[!?]\./g,
+    replace: (m) => {
+      const marks = m[0];
+      if (marks.includes(".") && /[!?]/.test(marks)) {
+        return marks.replaceAll(".", "");
+      }
+      return marks[0];
+    },
   },
   {
     category: "correctness",
@@ -179,30 +120,13 @@ const RULES: Rule[] = [
     regex: /[^\S\n]+([,.;:!?])/g,
     replace: (m) => m[1],
   },
-  buildPhraseRule(MISSPELLINGS, "correctness", "Possible misspelling", "This looks like a common misspelling.", "C0"),
-
-  // --- Clarity (blue) / C1 ---
-  buildPhraseRule(WORDY_PHRASES, "clarity", "Wordy phrase", "This phrase can be tightened up.", "C1"),
-
-  // --- Engagement (green) / C1 ---
   {
-    category: "engagement",
-    title: "Weak intensifier",
-    explanation: "Cut the filler word and let the point stand on its own.",
-    riskTier: "C1",
-    regex: /\b(?:very|really|extremely|basically|actually|literally)\s+([A-Za-z]+)/gi,
-    replace: (m) => m[1],
-  },
-
-  // --- Tone (purple) / C2 voice-affecting ---
-  buildPhraseRule(CLICHES, "tone", "Cliché", "This is an overused phrase — say it more directly.", "C2"),
-  {
-    category: "tone",
-    title: "Hedging",
-    explanation: "State it with confidence instead of hedging.",
-    riskTier: "C2",
-    regex: /\bI (?:think|believe|feel) that\s+/gi,
-    replace: () => "",
+    category: "correctness",
+    title: "Hyphen spacing",
+    explanation: "Review whether this compound should use a closed hyphen without surrounding spaces.",
+    riskTier: "C0",
+    regex: /\b([A-Za-z]+)\s+-\s+([A-Za-z]+)\b/g,
+    replace: (m) => `${m[1]}-${m[2]}`,
   },
 ];
 
@@ -302,6 +226,10 @@ export function countByCategory(suggestions: Suggestion[]): Record<SuggestionCat
 // word_choice is NOT correctness — Accept-all must never bulk-apply diction changes.
 const COACH_TYPE_MAP: Record<string, { category: SuggestionCategory; title: string; riskTier: EditRiskTier }> = {
   grammar: { category: "correctness", title: "Grammar", riskTier: "C0" },
+  spelling: { category: "correctness", title: "Possible misspelling", riskTier: "C0" },
+  spelling_name: { category: "correctness", title: "Possible name or misspelling", riskTier: "C1" },
+  spelling_spacing: { category: "correctness", title: "Possible split word", riskTier: "C0" },
+  spelling_unknown: { category: "correctness", title: "Possible misspelling", riskTier: "C1" },
   word_choice: { category: "clarity", title: "Word choice", riskTier: "C2" },
   clarity: { category: "clarity", title: "Clarity", riskTier: "C1" },
   flow: { category: "clarity", title: "Flow", riskTier: "C1" },
@@ -436,16 +364,35 @@ export function anchorCoachSuggestions(raw: CoachSentenceSuggestion[], text: str
   for (const item of raw) {
     const original = (item.original_text ?? "").trim();
     const replacement = (item.suggested_text ?? "").trim();
-    if (!original || !replacement) continue;
+    const replacementAvailable = item.replacement_available !== false;
+    if (!original || (replacementAvailable && !replacement)) continue;
 
-    const span = findRealSpan(text, textLower, original, used);
+    const hintedStart = typeof item.start_offset === "number" ? item.start_offset : -1;
+    const hintedEnd = typeof item.end_offset === "number" ? item.end_offset : -1;
+    const hintedSpan = hintedStart >= 0
+      && hintedEnd > hintedStart
+      && text.slice(hintedStart, hintedEnd).toLowerCase() === original.toLowerCase()
+      ? [hintedStart, hintedEnd] as [number, number]
+      : null;
+    const span = hintedSpan ?? findRealSpan(text, textLower, original, used);
     if (!span) continue;
     const [matchedStart, matchedEnd] = span;
     // Use the ACTUAL draft substring so the card shows — and Accept replaces —
     // exactly what is in the essay, even when matched case-/whitespace-insensitively.
     const realOriginal = text.slice(matchedStart, matchedEnd);
-    if (realOriginal === replacement) continue;
-    const edit = minimizeSuggestionEdit(realOriginal, replacement, matchedStart);
+    if (replacementAvailable && realOriginal === replacement) continue;
+    // Spelling cards must show and replace the complete token. Minimizing
+    // "Morogoro → Morocco" into "gor → cc" is technically correct as a diff,
+    // but misleading to a student reviewing a possible proper noun.
+    const preserveCompleteSpelling = item.suggestion_type?.startsWith("spelling");
+    const edit = replacementAvailable && !preserveCompleteSpelling
+      ? minimizeSuggestionEdit(realOriginal, replacement, matchedStart)
+      : {
+          start: matchedStart,
+          end: matchedEnd,
+          original: realOriginal,
+          replacement: replacementAvailable ? replacement : "",
+        };
     if (!edit.original || edit.original === edit.replacement) continue;
     used.push([edit.start, edit.end]);
 
@@ -466,6 +413,9 @@ export function anchorCoachSuggestions(raw: CoachSentenceSuggestion[], text: str
       source: "coach",
       riskTier: normalizeRiskTier(item.risk_tier, meta.riskTier),
       suggestionType: item.suggestion_type,
+      confidence: item.confidence,
+      engineSource: item.source,
+      replacementAvailable,
     });
   }
   return results;

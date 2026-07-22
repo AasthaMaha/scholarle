@@ -590,6 +590,7 @@ def build_grammar_prompt(
     *,
     essay_draft: str,
     user_notes: str = "",
+    language_tool_candidates_json: str = "[]",
     max_suggestions: int = 25,
 ) -> tuple[str, str]:
     """Return (system, human) messages for the Grammar Coach."""
@@ -614,6 +615,10 @@ Scoring and output rules:
   "sentence_level_correctness_issues": quote or precisely identify each issue.
 - "revision_tasks": prioritize recurring correctness patterns the student
   should learn to fix.
+- Every valid issue named in any issue array MUST also have one corresponding
+  item in "sentence_suggestions" with an exact anchor and concrete correction.
+  Never diagnose an error only in feedback without returning its actionable
+  suggestion.
 
 For EACH suggestion:
 - "original_text" MUST be copied verbatim from the student's draft (an exact
@@ -629,6 +634,39 @@ For EACH suggestion:
 - "suggestion_type" must be exactly "grammar".
 - "severity" must be exactly one of: {", ".join(SENTENCE_SEVERITIES)}.
 - "reason" is one short sentence naming the correctness rule.
+- If a sentence is already grammatical, do not invent a correction just because
+  another phrasing would also be possible.
+- Prefer no suggestion over a speculative one.
+- Validate every replacement inside the complete original sentence, including
+  auxiliaries, modal verbs, coordination, and parallel constructions. After a
+  modal such as "would," "could," "should," "can," or "will," coordinated
+  verbs must use the parallel base form (for example, "would support ... and
+  strengthen," not "would support ... and strengthens").
+- Before returning, silently audit every clause in the draft. For each finite
+  verb, identify its actual grammatical subject and verify person and number
+  agreement; then verify tense, auxiliaries, modal constructions, pronoun
+  reference, and punctuation. Do not assume a nearby noun is the subject.
+- When a noun follows an article elsewhere in the sentence, trace the complete
+  clause before proposing a number change. A plural noun may correctly begin a
+  later relative or content clause and must not be made singular merely because
+  an earlier phrase contains "a" or "an".
+- Set "confidence" to "high" only when the correction is unquestionably
+  required by grammar or mechanics. Only high-confidence independent
+  corrections will be shown.
+
+LANGUAGETOOL CANDIDATE REVIEW:
+- Review every numbered LanguageTool candidate supplied by the user message.
+- Return one "candidate_reviews" item per candidate using its zero-based
+  "candidate_index".
+- "verdict" must be exactly "accept", "reject", or "revise".
+- Accept only when the proposed correction is correct in the complete sentence.
+- Reject false positives, including article/agreement suggestions that become
+  wrong when the full noun phrase is considered.
+- Revise when the location is valid but LanguageTool's replacement is not the
+  smallest correct edit. For "revise", provide the exact replacement in
+  "suggested_text".
+- Set review confidence to "high" only when the verdict is certain. Uncertain
+  grammar candidates must not be approved.
 
 Return at most the {max_suggestions} most valuable minimal corrections."""
 
@@ -639,6 +677,9 @@ STUDENT ESSAY DRAFT (the ONLY text you may quote in "original_text"):
 \"\"\"
 {essay_draft}
 \"\"\"
+
+NUMBERED LANGUAGETOOL CANDIDATES:
+{language_tool_candidates_json or "[]"}
 
 Return the Grammar Coach assessment as structured output."""
 

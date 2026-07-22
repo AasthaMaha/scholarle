@@ -1,5 +1,6 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import scholarELogoUrl from "../../logo/logoPic.jpeg";
 import {
   AlertCircle,
@@ -50,7 +51,6 @@ import { EssayEditor, type EssayEditorHandle, type RewriteAction } from "@/compo
 import {
   analyzeText,
   anchorCoachSuggestions,
-  applySuggestion,
   CATEGORY_META,
   CATEGORY_ORDER,
   countByCategory,
@@ -58,7 +58,16 @@ import {
   type CoachSentenceSuggestion,
   type Suggestion,
 } from "@/lib/suggestions";
-import { essayDraft as exampleEssayDraft, journeySteps } from "@/lib/persona";
+import {
+  draftEditWindow,
+  draftFingerprint,
+  ignoredSuggestionKey,
+  rebaseCachedSuggestions,
+  requiresFullDraftFixScan,
+  type EssayFixCacheEntry,
+  type FixEngine,
+} from "@/lib/fixCache";
+import { journeySteps } from "@/lib/persona";
 import { getFile, removeFile, storeFile } from "@/lib/fileStore";
 import { Spinner } from "@/components/Spinner";
 import { AcademicOnboarding } from "@/components/AcademicOnboarding";
@@ -68,6 +77,7 @@ import {
   buildCoachingSessionPayload,
   buildEditorCheckPayload,
   buildFitPayload,
+  buildOutlineCoveragePayload,
   buildOutlinePayload,
   buildOutlinePoints,
   buildWikiPayload,
@@ -76,11 +86,15 @@ import {
   extractScholarshipOpportunity,
   generatePersonalizedOutline,
   runEditorCheck,
+  runContextualGrammarCheck,
+  runOutlineCoverageCheck,
   runSelectionRewrite,
   runWorkspaceCoachingSession,
+  warmEditorTools,
   normalizeEssayPromptEntries,
   normalizeSelectedEssayPromptEntries,
   serializeEssayPromptEntries,
+  type EditorCheckResult,
 } from "@/lib/api/scholarE";
 import {
   useUser,
@@ -131,9 +145,9 @@ export const Route = createFileRoute("/journey")({
   component: Journey,
 });
 
-// 248px is the narrowest expanded width that keeps the longest journey title
-// ("Analyze Requirements & Fit") on one line with its step marker and padding.
-const SIDEBAR_EXPANDED_WIDTH = 248;
+// 232px is the narrowest safe expanded width for both the header controls and
+// the longest remaining journey label ("Application Tracker") on one line.
+const SIDEBAR_EXPANDED_WIDTH = 232;
 
 function needsAcademicOnboarding(user: UserProfile | null) {
   return !!(
@@ -156,6 +170,17 @@ function Journey() {
   const [journeyTutorialActive, setJourneyTutorialActive] = useState(false);
   const journeyMainRef = useRef<HTMLElement | null>(null);
   const accountIdentity = user?.email || (user ? "guest-profile" : "anonymous");
+
+  useEffect(() => {
+    const controller = new AbortController();
+    // Begin the one-time Java warm-up at Journey entry, several steps before
+    // the student needs Essay Workspace. Backend startup performs the same
+    // idempotent request, so this is also a safe cold-start fallback.
+    void warmEditorTools(controller.signal).catch(() => {
+      // Fixes degrade independently; never interrupt the student's journey.
+    });
+    return () => controller.abort();
+  }, []);
 
   useEffect(() => {
     if (!isHydrated) return;
@@ -447,7 +472,6 @@ function Sidebar({
           <Link to="/" className="flex min-w-0 flex-1 items-center gap-2">
             <img src={scholarELogoUrl} alt="" className="size-7 rounded-full object-cover" />
             <div className="text-sm font-display font-semibold tracking-tight">Scholar-E</div>
-            <span className="ml-auto text-[10px] uppercase tracking-widest text-muted-foreground">journey</span>
           </Link>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -493,7 +517,7 @@ function Sidebar({
                           }`}
                         >
                           <span
-                            className={`relative size-6 shrink-0 rounded-md grid place-items-center ${
+                            className={`relative grid size-8 shrink-0 place-items-center rounded-lg ${
                               isActive
                                 ? "bg-info text-white"
                                 : isDone
@@ -501,10 +525,10 @@ function Sidebar({
                                 : "bg-secondary text-muted-foreground"
                             }`}
                           >
-                            <span className="text-xs font-bold tabular-nums">{idx + 1}</span>
+                            <span className="text-sm font-bold tabular-nums">{idx + 1}</span>
                             {isDone && (
-                              <span className="absolute -bottom-0.5 -right-0.5 grid size-3 place-items-center rounded-full bg-success text-white ring-2 ring-card">
-                                <Check className="size-2" strokeWidth={4} />
+                              <span className="absolute -bottom-1 -right-1 grid size-4 place-items-center rounded-full bg-success text-white ring-2 ring-card">
+                                <Check className="size-2.5" strokeWidth={4} />
                               </span>
                             )}
                           </span>
@@ -521,7 +545,7 @@ function Sidebar({
           ))}
         </div>
 
-        <div className="border-t border-border px-6 py-4">
+        <div className="px-6 py-4">
           <SidebarUser />
         </div>
 
@@ -971,27 +995,30 @@ function TopBar({
   guidedProfileSetupActive: boolean;
 }) {
   const pct = ((stepIdx + 1) / journeySteps.length) * 100;
+  const hasWorkspaceExtension = step.slug === "essay-workspace";
   return (
-    <div className="sticky top-0 z-20 border-b border-border bg-background/85 backdrop-blur">
-      <div className="flex h-14 items-center gap-4 pl-16 pr-6 md:px-10">
+    <div className="sticky top-0 z-20 h-14 bg-background/85 backdrop-blur">
+      <div className={`flex h-full items-center pl-16 pr-6 md:px-10 ${hasWorkspaceExtension ? "gap-0" : "gap-4"}`}>
         <Tooltip>
           <TooltipTrigger asChild>
-            <div className="flex min-w-0 flex-1 items-baseline gap-2">
-              <span className="truncate text-sm font-medium text-foreground">{step.title}</span>
+            <div className={`flex min-w-0 items-center gap-2 ${hasWorkspaceExtension ? "shrink-0" : "flex-1"}`}>
+              <span className="truncate text-lg font-bold tracking-tight text-foreground">{step.title}</span>
               {guidedProfileSetupActive ? (
                 <span className="hidden shrink-0 text-xs text-muted-foreground sm:inline">Complete Your Profile</span>
-              ) : (
-                <span className="hidden shrink-0 text-xs text-muted-foreground sm:inline">
-                  {step.group} · Step {step.id}/{journeySteps.length}
-                </span>
-              )}
+              ) : null}
             </div>
           </TooltipTrigger>
           <TooltipContent>Goal: {step.goal}</TooltipContent>
         </Tooltip>
+        {hasWorkspaceExtension && (
+          <div
+            data-journey-topbar-workspace
+            className="flex min-w-0 flex-1 items-center gap-2"
+          />
+        )}
       </div>
       {!guidedProfileSetupActive && (
-        <div className="h-1 bg-secondary">
+        <div className="absolute inset-x-0 bottom-0 h-1 bg-secondary">
           <div className="h-full bg-info transition-all duration-500" style={{ width: `${pct}%` }} />
         </div>
       )}
@@ -1079,7 +1106,7 @@ function SidebarRail({
                   aria-label={isLocked ? `Step ${idx + 1}: ${s.title}. Complete your profile to unlock this step.` : `Step ${idx + 1}: ${s.title}`}
                   aria-disabled={isLocked || undefined}
                   aria-current={isActive ? "step" : undefined}
-                  className={`relative grid size-9 shrink-0 place-items-center rounded-full transition-colors ${
+                  className={`relative grid size-10 shrink-0 place-items-center rounded-full transition-colors ${
                     isActive
                       ? "bg-info text-white"
                       : isLocked
@@ -1091,7 +1118,7 @@ function SidebarRail({
                 >
                   <span className="text-sm font-bold tabular-nums">{idx + 1}</span>
                   {isDone && (
-                    <span className="absolute -bottom-0.5 -right-0.5 grid size-3.5 place-items-center rounded-full bg-success text-white ring-2 ring-card">
+                    <span className="absolute -bottom-1 -right-1 grid size-4 place-items-center rounded-full bg-success text-white ring-2 ring-card">
                       <Check className="size-2.5" strokeWidth={3.5} />
                     </span>
                   )}
@@ -5155,8 +5182,57 @@ const ESSAY_REVIEW_DIMENSIONS = [
   "narrative_structure_flow_coherence",
   "tone_authenticity",
   "clarity_concision",
-  "grammar",
 ] as const;
+
+type DraftCheckScope = { text: string; start: number; end: number; revision: string; document: string; promptId: string };
+type AnchoredFixState = { draft: string; suggestions: CoachSentenceSuggestion[] };
+const FIX_PIPELINE_VERSION = "6";
+
+function abortableDelay(milliseconds: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
+    const finish = () => {
+      window.clearTimeout(timer);
+      signal.removeEventListener("abort", finish);
+      resolve();
+    };
+    const timer = window.setTimeout(finish, milliseconds);
+    signal.addEventListener("abort", finish, { once: true });
+  });
+}
+
+function draftCheckScope(previous: string, current: string, promptId: string): DraftCheckScope {
+  if (requiresFullDraftFixScan(previous, current)) {
+    return { text: current, start: 0, end: current.length, revision: `full:${draftFingerprint(current)}`, document: current, promptId };
+  }
+  let changedAt = 0;
+  const shared = Math.min(previous.length, current.length);
+  while (changedAt < shared && previous[changedAt] === current[changedAt]) changedAt += 1;
+  const before = current.slice(0, changedAt);
+  const breakMatch = [...before.matchAll(/\n\s*\n/g)].at(-1);
+  const start = breakMatch ? (breakMatch.index ?? 0) + breakMatch[0].length : 0;
+  const after = current.slice(changedAt);
+  const nextBreak = after.match(/\n\s*\n/);
+  const end = nextBreak?.index == null ? current.length : changedAt + nextBreak.index;
+  const text = current.slice(start, end);
+  return { text, start, end, revision: `${start}:${end}:${draftFingerprint(text)}`, document: current, promptId };
+}
+
+function rebaseDraftRange(
+  previousDraft: string,
+  currentDraft: string,
+  start: number,
+  end: number,
+): [number, number] | null {
+  if (previousDraft === currentDraft) return [start, end];
+  const change = draftEditWindow(previousDraft, currentDraft);
+  if (end <= change.prefix) return [start, end];
+  if (start >= change.previousEnd) return [start + change.delta, end + change.delta];
+  return null;
+}
 
 type EssayReviewDimension = (typeof ESSAY_REVIEW_DIMENSIONS)[number];
 
@@ -5780,35 +5856,23 @@ function EssayReviewWorkspaceLoadingOverlay({
       description: "Evaluating whether your sentences are direct, easy to understand, and free from unnecessary wording or convoluted phrasing.",
     },
     {
-      title: "Grammar",
-      description: "Evaluating spelling, punctuation, capitalization, verb tense, agreement, and sentence-level correctness.",
-    },
-    {
       title: "Preparing specific revision guidance",
       description: "Preparing one clear, specific revision action for each criterion based on its score and feedback.",
     },
-    {
-      title: "Your essay review is ready",
-      description: "",
-    },
   ];
-  const activeStep = displayedProgress < 15
+  const activeStep = displayedProgress < 17
     ? 0
-    : displayedProgress < 25
+    : displayedProgress < 29
       ? 1
-      : displayedProgress < 35
+      : displayedProgress < 41
         ? 2
-        : displayedProgress < 50
+        : displayedProgress < 57
           ? 3
-          : displayedProgress < 60
+          : displayedProgress < 69
             ? 4
-            : displayedProgress < 70
+            : displayedProgress < 82
               ? 5
-              : displayedProgress < 85
-                ? 6
-                : displayedProgress < 100
-                  ? 7
-                  : 8;
+              : 6;
   const cardWidth = region ? Math.max(280, Math.min(576, region.width - 32)) : 576;
   const cardLeft = region
     ? region.left + Math.max(16, (region.width - cardWidth) / 2)
@@ -5895,12 +5959,13 @@ function EssayReviewWorkspaceLoadingOverlay({
 
 function StepEssayWorkspace() {
   const { user, updateProfile } = useUser();
+  const [topBarTarget, setTopBarTarget] = useState<HTMLElement | null>(null);
   const editorApiRef = useRef<EssayEditorHandle | null>(null);
   const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
-  const [coachRaw, setCoachRaw] = useState<CoachSentenceSuggestion[]>([]);
+  const [anchoredFixes, setAnchoredFixes] = useState<AnchoredFixState>(() => ({ draft: "", suggestions: [] }));
   const [coachLoading, setCoachLoading] = useState(false);
   const [reviewResult, setReviewResult] = useState<EssayReviewResult | null>(
-    () => user?.essayReviewResult?.schema_version === 3 ? user.essayReviewResult : null,
+    () => user?.essayReviewResult?.schema_version === 4 ? user.essayReviewResult : null,
   );
   const [reviewUpdatedAt, setReviewUpdatedAt] = useState<number | null>(() => user?.essayReviewUpdatedAt ?? null);
   const [reviewDraftAtRun, setReviewDraftAtRun] = useState<string>(() => user?.essayReviewDraftAtRun ?? "");
@@ -5927,12 +5992,12 @@ function StepEssayWorkspace() {
   }, [activeScholarshipName, essayTitle, updateProfile, user]);
   const [panelResizing, setPanelResizing] = useState(false);
   const [isEvaluating, setIsEvaluating] = useState(false);
-  const [autoCheckLoading, setAutoCheckLoading] = useState(false);
+  const [languageToolLoading, setLanguageToolLoading] = useState(false);
+  const [contextualGrammarLoading, setContextualGrammarLoading] = useState(false);
   const [sessionProgress, setSessionProgress] = useState(0);
   const [reviewReady, setReviewReady] = useState(false);
-  const [pdfStatus, setPdfStatus] = useState<string | null>(null);
-  const [analysisStatus, setAnalysisStatus] = useState<string | null>(null);
-  const [bgStatus, setBgStatus] = useState<string | null>(null);
+  const [languageToolWarning, setLanguageToolWarning] = useState<string | null>(null);
+  const [contextualGrammarWarning, setContextualGrammarWarning] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [nowTick, setNowTick] = useState(() => Date.now());
   const [outlineLoading, setOutlineLoading] = useState(false);
@@ -5942,6 +6007,16 @@ function StepEssayWorkspace() {
   const [pendingPromptIndex, setPendingPromptIndex] = useState(0);
   const [workspaceTutorialActive, setWorkspaceTutorialActive] = useState(false);
   const workspaceTutorialHandled = useRef(false);
+  const languageToolAbortRef = useRef<AbortController | null>(null);
+  const contextualGrammarAbortRef = useRef<AbortController | null>(null);
+  const currentDraftRef = useRef("");
+  const previousDraftForFixesRef = useRef("");
+  const [fullFixScanNonce, setFullFixScanNonce] = useState(0);
+  const handledFullFixScanNonceRef = useRef(0);
+
+  useEffect(() => {
+    setTopBarTarget(document.querySelector<HTMLElement>("[data-journey-topbar-workspace]"));
+  }, []);
 
   const legacyPromptBlob =
     user?.activeScholarship?.essayPrompts
@@ -5960,15 +6035,34 @@ function StepEssayWorkspace() {
   const [selectedPromptIndex, setSelectedPromptIndex] = useState(0);
   const activePromptEntry = availablePromptEntries[Math.min(selectedPromptIndex, Math.max(0, availablePromptEntries.length - 1))];
   const activePromptId = activePromptEntry?.id ?? "no-essay-prompt";
+  const activePromptIdRef = useRef(activePromptId);
+  activePromptIdRef.current = activePromptId;
+  const fixCacheByPromptRef = useRef<Record<string, EssayFixCacheEntry>>(user?.essayFixesByPromptId ?? {});
+  fixCacheByPromptRef.current = user?.essayFixesByPromptId ?? fixCacheByPromptRef.current;
   const essayPrompt =
     activePromptEntry?.promptText || (hasPromptDecisionState ? "" : legacyPromptBlob);
   const draft = user?.essayDraftsByPromptId?.[activePromptId]
     ?? (selectedPromptIndex === 0 && activePromptId !== "no-essay-prompt" ? user?.essayDraft ?? "" : "");
   const draftHtml = user?.essayDraftHtmlByPromptId?.[activePromptId]
     ?? (selectedPromptIndex === 0 && activePromptId !== "no-essay-prompt" ? user?.essayDraftHtml ?? "" : "");
+  currentDraftRef.current = draft;
   const wordCount = draft.trim() ? draft.trim().split(/\s+/).filter(Boolean).length : 0;
   const characterCount = draft.length;
   const hasMultiplePrompts = availablePrompts.length > 1;
+  const fixesLoading = languageToolLoading || contextualGrammarLoading;
+  const fixesWarning = [languageToolWarning, contextualGrammarWarning].filter(Boolean).join(" ") || null;
+
+  useEffect(() => {
+    languageToolAbortRef.current?.abort();
+    contextualGrammarAbortRef.current?.abort();
+    const cached = fixCacheByPromptRef.current[activePromptId];
+    const restored = cached?.pipelineVersion === FIX_PIPELINE_VERSION
+      ? rebaseCachedSuggestions(cached.draft, draft, cached.suggestions ?? [])
+      : [];
+    setAnchoredFixes({ draft, suggestions: restored });
+    setDismissed(new Set(user?.ignoredEssayFixesByPromptId?.[activePromptId] ?? []));
+    previousDraftForFixesRef.current = "";
+  }, [activePromptId, user?.email]);
 
   useEffect(() => {
     if (selectedPromptIndex >= availablePrompts.length) {
@@ -5981,11 +6075,30 @@ function StepEssayWorkspace() {
     [user, essayPrompt],
   );
   const score = typeof reviewResult?.overall_score === "number" ? reviewResult.overall_score : null;
+  const coachRaw = useMemo(
+    () => rebaseCachedSuggestions(anchoredFixes.draft, draft, anchoredFixes.suggestions),
+    [anchoredFixes, draft],
+  );
   const suggestions = useMemo(() => {
     const auto = analyzeText(draft);
     const coach = anchorCoachSuggestions(coachRaw, draft);
-    return mergeSuggestions(coach, auto).filter((s) => !dismissed.has(s.id));
+    return mergeSuggestions(coach, auto).filter((s) => !dismissed.has(ignoredSuggestionKey(s, draft)));
   }, [draft, coachRaw, dismissed]);
+
+  useEffect(() => {
+    if (!user || anchoredFixes.draft !== draft) return;
+    const existing = fixCacheByPromptRef.current[activePromptId];
+    const entry: EssayFixCacheEntry = {
+      ...existing,
+      draft: anchoredFixes.draft,
+      suggestions: anchoredFixes.suggestions,
+      checkedAt: Date.now(),
+      pipelineVersion: FIX_PIPELINE_VERSION,
+    };
+    const next = { ...fixCacheByPromptRef.current, [activePromptId]: entry };
+    fixCacheByPromptRef.current = next;
+    updateProfile({ essayFixesByPromptId: next });
+  }, [activePromptId, anchoredFixes, draft, updateProfile, user?.email]);
 
   function updateEssayPrompt(value: string, index = hasMultiplePrompts ? pendingPromptIndex : selectedPromptIndex) {
     if (!user) return;
@@ -6206,13 +6319,13 @@ function StepEssayWorkspace() {
     return () => window.clearInterval(id);
   }, []);
 
-  // Restore only schema-v3 Essay Review data. Older coach/evaluation payloads
+  // Restore only schema-v4 six-criterion Essay Review data. Older payloads
   // are intentionally ignored and render as an empty Evaluate state.
   useEffect(() => {
     const restored = user?.essayReviewResult;
-    setReviewResult(restored?.schema_version === 3 ? restored : null);
-    setReviewUpdatedAt(restored?.schema_version === 3 ? user?.essayReviewUpdatedAt ?? null : null);
-    setReviewDraftAtRun(restored?.schema_version === 3 ? user?.essayReviewDraftAtRun ?? "" : "");
+    setReviewResult(restored?.schema_version === 4 ? restored : null);
+    setReviewUpdatedAt(restored?.schema_version === 4 ? user?.essayReviewUpdatedAt ?? null : null);
+    setReviewDraftAtRun(restored?.schema_version === 4 ? user?.essayReviewDraftAtRun ?? "" : "");
   }, [user?.email, user?.essayReviewResult, user?.essayReviewUpdatedAt, user?.essayReviewDraftAtRun]);
 
   useEffect(() => {
@@ -6268,22 +6381,8 @@ function StepEssayWorkspace() {
   })();
 
   function acceptSuggestion(s: Suggestion) {
+    if (s.replacementAvailable === false) return;
     editorApiRef.current?.accept(s);
-  }
-
-  // "Quick fixes" = the low-risk mechanical corrections (grammar, spelling,
-  // spacing, capitalization). Stylistic/specificity rewrites are left for
-  // individual review to preserve the student's voice.
-  const quickFixSuggestions = suggestions.filter((s) => s.category === "correctness");
-
-  function acceptAllQuickFixes() {
-    if (!quickFixSuggestions.length) return;
-    // Apply right-to-left so earlier offsets stay valid (suggestions never overlap).
-    let text = draft;
-    for (const s of [...quickFixSuggestions].sort((a, b) => b.start - a.start)) {
-      text = applySuggestion(text, s);
-    }
-    updateActiveDraft(text);
   }
 
   const coveredPoints = useMemo(() => {
@@ -6312,11 +6411,33 @@ function StepEssayWorkspace() {
   }
 
   function dismissSuggestion(s: Suggestion) {
+    const key = ignoredSuggestionKey(s, draft);
     setDismissed((prev) => {
       const next = new Set(prev);
-      next.add(s.id);
+      next.add(key);
       return next;
     });
+    if (user) {
+      const existing = user.ignoredEssayFixesByPromptId?.[activePromptId] ?? [];
+      const nextIgnored = [...existing.filter((entry) => entry !== key), key].slice(-200);
+      updateProfile({
+        ignoredEssayFixesByPromptId: {
+          ...(user.ignoredEssayFixesByPromptId ?? {}),
+          [activePromptId]: nextIgnored,
+        },
+      });
+    }
+  }
+
+  function addSuggestionToDictionary(s: Suggestion) {
+    if (!user) return;
+    const word = s.original.trim();
+    if (!word || /\s/.test(word)) return;
+    const existing = user.personalDictionary ?? [];
+    if (!existing.some((item) => item.toLowerCase() === word.toLowerCase())) {
+      updateProfile({ personalDictionary: [...existing, word] });
+    }
+    dismissSuggestion(s);
   }
 
   function revealSuggestion(s: Suggestion) {
@@ -6335,40 +6456,237 @@ function StepEssayWorkspace() {
     });
   }
 
-  async function runAutoCheck() {
-    if (autoCheckLoading || coachLoading || isEvaluating) return;
-    if (draft === lastAutoCheckRef.current || wordCount < 20) return;
-    setAutoCheckLoading(true);
-    lastAutoCheckRef.current = draft;
-    setBgStatus("Checking grammar and outline coverage…");
-    try {
-      const result = await runEditorCheck(buildEditorCheckPayload(user));
-      const coveredIds = result.outline_coverage?.covered_point_ids;
-      if (coveredIds) {
-        // Intersect with known point ids so a hallucinated id can never tick a box.
-        const known = new Set(buildOutlinePoints(user?.personalizedOutline).map((p) => p.id));
-        setAutoCovered(new Set(coveredIds.filter((id) => known.has(id))));
+  function cachedFixResult(scope: DraftCheckScope, engine: FixEngine): EditorCheckResult | null {
+    const paragraph = fixCacheByPromptRef.current[scope.promptId]?.paragraphs?.[draftFingerprint(scope.text)];
+    if (!paragraph || paragraph.text !== scope.text) return null;
+    const cached = paragraph[engine];
+    if (!cached || cached.pipelineVersion !== FIX_PIPELINE_VERSION) return null;
+    const cacheLifetime = cached.suggestions.length > 0
+      ? 24 * 60 * 60 * 1000
+      : 5 * 60 * 1000;
+    if (Date.now() - cached.checkedAt > cacheLifetime) return null;
+    return {
+      status: "success",
+      sentence_suggestions: cached.suggestions,
+      warnings: [],
+      draft_revision: scope.revision,
+      language_tool_status: engine === "language_tool" ? "ready" : undefined,
+      replaces_language_tool: cached.replacesLanguageTool,
+      fix_pipeline_version: cached.pipelineVersion,
+    };
+  }
+
+  function cacheFixResult(scope: DraftCheckScope, result: EditorCheckResult, engine: FixEngine) {
+    const suggestionsForEngine: CoachSentenceSuggestion[] = (result.sentence_suggestions ?? []).map((suggestion) => ({
+      ...suggestion,
+      source: engine,
+    }));
+    const existing = fixCacheByPromptRef.current[scope.promptId];
+    const paragraphKey = draftFingerprint(scope.text);
+    const paragraph = existing?.paragraphs?.[paragraphKey];
+    const nextParagraphs = {
+      ...(existing?.paragraphs ?? {}),
+      [paragraphKey]: {
+        ...paragraph,
+        text: scope.text,
+        [engine]: {
+          suggestions: suggestionsForEngine,
+          checkedAt: Date.now(),
+          pipelineVersion: result.fix_pipeline_version ?? FIX_PIPELINE_VERSION,
+          replacesLanguageTool: result.replaces_language_tool,
+        },
+      },
+    };
+    const boundedParagraphs = Object.fromEntries(
+      Object.entries(nextParagraphs)
+        .sort(([, left], [, right]) => {
+          const leftTime = Math.max(left.language_tool?.checkedAt ?? 0, left.contextual_grammar?.checkedAt ?? 0);
+          const rightTime = Math.max(right.language_tool?.checkedAt ?? 0, right.contextual_grammar?.checkedAt ?? 0);
+          return leftTime - rightTime;
+        })
+        .slice(-40),
+    );
+    const entry: EssayFixCacheEntry = {
+      ...existing,
+      draft: existing?.draft ?? scope.document,
+      suggestions: existing?.suggestions ?? [],
+      checkedAt: Date.now(),
+      pipelineVersion: FIX_PIPELINE_VERSION,
+      paragraphs: boundedParagraphs,
+    };
+    const next = { ...fixCacheByPromptRef.current, [scope.promptId]: entry };
+    fixCacheByPromptRef.current = next;
+    updateProfile({ essayFixesByPromptId: next });
+  }
+
+  function applyFixCheckResult(scope: DraftCheckScope, result: EditorCheckResult, engine: FixEngine) {
+    if (scope.promptId !== activePromptIdRef.current) return;
+    if (result.draft_revision !== scope.revision) return;
+    const currentDraft = currentDraftRef.current;
+    const currentScope = rebaseDraftRange(scope.document, currentDraft, scope.start, scope.end);
+    if (!currentScope) return;
+    const [scopeStart, scopeEnd] = currentScope;
+    if (currentDraft.slice(scopeStart, scopeEnd) !== scope.text) return;
+
+    let refreshedSuggestions: CoachSentenceSuggestion[] = [];
+    for (const suggestion of result.sentence_suggestions ?? []) {
+      const relativeStart = typeof suggestion.start_offset === "number" ? suggestion.start_offset : null;
+      const relativeEnd = typeof suggestion.end_offset === "number" ? suggestion.end_offset : null;
+      if (relativeStart == null || relativeEnd == null) continue;
+      const absoluteStart = scopeStart + relativeStart;
+      const absoluteEnd = scopeStart + relativeEnd;
+      if (absoluteStart < scopeStart || absoluteEnd > scopeEnd) continue;
+      refreshedSuggestions.push({
+        ...suggestion,
+        source: engine,
+        start_offset: absoluteStart,
+        end_offset: absoluteEnd,
+      });
+    }
+
+    setAnchoredFixes((previous) => {
+      const rebased = rebaseCachedSuggestions(previous.draft, currentDraft, previous.suggestions);
+      let preserved = rebased.filter((suggestion) => {
+        if (suggestion.source !== engine) return true;
+        const start = suggestion.start_offset;
+        const end = suggestion.end_offset;
+        return typeof start !== "number" || typeof end !== "number" || end <= scopeStart || start >= scopeEnd;
+      });
+      const overlaps = (left: CoachSentenceSuggestion, right: CoachSentenceSuggestion) => {
+        const leftStart = left.start_offset ?? -1;
+        const leftEnd = left.end_offset ?? -1;
+        const rightStart = right.start_offset ?? -1;
+        const rightEnd = right.end_offset ?? -1;
+        return leftStart >= 0 && rightStart >= 0 && leftStart < rightEnd && leftEnd > rightStart;
+      };
+
+      if (engine === "language_tool") {
+        // LanguageTool is the fast candidate generator, but validated
+        // contextual suggestions should win when they cover the same text.
+        refreshedSuggestions = refreshedSuggestions.filter((fresh) =>
+          !preserved.some((suggestion) => suggestion.source === "contextual_grammar" && overlaps(suggestion, fresh)));
+      } else if (result.replaces_language_tool) {
+        // The contextual response is the authoritative final result for this
+        // paragraph: remove every provisional LanguageTool candidate in scope,
+        // including candidates the AI explicitly rejected.
+        preserved = preserved.filter((suggestion) => {
+          if (suggestion.source !== "language_tool") return true;
+          const start = suggestion.start_offset;
+          const end = suggestion.end_offset;
+          return typeof start !== "number" || typeof end !== "number" || end <= scopeStart || start >= scopeEnd;
+        });
+      } else {
+        preserved = preserved.filter((suggestion) =>
+          suggestion.source !== "language_tool"
+          || !refreshedSuggestions.some((fresh) => overlaps(suggestion, fresh)));
       }
-      setCoachRaw(result.sentence_suggestions ?? []);
-    } catch {
-      // Background checks fail silently; the main session remains authoritative.
+
+      return {
+        draft: currentDraft,
+        suggestions: [...preserved, ...refreshedSuggestions]
+          .sort((left, right) => (left.start_offset ?? 0) - (right.start_offset ?? 0)),
+      };
+    });
+  }
+
+  async function runLanguageToolCheck(scope: DraftCheckScope) {
+    if (coachLoading || isEvaluating || !scope.text.trim()) return;
+    const cached = cachedFixResult(scope, "language_tool");
+    if (cached) {
+      applyFixCheckResult(scope, cached, "language_tool");
+      setLanguageToolWarning(null);
+      return;
+    }
+    languageToolAbortRef.current?.abort();
+    const controller = new AbortController();
+    languageToolAbortRef.current = controller;
+    setLanguageToolLoading(true);
+    try {
+      let result: EditorCheckResult | null = null;
+      for (let attempt = 0; attempt < 24; attempt += 1) {
+        result = await runEditorCheck(
+          buildEditorCheckPayload(user, scope.text, scope.revision),
+          controller.signal,
+        );
+        if (controller.signal.aborted || result.status !== "warming") break;
+        setLanguageToolWarning(null);
+        await abortableDelay(result.retry_after_ms ?? 750, controller.signal);
+      }
+      if (controller.signal.aborted) return;
+      if (!result || result.status === "warming") return;
+      if (result.status !== "error") {
+        cacheFixResult(scope, result, "language_tool");
+        applyFixCheckResult(scope, result, "language_tool");
+      }
+      setLanguageToolWarning((result.warnings ?? []).join(" ") || null);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      setLanguageToolWarning("LanguageTool is temporarily unavailable. Immediate browser checks are still active.");
     } finally {
-      setAutoCheckLoading(false);
-      setBgStatus(null);
+      if (languageToolAbortRef.current === controller) {
+        languageToolAbortRef.current = null;
+        setLanguageToolLoading(false);
+      }
+    }
+  }
+
+  async function runContextualCheck(scope: DraftCheckScope) {
+    if (coachLoading || isEvaluating || !scope.text.trim()) return;
+    const cached = cachedFixResult(scope, "contextual_grammar");
+    if (cached) {
+      applyFixCheckResult(scope, cached, "contextual_grammar");
+      setContextualGrammarWarning(null);
+      return;
+    }
+    contextualGrammarAbortRef.current?.abort();
+    const controller = new AbortController();
+    contextualGrammarAbortRef.current = controller;
+    setContextualGrammarLoading(true);
+    try {
+      const result = await runContextualGrammarCheck(
+        buildEditorCheckPayload(user, scope.text, scope.revision),
+        controller.signal,
+      );
+      if (controller.signal.aborted) return;
+      if (result.status !== "error") {
+        cacheFixResult(scope, result, "contextual_grammar");
+        applyFixCheckResult(scope, result, "contextual_grammar");
+      }
+      setContextualGrammarWarning((result.warnings ?? []).join(" ") || null);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      setContextualGrammarWarning("Contextual grammar checking is temporarily unavailable. LanguageTool remains active.");
+    } finally {
+      if (contextualGrammarAbortRef.current === controller) {
+        contextualGrammarAbortRef.current = null;
+        setContextualGrammarLoading(false);
+      }
+    }
+  }
+
+  async function runCoverageCheck() {
+    const currentDraft = currentDraftRef.current;
+    if (!currentDraft.trim() || !buildOutlinePoints(user?.personalizedOutline).length) return;
+    try {
+      const result = await runOutlineCoverageCheck(buildOutlineCoveragePayload(user, currentDraft));
+      const coveredIds = result.outline_coverage?.covered_point_ids;
+      if (!coveredIds) return;
+      const known = new Set(buildOutlinePoints(user?.personalizedOutline).map((point) => point.id));
+      setAutoCovered(new Set(coveredIds.filter((id) => known.has(id))));
+    } catch {
+      // Coverage is independent from Fixes and can safely wait for Evaluate.
     }
   }
 
   async function runCoachingSession() {
     if (coachLoading || isEvaluating || !user) return;
     if (!promptConfirmed) {
-      setAnalysisStatus("Confirm your writing focus first, then select Evaluate.");
       setPromptPickerOpen(true);
       setActiveTab("outline");
       setPanelOpen(true);
       return;
     }
     if (wordCount < 30) {
-      setAnalysisStatus("Write at least 30 words, then select Evaluate.");
       return;
     }
 
@@ -6376,18 +6694,17 @@ function StepEssayWorkspace() {
     setCoachLoading(true);
     setReviewReady(false);
     setSessionProgress(6);
-    setAnalysisStatus(null);
     setPanelOpen(true);
     setActiveTab("coach");
 
     try {
       // One backend request owns the Manager-led review graph. It evaluates the
       // submitted draft exactly as written; grammar corrections remain optional fixes.
-      // Seven criterion agents evaluate, simulate the reviewer, score, and
+      // Six criterion agents evaluate in reviewer voice, score, and
       // propose one aligned action in parallel.
       const session = await runWorkspaceCoachingSession(buildCoachingSessionPayload(user, essayPrompt));
       const review = session.review ?? null;
-      const gotReview = !!review && review.schema_version === 3 && review.status !== "error";
+      const gotReview = !!review && review.schema_version === 4 && review.status !== "error";
       const coveredIds = session.outline_coverage?.covered_point_ids;
       if (coveredIds) {
         const known = new Set(buildOutlinePoints(user.personalizedOutline).map((p) => p.id));
@@ -6405,8 +6722,6 @@ function StepEssayWorkspace() {
       await new Promise((resolve) => window.setTimeout(resolve, 200));
     } catch (error) {
       console.error("Scholar-E coaching session failed.", error);
-      const message = error instanceof Error ? error.message : "The coaching session could not review your draft.";
-      setAnalysisStatus(message);
     } finally {
       setIsEvaluating(false);
       setCoachLoading(false);
@@ -6426,18 +6741,63 @@ function StepEssayWorkspace() {
     return () => window.clearInterval(interval);
   }, [isEvaluating]);
 
-  // Paste/upload auto-check: a paste bumps `pasteNonce`, and a debounced effect runs
-  // the cheap `auto_check` (grammar + outline coverage) once the draft has settled.
-  // `runAutoCheckRef` keeps the latest closure so the timeout sees the post-paste draft.
-  const runAutoCheckRef = useRef(runAutoCheck);
+  // Unaffected findings are synchronously rebased above on every draft render.
+  // LanguageTool refreshes the changed paragraph first; the slower contextual
+  // pass follows independently. New edits abort both stale requests without
+  // clearing still-valid underlines elsewhere in the essay.
+  const runLanguageToolCheckRef = useRef(runLanguageToolCheck);
+  const runContextualCheckRef = useRef(runContextualCheck);
   useEffect(() => {
-    runAutoCheckRef.current = runAutoCheck;
+    runLanguageToolCheckRef.current = runLanguageToolCheck;
+    runContextualCheckRef.current = runContextualCheck;
   });
-  const lastAutoCheckRef = useRef("");
+  useEffect(() => {
+    const previous = previousDraftForFixesRef.current;
+    previousDraftForFixesRef.current = draft;
+
+    const languageToolController = languageToolAbortRef.current;
+    const contextualController = contextualGrammarAbortRef.current;
+    languageToolAbortRef.current = null;
+    contextualGrammarAbortRef.current = null;
+    languageToolController?.abort();
+    contextualController?.abort();
+    setLanguageToolLoading(false);
+    setContextualGrammarLoading(false);
+
+    if (!draft.trim()) {
+      setAnchoredFixes({ draft: "", suggestions: [] });
+      setLanguageToolWarning(null);
+      setContextualGrammarWarning(null);
+      return;
+    }
+
+    const explicitFullScan = fullFixScanNonce !== handledFullFixScanNonceRef.current;
+    handledFullFixScanNonceRef.current = fullFixScanNonce;
+    const scope = explicitFullScan
+      ? { text: draft, start: 0, end: draft.length, revision: `full:${draftFingerprint(draft)}`, document: draft, promptId: activePromptId }
+      : draftCheckScope(previous, draft, activePromptId);
+    const languageToolTimer = window.setTimeout(
+      () => void runLanguageToolCheckRef.current(scope),
+      500,
+    );
+    const contextualTimer = window.setTimeout(
+      () => void runContextualCheckRef.current(scope),
+      1200,
+    );
+    return () => {
+      window.clearTimeout(languageToolTimer);
+      window.clearTimeout(contextualTimer);
+    };
+  }, [draft, fullFixScanNonce, isEvaluating, user?.personalDictionary]);
+
+  // Draft changes already trigger both Fixes passes. Paste/upload additionally
+  // refreshes the independent outline-coverage check after text settles.
   const [pasteNonce, setPasteNonce] = useState(0);
   useEffect(() => {
     if (pasteNonce === 0) return;
-    const id = window.setTimeout(() => void runAutoCheckRef.current(), 800);
+    const id = window.setTimeout(() => {
+      void runCoverageCheck();
+    }, 800);
     return () => window.clearTimeout(id);
   }, [pasteNonce]);
   function triggerAutoCheck() {
@@ -6453,7 +6813,6 @@ function StepEssayWorkspace() {
   }
 
   async function handlePdf(file: File) {
-    setPdfStatus(`Extracting text from ${file.name}...`);
     try {
       const w = window as unknown as {
         pdfjsLib?: {
@@ -6494,25 +6853,24 @@ function StepEssayWorkspace() {
       }
       const imported = reconstructPdfDocumentText(pages, user?.name ?? "");
       updateActiveDraft(imported.text);
+      // A PDF is a whole-document replacement even when its character count is
+      // close to the previous draft. Force both Fixes engines to review every
+      // imported paragraph after extraction and cleanup settles.
+      setFullFixScanNonce((nonce) => nonce + 1);
       setReviewResult(null);
       setReviewUpdatedAt(null);
       setReviewDraftAtRun("");
       setReviewReady(false);
-      setAnalysisStatus(null);
-      setCoachRaw([]);
+      setAnchoredFixes({ draft: imported.text, suggestions: [] });
       setDismissed(new Set());
       updateProfile({
         essayReviewResult: undefined,
         essayReviewUpdatedAt: undefined,
         essayReviewDraftAtRun: undefined,
       });
-      const headerNote = imported.removedRepeatedHeaderLines > 0
-        ? ` Removed ${imported.removedRepeatedHeaderLines} repeated header line${imported.removedRepeatedHeaderLines === 1 ? "" : "s"}.`
-        : "";
-      setPdfStatus(`Imported ${pdf.numPages} pages from ${file.name}.${headerNote}`);
       triggerAutoCheck();
-    } catch (e) {
-      setPdfStatus(`Could not parse PDF: ${(e as Error).message}`);
+    } catch (error) {
+      console.error("Scholar-E could not parse the uploaded PDF.", error);
     }
   }
 
@@ -6550,12 +6908,6 @@ function StepEssayWorkspace() {
     upsertVersion({ reviewOverall: score ?? undefined });
   }
 
-  function loadExampleEssay() {
-    updateActiveDraft(exampleEssayDraft);
-    setSavedAt(Date.now());
-    triggerAutoCheck();
-  }
-
   // Attach the canonical criterion scores to the current draft version.
   useEffect(() => {
     if (!reviewResult?.criteria) return;
@@ -6569,45 +6921,36 @@ function StepEssayWorkspace() {
   }, [reviewResult]);
 
   return (
-    <div className="relative flex h-full min-h-0 w-full flex-col overflow-hidden border-t border-border bg-background" aria-busy={outlineLoading || isEvaluating}>
+    <div className="relative flex h-full min-h-0 w-full flex-col overflow-hidden bg-background" aria-busy={outlineLoading || isEvaluating}>
       <div
         inert={outlineLoading || isEvaluating || workspaceTutorialActive ? true : undefined}
         className="flex min-h-0 flex-1 flex-col overflow-hidden"
       >
-      {/* Zone 1 — slim top bar (Grammarly-style) */}
-      <header className="sticky top-0 z-20 shrink-0 border-b border-border bg-background/90 backdrop-blur">
-        <div className="mx-auto flex h-14 max-w-[1440px] items-center gap-2 px-3 md:px-4">
-          <div className="flex min-w-0 flex-1 flex-col justify-center">
+      {topBarTarget && createPortal(
+        <div
+          inert={outlineLoading || isEvaluating || workspaceTutorialActive ? true : undefined}
+          className="flex min-w-0 flex-1 items-center"
+          aria-busy={outlineLoading || isEvaluating}
+        >
+          <div className="mx-10 hidden h-6 w-px shrink-0 bg-border lg:block" />
+          <div className="hidden min-w-0 flex-1 items-center gap-10 lg:flex">
             <input
               type="text"
               value={essayTitle}
               onChange={(e) => updateProfile({ essayTitle: e.target.value })}
               placeholder="Untitled scholarship essay"
               aria-label="Essay title"
-              className="w-full truncate border-none bg-transparent p-0 text-[15px] font-semibold leading-tight text-foreground outline-none placeholder:text-muted-foreground"
+              className="w-auto min-w-[10rem] max-w-[22rem] truncate border-none bg-transparent p-0 text-[15px] font-bold leading-tight tracking-tight text-foreground outline-none [field-sizing:content] placeholder:text-muted-foreground"
             />
-            <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+            <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap text-[11px] text-muted-foreground">
               <span className={`inline-block size-1.5 rounded-full ${savedAt ? "bg-success" : "bg-muted-foreground/40"}`} />
               {savedLabel}
             </div>
           </div>
 
-          <div className="flex shrink-0 items-center gap-1 md:gap-1.5">
+          <div className="ml-2 flex shrink-0 items-center gap-1 md:gap-1.5">
             <WordCountMeter wordCount={wordCount} characterCount={characterCount} target={wordTarget} />
             <div className="mx-1 hidden h-6 w-px bg-border sm:block" />
-
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  onClick={loadExampleEssay}
-                  className="hidden rounded-lg border border-border px-3 py-2 text-[13px] font-medium text-foreground transition-colors duration-150 hover:bg-accent sm:inline-flex"
-                >
-                  Load example
-                </button>
-              </TooltipTrigger>
-              <TooltipContent>Load only the example essay draft</TooltipContent>
-            </Tooltip>
 
             <Tooltip>
               <TooltipTrigger asChild>
@@ -6655,28 +6998,21 @@ function StepEssayWorkspace() {
               className={`ml-0.5 inline-flex items-center gap-1.5 rounded-lg bg-info px-3 py-2 text-[13px] font-medium text-white transition-opacity duration-150 hover:opacity-90 disabled:opacity-60 ${coachLoading || isEvaluating ? "agent-loading" : ""}`}
             >
               {coachLoading || isEvaluating ? <Spinner className="size-4" /> : <Wand2 className="size-4" />}
-              {coachLoading || isEvaluating ? "Evaluating…" : "Evaluate"}
+              <span className="hidden sm:inline">{coachLoading || isEvaluating ? "Evaluating…" : "Evaluate"}</span>
             </button>
 
             <Tooltip>
               <TooltipTrigger asChild>
-                <div className="ml-1 hidden md:block">
+                <div className="ml-1 hidden xl:block">
                   <ScoreRing score={score} />
                 </div>
               </TooltipTrigger>
               <TooltipContent>{score == null ? "Run a coaching session to get your essay score" : `Essay score: ${score}/100`}</TooltipContent>
             </Tooltip>
-
           </div>
-        </div>
-
-        {(pdfStatus || analysisStatus || bgStatus) && (
-          <div className="flex items-center gap-1.5 border-t border-border bg-accent/40 px-4 py-1.5 text-[11px] text-muted-foreground">
-            {bgStatus && <span className="size-2.5 shrink-0 animate-spin rounded-full border-2 border-info/30 border-t-info" />}
-            <span>{bgStatus ?? pdfStatus ?? analysisStatus}</span>
-          </div>
-        )}
-      </header>
+        </div>,
+        topBarTarget,
+      )}
 
       <Dialog open={promptPickerOpen} onOpenChange={(open) => {
         // Keep the landing chooser intentional — only close via Confirm.
@@ -6774,29 +7110,35 @@ function StepEssayWorkspace() {
       <section className="shrink-0 border-b border-border bg-card">
         <div className="mx-auto max-w-[1440px] space-y-3 px-4 py-3 md:px-6">
           {promptConfirmed && (
-            <div className="rounded-xl border border-info/20 bg-info/5 p-3">
-              <div className="flex items-center justify-between gap-2">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-info">
-                  {essayPrompt.trim()
-                    ? hasMultiplePrompts
-                      ? `Working on prompt ${selectedPromptIndex + 1}`
-                      : "Working on essay prompt"
-                    : "Scholarship-guided writing focus"}
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPendingPromptIndex(selectedPromptIndex);
-                    setPromptPickerOpen(true);
-                  }}
-                  className="text-[12px] font-semibold text-info hover:underline"
-                >
-                  Change prompt
-                </button>
+            <div className="flex items-center rounded-xl border border-info/20 bg-info/5 px-3 py-2.5">
+              <div className="shrink-0 text-[11px] font-semibold uppercase tracking-[0.12em] text-info">
+                {essayPrompt.trim()
+                  ? "Prompt"
+                  : "Scholarship-guided writing focus"}
               </div>
-              <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground line-clamp-2">
+              <div className="mx-3 h-7 w-px shrink-0 bg-border" aria-hidden="true" />
+              <p className="min-w-0 flex-1 text-[12px] leading-relaxed text-muted-foreground line-clamp-2">
                 {essayPrompt || "No formal prompt selected; evaluation uses the scholarship mission and selection criteria."}
               </p>
+              <div className="mx-3 h-7 w-px shrink-0 bg-border" aria-hidden="true" />
+              <Tooltip delayDuration={50}>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPendingPromptIndex(selectedPromptIndex);
+                      setPromptPickerOpen(true);
+                    }}
+                    aria-label="Change or edit prompt"
+                    className="inline-flex size-8 shrink-0 items-center justify-center rounded-md text-info outline-none transition-colors hover:bg-info/10 focus-visible:bg-info/10 focus-visible:ring-2 focus-visible:ring-info focus-visible:ring-offset-2"
+                  >
+                    <PencilLine className="size-4" aria-hidden="true" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" align="end" sideOffset={7}>
+                  Change or edit prompt
+                </TooltipContent>
+              </Tooltip>
             </div>
           )}
           {!promptConfirmed && (
@@ -6839,6 +7181,7 @@ function StepEssayWorkspace() {
               onRichChange={updateActiveDraftHtml}
               suggestions={suggestions}
               onDismiss={dismissSuggestion}
+              onAddToDictionary={addSuggestionToDictionary}
               onAutoCheck={triggerAutoCheck}
               onRequestRewrite={requestRewrite}
               className="flex-1"
@@ -6894,9 +7237,9 @@ function StepEssayWorkspace() {
               onAccept={acceptSuggestion}
               onDismiss={dismissSuggestion}
               onReveal={revealSuggestion}
-              onAcceptAllQuickFixes={acceptAllQuickFixes}
-              quickFixCount={quickFixSuggestions.length}
-              fixesLoading={autoCheckLoading}
+              onAddToDictionary={addSuggestionToDictionary}
+              fixesLoading={fixesLoading}
+              fixesWarning={fixesWarning}
               reviewResult={reviewResult}
               reviewUpdatedAt={reviewUpdatedAt}
               reviewDraftChanged={!!reviewUpdatedAt && draft !== reviewDraftAtRun}
@@ -6945,9 +7288,9 @@ function EssayWorkspacePanel({
   onAccept,
   onDismiss,
   onReveal,
-  onAcceptAllQuickFixes,
-  quickFixCount,
+  onAddToDictionary,
   fixesLoading,
+  fixesWarning,
   reviewResult,
   reviewUpdatedAt,
   reviewDraftChanged,
@@ -6968,9 +7311,9 @@ function EssayWorkspacePanel({
   onAccept: (s: Suggestion) => void;
   onDismiss: (s: Suggestion) => void;
   onReveal: (s: Suggestion) => void;
-  onAcceptAllQuickFixes: () => void;
-  quickFixCount: number;
+  onAddToDictionary: (s: Suggestion) => void;
   fixesLoading: boolean;
+  fixesWarning: string | null;
   reviewResult: EssayReviewResult | null;
   reviewUpdatedAt: number | null;
   reviewDraftChanged: boolean;
@@ -7007,6 +7350,13 @@ function EssayWorkspacePanel({
               >
                 <Icon className="size-3.5" />
                 <span className="hidden sm:inline">{tab.label}</span>
+                {tab.id === "highlights" && fixesLoading && (
+                  <span
+                    className="size-3 shrink-0 animate-spin rounded-full border-2 border-info/25 border-t-info"
+                    role="status"
+                    aria-label="Checking essay fixes"
+                  />
+                )}
                 {tab.count ? (
                   <span className={`grid h-4 min-w-4 place-items-center rounded-full px-1 text-[10px] font-bold ${active ? "bg-info text-white" : "bg-info/15 text-info"}`}>
                     {tab.count}
@@ -7057,9 +7407,9 @@ function EssayWorkspacePanel({
             onAccept={onAccept}
             onDismiss={onDismiss}
             onReveal={onReveal}
-            onAcceptAllQuickFixes={onAcceptAllQuickFixes}
-            quickFixCount={quickFixCount}
+            onAddToDictionary={onAddToDictionary}
             fixesLoading={fixesLoading}
+            fixesWarning={fixesWarning}
           />
         )}
       </div>
@@ -7209,7 +7559,7 @@ function PersonalizedOutlinePanel({
   return (
     <div className="relative text-foreground" aria-busy={loading}>
         {wordLimit && (
-          <div className="border-b border-border pb-4">
+          <div className="pb-2.5">
             <div className="min-w-0">
               <div className="inline-flex items-center rounded-md border border-border bg-background px-2.5 py-1 text-xs text-muted-foreground">
                 {wordLimit}
@@ -7235,7 +7585,7 @@ function PersonalizedOutlinePanel({
           const sections = data.sections ?? [];
 
           return (
-            <div className="mt-4 space-y-3">
+            <div className="mt-3 space-y-3">
               {outline?.strategy?.tone_guidance && (
                 <div className="flex items-start gap-2.5 rounded-lg border border-info/20 bg-info/5 px-3 py-2.5">
                   <span className="grid size-7 shrink-0 place-items-center rounded-md bg-info/10 text-info">
@@ -7386,10 +7736,12 @@ function CriterionScoreButton({
   criterion,
   selected,
   onSelect,
+  edge,
 }: {
   criterion: EssayCriterionReview;
   selected: boolean;
   onSelect: () => void;
+  edge?: "left" | "right";
 }) {
   const score = typeof criterion.score === "number" ? criterion.score : null;
   const displayLabel = criterion.criterion === "narrative_structure_flow_coherence"
@@ -7402,23 +7754,31 @@ function CriterionScoreButton({
       onClick={onSelect}
       aria-pressed={selected}
       aria-controls="essay-review-criterion-detail"
-      className={`group h-full w-full min-w-0 px-1 py-1.5 text-center transition-all focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-info ${
+      className={`group relative h-[5.5rem] w-full min-w-0 text-center transition-all focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-info ${
+        edge === "left"
+          ? "rounded-bl-xl after:rounded-bl-xl"
+          : edge === "right"
+            ? "rounded-br-xl after:rounded-br-xl"
+            : ""
+      } ${
         selected
-          ? "bg-background ring-2 ring-inset ring-info"
+          ? "z-10 bg-background after:pointer-events-none after:absolute after:inset-0 after:border-[3px] after:border-info"
           : "bg-background hover:bg-info/5"
       }`}
     >
-      <span className={`flex min-h-8 items-center justify-center text-[11px] font-semibold leading-tight ${selected ? "text-info" : "text-foreground/85"}`}>
-        {displayLabel}
-      </span>
-      <span className="mt-1 block text-[10px] font-semibold tabular-nums text-muted-foreground">
-        {criterion.weight ?? 0}%
-      </span>
-      <span
-        className="mt-1.5 block text-[22px] font-bold leading-none tabular-nums"
-        style={score != null ? { color: scoreColor(score) } : undefined}
-      >
-        {score ?? "—"}
+      <span className="absolute inset-0 grid grid-rows-[2rem_0.75rem_1.5rem] content-center items-center justify-items-center gap-1 px-1 py-1.5">
+        <span className={`flex h-full w-full items-center justify-center text-center text-[11px] leading-tight ${selected ? "font-black text-info" : "font-semibold text-foreground/85"}`}>
+          {displayLabel}
+        </span>
+        <span className="flex h-full w-full items-center justify-center text-center text-[10px] font-semibold leading-none text-muted-foreground">
+          {typeof criterion.weight === "number" ? `${criterion.weight}%` : ""}
+        </span>
+        <span
+          className="flex h-full w-full items-center justify-center text-center text-[20px] font-bold leading-none tabular-nums"
+          style={score != null ? { color: scoreColor(score) } : undefined}
+        >
+          {score ?? "—"}
+        </span>
       </span>
     </button>
   );
@@ -7443,17 +7803,16 @@ function CriterionReviewDetails({ criterion }: { criterion: EssayCriterionReview
       aria-live="polite"
       className="overflow-hidden rounded-xl border border-border bg-background"
     >
-      <div className="flex items-start gap-3 border-b border-border bg-accent/25 px-4 py-3.5">
-        <div className="min-w-0 flex-1">
-          <div className="text-[15px] font-semibold">{displayLabel}</div>
-          <div className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground">
-            <span>{criterion.weight ?? 0}% ·</span>
+      <div className="border-b border-border bg-accent/25 px-4 py-3.5">
+        <div className="flex items-center gap-3">
+          <div className="min-w-0 flex-1 text-[15px] font-semibold">{displayLabel}</div>
+          <div className="flex shrink-0 items-center gap-2.5">
             {!!rubricBands.length ? (
               <Tooltip delayDuration={150}>
                 <TooltipTrigger asChild>
                   <button
                     type="button"
-                    className="font-semibold text-foreground/80 underline decoration-dotted underline-offset-2 outline-none transition-colors hover:text-info focus-visible:text-info"
+                    className="text-[11px] font-semibold text-foreground/80 underline decoration-dotted underline-offset-2 outline-none transition-colors hover:text-info focus-visible:text-info"
                     aria-label={`Show the complete ${displayLabel} scoring rubric`}
                   >
                     {criterion.level || "Not scored"}
@@ -7461,7 +7820,7 @@ function CriterionReviewDetails({ criterion }: { criterion: EssayCriterionReview
                 </TooltipTrigger>
                 <TooltipContent
                   side="bottom"
-                  align="start"
+                  align="end"
                   sideOffset={7}
                   className="w-80 max-w-[calc(100vw-2rem)] p-3 text-left"
                 >
@@ -7476,22 +7835,22 @@ function CriterionReviewDetails({ criterion }: { criterion: EssayCriterionReview
                 </TooltipContent>
               </Tooltip>
             ) : (
-              <span>{criterion.level || "Not scored"}</span>
+              <span className="text-[11px] text-muted-foreground">{criterion.level || "Not scored"}</span>
             )}
+            <span className="text-[18px] font-bold tabular-nums" style={score != null ? { color: scoreColor(score) } : undefined}>
+              {score != null ? `${score}/100` : "Unavailable"}
+            </span>
           </div>
-          {criterion.rubric?.description && (
-            <p className="mt-2 text-[12px] leading-relaxed text-muted-foreground">{criterion.rubric.description}</p>
-          )}
         </div>
-        <span className="shrink-0 text-[18px] font-bold tabular-nums" style={score != null ? { color: scoreColor(score) } : undefined}>
-          {score != null ? `${score}/100` : "Unavailable"}
-        </span>
+        {criterion.rubric?.description && (
+          <p className="mt-1.5 text-[11px] italic leading-relaxed text-muted-foreground/70">{criterion.rubric.description}</p>
+        )}
       </div>
 
       <div className="space-y-3 p-3">
         {(feedback?.grounded_praise || feedback?.main_gap) && (
           <section className="space-y-2 rounded-lg border border-info/20 bg-info/5 p-3">
-            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-info">Scholarship Coach Feedback</div>
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-info">Essay Coach Feedback</div>
             {feedback?.grounded_praise && (
               <p className="text-[12px] leading-relaxed text-foreground/90">{feedback.grounded_praise}</p>
             )}
@@ -7557,15 +7916,20 @@ function UnifiedEssayReview({
     if (firstAvailable) setSelectedCriterionKey(firstAvailable);
   }, [review, selectedCriterionKey]);
   const selectedCriterion = criteriaByKey[selectedCriterionKey] ?? criteria[0];
-  const grammarCriterion = criteriaByKey.grammar;
   const score = typeof review.overall_score === "number" ? review.overall_score : null;
   const scoredVersions = (user?.drafts ?? []).filter((version) => typeof version.reviewOverall === "number");
+  const desktopCriterionKeys = ESSAY_REVIEW_SCORE_GROUPS.flatMap((group) => group.criteria);
 
   return (
     <div className="space-y-3">
-      <div>
-        <div className="text-[12px] text-muted-foreground">Last updated: {relativeTimeLabel(updatedAt, now)}</div>
-        {draftChanged && <div className="mt-1 text-[12px] font-medium text-warning">Essay changed since this review.</div>}
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px]">
+        <div className="text-muted-foreground">Last updated: {relativeTimeLabel(updatedAt, now)}</div>
+        {draftChanged && (
+          <>
+            <span className="text-border" aria-hidden="true">•</span>
+            <div className="font-medium text-warning">Essay changed since this review.</div>
+          </>
+        )}
       </div>
 
       <OverallEssayScoreCard score={score} versions={scoredVersions} />
@@ -7573,11 +7937,11 @@ function UnifiedEssayReview({
       <div className="overflow-hidden rounded-xl border border-border bg-border">
         <div className="hidden grid-cols-6 gap-px md:grid">
           {ESSAY_REVIEW_SCORE_GROUPS.map((group) => (
-            <h3 key={group.label} className={`flex items-center justify-center bg-background px-1 py-3 text-center font-sans text-[14px] font-semibold leading-tight text-foreground ${group.columnClass}`}>
+            <h3 key={group.label} className={`flex items-center justify-center bg-background px-2 py-1.5 text-center font-sans text-[10px] font-bold uppercase leading-tight tracking-[0.07em] text-info/90 ${group.columnClass}`}>
               {group.label}
             </h3>
           ))}
-          {ESSAY_REVIEW_SCORE_GROUPS.flatMap((group) => group.criteria).map((key) => {
+          {desktopCriterionKeys.map((key, index) => {
             const criterion = criteriaByKey[key];
             if (!criterion) return null;
             return (
@@ -7586,6 +7950,7 @@ function UnifiedEssayReview({
                 criterion={criterion}
                 selected={selectedCriterionKey === key}
                 onSelect={() => setSelectedCriterionKey(key)}
+                edge={index === 0 ? "left" : index === desktopCriterionKeys.length - 1 ? "right" : undefined}
               />
             );
           })}
@@ -7599,7 +7964,7 @@ function UnifiedEssayReview({
             if (!groupCriteria.length) return null;
             return (
               <section key={group.label} className="min-w-0 bg-background p-3">
-                <h3 className="text-center font-sans text-[14px] font-semibold leading-tight text-foreground">{group.label}</h3>
+                <h3 className="text-center font-sans text-[10px] font-bold uppercase leading-tight tracking-[0.07em] text-info/90">{group.label}</h3>
                 <div className={`mt-3 grid gap-1.5 ${groupCriteria.length === 3 ? "grid-cols-3" : groupCriteria.length === 2 ? "grid-cols-2" : "grid-cols-1"}`}>
                   {groupCriteria.map(([key, criterion]) => (
                     <CriterionScoreButton
@@ -7615,31 +7980,6 @@ function UnifiedEssayReview({
           })}
         </div>
 
-        {grammarCriterion && (
-          <button
-            type="button"
-            onClick={() => setSelectedCriterionKey("grammar")}
-            aria-pressed={selectedCriterionKey === "grammar"}
-            aria-controls="essay-review-criterion-detail"
-            className={`flex w-full items-center gap-3 rounded-b-xl border-t border-border bg-background py-1 pl-5 pr-1 text-left transition-colors focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-info ${
-              selectedCriterionKey === "grammar"
-                ? "ring-2 ring-inset ring-info"
-                : "hover:bg-info/5"
-            }`}
-          >
-            <div className="min-w-0 flex-1">
-              <h3 className="font-sans text-[14px] font-semibold text-foreground">Grammar</h3>
-              <p className="mt-0.5 text-[10px] leading-relaxed text-muted-foreground">Spelling, punctuation, usage, and sentence-level correctness</p>
-            </div>
-            <span className="h-12 w-px shrink-0 bg-border" aria-hidden="true" />
-            <span className="flex w-28 shrink-0 translate-x-1 flex-col items-center justify-center px-3 py-2 text-center">
-              <span className="text-[10px] font-semibold tabular-nums text-muted-foreground">{grammarCriterion.weight ?? 0}%</span>
-              <span className="mt-1 text-[22px] font-bold leading-none tabular-nums" style={typeof grammarCriterion.score === "number" ? { color: scoreColor(grammarCriterion.score) } : undefined}>
-                {typeof grammarCriterion.score === "number" ? grammarCriterion.score : "—"}
-              </span>
-            </span>
-          </button>
-        )}
       </div>
 
       {selectedCriterion && <CriterionReviewDetails criterion={selectedCriterion} />}
@@ -7665,7 +8005,7 @@ function WorkspaceEssayReviewTab({
       <CoachSkeleton />
     );
   }
-  if (!review || review.schema_version !== 3) {
+  if (!review || review.schema_version !== 4) {
     return (
       <PanelEmpty
         message="No review yet. Click “Evaluate” in the top-right corner to review your essay."
@@ -7682,72 +8022,72 @@ function WorkspaceEssayReviewTab({
   );
 }
 
-function Sparkline({ points }: { points: number[] }) {
-  const w = 320;
-  const h = 40;
-  const pad = 5;
-  const step = points.length > 1 ? (w - pad * 2) / (points.length - 1) : 0;
-  const coords = points.map((p, i) => [pad + i * step, h - pad - (Math.max(0, Math.min(100, p)) / 100) * (h - pad * 2)] as const);
-  const d = coords.map(([x, y], i) => `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
-  return (
-    <svg viewBox={`0 0 ${w} ${h}`} className="h-10 w-full" preserveAspectRatio="none" aria-hidden>
-      <path d={d} fill="none" stroke="var(--info)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-      {coords.map(([x, y], i) => (
-        <circle key={i} cx={x} cy={y} r={i === coords.length - 1 ? 3 : 2} fill="var(--info)" />
-      ))}
-    </svg>
-  );
-}
-
 function OverallEssayScoreCard({ score, versions }: { score: number | null; versions: EssayDraft[] }) {
   const scored = versions.filter((v) => typeof v.reviewOverall === "number");
   const latest = scored[scored.length - 1] ?? null;
   const prev = scored.length > 1 ? scored[scored.length - 2] : null;
   const overall = score ?? latest?.reviewOverall ?? null;
   const overallDelta = prev && overall != null ? overall - (prev.reviewOverall ?? 0) : null;
-  const deltas =
-    prev?.reviewScores && latest?.reviewScores
-      ? Object.entries(latest.reviewScores)
-          .map(([k, v]) => ({ key: k, delta: v - (prev.reviewScores?.[k] ?? v) }))
-          .filter((x) => x.delta !== 0)
-          .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta))
-      : [];
   return (
-    <div className="space-y-3 rounded-xl border border-border bg-background p-3">
-      <div className="flex items-center gap-3">
-        <ScoreRing score={overall} size={58} stroke={4} />
+    <div className="rounded-xl border border-border bg-background px-3 py-2.5">
+      <div className="flex items-center gap-2.5">
+        <Tooltip delayDuration={150}>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              aria-label={overall == null ? "Overall essay score unavailable" : `Overall essay score ${overall} out of 100`}
+              className="shrink-0 rounded-full outline-none focus-visible:ring-2 focus-visible:ring-info focus-visible:ring-offset-2"
+            >
+              <ScoreRing score={overall} />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent
+            side="bottom"
+            align="start"
+            sideOffset={7}
+            className="w-72 max-w-[calc(100vw-2rem)] p-3 text-left"
+          >
+            <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-primary-foreground/70">
+              {overall == null ? "Essay score: unavailable" : `Essay score: ${overall}/100`}
+            </div>
+            <div className="mt-1.5 text-[11px] leading-relaxed text-primary-foreground/85">
+              {overall == null
+                ? "Your overall score will be calculated using criteria weights tailored for this scholarship and essay prompt."
+                : "Overall score calculated based on criteria weights tailored for this scholarship and essay prompt."}
+            </div>
+          </TooltipContent>
+        </Tooltip>
         <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-semibold">Overall essay score</div>
-          <div className="text-[12px] text-muted-foreground">Criteria weights tailored for this scholarship and essay prompt</div>
-        </div>
-      </div>
-
-      {latest && (
-        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-2 text-[12px]">
-          <span className="text-muted-foreground">Draft {latest.version} · {latest.wordCount} words</span>
-          {prev && overallDelta != null ? (
-            <span className="font-semibold" style={{ color: overallDelta >= 0 ? "var(--success)" : "var(--destructive)" }}>
-              {overallDelta >= 0 ? `▲ +${overallDelta}` : `▼ ${overallDelta}`} since Draft {prev.version} · {scored.length} scored drafts
-            </span>
-          ) : (
-            <span className="text-muted-foreground">First scored draft</span>
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+            <div className="text-[13px] font-semibold">Overall essay score</div>
+            {prev && overallDelta != null ? (
+              <span
+                className="text-[11px] font-semibold"
+                style={{
+                  color: overallDelta > 0
+                    ? "var(--success)"
+                    : overallDelta < 0
+                      ? "var(--destructive)"
+                      : "var(--muted-foreground)",
+                }}
+              >
+                {overallDelta > 0
+                  ? `▲ +${overallDelta} since Draft ${prev.version}`
+                  : overallDelta < 0
+                    ? `▼ ${overallDelta} since Draft ${prev.version}`
+                    : `No change since Draft ${prev.version}`}
+              </span>
+            ) : latest ? (
+              <span className="text-[11px] font-medium text-muted-foreground">First scored draft</span>
+            ) : null}
+          </div>
+          {latest && (
+            <div className="mt-0.5 text-[10px] text-muted-foreground">
+              Draft {latest.version} · {latest.wordCount} words · {scored.length} scored draft{scored.length === 1 ? "" : "s"}
+            </div>
           )}
         </div>
-      )}
-
-      {scored.length > 1 && <Sparkline points={scored.map((v) => v.reviewOverall ?? 0)} />}
-      {deltas.length > 0 && (
-        <div className="flex flex-wrap gap-1">
-          {deltas.slice(0, 5).map((x) => (
-            <span
-              key={x.key}
-              className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${x.delta > 0 ? "bg-success/10 text-success" : "bg-destructive/10 text-destructive"}`}
-            >
-              {x.delta > 0 ? `▲ +${x.delta}` : `▼ ${x.delta}`} {labelize(x.key)}
-            </span>
-          ))}
-        </div>
-      )}
+      </div>
     </div>
   );
 }
@@ -7757,14 +8097,21 @@ function SuggestionCard({
   onAccept,
   onDismiss,
   onReveal,
+  onAddToDictionary,
 }: {
   s: Suggestion;
   onAccept: (s: Suggestion) => void;
   onDismiss: (s: Suggestion) => void;
   onReveal: (s: Suggestion) => void;
+  onAddToDictionary: (s: Suggestion) => void;
 }) {
   const meta = CATEGORY_META[s.category];
   const [copied, setCopied] = useState(false);
+  const canReplace = s.replacementAvailable !== false && s.replacement.length > 0;
+  const canAddToDictionary = s.engineSource === "language_tool"
+    && s.suggestionType?.startsWith("spelling")
+    && /^\p{L}[\p{L}'’-]*$/u.test(s.original.trim());
+  const possibleName = s.suggestionType === "spelling_name";
   async function copy() {
     try {
       await navigator.clipboard?.writeText(s.replacement);
@@ -7783,31 +8130,60 @@ function SuggestionCard({
             <span className="rounded bg-muted px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">{s.severity}</span>
           )}
         </div>
-        <div className="mt-1 text-[12px]">
-          <span className="text-muted-foreground line-through decoration-muted-foreground/50">{s.original.trim() || "␠"}</span>
-          <span className="mx-1 text-muted-foreground">→</span>
-          <span className="font-medium text-foreground">{s.replacement.trim() || "(removed)"}</span>
-        </div>
+        {canReplace ? (
+          <div className="mt-1 text-[12px]">
+            <span className="text-muted-foreground line-through decoration-muted-foreground/50">{s.original.trim() || "␠"}</span>
+            <span className="mx-1 text-muted-foreground">→</span>
+            <span className="font-medium text-foreground">{s.replacement.trim() || "(removed)"}</span>
+          </div>
+        ) : (
+          <div className="mt-1 text-[12px] font-medium text-foreground">{s.original.trim()}</div>
+        )}
         {s.source === "coach" && s.explanation && (
           <div className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{s.explanation}</div>
         )}
       </button>
       <div className="mt-2 flex items-center gap-1.5">
-        <button type="button" onClick={() => onAccept(s)} className="flex-1 rounded-md bg-info px-2.5 py-1 text-[11px] font-semibold text-white transition-opacity hover:opacity-90">
-          Accept
-        </button>
+        {canReplace && (
+          <button
+            type="button"
+            onClick={() => onAccept(s)}
+            className={`flex-1 rounded-md px-2.5 py-1 text-[11px] font-semibold transition-colors ${
+              possibleName
+                ? "border border-border text-muted-foreground hover:bg-accent hover:text-foreground"
+                : "bg-info text-white hover:opacity-90"
+            }`}
+          >
+            {possibleName ? "Use suggestion" : "Accept"}
+          </button>
+        )}
         <button type="button" onClick={() => onDismiss(s)} className="rounded-md border border-border px-2.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
           Ignore
         </button>
-        <button
-          type="button"
-          onClick={copy}
-          title="Copy suggested text"
-          aria-label="Copy suggested text"
-          className="grid size-7 place-items-center rounded-md border border-border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-        >
-          {copied ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
-        </button>
+        {canAddToDictionary && (
+          <button
+            type="button"
+            onClick={() => onAddToDictionary(s)}
+            className={`rounded-md border px-2.5 py-1 text-[11px] font-medium transition-colors ${
+              possibleName
+                ? "border-info bg-info text-white hover:opacity-90"
+                : "border-border text-muted-foreground hover:bg-accent hover:text-foreground"
+            }`}
+          >
+            Add word
+          </button>
+        )}
+        {canReplace && (
+          <button
+            type="button"
+            onClick={copy}
+            title="Copy suggested text"
+            aria-label="Copy suggested text"
+            className="grid size-7 place-items-center rounded-md border border-border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            {copied ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -7819,18 +8195,18 @@ function WorkspaceHighlightsTab({
   onAccept,
   onDismiss,
   onReveal,
-  onAcceptAllQuickFixes,
-  quickFixCount,
+  onAddToDictionary,
   fixesLoading,
+  fixesWarning,
 }: {
   isEvaluating: boolean;
   suggestions: Suggestion[];
   onAccept: (s: Suggestion) => void;
   onDismiss: (s: Suggestion) => void;
   onReveal: (s: Suggestion) => void;
-  onAcceptAllQuickFixes: () => void;
-  quickFixCount: number;
+  onAddToDictionary: (s: Suggestion) => void;
   fixesLoading: boolean;
+  fixesWarning: string | null;
 }) {
   const counts = countByCategory(suggestions);
 
@@ -7840,23 +8216,17 @@ function WorkspaceHighlightsTab({
     <div className="space-y-3">
       <div className="text-[12px] font-semibold text-muted-foreground">{suggestions.length} open</div>
 
-      {quickFixCount > 0 && (
-        <button
-          type="button"
-          onClick={onAcceptAllQuickFixes}
-          className="flex w-full items-center justify-center gap-2 rounded-lg border border-border px-3 py-1.5 text-[12px] font-semibold text-foreground transition-colors duration-150 hover:bg-accent"
-          title="Applies grammar, spelling, spacing, and capitalization fixes — stylistic rewrites stay for individual review"
-        >
-          <Check className="size-3.5 text-success" />
-          Accept {quickFixCount} quick fix{quickFixCount === 1 ? "" : "es"}
-        </button>
-      )}
+      {fixesLoading && !suggestions.length && <HighlightsSkeleton />}
 
-      {fixesLoading && <HighlightsSkeleton />}
+      {fixesWarning && (
+        <div className="rounded-lg border border-warning/30 bg-warning/5 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
+          {fixesWarning}
+        </div>
+      )}
 
       {!fixesLoading && !suggestions.length && (
         <div className="rounded-xl border border-dashed border-border bg-background p-4 text-[13px] leading-relaxed text-muted-foreground">
-          No sentence-level fixes are available for this draft. Run the main coaching session after making changes.
+          No fixes found. Fixes update automatically as you type.
         </div>
       )}
 
@@ -7871,7 +8241,14 @@ function WorkspaceHighlightsTab({
               <span className="text-[11px] text-muted-foreground">· {items.length}</span>
             </div>
             {items.map((s) => (
-              <SuggestionCard key={s.id} s={s} onAccept={onAccept} onDismiss={onDismiss} onReveal={onReveal} />
+              <SuggestionCard
+                key={s.id}
+                s={s}
+                onAccept={onAccept}
+                onDismiss={onDismiss}
+                onReveal={onReveal}
+                onAddToDictionary={onAddToDictionary}
+              />
             ))}
           </div>
         );
@@ -8077,7 +8454,7 @@ function lowEssayReviewCriteria(review?: EssayReviewResult | null): string[] {
 
 function StepFinalCheck({ onNavigate }: { onNavigate?: (slug: string) => void }) {
   const { user, updateProfile } = useUser();
-  const review = user?.essayReviewResult?.schema_version === 3 ? user.essayReviewResult : null;
+  const review = user?.essayReviewResult?.schema_version === 4 ? user.essayReviewResult : null;
   const docs = user?.documents ?? [];
   const hasDoc = (kind: string) => docs.some((doc) => doc.kind.toLowerCase().includes(kind));
   const [zipping, setZipping] = useState(false);
@@ -8372,7 +8749,7 @@ function DraftDot({ cx, cy, index, payload, r = 4, onSelect }: DraftDotProps & {
 function StepTracker({ onNavigate }: { onNavigate?: (slug: string) => void }) {
   const { user, updateProfile } = useUser();
   const scholarship = user?.activeScholarship;
-  const review = user?.essayReviewResult?.schema_version === 3 ? user.essayReviewResult : null;
+  const review = user?.essayReviewResult?.schema_version === 4 ? user.essayReviewResult : null;
   const currentScore = typeof review?.overall_score === "number" ? review.overall_score : undefined;
   const applications = useMemo(() => user?.applications ?? [], [user?.applications]);
   const [openColumn, setOpenColumn] = useState<ApplicationStatus | null>(null);
