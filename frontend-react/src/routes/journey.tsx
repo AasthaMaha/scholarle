@@ -13,6 +13,7 @@ import {
   ClipboardList,
   Copy,
   Download,
+  ExternalLink,
   FileUp,
   FlaskConical,
   Gauge,
@@ -73,6 +74,7 @@ import {
   buildWikiPayload,
   discoverScholarshipWiki,
   buildRewritePayload,
+  extractPromptWordLimits,
   extractScholarshipOpportunity,
   generatePersonalizedOutline,
   runEditorCheck,
@@ -335,9 +337,7 @@ function Journey() {
           />
           <main ref={journeyMainRef} tabIndex={-1} className={`min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto outline-none transition-colors duration-500 ${
             step.slug === "discovery"
-              ? user?.wikiDiscovery
-                ? "bg-[radial-gradient(circle_at_85%_8%,rgba(109,93,246,0.10),transparent_28%),linear-gradient(180deg,#f4f6fb_0%,#ffffff_48%,#f4f2fb_100%)]"
-                : "bg-[radial-gradient(circle_at_18%_15%,rgba(109,93,246,0.18),transparent_34%),radial-gradient(circle_at_82%_75%,rgba(46,196,182,0.12),transparent_30%),linear-gradient(145deg,#f7f8ff_0%,#eef2fb_52%,#f8f5ff_100%)]"
+              ? "bg-[radial-gradient(circle_at_85%_8%,rgba(109,93,246,0.10),transparent_28%),linear-gradient(180deg,#f4f6fb_0%,#ffffff_48%,#f4f2fb_100%)]"
               : ""
           }`}>
             <div
@@ -2542,8 +2542,8 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   return <div className="text-xs uppercase tracking-widest text-muted-foreground">{children}</div>;
 }
 function Input({
-  label, value, onChange, placeholder, className = "", type = "text", invalid = false, errorMessage,
-}: { label: string; value: string; onChange: (v: string) => void; placeholder?: string; className?: string; type?: string; invalid?: boolean; errorMessage?: string }) {
+  label, value, onChange, placeholder, className = "", controlClassName = "", type = "text", invalid = false, errorMessage,
+}: { label: string; value: string; onChange: (v: string) => void; placeholder?: string; className?: string; controlClassName?: string; type?: string; invalid?: boolean; errorMessage?: string }) {
   const errorId = useId();
   return (
     <label className={`block ${className}`}>
@@ -2555,7 +2555,7 @@ function Input({
         onChange={(e) => onChange(e.target.value)}
         aria-invalid={invalid || undefined}
         aria-describedby={invalid ? errorId : undefined}
-        className={`mt-1 w-full rounded-md border bg-card px-3 py-1.5 text-sm text-foreground outline-none transition-[border-color,box-shadow,background-color] placeholder:text-muted-foreground/60 focus:border-primary/70 focus:ring-2 focus:ring-primary/15 ${
+        className={`mt-1 w-full rounded-md border bg-card px-3 py-1.5 text-sm text-foreground outline-none transition-[border-color,box-shadow,background-color] placeholder:text-muted-foreground/60 focus:border-primary/70 focus:ring-2 focus:ring-primary/15 ${controlClassName} ${
           invalid ? "border-destructive ring-2 ring-destructive/15" : "border-border"
         }`}
       />
@@ -2568,8 +2568,8 @@ function Input({
   );
 }
 function Textarea({
-  label, value, onChange, placeholder, rows = 3, className = "",
-}: { label: string; value: string; onChange: (v: string) => void; placeholder?: string; rows?: number; className?: string }) {
+  label, value, onChange, placeholder, rows = 3, className = "", controlClassName = "",
+}: { label: string; value: string; onChange: (v: string) => void; placeholder?: string; rows?: number; className?: string; controlClassName?: string }) {
   return (
     <label className={`block ${className}`}>
       <span className="text-xs font-medium text-foreground/75">{label}</span>
@@ -2578,7 +2578,7 @@ function Textarea({
         rows={rows}
         placeholder={placeholder}
         onChange={(e) => onChange(e.target.value)}
-        className="mt-1 w-full rounded-md border border-border bg-card px-3 py-1.5 text-sm leading-relaxed text-foreground outline-none transition-[border-color,box-shadow,background-color] placeholder:text-muted-foreground/60 focus:border-primary/70 focus:ring-2 focus:ring-primary/15"
+        className={`mt-1 w-full rounded-md border border-border bg-card px-3 py-1.5 text-sm leading-relaxed text-foreground outline-none transition-[border-color,box-shadow,background-color] placeholder:text-muted-foreground/60 focus:border-primary/70 focus:ring-2 focus:ring-primary/15 ${controlClassName}`}
       />
     </label>
   );
@@ -3566,6 +3566,100 @@ type DiscoverySource = NonNullable<WikiDiscoveryResult["specific_opportunities"]
   source_authority?: string;
 };
 
+type TrustedPlatformGuide = DiscoverySource & {
+  description: string;
+  bestFor: string;
+  matchTerms: string[];
+};
+
+const TRUSTED_PLATFORM_GUIDES: TrustedPlatformGuide[] = [
+  {
+    name: "Bold.org",
+    url: "https://bold.org/scholarships/",
+    category: "Scholarship platform",
+    description: "Smaller donor-funded awards across specific identities, interests, majors, and experiences.",
+    bestFor: "Targeted opportunities and no-essay scholarships.",
+    matchTerms: ["bold.org", "bold"],
+  },
+  {
+    name: "BigFuture",
+    url: "https://bigfuture.collegeboard.org/scholarship-search",
+    category: "Scholarship database",
+    description: "College Board’s scholarship search alongside college-planning and financial-aid resources.",
+    bestFor: "Broad discovery and college financial planning.",
+    matchTerms: ["bigfuture", "college board"],
+  },
+  {
+    name: "Fastweb",
+    url: "https://www.fastweb.com/",
+    category: "Scholarship platform",
+    description: "A large scholarship directory that builds recommendations from a student profile.",
+    bestFor: "Profile-based lists and monitoring recurring opportunities.",
+    matchTerms: ["fastweb"],
+  },
+  {
+    name: "Scholarships.com",
+    url: "https://www.scholarships.com/",
+    category: "Scholarship directory",
+    description: "A large directory organized across academic, personal, geographic, and eligibility categories.",
+    bestFor: "Browsing by major, academic level, background, or location.",
+    matchTerms: ["scholarships.com"],
+  },
+];
+
+function discoveryEducationLabel(entry?: EducationHistoryEntry, fallback?: EducationLevel) {
+  const normalized = normalizeEducationLevelLabel(entry?.educationLevel)
+    || inferEducationLevelLabel(entry ?? {});
+  if (/high school/i.test(normalized)) return "High school student";
+  if (/associate/i.test(normalized)) return "Associate degree student";
+  if (/bachelor/i.test(normalized)) return "Undergraduate student";
+  if (/master/i.test(normalized)) return "Graduate student";
+  if (/doctoral|doctor|phd/i.test(normalized)) return "Doctoral student";
+  if (/professional/i.test(normalized)) return "Professional degree student";
+  return fallback ? eduLevelLabel(fallback) : "";
+}
+
+function discoveryCitizenshipLabel(value?: string) {
+  const citizenship = value?.trim() ?? "";
+  if (!citizenship) return "";
+  if (/u\.s\. citizen|us citizen|permanent resident/i.test(citizenship)) return "Domestic student";
+  if (/international/i.test(citizenship)) return "International student";
+  return citizenship;
+}
+
+function buildDiscoveryProfileContext(user: UserProfile | null) {
+  if (!user) return [];
+  const currentEducation = user.educationHistory?.find((entry) => entry.isCurrent);
+  const alignedBranch = user.educationLevel === "high_school"
+    ? user.highSchool
+    : user.educationLevel === "undergrad"
+      ? user.undergrad
+      : user.graduate;
+  const branchMajor = user.educationLevel === "undergrad"
+    ? user.undergrad?.major?.trim()
+    : user.educationLevel === "grad" || user.educationLevel === "phd"
+      ? (user.graduate?.program || user.graduate?.researchArea)?.trim()
+      : "";
+  const currentLevel = educationLevelCode(currentEducation?.educationLevel);
+  const currentMatchesSelectedLevel = !currentEducation
+    || !currentLevel
+    || currentLevel === user.educationLevel;
+  const major = currentEducation?.majorField?.trim()
+    || (currentMatchesSelectedLevel ? branchMajor : "");
+  const gpa = currentEducation?.gpa?.trim()
+    || ("gpa" in (alignedBranch ?? {}) ? String(alignedBranch?.gpa ?? "").trim() : "");
+  const values = [
+    discoveryEducationLabel(currentEducation, user.educationLevel),
+    major,
+    discoveryCitizenshipLabel(user.citizenshipStatus),
+    user.location?.trim(),
+    gpa ? `GPA ${gpa}` : "",
+  ].filter((value): value is string => !!value);
+  return values.filter(
+    (value, index) => values.findIndex((candidate) => candidate.toLowerCase() === value.toLowerCase()) === index,
+  );
+}
+
 function StepDiscovery({
   onUpdateProfile,
   onUseSource,
@@ -3623,7 +3717,7 @@ function StepDiscovery({
     }
   }
 
-  function useSourceForExtraction(source: DiscoverySource) {
+  function selectSourceForExtraction(source: DiscoverySource) {
     const sourceUrl = source.url ?? "";
     const deadlineStatus = source.deadline_status === "open"
       ? "Applications open"
@@ -3680,9 +3774,13 @@ function StepDiscovery({
     setStatus(exists ? "Removed from saved opportunities." : "Saved for later.");
   }
 
-  function openPlatform(source: DiscoverySource) {
+  function rememberPlatform(source: DiscoverySource) {
     setPlatformContext(source.name || "the platform");
-    if (source.url) window.open(source.url, "_blank", "noopener,noreferrer");
+  }
+
+  function resizeScholarshipInput(element: HTMLTextAreaElement) {
+    element.style.height = "auto";
+    element.style.height = `${Math.min(Math.max(element.scrollHeight, 168), 360)}px`;
   }
 
   function continueWithOwnOpportunity() {
@@ -3721,169 +3819,267 @@ function StepDiscovery({
   const dismissedUrls = new Set(user?.dismissedDiscoveryUrls ?? []);
   const directSources = (wiki?.specific_opportunities ?? []).filter((source) => !dismissedUrls.has(source.url ?? "")).slice(0, 3);
   const apiPlatforms = (wiki?.top_free_platforms ?? []).filter((source) => source.name && source.url);
-  const platformSources = [...apiPlatforms, ...(user?.discoveryPlatformDefaults ?? [])]
-    .filter((source, index, sources) => sources.findIndex((candidate) => candidate.url === source.url) === index)
-    .slice(0, 3);
+  const returnedPlatforms = [...apiPlatforms, ...(user?.discoveryPlatformDefaults ?? [])]
+    .filter((source, index, sources) => sources.findIndex((candidate) => candidate.url === source.url) === index);
+  const platformSources = TRUSTED_PLATFORM_GUIDES.map((guide) => {
+    const existing = returnedPlatforms.find((source) => {
+      const identity = `${source.name ?? ""} ${source.url ?? ""}`.toLowerCase();
+      return guide.matchTerms.some((term) => identity.includes(term));
+    });
+    return {
+      ...guide,
+      ...existing,
+      name: guide.name,
+      url: existing?.url || guide.url,
+      description: guide.description,
+      bestFor: guide.bestFor,
+      matchTerms: guide.matchTerms,
+    };
+  });
   const savedIds = new Set((user?.savedWikiSources ?? []).map((item) => item.id));
   const resultsVisible = showResults && hasWiki;
+  const profileContext = buildDiscoveryProfileContext(user);
 
   return (
-    <div className={resultsVisible && !loading ? "space-y-7 pb-3" : "flex min-h-[calc(100vh-190px)] items-center justify-center py-6"}>
-      {!resultsVisible && !loading && (
-        <section className="w-full max-w-3xl rounded-3xl border border-border/70 bg-card p-7 text-center shadow-sm">
-          <h2 className="font-display text-2xl font-bold">We couldn’t load scholarship results</h2>
-          <p role="alert" className="mx-auto mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
-            {searchError || "Scholar-E couldn’t complete this search. Try again or review the profile information being used."}
-          </p>
-          <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
+    <div className="space-y-5 pb-5">
+      <header className="border-b border-info/10 pb-4">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h2 className="font-display text-3xl font-bold tracking-tight">Scholarship Discovery</h2>
+            <p className="mt-1.5 max-w-2xl text-[15px] leading-6 text-foreground/75">
+              Paste a scholarship you found, or use one of the trusted sources below to find one.
+            </p>
+          </div>
+          {hasWiki && (
             <button
               type="button"
               onClick={refreshWiki}
-              className="rounded-xl bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 focus-visible:ring-offset-2"
+              disabled={loading}
+              className="inline-flex min-h-9 shrink-0 items-center justify-center rounded-lg border border-info/15 bg-card px-3 py-2 text-xs font-semibold text-foreground/70 transition-colors hover:border-info/30 hover:bg-accent/70 hover:text-foreground disabled:cursor-wait disabled:opacity-55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/35"
             >
-              Retry search
+              {loading ? "Refreshing…" : "Refresh results"}
             </button>
+          )}
+        </div>
+      </header>
+
+      <section
+        aria-labelledby="verified-profile-heading"
+        className="flex flex-col gap-2 border-b border-success/25 pb-4 sm:flex-row sm:items-center sm:justify-between"
+      >
+        <div className="flex min-w-0 items-start gap-2.5">
+          <span className="mt-0.5 grid size-6 shrink-0 place-items-center rounded-full bg-success/12 text-success">
+            <Check className="size-3.5" aria-hidden="true" />
+          </span>
+          <div className="min-w-0">
+            <h3 id="verified-profile-heading" className="text-sm font-semibold text-foreground">
+              Using your verified profile
+            </h3>
+          {profileContext.length ? (
+            <ul className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1" aria-label="Profile details used for analysis">
+              {profileContext.map((item, index) => (
+                <li key={item} className="inline-flex items-center gap-2 text-sm text-foreground/75">
+                  {index > 0 && <span className="text-success/70" aria-hidden="true">·</span>}
+                  <span>{item}</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-2 text-xs text-foreground/70">
+              Add profile details to improve the comparison in Step 3.
+            </p>
+          )}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onUpdateProfile}
+          className="shrink-0 self-start text-xs font-semibold text-info underline-offset-4 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/35 sm:self-center"
+        >
+          Edit profile
+        </button>
+      </section>
+
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1.9fr)_minmax(280px,1fr)] lg:items-start">
+        <section
+          className="border-l-2 border-info/65 py-1 pl-4 pr-0 sm:pl-5"
+          aria-labelledby="analyze-scholarship-heading"
+        >
+          <div className="flex items-start gap-3">
+            <span className="grid size-9 shrink-0 place-items-center rounded-full bg-info/10 text-info">
+              <ClipboardList className="size-4.5" aria-hidden="true" />
+            </span>
+            <div className="min-w-0">
+              <div className="text-sm font-semibold uppercase tracking-[0.14em] text-info">
+                Already found a scholarship?
+              </div>
+              <h3 id="analyze-scholarship-heading" className="mt-1 font-display text-[1.75rem] font-bold leading-tight">
+                Paste a scholarship
+              </h3>
+            </div>
+          </div>
+          <p className="mt-2.5 max-w-2xl text-[15px] leading-6 text-foreground/80">
+            Paste a scholarship URL or copied listing. Scholar-E will extract the requirements and compare them with your student profile.
+          </p>
+
+          <div className="mt-3.5">
+          <label htmlFor="bring-opportunity" className="text-sm font-semibold text-foreground">
+            Scholarship link or details
+          </label>
+          <textarea
+            id="bring-opportunity"
+            rows={4}
+            value={bringValue}
+            onChange={(event) => {
+              setBringValue(event.target.value);
+              resizeScholarshipInput(event.currentTarget);
+              if (bringError) setBringError("");
+            }}
+            aria-invalid={!!bringError || undefined}
+            aria-describedby={bringError ? "bring-opportunity-help bring-opportunity-error" : "bring-opportunity-help"}
+            placeholder="Paste a scholarship link or copied scholarship details…"
+            className="mt-1.5 min-h-[168px] w-full resize-y overflow-y-auto rounded-lg border border-info/20 bg-accent/20 px-4 py-3 text-sm leading-6 text-foreground shadow-inner shadow-info/[0.02] outline-none transition-[border-color,box-shadow,background-color] placeholder:text-foreground/55 focus:border-info/70 focus:bg-white focus:ring-3 focus:ring-info/20"
+          />
+          {bringError && (
+            <p id="bring-opportunity-error" role="alert" className="mt-2 text-xs font-medium text-destructive">
+              {bringError}
+            </p>
+          )}
+          <div id="bring-opportunity-help" className="mt-4 rounded-lg bg-success/[0.035] px-3 py-2.5 text-sm leading-6 text-foreground/80">
+            <div className="font-semibold text-foreground">Supported inputs</div>
+            <ul className="mt-1.5 grid gap-x-4 gap-y-1 sm:grid-cols-2" aria-label="Accepted scholarship input formats">
+              {["Scholarship URL", "Scholarship page or listing", "Copied eligibility requirements", "Application description"].map((item) => (
+                <li key={item} className="flex items-start gap-2">
+                  <Check className="mt-1 size-3.5 shrink-0 text-success" aria-hidden="true" />
+                  <span>{item}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+          <div className="mt-4 flex justify-end">
             <button
               type="button"
-              onClick={onUpdateProfile}
-              className="rounded-xl border border-border px-5 py-2.5 text-sm font-semibold text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
+              onClick={continueWithOwnOpportunity}
+              disabled={!bringValue.trim()}
+              className="inline-flex min-h-11 w-full shrink-0 items-center justify-center gap-2 rounded-lg bg-primary px-6 py-3 text-sm font-semibold text-primary-foreground shadow-sm transition-[background-color,opacity,box-shadow] hover:bg-primary/90 hover:shadow-md disabled:cursor-not-allowed disabled:bg-accent disabled:text-muted-foreground disabled:shadow-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/45 focus-visible:ring-offset-2 sm:w-auto"
             >
-              Edit profile
+              Analyze Scholarship <ArrowRight className="size-4" aria-hidden="true" />
             </button>
           </div>
-        </section>
-      )}
-      {loading && (
-        <section className="w-full max-w-5xl space-y-5 rounded-[2rem] border border-white/80 bg-white/80 p-8 shadow-xl backdrop-blur-xl">
-          <div className="flex items-center gap-3">
-            <Spinner className="size-5 text-primary" />
-            <div>
-              <h2 className="font-display text-2xl font-bold">Finding scholarships using your verified profile</h2>
-              <p role="status" aria-live="polite" className="mt-1 text-sm text-muted-foreground">{status}</p>
-            </div>
-          </div>
-          <div className="space-y-3">
-            {[0, 1, 2].map((item) => <Skeleton key={item} className="h-32 rounded-2xl" />)}
-          </div>
-          <div className="grid grid-cols-3 gap-3">
-            {[0, 1, 2].map((item) => <Skeleton key={item} className="h-24 rounded-2xl" />)}
           </div>
         </section>
-      )}
 
-      {resultsVisible && !loading && (
-        <>
-          <section className="rounded-3xl border border-white/80 bg-white/80 px-7 py-5 shadow-sm backdrop-blur-xl">
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-success">
-                  <span className="grid size-6 place-items-center rounded-full bg-success/10"><Check className="size-3.5" /></span>
-                  Discovery complete
+        <section
+          aria-labelledby="find-scholarship-heading"
+          className="rounded-lg border border-info/10 bg-accent/35 p-4"
+        >
+          <div>
+            <div className="text-sm font-semibold uppercase tracking-[0.14em] text-info">
+              Need help finding one?
+            </div>
+            <h3 id="find-scholarship-heading" className="mt-1 font-display text-2xl font-bold leading-tight">
+              Trusted scholarship platforms
+            </h3>
+            <p className="mt-1.5 text-[15px] leading-6 text-foreground/80">
+              Browse a trusted platform, choose a scholarship, then return and paste it here.
+            </p>
+          </div>
+
+          <div className="mt-4 grid gap-2.5 sm:grid-cols-2 lg:grid-cols-1">
+            {platformSources.map((source, index) => (
+              <a
+                key={`platform-${source.url || source.name}`}
+                href={source.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={() => rememberPlatform(source)}
+                aria-label={`Open ${source.name} in a new tab`}
+                className="group rounded-lg border border-info/10 bg-white/80 p-3 transition-[border-color,background-color,box-shadow,transform] motion-safe:hover:-translate-y-0.5 hover:border-info/35 hover:bg-white hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/35"
+              >
+                <div className="flex items-start gap-3">
+                  <div className={`grid size-8 shrink-0 place-items-center rounded-full font-display text-sm font-bold ${index === 2 ? "bg-success/12 text-success" : index === 1 ? "bg-secondary text-info" : index === 3 ? "bg-success/10 text-success" : "bg-info/10 text-info"}`}>
+                    {source.name?.charAt(0) || "P"}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="font-display text-base font-bold leading-tight">{source.name}</div>
+                      <ArrowRight className="size-3.5 shrink-0 -rotate-45 text-info/65 transition-colors group-hover:text-info" aria-hidden="true" />
+                    </div>
+                    <p className="mt-1 line-clamp-2 text-xs leading-4 text-foreground/70">{source.description}</p>
+                    <p className="mt-1 line-clamp-2 text-xs leading-4 text-foreground/75">
+                      <span className="font-semibold text-success">Best used for:</span> {source.bestFor}
+                    </p>
+                  </div>
                 </div>
-                <h2 className="mt-2 font-display text-3xl font-bold">Scholarship Discovery</h2>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  Continue with a scholarship you found, or review the suggestions below.
-                </p>
-              </div>
-              <div className="flex shrink-0 flex-wrap items-center gap-2 self-start">
-                <button onClick={onUpdateProfile} className="rounded-full border border-border bg-white px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent">
-                  Profile used for this search
-                </button>
-                <button onClick={refreshWiki} className="inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/5 px-3 py-1.5 text-xs font-semibold text-primary hover:bg-primary/10">
-                  Refresh results
-                </button>
-              </div>
-            </div>
-          </section>
+              </a>
+            ))}
+          </div>
 
-          <section className="rounded-2xl border border-primary/25 bg-primary/[0.035] p-5 shadow-sm sm:p-6" aria-labelledby="analyze-scholarship-heading">
-            <div className="max-w-3xl">
-              <div className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">Continue to Step 3</div>
-              <h3 id="analyze-scholarship-heading" className="mt-2 font-display text-2xl font-bold">Paste a Scholarship to Analyze</h3>
-              <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                Paste a scholarship URL, scholarship description, or listing details. Scholar-E will extract the requirements and compare them with your verified profile.
+          {resultsVisible && !directSources.length && !loading && (
+            <p className="mt-3 text-xs leading-5 text-foreground/65">
+              Scholar-E did not find a recommendation it could verify confidently, so these trusted sources are the best places to continue.
+            </p>
+          )}
+        </section>
+      </div>
+
+      {loading && (
+        <section className="border-t border-border/70 pt-6" aria-labelledby="recommendation-search-heading">
+          <div className="flex items-start gap-3">
+            <Spinner className="mt-0.5 size-4 shrink-0 text-primary" />
+            <div>
+              <h3 id="recommendation-search-heading" className="text-sm font-semibold">
+                Looking for additional Scholar-E suggestions
+              </h3>
+              <p role="status" aria-live="polite" className="mt-1 text-sm leading-5 text-foreground/70">
+                {status}
               </p>
             </div>
-            {platformContext && (
-              <p className="mt-4 text-xs font-medium text-primary">Found something on {platformContext}? Paste the specific scholarship below.</p>
-            )}
-            <div className="mt-4 flex flex-col gap-3 lg:flex-row lg:items-end">
-              <div className="min-w-0 flex-1">
-                <label htmlFor="bring-opportunity" className="text-xs font-semibold text-foreground/75">Scholarship URL or details</label>
-                <textarea
-                  id="bring-opportunity"
-                  rows={3}
-                  value={bringValue}
-                  onChange={(event) => {
-                    setBringValue(event.target.value);
-                    if (bringError) setBringError("");
-                  }}
-                  aria-invalid={!!bringError || undefined}
-                  aria-describedby={bringError ? "bring-opportunity-help bring-opportunity-error" : "bring-opportunity-help"}
-                  placeholder="Paste a scholarship link, description, eligibility details, or application listing"
-                  className="mt-1 w-full resize-y rounded-xl border border-input bg-white px-4 py-3 text-sm leading-6 outline-none transition-[border-color,box-shadow] placeholder:text-muted-foreground/60 focus:border-primary/60 focus:ring-4 focus:ring-primary/15"
-                />
-                <p id="bring-opportunity-help" className="mt-1 text-xs text-muted-foreground">A URL is easiest, but copied listing text works too.</p>
-                {bringError && <p id="bring-opportunity-error" role="alert" className="mt-1 text-xs font-medium text-destructive">{bringError}</p>}
-              </div>
-              <button
-                type="button"
-                onClick={continueWithOwnOpportunity}
-                className="inline-flex min-h-11 w-full shrink-0 items-center justify-center gap-2 rounded-xl bg-primary px-6 py-3 text-sm font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 focus-visible:ring-offset-2 lg:w-auto"
-              >
-                Analyze Scholarship <ArrowRight className="size-4" />
-              </button>
-            </div>
-          </section>
+          </div>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            {[0, 1].map((item) => <Skeleton key={item} className="h-24 rounded-xl" />)}
+          </div>
+        </section>
+      )}
 
-          <section>
-            <div className="mb-4 flex items-end justify-between gap-3">
-              <div>
-                <div className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">Recommended scholarships</div>
-                <p className="mt-1 text-sm text-muted-foreground">Discovery suggestions only—eligibility is checked in the next step.</p>
-              </div>
-            </div>
-            <div className="space-y-3">
-              {directSources.map((source) => (
-                <DiscoverySourceCard
-                  key={`direct-${source.url || source.name}`}
-                  source={source}
-                  mode="scholarship"
-                  saved={savedIds.has((source.url || source.name || "").toLowerCase())}
-                  onExplore={() => useSourceForExtraction(source)}
-                  onSave={() => toggleSaved(source, "scholarship")}
-                />
-              ))}
-            </div>
-            {!directSources.length && (
-              <div className="rounded-2xl border border-dashed border-border bg-white/70 p-5">
-                <h3 className="font-semibold">We couldn’t confirm a close scholarship.</h3>
-                <p className="mt-1 text-sm text-muted-foreground">We left out weaker matches. The profile-matched platforms below are the best places to continue.</p>
-              </div>
-            )}
-          </section>
+      {!resultsVisible && !loading && (
+        <section className="flex flex-col gap-3 border-t border-border/70 pt-5 sm:flex-row sm:items-center sm:justify-between">
+          <p role="alert" className="max-w-2xl text-sm leading-6 text-foreground/70">
+            {searchError || "Scholar-E couldn’t refresh suggestions right now. You can still paste a scholarship above or use one of the trusted sources."}
+          </p>
+          <button
+            type="button"
+            onClick={refreshWiki}
+            className="shrink-0 self-start rounded-lg border border-border bg-card px-3 py-2 text-xs font-semibold text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 sm:self-center"
+          >
+            Retry suggestions
+          </button>
+        </section>
+      )}
 
-          <section className="rounded-3xl border border-[#d9def3] bg-[#eef1fb]/90 p-6 shadow-sm">
-            <div>
-              <div className="text-xs font-semibold uppercase tracking-[0.18em] text-[#4a5685]">Need help finding an opportunity?</div>
-              <h3 className="mt-2 font-display text-2xl font-bold">Trusted scholarship platforms</h3>
-              <p className="mt-1 text-sm text-muted-foreground">Open a trusted platform, find a scholarship, then paste its link or details into the analyzer above.</p>
-            </div>
-            <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {platformSources.map((source) => (
-                <button key={`platform-${source.url || source.name}`} onClick={() => openPlatform(source)} className="group min-h-32 rounded-2xl border border-white/90 bg-white p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="grid size-9 place-items-center rounded-xl bg-[#eef1fb] font-display text-sm font-bold text-[#4a5685]">{source.name?.charAt(0) || "P"}</div>
-                    <ArrowRight className="size-4 -rotate-45 text-muted-foreground transition group-hover:text-primary" />
-                  </div>
-                  <div className="mt-3 font-display text-lg font-bold leading-tight">{source.name}</div>
-                  <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{source.why_recommended}</p>
-                </button>
-              ))}
-            </div>
-          </section>
-
-        </>
+      {resultsVisible && !loading && directSources.length > 0 && (
+        <section aria-labelledby="scholar-e-suggestions-heading" className="border-t border-border/70 pt-7">
+          <div className="mb-4">
+            <h3 id="scholar-e-suggestions-heading" className="font-display text-2xl font-bold">
+              Scholar-E suggestions
+            </h3>
+            <p className="mt-1 text-[15px] leading-6 text-foreground/70">
+              These are discovery leads only. Eligibility and current deadlines are checked in the next step.
+            </p>
+          </div>
+          <div className="space-y-3">
+            {directSources.map((source) => (
+              <DiscoverySourceCard
+                key={`direct-${source.url || source.name}`}
+                source={source}
+                mode="scholarship"
+                saved={savedIds.has((source.url || source.name || "").toLowerCase())}
+                onExplore={() => selectSourceForExtraction(source)}
+                onSave={() => toggleSaved(source, "scholarship")}
+              />
+            ))}
+          </div>
+        </section>
       )}
     </div>
   );
@@ -3922,7 +4118,7 @@ function DiscoverySourceCard({
             <div className="min-w-0">
               <h4 className="font-display text-xl font-bold leading-tight">{source.name}</h4>
               {source.category && <p className="mt-1 text-xs text-muted-foreground">{source.category}</p>}
-              {source.why_recommended && <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">{source.why_recommended}</p>}
+              {source.why_recommended && <p className="mt-2 max-w-3xl text-sm leading-6 text-foreground/70">{source.why_recommended}</p>}
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${deadlineTone}`}>{deadlineLabel}</span>
                 {source.status_note && <span className="text-xs text-muted-foreground">{source.status_note}</span>}
@@ -3955,7 +4151,7 @@ function DiscoverySourceCard({
           </span>
           <div>
             <h5 className="font-display text-base font-bold">Worth a closer look?</h5>
-            <p className="mt-1 text-sm leading-5 text-muted-foreground">
+            <p className="mt-1 text-sm leading-5 text-foreground/70">
               Select this opportunity to collect its official requirements and evaluate how well it aligns with your profile.
             </p>
           </div>
@@ -4135,25 +4331,71 @@ function WorkflowStep({
   isLast?: boolean;
   children: React.ReactNode;
 }) {
-  const markerClass = complete
-    ? "border-primary bg-primary text-primary-foreground"
+  const stepTone = number === 1
+    ? {
+        marker: "border-success bg-success text-white shadow-sm shadow-success/20",
+        accent: "bg-success",
+        line: "border-success/35",
+        label: "text-success",
+        panel: "border-success/25 bg-success/[0.025]",
+        lockedPanel: "border-success/15 bg-success/[0.018]",
+      }
+    : number === 2
+      ? {
+          marker: "border-info bg-info text-white shadow-sm shadow-info/20",
+          accent: "bg-info",
+          line: "border-info/35",
+          label: "text-info",
+          panel: "border-info/25 bg-info/[0.018]",
+          lockedPanel: "border-info/15 bg-accent/20",
+        }
+      : {
+          marker: "border-primary bg-primary text-primary-foreground shadow-sm shadow-primary/20",
+          accent: "bg-primary",
+          line: "border-primary/30",
+          label: "text-primary",
+          panel: "border-primary/20 bg-secondary/25",
+          lockedPanel: "border-primary/12 bg-secondary/20",
+        };
+  const showCompleteMarker = !!complete && !active;
+  const markerClass = active
+    ? stepTone.marker
+    : showCompleteMarker
+      ? "border-success bg-success text-white shadow-sm shadow-success/20"
+      : "border-border/80 bg-background text-muted-foreground";
+  const connectorClass = showCompleteMarker
+    ? "border-success/45"
     : active
-      ? "border-primary bg-background text-primary"
-      : "border-border bg-background text-muted-foreground";
+      ? stepTone.line
+      : "border-border/65";
+  const panelClass = locked
+    ? `border-dashed shadow-none ${stepTone.lockedPanel}`
+    : active
+      ? `shadow-sm ${stepTone.panel}`
+      : showCompleteMarker
+        ? "border-success/15 bg-white shadow-sm"
+        : "border-border/70 bg-white shadow-sm";
+  const accentClass = locked
+    ? "bg-border/70"
+    : active
+      ? stepTone.accent
+      : showCompleteMarker
+        ? "bg-success"
+        : "bg-border";
 
   return (
     <section
-      className={`group relative grid gap-4 transition-opacity duration-300 motion-reduce:transition-none md:grid-cols-[76px_1fr] ${locked ? "opacity-55" : "opacity-100"}`}
+      className={`group relative grid gap-4 transition-[opacity,transform] duration-200 motion-reduce:transform-none motion-reduce:transition-none md:grid-cols-[76px_1fr] ${locked ? "translate-y-1 opacity-80" : "translate-y-0 opacity-100"}`}
       aria-disabled={locked || undefined}
       aria-labelledby={headingId}
       aria-describedby={locked && lockedMessage ? `${headingId ?? `workflow-step-${number}`}-locked-message` : undefined}
       tabIndex={locked ? 0 : undefined}
     >
       <div className="relative hidden md:flex justify-center">
-        <div className={`relative z-10 grid size-12 place-items-center rounded-full border-2 text-sm font-semibold ${markerClass}`}>
-          {complete ? <Check className="size-5" strokeWidth={3} /> : number}
+        <div className={`relative z-10 grid size-12 place-items-center rounded-full border-2 text-sm font-semibold transition-[background-color,border-color,color,box-shadow] duration-200 motion-reduce:transition-none ${markerClass}`}>
+          {showCompleteMarker ? <Check className="size-5" strokeWidth={3} /> : number}
         </div>
-        {!isLast && <div className="absolute left-1/2 top-12 h-[calc(100%+2rem)] -translate-x-1/2 border-l-2 border-dashed border-border" />}
+        {!isLast && <div className={`absolute left-1/2 top-12 h-[calc(100%+2rem)] -translate-x-1/2 border-l-2 border-dashed transition-colors duration-200 motion-reduce:transition-none ${connectorClass}`} />}
       </div>
       <div className="min-w-0">
         <div className="relative pb-4">
@@ -4161,14 +4403,14 @@ function WorkflowStep({
             {String(number).padStart(2, "0")}
           </div>
           <div className="flex items-center gap-3 md:hidden">
-            <div className={`grid size-10 place-items-center rounded-full border-2 text-sm font-semibold ${markerClass}`}>
-              {complete ? <Check className="size-4" strokeWidth={3} /> : number}
+            <div className={`grid size-10 place-items-center rounded-full border-2 text-sm font-semibold transition-[background-color,border-color,color,box-shadow] duration-200 motion-reduce:transition-none ${markerClass}`}>
+              {showCompleteMarker ? <Check className="size-4" strokeWidth={3} /> : number}
             </div>
-            <div className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Step {number}</div>
+            <div className={`text-xs font-semibold uppercase tracking-widest ${active ? stepTone.label : "text-muted-foreground"}`}>Step {number}</div>
           </div>
-          <div className="hidden text-sm font-semibold uppercase tracking-widest text-muted-foreground md:block">Step {number}</div>
+          <div className={`hidden text-sm font-semibold uppercase tracking-widest md:block ${active ? stepTone.label : "text-muted-foreground"}`}>Step {number}</div>
           <h3 id={headingId} tabIndex={headingId && !locked ? -1 : undefined} className="mt-1 scroll-mt-20 font-display text-2xl font-bold leading-tight text-foreground">{title}</h3>
-          {description && <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">{description}</p>}
+          {description && <p className="mt-2 max-w-3xl text-sm leading-6 text-foreground/65">{description}</p>}
           {locked && lockedMessage && (
             <p id={`${headingId ?? `workflow-step-${number}`}-locked-message`} className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
               <Lock className="size-3.5" aria-hidden="true" />
@@ -4176,9 +4418,9 @@ function WorkflowStep({
             </p>
           )}
         </div>
-        <div className={`overflow-hidden rounded-2xl border border-border/70 bg-white shadow-sm transition-colors duration-300 motion-reduce:transition-none ${locked ? "bg-muted/35 grayscale-[0.2]" : ""}`}>
-          <div className={`h-1 ${active ? "bg-primary" : complete ? "bg-success" : "bg-border"}`} />
-          <div inert={locked ? true : undefined} className={locked ? "pointer-events-none select-none p-5 md:p-6" : "p-5 md:p-6"}>{children}</div>
+        <div className={`overflow-hidden rounded-xl border transition-[border-color,background-color,box-shadow] duration-200 motion-reduce:transition-none ${panelClass}`}>
+          <div className={`h-1 ${accentClass}`} />
+          <div inert={locked ? true : undefined} className={locked ? "pointer-events-none select-none p-4 md:p-5" : "p-5 md:p-6"}>{children}</div>
         </div>
       </div>
     </section>
@@ -4207,18 +4449,19 @@ function ScholarshipDetailsCard({
   return (
     <WorkflowStep
       number={1}
-      title="Confirm the opportunity you want to explore"
-      description="We carried over what you selected or entered during discovery. Add or correct anything you know, then Scholar-E will collect the available requirements into editable fields."
+      title="Confirm scholarship details"
+      description="We carried over the scholarship you entered during discovery. Review or correct the details, then extract the available requirements."
       complete={complete}
       active={active}
     >
-      <div className="mt-4 grid sm:grid-cols-2 gap-3">
+      <div className="grid gap-3 sm:grid-cols-2">
         <Input
           label="Scholarship name"
           value={scholarship.name ?? ""}
           onChange={(name) => updateScholarship({ name })}
           placeholder="Coca-Cola Scholars Program, Gates Scholarship..."
           className="sm:col-span-2"
+          controlClassName="focus:!border-info/70 focus:!ring-info/20"
         />
         <Input
           label="Scholarship URL"
@@ -4226,6 +4469,7 @@ function ScholarshipDetailsCard({
           onChange={(url) => updateScholarship({ url })}
           placeholder="https://... or source name"
           className="sm:col-span-2"
+          controlClassName="focus:!border-info/70 focus:!ring-info/20"
         />
       </div>
       <Textarea
@@ -4234,17 +4478,18 @@ function ScholarshipDetailsCard({
         onChange={(additionalNotes) => updateScholarship({ additionalNotes })}
         placeholder="Paste copied scholarship text, eligibility details, award amount, deadlines, essay prompts, or anything else that may help Scholar-E extract requirements."
         rows={3}
+        controlClassName="focus:!border-info/70 focus:!ring-info/20"
       />
-      <div className="mt-5 flex justify-end">
+      <div className="mt-4 flex justify-end">
         <button
           type="button"
           onClick={onExtract}
           disabled={extracting}
           aria-busy={extracting}
-          className={`inline-flex items-center justify-center gap-2 rounded-lg bg-primary text-primary-foreground px-5 py-2.5 text-sm font-medium hover:opacity-90 disabled:opacity-90 ${extracting ? "agent-loading" : ""}`}
+          className={`group inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground shadow-sm transition-[background-color,box-shadow,opacity] duration-150 hover:bg-primary/90 hover:shadow-md active:shadow-none disabled:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/40 focus-visible:ring-offset-2 ${extracting ? "agent-loading" : ""}`}
         >
           {extracting && <Spinner className="size-4" />}
-          {extracting ? "Extracting requirements…" : "Extract Requirements"}
+          {extracting ? "Extracting requirements…" : <>Extract Requirements <ArrowRight className="size-4 transition-transform duration-150 group-hover:translate-x-0.5 group-disabled:translate-x-0 motion-reduce:transform-none motion-reduce:transition-none" aria-hidden="true" /></>}
         </button>
       </div>
       {extractionStatus && <p className="mt-3 text-xs text-muted-foreground text-right">{extractionStatus}</p>}
@@ -4310,8 +4555,17 @@ function PromptReviewRow({
     && parsedMaximum.value !== null
     && parsedMinimum.value > parsedMaximum.value;
   const canSave = !!promptText.trim() && parsedMinimum.valid && parsedMaximum.valid && !rangeInvalid;
-  const minimumDisplay = entry.minimumWordsReviewed === true ? entry.minimumWords ?? "N/A" : "Needs review";
-  const maximumDisplay = entry.maximumWordsReviewed === true ? entry.maximumWords ?? "N/A" : "Needs review";
+  const inferredLimits = extractPromptWordLimits(entry.promptText);
+  const minimumIsUnambiguouslyAbsent = entry.minimumWords === null
+    && inferredLimits.minimumWords === null
+    && inferredLimits.maximumWords !== null;
+  const maximumIsUnambiguouslyAbsent = entry.maximumWords === null
+    && inferredLimits.maximumWords === null
+    && inferredLimits.minimumWords !== null;
+  const minimumResolved = entry.minimumWordsReviewed === true || minimumIsUnambiguouslyAbsent;
+  const maximumResolved = entry.maximumWordsReviewed === true || maximumIsUnambiguouslyAbsent;
+  const minimumDisplay = minimumResolved ? entry.minimumWords ?? "N/A" : "Needs review";
+  const maximumDisplay = maximumResolved ? entry.maximumWords ?? "N/A" : "Needs review";
 
   function cancelEditing() {
     setPromptText(entry.promptText);
@@ -4333,16 +4587,16 @@ function PromptReviewRow({
   }
 
   return (
-    <article className={`border-t px-1 py-4 transition-colors ${selected ? "border-primary/35 bg-primary/[0.025]" : "border-border/60"}`}>
+    <article className={`my-2 rounded-lg border px-3 py-3 transition-[border-color,background-color,box-shadow,transform] duration-150 motion-safe:hover:-translate-y-px motion-reduce:transform-none motion-reduce:transition-none ${selected ? "border-info/65 bg-info/[0.10] shadow-sm hover:border-info/75 hover:bg-info/[0.12] focus-within:border-info/75 focus-within:bg-info/[0.12]" : "border-info/15 bg-white/85 hover:border-info/35 hover:bg-info/[0.035] hover:shadow-sm focus-within:border-info/40 focus-within:bg-info/[0.035]"}`}>
       <div className="flex items-start gap-3">
         <label className="mt-0.5 inline-flex min-h-8 min-w-8 cursor-pointer items-start justify-center pt-1" aria-label={`Select Prompt ${index + 1}`}>
-          <input type="checkbox" checked={selected} onChange={onToggle} className="size-4 rounded border-border text-primary focus:ring-2 focus:ring-primary/25" />
+          <input type="checkbox" checked={selected} onChange={onToggle} className="size-4 rounded border-border text-info focus:ring-2 focus:ring-info/30" />
         </label>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h4 className="text-xs font-semibold uppercase tracking-[0.1em] text-foreground">Prompt {index + 1}</h4>
             {!editing && (
-              <button type="button" onClick={() => setEditing(true)} className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:underline">
+              <button type="button" onClick={() => setEditing(true)} className="inline-flex min-h-8 items-center gap-1 rounded px-1 text-[11px] font-medium text-info/65 transition-colors hover:text-info hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/35 focus-visible:ring-offset-1">
                 <PencilLine className="size-3.5" aria-hidden="true" />
                 Edit
               </button>
@@ -4355,11 +4609,11 @@ function PromptReviewRow({
               <div className="grid gap-3 sm:grid-cols-2">
                 <label className="block">
                   <span className="mb-1 block text-[11px] font-semibold text-foreground/75">Minimum words</span>
-                  <input value={minimumWords} onChange={(event) => setMinimumWords(event.target.value)} inputMode="numeric" placeholder="Enter a number or N/A" aria-invalid={!parsedMinimum.valid || rangeInvalid} aria-describedby={!parsedMinimum.valid || rangeInvalid ? validationId : undefined} className="h-9 w-full rounded-lg border border-border bg-background px-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/10" />
+                  <input value={minimumWords} onChange={(event) => setMinimumWords(event.target.value)} inputMode="numeric" placeholder="Enter a number or N/A" aria-invalid={!parsedMinimum.valid || rangeInvalid} aria-describedby={!parsedMinimum.valid || rangeInvalid ? validationId : undefined} className="h-9 w-full rounded-lg border border-border bg-background px-3 text-sm outline-none focus:border-info focus:ring-2 focus:ring-info/15" />
                 </label>
                 <label className="block">
                   <span className="mb-1 block text-[11px] font-semibold text-foreground/75">Maximum words</span>
-                  <input value={maximumWords} onChange={(event) => setMaximumWords(event.target.value)} inputMode="numeric" placeholder="Enter a number or N/A" aria-invalid={!parsedMaximum.valid || rangeInvalid} aria-describedby={!parsedMaximum.valid || rangeInvalid ? validationId : undefined} className="h-9 w-full rounded-lg border border-border bg-background px-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/10" />
+                  <input value={maximumWords} onChange={(event) => setMaximumWords(event.target.value)} inputMode="numeric" placeholder="Enter a number or N/A" aria-invalid={!parsedMaximum.valid || rangeInvalid} aria-describedby={!parsedMaximum.valid || rangeInvalid ? validationId : undefined} className="h-9 w-full rounded-lg border border-border bg-background px-3 text-sm outline-none focus:border-info focus:ring-2 focus:ring-info/15" />
                 </label>
               </div>
               {(!parsedMinimum.valid || !parsedMaximum.valid || rangeInvalid || !promptText.trim()) && (
@@ -4377,8 +4631,8 @@ function PromptReviewRow({
             <>
               <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-foreground">{entry.promptText || "Prompt text needs review."}</p>
               <dl className="mt-2 flex flex-col gap-1 text-xs sm:flex-row sm:gap-x-6">
-                <div className="flex gap-1"><dt className="text-muted-foreground">Minimum words:</dt><dd className={`font-semibold ${entry.minimumWordsReviewed === true ? "text-foreground" : "text-warning"}`}>{minimumDisplay}</dd></div>
-                <div className="flex gap-1"><dt className="text-muted-foreground">Maximum words:</dt><dd className={`font-semibold ${entry.maximumWordsReviewed === true ? "text-foreground" : "text-warning"}`}>{maximumDisplay}</dd></div>
+                <div className="flex gap-1"><dt className="text-muted-foreground">Minimum words:</dt><dd className={`font-semibold ${minimumResolved ? "text-foreground" : "text-warning"}`}>{minimumDisplay}</dd></div>
+                <div className="flex gap-1"><dt className="text-muted-foreground">Maximum words:</dt><dd className={`font-semibold ${maximumResolved ? "text-foreground" : "text-warning"}`}>{maximumDisplay}</dd></div>
               </dl>
             </>
           )}
@@ -4388,11 +4642,35 @@ function PromptReviewRow({
   );
 }
 
-function SnapshotValue({ label, value, className = "" }: { label: string; value?: string; className?: string }) {
+function SnapshotValue({
+  label,
+  value,
+  tone = "default",
+  className = "",
+}: {
+  label: string;
+  value?: string;
+  tone?: "default" | "success" | "warning" | "info";
+  className?: string;
+}) {
   if (isReviewFieldMissing(value)) return null;
+  const toneClass = tone === "success"
+    ? "border-success/15 bg-success/[0.035]"
+    : tone === "warning"
+      ? "border-warning/15 bg-warning/[0.035]"
+      : tone === "info"
+        ? "border-info/15 bg-info/[0.035]"
+        : "border-border/60 bg-secondary/20";
+  const labelClass = tone === "success"
+    ? "text-success"
+    : tone === "warning"
+      ? "text-warning"
+      : tone === "info"
+        ? "text-info"
+        : "text-muted-foreground";
   return (
-    <div className={`min-w-0 ${className}`}>
-      <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</div>
+    <div className={`min-w-0 rounded-lg border px-3 py-2.5 transition-[border-color,box-shadow,transform] duration-150 motion-safe:hover:-translate-y-px hover:border-current/25 hover:shadow-sm motion-reduce:transform-none motion-reduce:transition-none ${toneClass} ${className}`}>
+      <div className={`text-[10px] font-semibold uppercase tracking-wide ${labelClass}`}>{label}</div>
       <div className="mt-1 text-sm font-medium leading-5 text-foreground">{value}</div>
     </div>
   );
@@ -4422,7 +4700,7 @@ function SnapshotEditField({
           rows={3}
           placeholder={placeholder}
           onChange={(event) => onChange(event.target.value)}
-          className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground/55 focus:border-primary focus:ring-2 focus:ring-primary/10"
+          className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground/55 focus:border-info focus:ring-2 focus:ring-info/15"
         />
       ) : (
         <input
@@ -4430,7 +4708,7 @@ function SnapshotEditField({
           value={value}
           placeholder={placeholder}
           onChange={(event) => onChange(event.target.value)}
-          className="h-9 w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground/55 focus:border-primary focus:ring-2 focus:ring-primary/10"
+          className="h-9 w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground/55 focus:border-info focus:ring-2 focus:ring-info/15"
         />
       )}
     </label>
@@ -4464,22 +4742,36 @@ function EditableScholarshipFields({
   const [editingSnapshot, setEditingSnapshot] = useState(false);
   const [pendingNoEssayConfirmation, setPendingNoEssayConfirmation] = useState(false);
   const promptEntries = normalizeEssayPromptEntries(scholarship);
-  const promptTextKeys = new Set(promptEntries.map((entry) => entry.promptText.trim().toLocaleLowerCase()).filter(Boolean));
+  const promptTexts = promptEntries.map((entry) => entry.promptText.trim().toLocaleLowerCase()).filter(Boolean);
   const materialCandidates = [
     ...(scholarship.requiredDocumentTypes ?? []),
     ...(scholarship.requiredApplicationMaterials ?? []),
     scholarship.otherRequiredMaterials ?? "",
   ].flatMap((item) => String(item).split(/\n|,|;/));
   const requiredMaterials = Array.from(new Set(materialCandidates.flatMap((item) => {
-    const value = item.trim();
-    if (!value || promptTextKeys.has(value.toLocaleLowerCase())) return [];
+    const value = item.replace(/\s+/g, " ").trim();
+    const normalizedValue = value.toLocaleLowerCase();
+    if (!value || promptTexts.includes(normalizedValue)) return [];
     const recognized: string[] = [];
-    if (/\b(?:essay|personal statement|short[- ]answer)\b/i.test(value)) recognized.push("Essay");
-    if (/\bresume|curriculum vitae|\bcv\b/i.test(value)) recognized.push("Resume");
-    if (/\btranscript/i.test(value)) recognized.push("Transcript");
-    if (/\brecommendation|reference letter/i.test(value)) recognized.push("Recommendation letter");
-    return recognized.length > 0 ? recognized : [value];
-  })));
+    if (/\b(?:essays?|personal statements?|short[- ]answers?)\b/i.test(value)) recognized.push("Essay");
+    if (/\bresumes?\b|curriculum vitae|\bcvs?\b/i.test(value)) recognized.push("Resume");
+    if (/\btranscripts?\b/i.test(value)) recognized.push("Transcript");
+    if (/\b(?:recommendation|reference) letters?\b|letters? of (?:recommendation|reference)/i.test(value)) recognized.push("Recommendation letter");
+    if (/\bportfolios?\b/i.test(value)) recognized.push("Portfolio");
+    if (/\bproof of (?:enrollment|eligibility|residency|citizenship)\b/i.test(value)) recognized.push(value);
+    if (/\b(?:fafsa|financial aid form)\b/i.test(value)) recognized.push("Financial aid information");
+    if (/\bapplication form\b/i.test(value)) recognized.push("Application form");
+    if (recognized.length > 0) return recognized;
+    const appearsInsidePrompt = promptTexts.some((prompt) => normalizedValue.length > 10 && prompt.includes(normalizedValue));
+    const looksLikePromptFragment = appearsInsidePrompt
+      || /\b\d{1,5}\s*(?:words?|characters?)\b/i.test(value)
+      || /^(?:describe|explain|discuss|tell us|in \d+ words?|equity|and inclusion centric|inclusion centric)\b/i.test(value)
+      || value.endsWith("?")
+      || value.length > 80;
+    return looksLikePromptFragment ? [] : [value];
+  }))).filter((material, index, materials) => (
+    materials.findIndex((candidate) => candidate.toLocaleLowerCase() === material.toLocaleLowerCase()) === index
+  ));
   const essayRequiredByMaterials = requiredMaterials.some((item) => /\bessay|personal statement|short[- ]answer\b/i.test(item));
   const validPromptIds = new Set(promptEntries.map((entry) => entry.id));
   const noEssayPromptSelected = !!scholarship.noEssayPromptSelected;
@@ -4560,22 +4852,22 @@ function EditableScholarshipFields({
     return (
       <WorkflowStep
         number={2}
-        title="Extracted requirements"
-        description="Review and edit anything the extractor found before analyzing fit."
+        title="Review extracted requirements"
+        description="Review and correct the scholarship details before analyzing your profile fit."
         complete={complete}
         active={active}
         locked={locked}
         lockedMessage="Extract the scholarship requirements to unlock this step."
         headingId="extracted-requirements-heading"
       >
-        <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-white px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-start gap-3">
+          <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-info/10 text-info">
+            <ClipboardList className="size-4" aria-hidden="true" />
+          </span>
           <div>
-            <p className="text-sm font-medium text-foreground">No requirements extracted yet</p>
-            <p className="mt-1 text-sm text-muted-foreground">Run Extract Requirements to review the editable fields Scholar-E finds.</p>
+            <p className="text-sm font-semibold text-foreground">Requirements will appear here</p>
+            <p className="mt-1 text-sm leading-5 text-foreground/65">Extract the scholarship requirements to review and edit them.</p>
           </div>
-          <button type="button" disabled className="w-fit rounded-xl border border-border px-4 py-2 text-sm font-medium text-muted-foreground opacity-60">
-            Edit
-          </button>
         </div>
       </WorkflowStep>
     );
@@ -4584,8 +4876,8 @@ function EditableScholarshipFields({
   return (
     <WorkflowStep
       number={2}
-      title="Extracted requirements"
-      description="Review and edit anything the extractor found before analyzing fit."
+      title="Review extracted requirements"
+      description="Review and correct the scholarship details before analyzing your profile fit."
       complete={complete}
       active={active}
       locked={locked}
@@ -4593,7 +4885,7 @@ function EditableScholarshipFields({
       headingId="extracted-requirements-heading"
     >
       <section className="mt-2" aria-labelledby="scholarship-snapshot-heading">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 pb-3">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-info/15 pb-3">
           <div>
             <h3 id="scholarship-snapshot-heading" className="text-base font-semibold text-foreground">Scholarship Snapshot</h3>
             <p className="mt-1 text-xs text-muted-foreground">Review the extracted details before analyzing your fit.</p>
@@ -4601,7 +4893,7 @@ function EditableScholarshipFields({
           <button
             type="button"
             onClick={() => setEditingSnapshot((current) => !current)}
-            className="inline-flex items-center gap-1.5 text-xs font-semibold text-primary transition-colors hover:text-primary/75 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25"
+            className="inline-flex items-center gap-1.5 text-xs font-semibold text-info transition-colors hover:text-info/75 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/30"
           >
             <PencilLine className="size-3.5" aria-hidden="true" />
             {editingSnapshot ? "Done editing" : "Edit extracted information"}
@@ -4638,28 +4930,40 @@ function EditableScholarshipFields({
                   {!isReviewFieldMissing(scholarship.organization) && <p className="mt-0.5 text-sm text-muted-foreground">{scholarship.organization}</p>}
                 </div>
               )}
-              <div className="grid gap-x-6 gap-y-3 sm:grid-cols-2 lg:grid-cols-3">
-                <SnapshotValue label="Award" value={scholarship.awardAmount} />
-                <SnapshotValue label="Deadline" value={scholarship.applicationDeadline} />
-                <SnapshotValue label="Education" value={scholarship.enrollmentLevel} />
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                <SnapshotValue label="Award" value={scholarship.awardAmount} tone="success" />
+                <SnapshotValue label="Deadline" value={scholarship.applicationDeadline} tone="warning" />
+                <SnapshotValue label="Education" value={scholarship.enrollmentLevel} tone="info" />
               </div>
-              {sourceUrl && <a href={sourceUrl.startsWith("http") ? sourceUrl : `https://${sourceUrl}`} target="_blank" rel="noreferrer" className="inline-flex text-sm font-semibold text-primary hover:underline">View official scholarship page</a>}
+              {sourceUrl && (
+                <a
+                  href={sourceUrl.startsWith("http") ? sourceUrl : `https://${sourceUrl}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label="Official scholarship page (opens in a new tab)"
+                  className="group inline-flex items-center gap-1.5 rounded-sm text-sm font-semibold text-info transition-colors hover:text-info/80 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/35 focus-visible:ring-offset-2"
+                >
+                  Official scholarship page
+                  <ExternalLink className="size-3.5 transition-transform duration-150 group-hover:-translate-y-px group-hover:translate-x-px motion-reduce:transform-none motion-reduce:transition-none" aria-hidden="true" />
+                </a>
+              )}
             </div>
           )}
         </div>
 
-        <div className="border-t border-border/60 py-5">
+        <div className="border-t border-info/10 py-5">
           <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-foreground/75">Required materials</h3>
           {requiredMaterials.length > 0 ? (
-            <ul className="mt-2 grid gap-1.5 text-sm text-foreground sm:grid-cols-2">
-              {requiredMaterials.map((material) => <li key={material} className="flex items-start gap-2"><span className="mt-2 size-1 rounded-full bg-primary/70" />{material}</li>)}
+            <ul className="mt-2 flex flex-wrap gap-2 text-sm text-foreground">
+              {requiredMaterials.map((material) => <li key={material} className="inline-flex items-center rounded-md border border-success/15 bg-success/[0.035] px-2.5 py-1.5">{material}</li>)}
             </ul>
           ) : <p className="mt-2 text-sm text-muted-foreground">No required materials were identified.</p>}
         </div>
 
-        <section aria-labelledby="essay-requirements-heading" className="border-l-2 border-primary/45 bg-primary/[0.025] px-3 py-4 sm:px-4">
+        <section aria-labelledby="essay-requirements-heading" className="border-l-2 border-info/55 bg-accent/20 px-3 py-4 sm:px-4">
           <h3 id="essay-requirements-heading" className="text-base font-semibold text-foreground">Essay requirements</h3>
-          <p className="mt-1 max-w-3xl text-sm leading-5 text-muted-foreground">Review each selected prompt and its word limits. Enter N/A when the scholarship does not provide a minimum or maximum.</p>
+          <p className="mt-1 max-w-3xl text-sm leading-5 text-foreground/70">Review the prompts and word limits, then choose the prompt or prompts you want to use.</p>
+          <p className="mt-1 text-xs text-muted-foreground">Use N/A when the scholarship does not specify a limit.</p>
 
           <div className="mt-3">
             {promptEntries.map((entry, index) => (
@@ -4673,7 +4977,7 @@ function EditableScholarshipFields({
                 onRemove={() => updatePromptEntries(promptEntries.filter((candidate) => candidate.id !== entry.id))}
               />
             ))}
-            {promptEntries.length === 0 && <p className="border-t border-border/60 py-4 text-sm text-muted-foreground">No essay prompt was extracted. Add one or explicitly choose No essay prompt.</p>}
+            {promptEntries.length === 0 && <p className="py-4 text-sm text-muted-foreground">No essay prompt was extracted. Add one or explicitly choose No essay prompt.</p>}
           </div>
 
           <button
@@ -4684,12 +4988,12 @@ function EditableScholarshipFields({
             + Add prompt
           </button>
 
-          <div className="mt-4 border-t border-border/60 pt-4">
-            <label className="flex cursor-pointer items-start gap-3">
-              <input type="checkbox" checked={noEssayPromptSelected} onChange={chooseNoEssayPrompt} className="mt-0.5 size-4 rounded border-border text-primary focus:ring-2 focus:ring-primary/25" />
+          <div className="mt-4 border-t border-info/10 pt-4">
+            <label className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-3 transition-colors ${noEssayPromptSelected ? "border-info/40 bg-accent/50" : "border-info/10 bg-white/65 hover:border-info/25"}`}>
+              <input type="checkbox" checked={noEssayPromptSelected} onChange={chooseNoEssayPrompt} className="mt-0.5 size-4 rounded border-border text-info focus:ring-2 focus:ring-info/30" />
               <span>
                 <span className="block text-sm font-semibold text-foreground">No essay prompt</span>
-                <span className="mt-0.5 block text-xs leading-5 text-muted-foreground">Choose this only if the scholarship does not require an essay or written response.</span>
+                <span className="mt-0.5 block text-xs leading-5 text-muted-foreground">Choose this only when the scholarship does not require a written response.</span>
               </span>
             </label>
             {(pendingNoEssayConfirmation || (noEssayPromptSelected && essayRequiredByMaterials && !scholarship.noEssayPromptConflictConfirmed)) && (
@@ -4705,26 +5009,26 @@ function EditableScholarshipFields({
         </section>
       </section>
 
-      <div className="mt-7 flex flex-col items-end gap-2">
+      <div className="mt-6 flex flex-col items-end gap-2">
         <button
           type="button"
           onClick={onAnalyze}
           disabled={analyzing || !promptDecisionValid}
           aria-busy={analyzing}
-          className={`inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45 ${analyzing ? "agent-loading" : ""}`}
+          className={`group inline-flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground shadow-sm transition-[background-color,box-shadow,opacity] duration-150 hover:bg-primary/90 hover:shadow-md active:shadow-none disabled:cursor-not-allowed disabled:opacity-45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/40 focus-visible:ring-offset-2 sm:w-auto ${analyzing ? "agent-loading" : ""}`}
         >
           {analyzing && <Spinner className="size-4" />}
-          {analyzing ? "Analyzing fit…" : "Accept and Analyze Fit"}
+          {analyzing ? "Analyzing fit…" : <>Accept and Analyze Fit <ArrowRight className="size-4 transition-transform duration-150 group-hover:translate-x-0.5 group-disabled:translate-x-0 motion-reduce:transform-none motion-reduce:transition-none" aria-hidden="true" /></>}
         </button>
-        <p role="status" aria-live="polite" className={`text-right text-xs font-medium ${promptDecisionValid ? "text-success" : "text-warning"}`}>
-          {promptDecisionValid
-            ? "Prompt requirements reviewed."
-            : !promptDecisionMade
-              ? "Select a prompt and review its word limits to continue."
+        {!promptDecisionValid && (
+          <p role="status" aria-live="polite" className="text-right text-sm font-medium text-warning">
+            {!promptDecisionMade
+              ? "Select at least one prompt or choose No essay prompt."
               : noEssayPromptSelected
                 ? "Confirm that no essay prompt applies to continue."
                 : "Review the selected prompt text and enter a number or N/A for both word limits."}
-        </p>
+          </p>
+        )}
         {analysisStatus && <p className="mt-2 text-right text-xs text-muted-foreground">{analysisStatus}</p>}
       </div>
     </WorkflowStep>
@@ -4871,11 +5175,11 @@ function StepRequirementsAndFit() {
 
       <WorkflowStep
         number={3}
-        title="Profile fit analysis"
+        title="Analyze profile fit"
         description={
           fitAnalysis
             ? "This score answers whether your current profile fits this scholarship."
-            : "Extract and review scholarship requirements, then use Accept and Analyze Fit."
+            : "Accept the extracted requirements to compare them with your student profile."
         }
         complete={!!fitAnalysis}
         active={!!fitAnalysis && !fitAnalyzing}
@@ -4886,13 +5190,16 @@ function StepRequirementsAndFit() {
       >
         <div className="space-y-6">
           {!fitAnalysis && (
-            <section>
-              <div className="font-medium">No analysis yet</div>
-              <p className="mt-1 text-sm text-muted-foreground">
-                Extract and review scholarship requirements, then use Accept and Analyze Fit.
-                Scholar-E will compare your profile to this scholarship’s hard requirements and
-                stated priorities. Document readiness is not part of this score.
-              </p>
+            <section className="flex items-start gap-3">
+              <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary">
+                <Lock className="size-4" aria-hidden="true" />
+              </span>
+              <div>
+                <div className="text-sm font-semibold text-foreground">Fit analysis will appear here</div>
+                <p className="mt-1 text-sm leading-5 text-foreground/65">
+                  Accept the extracted requirements to compare them with your student profile.
+                </p>
+              </div>
             </section>
           )}
 
