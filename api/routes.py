@@ -14,9 +14,10 @@ from pydantic import BaseModel, Field
 from fastapi import HTTPException, UploadFile
 
 from config import settings
+from essay_editor_service import run_contextual_grammar_check as run_contextual_grammar_check_service
 from essay_editor_service import run_editor_check as run_editor_check_service
+from essay_editor_service import run_outline_coverage_check as run_outline_coverage_check_service
 from essay_editor_service import run_selection_rewrite
-from essay_mechanics import apply_deterministic_mechanics
 from prompt_adaptation import format_brief_for_prompt, resolve_writing_brief
 from graph.fit_builder import build_fit_analysis_graph
 from graph.opportunity_builder import build_opportunity_extraction_graph
@@ -196,15 +197,20 @@ class WikiDiscoverResponse(BaseModel):
 
 
 class EditorCheckRequest(BaseModel):
-    user_id: str = Field(default="", max_length=100)
-    clean_scholarship_record: dict = Field(default_factory=dict)
     essay_draft: str = Field(default="", max_length=20000)
     user_notes: str = Field(default="", max_length=5000)
+    protected_terms: list[str] = Field(default_factory=list, max_length=500)
+    draft_revision: str = Field(default="", max_length=100)
+
+
+class OutlineCoverageRequest(BaseModel):
+    clean_scholarship_record: dict = Field(default_factory=dict)
+    essay_draft: str = Field(default="", max_length=20000)
     outline_points: list[dict] = Field(default_factory=list)
 
 
 class CoachingSessionRequest(BaseModel):
-    """One-button Page 4 session: mechanics → one weighted essay review."""
+    """One-button Page 4 session: evaluate the submitted draft without rewriting it."""
 
     user_id: str = Field(default="", max_length=100)
     cv_text: str = Field(default="", max_length=50000)
@@ -630,6 +636,24 @@ def generate_personalized_outline(request: OutlineGenerateRequest) -> dict:
 
 
 def run_editor_check(request: EditorCheckRequest) -> dict:
+    return run_editor_check_service(
+        essay_draft=request.essay_draft,
+        user_notes=request.user_notes,
+        protected_terms=request.protected_terms,
+        draft_revision=request.draft_revision,
+    )
+
+
+def run_contextual_grammar_check(request: EditorCheckRequest) -> dict:
+    return run_contextual_grammar_check_service(
+        essay_draft=request.essay_draft,
+        user_notes=request.user_notes,
+        protected_terms=request.protected_terms,
+        draft_revision=request.draft_revision,
+    )
+
+
+def run_outline_coverage_check(request: OutlineCoverageRequest) -> dict:
     if not settings.openai_api_key:
         raise HTTPException(
             status_code=400,
@@ -638,17 +662,15 @@ def run_editor_check(request: EditorCheckRequest) -> dict:
                 "with OPENAI_API_KEY=your_key, then restart the server."
             ),
         )
-
-    return run_editor_check_service(
+    return run_outline_coverage_check_service(
         essay_draft=request.essay_draft,
         clean_scholarship_record=request.clean_scholarship_record,
-        user_notes=request.user_notes,
         outline_points=request.outline_points,
     )
 
 
 def run_workspace_coaching_session(request: CoachingSessionRequest) -> dict:
-    """Mechanics first, then one Manager-led criterion review graph."""
+    """Run one Manager-led criterion review graph on the submitted draft."""
     if not settings.openai_api_key:
         raise HTTPException(
             status_code=400,
@@ -659,9 +681,8 @@ def run_workspace_coaching_session(request: CoachingSessionRequest) -> dict:
         )
 
     started_at = time.perf_counter()
-    mechanics = apply_deterministic_mechanics(request.essay_text)
-    cleaned_draft = mechanics["draft"]
-    draft_hash = hashlib.sha256(cleaned_draft.encode("utf-8")).hexdigest()
+    essay_draft = request.essay_text
+    draft_hash = hashlib.sha256(essay_draft.encode("utf-8")).hexdigest()
     session_seed = f"{request.user_id}:{time.time_ns()}:{draft_hash}"
     session_id = f"coach_{hashlib.sha256(session_seed.encode('utf-8')).hexdigest()[:16]}"
     essay_prompt = (request.essay_prompt or request.prompt or "").strip()
@@ -670,7 +691,7 @@ def run_workspace_coaching_session(request: CoachingSessionRequest) -> dict:
         student_profile=request.student_profile,
         clean_scholarship_record=request.clean_scholarship_record,
         essay_prompt=essay_prompt,
-        essay_draft=cleaned_draft,
+        essay_draft=essay_draft,
         word_limit=request.word_limit,
         outline_points=request.outline_points,
         profile_text=request.cv_text,
@@ -689,8 +710,6 @@ def run_workspace_coaching_session(request: CoachingSessionRequest) -> dict:
         "session_id": session_id,
         "draft_hash": draft_hash,
         "status": status,
-        "mechanics": mechanics,
-        "cleaned_draft": cleaned_draft,
         "review": review,
         "outline_coverage": merged.get("outline_coverage") or {},
         "agents": merged.get("agent_status", {}),

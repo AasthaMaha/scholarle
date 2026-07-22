@@ -1,5 +1,6 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import scholarELogoUrl from "../../logo/logoPic.jpeg";
 import {
   AlertCircle,
@@ -51,7 +52,6 @@ import { EssayEditor, type EssayEditorHandle, type RewriteAction } from "@/compo
 import {
   analyzeText,
   anchorCoachSuggestions,
-  applySuggestion,
   CATEGORY_META,
   CATEGORY_ORDER,
   countByCategory,
@@ -59,7 +59,16 @@ import {
   type CoachSentenceSuggestion,
   type Suggestion,
 } from "@/lib/suggestions";
-import { essayDraft as exampleEssayDraft, journeySteps } from "@/lib/persona";
+import {
+  draftEditWindow,
+  draftFingerprint,
+  ignoredSuggestionKey,
+  rebaseCachedSuggestions,
+  requiresFullDraftFixScan,
+  type EssayFixCacheEntry,
+  type FixEngine,
+} from "@/lib/fixCache";
+import { journeySteps } from "@/lib/persona";
 import { getFile, removeFile, storeFile } from "@/lib/fileStore";
 import { Spinner } from "@/components/Spinner";
 import { AcademicOnboarding } from "@/components/AcademicOnboarding";
@@ -69,6 +78,7 @@ import {
   buildCoachingSessionPayload,
   buildEditorCheckPayload,
   buildFitPayload,
+  buildOutlineCoveragePayload,
   buildOutlinePayload,
   buildOutlinePoints,
   buildWikiPayload,
@@ -78,11 +88,15 @@ import {
   extractScholarshipOpportunity,
   generatePersonalizedOutline,
   runEditorCheck,
+  runContextualGrammarCheck,
+  runOutlineCoverageCheck,
   runSelectionRewrite,
   runWorkspaceCoachingSession,
+  warmEditorTools,
   normalizeEssayPromptEntries,
   normalizeSelectedEssayPromptEntries,
   serializeEssayPromptEntries,
+  type EditorCheckResult,
 } from "@/lib/api/scholarE";
 import {
   useUser,
@@ -133,10 +147,9 @@ export const Route = createFileRoute("/journey")({
   component: Journey,
 });
 
-const SIDEBAR_MIN_WIDTH = 232;
-const SIDEBAR_MAX_WIDTH = 420;
-const SIDEBAR_DEFAULT_WIDTH = 288;
-const SIDEBAR_WIDTH_KEY = "scholar-e:sidebarWidth";
+// 232px is the narrowest safe expanded width for both the header controls and
+// the longest remaining journey label ("Application Tracker") on one line.
+const SIDEBAR_EXPANDED_WIDTH = 232;
 
 function needsAcademicOnboarding(user: UserProfile | null) {
   return !!(
@@ -153,14 +166,23 @@ function Journey() {
   const [stepIdx, setStepIdx] = useState(0);
   const [profileError, setProfileError] = useState("");
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  const [panelWidth, setPanelWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
-  const [sidebarDragging, setSidebarDragging] = useState(false);
   const [academicOnboardingActive, setAcademicOnboardingActive] = useState<boolean | null>(null);
   const [showResumePrompt, setShowResumePrompt] = useState(false);
   const guidedSidebarExpanded = useRef(false);
   const [journeyTutorialActive, setJourneyTutorialActive] = useState(false);
   const journeyMainRef = useRef<HTMLElement | null>(null);
   const accountIdentity = user?.email || (user ? "guest-profile" : "anonymous");
+
+  useEffect(() => {
+    const controller = new AbortController();
+    // Begin the one-time Java warm-up at Journey entry, several steps before
+    // the student needs Essay Workspace. Backend startup performs the same
+    // idempotent request, so this is also a safe cold-start fallback.
+    void warmEditorTools(controller.signal).catch(() => {
+      // Fixes degrade independently; never interrupt the student's journey.
+    });
+    return () => controller.abort();
+  }, []);
 
   useEffect(() => {
     if (!isHydrated) return;
@@ -189,19 +211,6 @@ function Journey() {
     const frame = window.requestAnimationFrame(() => setShowResumePrompt(false));
     return () => window.cancelAnimationFrame(frame);
   }, [academicOnboardingActive, showResumePrompt]);
-
-  // Restore the user's chosen sidebar width (client-only; SSR-safe).
-  useEffect(() => {
-    const saved = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY));
-    if (saved >= SIDEBAR_MIN_WIDTH && saved <= SIDEBAR_MAX_WIDTH) setPanelWidth(saved);
-  }, []);
-  useEffect(() => {
-    try {
-      localStorage.setItem(SIDEBAR_WIDTH_KEY, String(panelWidth));
-    } catch {
-      /* ignore quota / privacy-mode errors */
-    }
-  }, [panelWidth]);
 
   // Resume the last step once the saved profile hydrates from storage.
   const restoredStep = useRef(false);
@@ -302,8 +311,8 @@ function Journey() {
   return (
     <TooltipProvider delayDuration={150}>
       <div
-        className="flex h-screen overflow-hidden"
-        style={{ ["--sw" as string]: `${panelWidth}px` } as React.CSSProperties}
+        className="flex h-[100dvh] overflow-hidden"
+        style={{ ["--sw" as string]: `${SIDEBAR_EXPANDED_WIDTH}px` } as React.CSSProperties}
       >
         <SidebarRail
           activeIdx={visibleStepIdx}
@@ -322,20 +331,20 @@ function Journey() {
             if (!window.matchMedia("(min-width: 768px)").matches) setIsSidebarOpen(false);
           }}
           onClearAll={handleClearAll}
-          onResize={(w) => setPanelWidth(Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, w)))}
-          onResizeActive={setSidebarDragging}
         />
         <div
-          className={`flex w-full min-w-0 flex-col ${
-            sidebarDragging ? "" : "transition-[padding] duration-300 ease-out"
-          } ${isSidebarOpen ? "md:pl-[var(--sw)]" : "md:pl-[65px]"}`}
+          className={`flex min-h-0 w-full min-w-0 flex-col transition-[padding] duration-300 ease-out ${
+            isSidebarOpen ? "md:pl-[var(--sw)]" : "md:pl-[65px]"
+          }`}
         >
           <TopBar step={step} stepIdx={visibleStepIdx} guidedProfileSetupActive={guidedProfileSetupActive} />
           <FloatingSidebarToggle
             isOpen={isSidebarOpen}
             onOpen={() => setIsSidebarOpen(true)}
           />
-          <main ref={journeyMainRef} tabIndex={-1} className={`min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto outline-none transition-colors duration-500 ${
+          <main ref={journeyMainRef} tabIndex={-1} className={`min-h-0 min-w-0 flex-1 overflow-x-hidden outline-none transition-colors duration-500 ${
+            step.slug === "essay-workspace" ? "overflow-y-hidden" : "overflow-y-auto"
+          } ${
             step.slug === "discovery"
               ? "bg-[radial-gradient(circle_at_85%_8%,rgba(109,93,246,0.10),transparent_28%),linear-gradient(180deg,#f4f6fb_0%,#ffffff_48%,#f4f2fb_100%)]"
               : ""
@@ -343,7 +352,7 @@ function Journey() {
             <div
               className={`mx-auto ${
                 step.slug === "essay-workspace"
-                  ? "w-full max-w-none px-0 py-0"
+                  ? "h-full min-h-0 w-full max-w-none px-0 py-0"
                   : `px-6 md:px-10 ${
                       ["discovery", "requirements"].includes(step.slug)
                         ? "max-w-7xl py-6"
@@ -353,7 +362,7 @@ function Journey() {
                     }`
               }`}
             >
-              <div>
+              <div className={step.slug === "essay-workspace" ? "h-full min-h-0" : undefined}>
               <StepBody
                 slug={step.slug}
                 goNext={goNext}
@@ -368,8 +377,8 @@ function Journey() {
               </div>
             </div>
           </main>
-          {!guidedProfileSetupActive && <footer className="shrink-0 border-t border-border bg-background/95 px-6 backdrop-blur md:px-10">
-            <div className="mx-auto max-w-7xl">
+          {!guidedProfileSetupActive && <footer className="h-16 shrink-0 border-t border-border bg-background/95 px-6 backdrop-blur md:px-10">
+            <div className="mx-auto h-full max-w-7xl">
               <Nav
                 stepIdx={stepIdx}
                 onNext={goNext}
@@ -424,8 +433,6 @@ function Sidebar({
   onClose,
   onSelect,
   onClearAll,
-  onResize,
-  onResizeActive,
 }: {
   activeIdx: number;
   laterStepsLocked: boolean;
@@ -434,22 +441,7 @@ function Sidebar({
   onClose: () => void;
   onSelect: (i: number) => void;
   onClearAll: () => void;
-  onResize: (width: number) => void;
-  onResizeActive: (active: boolean) => void;
 }) {
-  function startResize(e: React.MouseEvent) {
-    e.preventDefault();
-    onResizeActive(true);
-    const onMove = (ev: MouseEvent) => onResize(ev.clientX);
-    const onUp = () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-      onResizeActive(false);
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-  }
-
   const groups = useMemo(() => {
     const map = new Map<string, typeof journeySteps>();
     journeySteps.forEach((s) => {
@@ -472,7 +464,7 @@ function Sidebar({
       />
       <aside
         data-journey-sidebar
-        className={`fixed inset-y-0 left-0 z-40 flex w-80 max-w-[85vw] shrink-0 flex-col border-r border-border bg-card/95 backdrop-blur transition-transform duration-300 ease-out md:w-[var(--sw)] md:max-w-none ${
+        className={`fixed inset-y-0 left-0 z-40 flex w-[var(--sw)] max-w-[85vw] shrink-0 flex-col border-r border-border bg-card/95 backdrop-blur transition-transform duration-300 ease-out md:max-w-none ${
           isOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
@@ -480,7 +472,6 @@ function Sidebar({
           <Link to="/" className="flex min-w-0 flex-1 items-center gap-2">
             <img src={scholarELogoUrl} alt="" className="size-7 rounded-full object-cover" />
             <div className="text-sm font-display font-semibold tracking-tight">Scholar-E</div>
-            <span className="ml-auto text-[10px] uppercase tracking-widest text-muted-foreground">journey</span>
           </Link>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -526,7 +517,7 @@ function Sidebar({
                           }`}
                         >
                           <span
-                            className={`relative size-6 shrink-0 rounded-md grid place-items-center ${
+                            className={`relative grid size-8 shrink-0 place-items-center rounded-lg ${
                               isActive
                                 ? "bg-info text-white"
                                 : isDone
@@ -534,10 +525,10 @@ function Sidebar({
                                 : "bg-secondary text-muted-foreground"
                             }`}
                           >
-                            <span className="text-xs font-bold tabular-nums">{idx + 1}</span>
+                            <span className="text-sm font-bold tabular-nums">{idx + 1}</span>
                             {isDone && (
-                              <span className="absolute -bottom-0.5 -right-0.5 grid size-3 place-items-center rounded-full bg-success text-white ring-2 ring-card">
-                                <Check className="size-2" strokeWidth={4} />
+                              <span className="absolute -bottom-1 -right-1 grid size-4 place-items-center rounded-full bg-success text-white ring-2 ring-card">
+                                <Check className="size-2.5" strokeWidth={4} />
                               </span>
                             )}
                           </span>
@@ -554,11 +545,11 @@ function Sidebar({
           ))}
         </div>
 
-        <div className="border-t border-border px-6 py-4">
+        <div className="px-6 py-4">
           <SidebarUser />
         </div>
 
-        <div className="border-t border-border px-6 py-3">
+        <div className="flex h-16 shrink-0 flex-col justify-center border-t border-border px-6">
           <button
             type="button"
             onClick={onClearAll}
@@ -567,18 +558,7 @@ function Sidebar({
             <RefreshCw className="size-3.5" />
             Reset all data
           </button>
-          <div className="mt-2 text-[11px] text-muted-foreground/60">A coach, not a ghostwriter.</div>
-        </div>
-
-        {/* Drag-to-resize handle (desktop). Widens/narrows the panel; width persists. */}
-        <div
-          onMouseDown={startResize}
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize sidebar"
-          className="group absolute inset-y-0 -right-1 hidden w-2 cursor-col-resize md:block"
-        >
-          <div className="mx-auto h-full w-px bg-transparent transition-colors group-hover:bg-info/60" />
+          <div className="mt-1 pl-px text-[11px] text-muted-foreground/60">A coach, not a ghostwriter.</div>
         </div>
       </aside>
     </>
@@ -1015,27 +995,30 @@ function TopBar({
   guidedProfileSetupActive: boolean;
 }) {
   const pct = ((stepIdx + 1) / journeySteps.length) * 100;
+  const hasWorkspaceExtension = step.slug === "essay-workspace";
   return (
-    <div className="sticky top-0 z-20 border-b border-border bg-background/85 backdrop-blur">
-      <div className="flex h-14 items-center gap-4 pl-16 pr-6 md:px-10">
+    <div className="sticky top-0 z-20 h-14 bg-background/85 backdrop-blur">
+      <div className={`flex h-full items-center pl-16 pr-6 md:px-10 ${hasWorkspaceExtension ? "gap-0" : "gap-4"}`}>
         <Tooltip>
           <TooltipTrigger asChild>
-            <div className="flex min-w-0 flex-1 items-baseline gap-2">
-              <span className="truncate text-sm font-medium text-foreground">{step.title}</span>
+            <div className={`flex min-w-0 items-center gap-2 ${hasWorkspaceExtension ? "shrink-0" : "flex-1"}`}>
+              <span className="truncate text-lg font-bold tracking-tight text-foreground">{step.title}</span>
               {guidedProfileSetupActive ? (
                 <span className="hidden shrink-0 text-xs text-muted-foreground sm:inline">Complete Your Profile</span>
-              ) : (
-                <span className="hidden shrink-0 text-xs text-muted-foreground sm:inline">
-                  {step.group} · Step {step.id}/{journeySteps.length}
-                </span>
-              )}
+              ) : null}
             </div>
           </TooltipTrigger>
           <TooltipContent>Goal: {step.goal}</TooltipContent>
         </Tooltip>
+        {hasWorkspaceExtension && (
+          <div
+            data-journey-topbar-workspace
+            className="flex min-w-0 flex-1 items-center gap-2"
+          />
+        )}
       </div>
       {!guidedProfileSetupActive && (
-        <div className="h-1 bg-secondary">
+        <div className="absolute inset-x-0 bottom-0 h-1 bg-secondary">
           <div className="h-full bg-info transition-all duration-500" style={{ width: `${pct}%` }} />
         </div>
       )}
@@ -1106,7 +1089,7 @@ function SidebarRail({
         <TooltipContent side="right">Expand sidebar</TooltipContent>
       </Tooltip>
 
-      <div className="mt-3 flex flex-1 flex-col items-center gap-1.5 overflow-hidden py-1">
+      <div className="mt-3 flex w-full flex-1 flex-col items-center gap-1.5 overflow-hidden py-1">
         <span className="mb-1 text-[9px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
           Steps
         </span>
@@ -1123,7 +1106,7 @@ function SidebarRail({
                   aria-label={isLocked ? `Step ${idx + 1}: ${s.title}. Complete your profile to unlock this step.` : `Step ${idx + 1}: ${s.title}`}
                   aria-disabled={isLocked || undefined}
                   aria-current={isActive ? "step" : undefined}
-                  className={`relative grid size-9 shrink-0 place-items-center rounded-full transition-colors ${
+                  className={`relative grid size-10 shrink-0 place-items-center rounded-full transition-colors ${
                     isActive
                       ? "bg-info text-white"
                       : isLocked
@@ -1135,7 +1118,7 @@ function SidebarRail({
                 >
                   <span className="text-sm font-bold tabular-nums">{idx + 1}</span>
                   {isDone && (
-                    <span className="absolute -bottom-0.5 -right-0.5 grid size-3.5 place-items-center rounded-full bg-success text-white ring-2 ring-card">
+                    <span className="absolute -bottom-1 -right-1 grid size-4 place-items-center rounded-full bg-success text-white ring-2 ring-card">
                       <Check className="size-2.5" strokeWidth={3.5} />
                     </span>
                   )}
@@ -1180,7 +1163,7 @@ function Nav({
   hideNext?: boolean;
 }) {
   return (
-    <div className="flex min-h-16 items-center justify-between">
+    <div className="flex h-full items-center justify-between">
       <button
         onClick={onPrev}
         disabled={stepIdx === 0}
@@ -1232,7 +1215,7 @@ function StepBody({
     case "discovery": return <StepDiscovery onUpdateProfile={goToProfile} onUseSource={goToRequirements} />;
     case "opportunities": return <StepOpportunities onAnalyze={goNext} />;
     case "requirements": return <StepRequirementsAndFit />;
-    case "essay-workspace": return <StepEssayWorkspace onBack={goPrev} />;
+    case "essay-workspace": return <StepEssayWorkspace />;
     case "revise": return <StepRevise />;
     case "final-check": return <StepFinalCheck onNavigate={goToStep} />;
     case "tracker": return <StepTracker onNavigate={goToStep} />;
@@ -5487,6 +5470,18 @@ function criteriaAlignmentTone(alignment?: string): "default" | "gold" | "succes
 
 type WorkspaceTab = "outline" | "coach" | "highlights";
 
+// At 500px the three tabs and six-column score grid remain fully readable
+// without taking more space from the essay than necessary.
+const ESSAY_REVIEW_PANEL_MIN_WIDTH = 500;
+
+function essayReviewPanelBounds(workspaceWidth: number) {
+  const maximum = Math.max(1, Math.floor(workspaceWidth / 2));
+  return {
+    minimum: Math.min(ESSAY_REVIEW_PANEL_MIN_WIDTH, maximum),
+    maximum,
+  };
+}
+
 const ESSAY_REVIEW_DIMENSIONS = [
   "alignment",
   "evidence_strength",
@@ -5494,8 +5489,57 @@ const ESSAY_REVIEW_DIMENSIONS = [
   "narrative_structure_flow_coherence",
   "tone_authenticity",
   "clarity_concision",
-  "grammar",
 ] as const;
+
+type DraftCheckScope = { text: string; start: number; end: number; revision: string; document: string; promptId: string };
+type AnchoredFixState = { draft: string; suggestions: CoachSentenceSuggestion[] };
+const FIX_PIPELINE_VERSION = "6";
+
+function abortableDelay(milliseconds: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
+    const finish = () => {
+      window.clearTimeout(timer);
+      signal.removeEventListener("abort", finish);
+      resolve();
+    };
+    const timer = window.setTimeout(finish, milliseconds);
+    signal.addEventListener("abort", finish, { once: true });
+  });
+}
+
+function draftCheckScope(previous: string, current: string, promptId: string): DraftCheckScope {
+  if (requiresFullDraftFixScan(previous, current)) {
+    return { text: current, start: 0, end: current.length, revision: `full:${draftFingerprint(current)}`, document: current, promptId };
+  }
+  let changedAt = 0;
+  const shared = Math.min(previous.length, current.length);
+  while (changedAt < shared && previous[changedAt] === current[changedAt]) changedAt += 1;
+  const before = current.slice(0, changedAt);
+  const breakMatch = [...before.matchAll(/\n\s*\n/g)].at(-1);
+  const start = breakMatch ? (breakMatch.index ?? 0) + breakMatch[0].length : 0;
+  const after = current.slice(changedAt);
+  const nextBreak = after.match(/\n\s*\n/);
+  const end = nextBreak?.index == null ? current.length : changedAt + nextBreak.index;
+  const text = current.slice(start, end);
+  return { text, start, end, revision: `${start}:${end}:${draftFingerprint(text)}`, document: current, promptId };
+}
+
+function rebaseDraftRange(
+  previousDraft: string,
+  currentDraft: string,
+  start: number,
+  end: number,
+): [number, number] | null {
+  if (previousDraft === currentDraft) return [start, end];
+  const change = draftEditWindow(previousDraft, currentDraft);
+  if (end <= change.prefix) return [start, end];
+  if (start >= change.previousEnd) return [start + change.delta, end + change.delta];
+  return null;
+}
 
 type EssayReviewDimension = (typeof ESSAY_REVIEW_DIMENSIONS)[number];
 
@@ -5521,11 +5565,285 @@ const ESSAY_REVIEW_SCORE_GROUPS: ReadonlyArray<{
   },
 ];
 
+type PdfTextItem = {
+  str?: string;
+  transform?: number[];
+  width?: number;
+  height?: number;
+  hasEOL?: boolean;
+};
+
+type PdfVisualLine = {
+  text: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  averageCharacterWidth: number;
+};
+
+function pdfItemPosition(item: PdfTextItem) {
+  const transform = item.transform;
+  if (!transform || transform.length < 6 || !Number.isFinite(transform[4]) || !Number.isFinite(transform[5])) {
+    return null;
+  }
+  return {
+    x: transform[4],
+    y: transform[5],
+    width: Number.isFinite(item.width) ? Math.max(0, item.width ?? 0) : 0,
+    height: Number.isFinite(item.height) ? Math.max(0, item.height ?? 0) : 0,
+  };
+}
+
+function median(values: number[], fallback: number) {
+  if (!values.length) return fallback;
+  const ordered = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(ordered.length / 2);
+  return ordered.length % 2 ? ordered[middle] : (ordered[middle - 1] + ordered[middle]) / 2;
+}
+
+function joinPdfLineFragments(items: PdfTextItem[]) {
+  const ordered = [...items].sort((a, b) => (pdfItemPosition(a)?.x ?? 0) - (pdfItemPosition(b)?.x ?? 0));
+  let text = "";
+  let previous: PdfTextItem | null = null;
+
+  for (const item of ordered) {
+    const fragment = item.str ?? "";
+    if (!fragment) continue;
+    if (previous && !/\s$/.test(text) && !/^\s/.test(fragment)) {
+      const previousPosition = pdfItemPosition(previous);
+      const position = pdfItemPosition(item);
+      if (!previousPosition || !position) {
+        text += " ";
+      } else {
+        const gap = position.x - (previousPosition.x + previousPosition.width);
+        const previousCharacters = Math.max(1, (previous.str ?? "").trim().length);
+        const currentCharacters = Math.max(1, fragment.trim().length);
+        const characterWidth =
+          ((previousPosition.width / previousCharacters) + (position.width / currentCharacters)) / 2;
+        // A near-zero visual gap means the PDF split one word into multiple text runs.
+        if (gap > Math.max(1, characterWidth * 0.2)) text += " ";
+      }
+    }
+    text += fragment;
+    previous = item;
+  }
+
+  return text.replace(/[ \t]+/g, " ").trim();
+}
+
+function isPdfPageMarker(text: string) {
+  const spacedPage = "p\\s*a\\s*g\\s*e";
+  return new RegExp(
+    `^(?:page\\s+\\d+|\\d+\\s*(?:\\||[-–—])\\s*(?:${spacedPage}|page)|(?:${spacedPage}|page)\\s+\\d+)$`,
+    "i",
+  ).test(text.trim());
+}
+
+function buildPdfVisualLines(items: PdfTextItem[]) {
+  const groups: PdfTextItem[][] = [];
+  let current: PdfTextItem[] = [];
+  let forceNewLine = false;
+
+  for (const item of items) {
+    const fragment = item.str ?? "";
+    if (!fragment) {
+      if (item.hasEOL) forceNewLine = true;
+      continue;
+    }
+
+    const previous = current[current.length - 1];
+    const previousPosition = previous ? pdfItemPosition(previous) : null;
+    const position = pdfItemPosition(item);
+    const lineTolerance = Math.max(
+      1.5,
+      Math.min(previousPosition?.height || 10, position?.height || 10) * 0.45,
+    );
+    const startsNewLine =
+      current.length > 0 &&
+      (forceNewLine ||
+        previous?.hasEOL ||
+        (!!previousPosition && !!position && Math.abs(position.y - previousPosition.y) > lineTolerance));
+
+    if (startsNewLine) {
+      groups.push(current);
+      current = [];
+    }
+    current.push(item);
+    forceNewLine = false;
+  }
+  if (current.length) groups.push(current);
+
+  return groups
+    .map((group): PdfVisualLine | null => {
+      const positioned = group
+        .map((item) => ({ item, position: pdfItemPosition(item) }))
+        .filter((entry) => entry.position !== null);
+      const text = joinPdfLineFragments(group);
+      if (!text || isPdfPageMarker(text)) return null;
+      if (!positioned.length) {
+        return { text, x: 0, y: 0, width: 0, height: 10, averageCharacterWidth: 5 };
+      }
+      const x = Math.min(...positioned.map(({ position }) => position!.x));
+      const right = Math.max(...positioned.map(({ position }) => position!.x + position!.width));
+      const width = Math.max(0, right - x);
+      return {
+        text,
+        x,
+        y: positioned[0].position!.y,
+        width,
+        height: Math.max(...positioned.map(({ position }) => position!.height || 0), 10),
+        averageCharacterWidth: width > 0 ? width / Math.max(1, text.replace(/\s/g, "").length) : 5,
+      };
+    })
+    .filter((line): line is PdfVisualLine => line !== null);
+}
+
+/** Reflow visual PDF lines into paragraphs while preserving genuine structure. */
+function reflowPdfVisualLines(lines: PdfVisualLine[]) {
+  if (!lines.length) return "";
+
+  const typicalHeight = median(lines.map((line) => line.height).filter((height) => height > 0), 10);
+  const verticalSteps = lines
+    .slice(1)
+    .map((line, index) => Math.abs(lines[index].y - line.y))
+    .filter((step) => step > 1 && step < typicalHeight * 2.5);
+  const typicalStep = median(verticalSteps, typicalHeight * 1.2);
+  const bodyLines = lines.filter((line) => line.text.length >= 30 && line.height <= typicalHeight * 1.25);
+  const typicalWidth = median(bodyLines.map((line) => line.width).filter((width) => width > 0), 0);
+  const commonLeft = median(bodyLines.map((line) => line.x), lines[0].x);
+
+  let text = lines[0].text;
+  for (let index = 1; index < lines.length; index += 1) {
+    const previous = lines[index - 1];
+    const current = lines[index];
+    const verticalGap = Math.abs(previous.y - current.y);
+    const largeGap = verticalGap > Math.max(typicalStep * 1.35, typicalHeight * 1.55);
+    const indented = current.x - commonLeft > Math.max(12, current.averageCharacterWidth * 1.75);
+    const fontScaleChanged =
+      Math.max(previous.height, current.height) / Math.max(1, Math.min(previous.height, current.height)) > 1.2;
+    const listItem = /^(?:[•▪◦*\-]|\(?\d+[.)])\s+/.test(current.text);
+    const previousLooksComplete =
+      typicalWidth > 0 &&
+      previous.width < typicalWidth * 0.72 &&
+      /[.!?]["')\]]?$/.test(previous.text);
+    const openingDocumentLabel =
+      index <= 3 && (previous.text.length < 80 || current.text.length < 80) && previousLooksComplete === false;
+    const paragraphBreak = largeGap || indented || fontScaleChanged || listItem || previousLooksComplete || openingDocumentLabel;
+
+    if (paragraphBreak) {
+      text += `\n\n${current.text}`;
+    } else if (/[-‐‑]$/.test(previous.text)) {
+      text += current.text;
+    } else {
+      text += ` ${current.text}`;
+    }
+  }
+
+  return text;
+}
+
+function normalizedPdfHeaderText(text: string) {
+  return text
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[‘’]/g, "'")
+    .replace(/[“”]/g, '"')
+    .replace(/[–—]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isPossiblePdfHeaderLine(line: PdfVisualLine) {
+  const normalized = normalizedPdfHeaderText(line.text);
+  const words = normalized.split(/\s+/).filter(Boolean);
+  return normalized.length >= 8 && normalized.length <= 180 && words.length >= 2;
+}
+
+function matchingPdfHeaderFormat(reference: PdfVisualLine, candidate: PdfVisualLine) {
+  const heightRatio =
+    Math.max(reference.height, candidate.height) / Math.max(1, Math.min(reference.height, candidate.height));
+  const horizontalTolerance = Math.max(
+    24,
+    reference.averageCharacterWidth * 4,
+    candidate.averageCharacterWidth * 4,
+  );
+  return heightRatio <= 1.2 && Math.abs(reference.x - candidate.x) <= horizontalTolerance;
+}
+
+function removeRepeatedPdfHeaders(pageLines: PdfVisualLine[][], studentName = "") {
+  const headerLineCount = 4;
+  const occurrences = new Map<
+    string,
+    Array<{ pageIndex: number; lineIndex: number; line: PdfVisualLine }>
+  >();
+
+  pageLines.forEach((lines, pageIndex) => {
+    const keysSeenOnPage = new Set<string>();
+    lines.slice(0, headerLineCount).forEach((line, lineIndex) => {
+      if (!isPossiblePdfHeaderLine(line)) return;
+      const key = normalizedPdfHeaderText(line.text);
+      if (keysSeenOnPage.has(key)) return;
+      keysSeenOnPage.add(key);
+      const existing = occurrences.get(key) ?? [];
+      existing.push({ pageIndex, lineIndex, line });
+      occurrences.set(key, existing);
+    });
+  });
+
+  const repeated = new Map<string, Array<{ pageIndex: number; lineIndex: number; line: PdfVisualLine }>>();
+  occurrences.forEach((items, key) => {
+    if (new Set(items.map((item) => item.pageIndex)).size < 2) return;
+    const reference = items[0].line;
+    const compatible = items.filter((item) => matchingPdfHeaderFormat(reference, item.line));
+    if (new Set(compatible.map((item) => item.pageIndex)).size >= 2) repeated.set(key, compatible);
+  });
+
+  const knownNameKey = normalizedPdfHeaderText(studentName);
+  const removals = pageLines.map(() => new Set<number>());
+  for (let pageIndex = 1; pageIndex < pageLines.length; pageIndex += 1) {
+    const matches = Array.from(repeated.entries())
+      .flatMap(([key, items]) =>
+        items
+          .filter((item) => item.pageIndex === pageIndex)
+          .map((item) => ({ key, item, repeatedPageCount: new Set(items.map((entry) => entry.pageIndex)).size })),
+      );
+    const repeatedBlock = matches.length >= 2;
+    matches.forEach(({ key, item, repeatedPageCount }) => {
+      const isKnownStudentName = !!knownNameKey && key === knownNameKey;
+      if (repeatedBlock || repeatedPageCount >= 3 || isKnownStudentName) {
+        removals[pageIndex].add(item.lineIndex);
+      }
+    });
+  }
+
+  let removedCount = 0;
+  const cleanedPages = pageLines.map((lines, pageIndex) =>
+    lines.filter((_line, lineIndex) => {
+      const remove = removals[pageIndex].has(lineIndex);
+      if (remove) removedCount += 1;
+      return !remove;
+    }),
+  );
+  return { cleanedPages, removedCount };
+}
+
+function reconstructPdfDocumentText(pages: PdfTextItem[][], studentName = "") {
+  const pageLines = pages.map(buildPdfVisualLines);
+  const { cleanedPages, removedCount } = removeRepeatedPdfHeaders(pageLines, studentName);
+  return {
+    text: normalizePdfDraftText(cleanedPages.map(reflowPdfVisualLines)),
+    removedRepeatedHeaderLines: removedCount,
+  };
+}
+
 function normalizePdfDraftText(pages: string[]) {
   return pages
     .map((page) => page.replace(/[ \t]+/g, " ").trim())
     .filter(Boolean)
-    .join("\n")
+    // A page boundary is usually just another visual wrap, not a paragraph.
+    .join(" ")
+    .replace(/([A-Za-z])\s+-\s+(?=[A-Za-z])/g, "$1-")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
@@ -5833,7 +6151,7 @@ function EssayReviewWorkspaceLoadingOverlay({
       description: "Evaluating the depth of your writing, including the meaning of your experiences and what you learned, realized, questioned, or changed.",
     },
     {
-      title: "Narrative Structure, Flow & Coherence",
+      title: "Flow & Coherence",
       description: "Evaluating your essay’s organization, progression, transitions, timeline, and logical consistency.",
     },
     {
@@ -5845,35 +6163,23 @@ function EssayReviewWorkspaceLoadingOverlay({
       description: "Evaluating whether your sentences are direct, easy to understand, and free from unnecessary wording or convoluted phrasing.",
     },
     {
-      title: "Grammar",
-      description: "Evaluating spelling, punctuation, capitalization, verb tense, agreement, and sentence-level correctness.",
-    },
-    {
       title: "Preparing specific revision guidance",
       description: "Preparing one clear, specific revision action for each criterion based on its score and feedback.",
     },
-    {
-      title: "Your essay review is ready",
-      description: "",
-    },
   ];
-  const activeStep = displayedProgress < 15
+  const activeStep = displayedProgress < 17
     ? 0
-    : displayedProgress < 25
+    : displayedProgress < 29
       ? 1
-      : displayedProgress < 35
+      : displayedProgress < 41
         ? 2
-        : displayedProgress < 50
+        : displayedProgress < 57
           ? 3
-          : displayedProgress < 60
+          : displayedProgress < 69
             ? 4
-            : displayedProgress < 70
+            : displayedProgress < 82
               ? 5
-              : displayedProgress < 85
-                ? 6
-                : displayedProgress < 100
-                  ? 7
-                  : 8;
+              : 6;
   const cardWidth = region ? Math.max(280, Math.min(576, region.width - 32)) : 576;
   const cardLeft = region
     ? region.left + Math.max(16, (region.width - cardWidth) / 2)
@@ -5958,14 +6264,15 @@ function EssayReviewWorkspaceLoadingOverlay({
   );
 }
 
-function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
+function StepEssayWorkspace() {
   const { user, updateProfile } = useUser();
+  const [topBarTarget, setTopBarTarget] = useState<HTMLElement | null>(null);
   const editorApiRef = useRef<EssayEditorHandle | null>(null);
   const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
-  const [coachRaw, setCoachRaw] = useState<CoachSentenceSuggestion[]>([]);
+  const [anchoredFixes, setAnchoredFixes] = useState<AnchoredFixState>(() => ({ draft: "", suggestions: [] }));
   const [coachLoading, setCoachLoading] = useState(false);
   const [reviewResult, setReviewResult] = useState<EssayReviewResult | null>(
-    () => user?.essayReviewResult?.schema_version === 3 ? user.essayReviewResult : null,
+    () => user?.essayReviewResult?.schema_version === 4 ? user.essayReviewResult : null,
   );
   const [reviewUpdatedAt, setReviewUpdatedAt] = useState<number | null>(() => user?.essayReviewUpdatedAt ?? null);
   const [reviewDraftAtRun, setReviewDraftAtRun] = useState<string>(() => user?.essayReviewDraftAtRun ?? "");
@@ -5979,14 +6286,12 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   const activeScholarshipName = user?.activeScholarship?.name?.trim() ?? "";
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("outline");
   const [panelOpen, setPanelOpen] = useState(true);
-  const [panelWidth, setPanelWidth] = useState(() => {
-    if (typeof window === "undefined") return 420;
-    const saved = Number(window.localStorage.getItem("scholar-e:essay-panel-width"));
-    const minimum = Math.max(300, Math.round(window.innerWidth * 0.4));
-    return Number.isFinite(saved) && saved >= 300
-      ? saved
-      : Math.min(Math.max(420, minimum), Math.round(window.innerWidth * 0.55));
-  });
+  const workspaceColumnsRef = useRef<HTMLDivElement | null>(null);
+  const [workspaceColumnsWidth, setWorkspaceColumnsWidth] = useState(
+    ESSAY_REVIEW_PANEL_MIN_WIDTH * 2,
+  );
+  const [panelWidth, setPanelWidth] = useState(ESSAY_REVIEW_PANEL_MIN_WIDTH);
+  const panelBounds = essayReviewPanelBounds(workspaceColumnsWidth);
 
   useEffect(() => {
     if (!user || essayTitle.trim() || !activeScholarshipName) return;
@@ -5994,12 +6299,12 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   }, [activeScholarshipName, essayTitle, updateProfile, user]);
   const [panelResizing, setPanelResizing] = useState(false);
   const [isEvaluating, setIsEvaluating] = useState(false);
+  const [languageToolLoading, setLanguageToolLoading] = useState(false);
+  const [contextualGrammarLoading, setContextualGrammarLoading] = useState(false);
   const [sessionProgress, setSessionProgress] = useState(0);
   const [reviewReady, setReviewReady] = useState(false);
-  const [mechanicsNote, setMechanicsNote] = useState<string | null>(null);
-  const [pdfStatus, setPdfStatus] = useState<string | null>(null);
-  const [analysisStatus, setAnalysisStatus] = useState<string | null>(null);
-  const [bgStatus, setBgStatus] = useState<string | null>(null);
+  const [languageToolWarning, setLanguageToolWarning] = useState<string | null>(null);
+  const [contextualGrammarWarning, setContextualGrammarWarning] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [nowTick, setNowTick] = useState(() => Date.now());
   const [outlineLoading, setOutlineLoading] = useState(false);
@@ -6009,6 +6314,16 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   const [pendingPromptIndex, setPendingPromptIndex] = useState(0);
   const [workspaceTutorialActive, setWorkspaceTutorialActive] = useState(false);
   const workspaceTutorialHandled = useRef(false);
+  const languageToolAbortRef = useRef<AbortController | null>(null);
+  const contextualGrammarAbortRef = useRef<AbortController | null>(null);
+  const currentDraftRef = useRef("");
+  const previousDraftForFixesRef = useRef("");
+  const [fullFixScanNonce, setFullFixScanNonce] = useState(0);
+  const handledFullFixScanNonceRef = useRef(0);
+
+  useEffect(() => {
+    setTopBarTarget(document.querySelector<HTMLElement>("[data-journey-topbar-workspace]"));
+  }, []);
 
   const legacyPromptBlob =
     user?.activeScholarship?.essayPrompts
@@ -6027,15 +6342,34 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   const [selectedPromptIndex, setSelectedPromptIndex] = useState(0);
   const activePromptEntry = availablePromptEntries[Math.min(selectedPromptIndex, Math.max(0, availablePromptEntries.length - 1))];
   const activePromptId = activePromptEntry?.id ?? "no-essay-prompt";
+  const activePromptIdRef = useRef(activePromptId);
+  activePromptIdRef.current = activePromptId;
+  const fixCacheByPromptRef = useRef<Record<string, EssayFixCacheEntry>>(user?.essayFixesByPromptId ?? {});
+  fixCacheByPromptRef.current = user?.essayFixesByPromptId ?? fixCacheByPromptRef.current;
   const essayPrompt =
     activePromptEntry?.promptText || (hasPromptDecisionState ? "" : legacyPromptBlob);
   const draft = user?.essayDraftsByPromptId?.[activePromptId]
     ?? (selectedPromptIndex === 0 && activePromptId !== "no-essay-prompt" ? user?.essayDraft ?? "" : "");
   const draftHtml = user?.essayDraftHtmlByPromptId?.[activePromptId]
     ?? (selectedPromptIndex === 0 && activePromptId !== "no-essay-prompt" ? user?.essayDraftHtml ?? "" : "");
+  currentDraftRef.current = draft;
   const wordCount = draft.trim() ? draft.trim().split(/\s+/).filter(Boolean).length : 0;
   const characterCount = draft.length;
   const hasMultiplePrompts = availablePrompts.length > 1;
+  const fixesLoading = languageToolLoading || contextualGrammarLoading;
+  const fixesWarning = [languageToolWarning, contextualGrammarWarning].filter(Boolean).join(" ") || null;
+
+  useEffect(() => {
+    languageToolAbortRef.current?.abort();
+    contextualGrammarAbortRef.current?.abort();
+    const cached = fixCacheByPromptRef.current[activePromptId];
+    const restored = cached?.pipelineVersion === FIX_PIPELINE_VERSION
+      ? rebaseCachedSuggestions(cached.draft, draft, cached.suggestions ?? [])
+      : [];
+    setAnchoredFixes({ draft, suggestions: restored });
+    setDismissed(new Set(user?.ignoredEssayFixesByPromptId?.[activePromptId] ?? []));
+    previousDraftForFixesRef.current = "";
+  }, [activePromptId, user?.email]);
 
   useEffect(() => {
     if (selectedPromptIndex >= availablePrompts.length) {
@@ -6048,11 +6382,30 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     [user, essayPrompt],
   );
   const score = typeof reviewResult?.overall_score === "number" ? reviewResult.overall_score : null;
+  const coachRaw = useMemo(
+    () => rebaseCachedSuggestions(anchoredFixes.draft, draft, anchoredFixes.suggestions),
+    [anchoredFixes, draft],
+  );
   const suggestions = useMemo(() => {
     const auto = analyzeText(draft);
     const coach = anchorCoachSuggestions(coachRaw, draft);
-    return mergeSuggestions(coach, auto).filter((s) => !dismissed.has(s.id));
+    return mergeSuggestions(coach, auto).filter((s) => !dismissed.has(ignoredSuggestionKey(s, draft)));
   }, [draft, coachRaw, dismissed]);
+
+  useEffect(() => {
+    if (!user || anchoredFixes.draft !== draft) return;
+    const existing = fixCacheByPromptRef.current[activePromptId];
+    const entry: EssayFixCacheEntry = {
+      ...existing,
+      draft: anchoredFixes.draft,
+      suggestions: anchoredFixes.suggestions,
+      checkedAt: Date.now(),
+      pipelineVersion: FIX_PIPELINE_VERSION,
+    };
+    const next = { ...fixCacheByPromptRef.current, [activePromptId]: entry };
+    fixCacheByPromptRef.current = next;
+    updateProfile({ essayFixesByPromptId: next });
+  }, [activePromptId, anchoredFixes, draft, updateProfile, user?.email]);
 
   function updateEssayPrompt(value: string, index = hasMultiplePrompts ? pendingPromptIndex : selectedPromptIndex) {
     if (!user) return;
@@ -6273,21 +6626,23 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     return () => window.clearInterval(id);
   }, []);
 
-  // Restore only schema-v3 Essay Review data. Older coach/evaluation payloads
+  // Restore only schema-v4 six-criterion Essay Review data. Older payloads
   // are intentionally ignored and render as an empty Evaluate state.
   useEffect(() => {
     const restored = user?.essayReviewResult;
-    setReviewResult(restored?.schema_version === 3 ? restored : null);
-    setReviewUpdatedAt(restored?.schema_version === 3 ? user?.essayReviewUpdatedAt ?? null : null);
-    setReviewDraftAtRun(restored?.schema_version === 3 ? user?.essayReviewDraftAtRun ?? "" : "");
+    setReviewResult(restored?.schema_version === 4 ? restored : null);
+    setReviewUpdatedAt(restored?.schema_version === 4 ? user?.essayReviewUpdatedAt ?? null : null);
+    setReviewDraftAtRun(restored?.schema_version === 4 ? user?.essayReviewDraftAtRun ?? "" : "");
   }, [user?.email, user?.essayReviewResult, user?.essayReviewUpdatedAt, user?.essayReviewDraftAtRun]);
 
   useEffect(() => {
     if (!panelResizing) return;
     const resize = (event: PointerEvent) => {
-      const minimum = Math.max(300, Math.round(window.innerWidth * 0.4));
-      const maximum = Math.round(window.innerWidth * 0.7);
-      setPanelWidth(Math.max(minimum, Math.min(maximum, window.innerWidth - event.clientX)));
+      const workspace = workspaceColumnsRef.current?.getBoundingClientRect();
+      if (!workspace) return;
+      const { minimum, maximum } = essayReviewPanelBounds(workspace.width);
+      const requestedWidth = workspace.right - event.clientX;
+      setPanelWidth(Math.max(minimum, Math.min(maximum, requestedWidth)));
     };
     const stop = () => setPanelResizing(false);
     const previousCursor = document.body.style.cursor;
@@ -6305,20 +6660,23 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   }, [panelResizing]);
 
   useEffect(() => {
-    if (panelResizing) return;
-    window.localStorage.setItem("scholar-e:essay-panel-width", String(Math.round(panelWidth)));
-  }, [panelWidth, panelResizing]);
+    const workspace = workspaceColumnsRef.current;
+    if (!workspace) return;
+    const resizeObserver = new ResizeObserver(([entry]) => {
+      const width = entry.contentRect.width;
+      const { minimum, maximum } = essayReviewPanelBounds(width);
+      setWorkspaceColumnsWidth(width);
+      setPanelWidth((current) => Math.max(minimum, Math.min(maximum, current)));
+    });
+    resizeObserver.observe(workspace);
+    return () => resizeObserver.disconnect();
+  }, []);
 
   useEffect(() => {
-    const clamp = () => {
-      const minimum = Math.max(300, Math.round(window.innerWidth * 0.4));
-      const maximum = Math.round(window.innerWidth * 0.7);
-      setPanelWidth((width) => Math.max(minimum, Math.min(maximum, width)));
-    };
-    clamp();
-    window.addEventListener("resize", clamp);
-    return () => window.removeEventListener("resize", clamp);
-  }, []);
+    if (panelWidth < panelBounds.minimum || panelWidth > panelBounds.maximum) {
+      setPanelWidth((current) => Math.max(panelBounds.minimum, Math.min(panelBounds.maximum, current)));
+    }
+  }, [panelBounds.maximum, panelBounds.minimum, panelWidth]);
 
   const savedLabel = (() => {
     if (!savedAt) return "Not saved yet";
@@ -6330,22 +6688,8 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   })();
 
   function acceptSuggestion(s: Suggestion) {
+    if (s.replacementAvailable === false) return;
     editorApiRef.current?.accept(s);
-  }
-
-  // "Quick fixes" = the low-risk mechanical corrections (grammar, spelling,
-  // spacing, capitalization). Stylistic/specificity rewrites are left for
-  // individual review to preserve the student's voice.
-  const quickFixSuggestions = suggestions.filter((s) => s.category === "correctness");
-
-  function acceptAllQuickFixes() {
-    if (!quickFixSuggestions.length) return;
-    // Apply right-to-left so earlier offsets stay valid (suggestions never overlap).
-    let text = draft;
-    for (const s of [...quickFixSuggestions].sort((a, b) => b.start - a.start)) {
-      text = applySuggestion(text, s);
-    }
-    updateActiveDraft(text);
   }
 
   const coveredPoints = useMemo(() => {
@@ -6374,21 +6718,37 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   }
 
   function dismissSuggestion(s: Suggestion) {
+    const key = ignoredSuggestionKey(s, draft);
     setDismissed((prev) => {
       const next = new Set(prev);
-      next.add(s.id);
+      next.add(key);
       return next;
     });
+    if (user) {
+      const existing = user.ignoredEssayFixesByPromptId?.[activePromptId] ?? [];
+      const nextIgnored = [...existing.filter((entry) => entry !== key), key].slice(-200);
+      updateProfile({
+        ignoredEssayFixesByPromptId: {
+          ...(user.ignoredEssayFixesByPromptId ?? {}),
+          [activePromptId]: nextIgnored,
+        },
+      });
+    }
+  }
+
+  function addSuggestionToDictionary(s: Suggestion) {
+    if (!user) return;
+    const word = s.original.trim();
+    if (!word || /\s/.test(word)) return;
+    const existing = user.personalDictionary ?? [];
+    if (!existing.some((item) => item.toLowerCase() === word.toLowerCase())) {
+      updateProfile({ personalDictionary: [...existing, word] });
+    }
+    dismissSuggestion(s);
   }
 
   function revealSuggestion(s: Suggestion) {
     editorApiRef.current?.reveal(s);
-  }
-
-  function openHighlights() {
-    setPanelOpen(true);
-    setActiveTab("highlights");
-    if (suggestions[0]) requestAnimationFrame(() => editorApiRef.current?.reveal(suggestions[0]));
   }
 
   function persistEssayReview(result: EssayReviewResult, draftForRun: string) {
@@ -6403,40 +6763,237 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     });
   }
 
-  async function runAutoCheck() {
-    if (coachLoading) return;
-    if (draft === lastAutoCheckRef.current || wordCount < 20) return;
-    setCoachLoading(true);
-    lastAutoCheckRef.current = draft;
-    setBgStatus("Checking grammar and outline coverage…");
-    try {
-      const result = await runEditorCheck(buildEditorCheckPayload(user));
-      const coveredIds = result.outline_coverage?.covered_point_ids;
-      if (coveredIds) {
-        // Intersect with known point ids so a hallucinated id can never tick a box.
-        const known = new Set(buildOutlinePoints(user?.personalizedOutline).map((p) => p.id));
-        setAutoCovered(new Set(coveredIds.filter((id) => known.has(id))));
+  function cachedFixResult(scope: DraftCheckScope, engine: FixEngine): EditorCheckResult | null {
+    const paragraph = fixCacheByPromptRef.current[scope.promptId]?.paragraphs?.[draftFingerprint(scope.text)];
+    if (!paragraph || paragraph.text !== scope.text) return null;
+    const cached = paragraph[engine];
+    if (!cached || cached.pipelineVersion !== FIX_PIPELINE_VERSION) return null;
+    const cacheLifetime = cached.suggestions.length > 0
+      ? 24 * 60 * 60 * 1000
+      : 5 * 60 * 1000;
+    if (Date.now() - cached.checkedAt > cacheLifetime) return null;
+    return {
+      status: "success",
+      sentence_suggestions: cached.suggestions,
+      warnings: [],
+      draft_revision: scope.revision,
+      language_tool_status: engine === "language_tool" ? "ready" : undefined,
+      replaces_language_tool: cached.replacesLanguageTool,
+      fix_pipeline_version: cached.pipelineVersion,
+    };
+  }
+
+  function cacheFixResult(scope: DraftCheckScope, result: EditorCheckResult, engine: FixEngine) {
+    const suggestionsForEngine: CoachSentenceSuggestion[] = (result.sentence_suggestions ?? []).map((suggestion) => ({
+      ...suggestion,
+      source: engine,
+    }));
+    const existing = fixCacheByPromptRef.current[scope.promptId];
+    const paragraphKey = draftFingerprint(scope.text);
+    const paragraph = existing?.paragraphs?.[paragraphKey];
+    const nextParagraphs = {
+      ...(existing?.paragraphs ?? {}),
+      [paragraphKey]: {
+        ...paragraph,
+        text: scope.text,
+        [engine]: {
+          suggestions: suggestionsForEngine,
+          checkedAt: Date.now(),
+          pipelineVersion: result.fix_pipeline_version ?? FIX_PIPELINE_VERSION,
+          replacesLanguageTool: result.replaces_language_tool,
+        },
+      },
+    };
+    const boundedParagraphs = Object.fromEntries(
+      Object.entries(nextParagraphs)
+        .sort(([, left], [, right]) => {
+          const leftTime = Math.max(left.language_tool?.checkedAt ?? 0, left.contextual_grammar?.checkedAt ?? 0);
+          const rightTime = Math.max(right.language_tool?.checkedAt ?? 0, right.contextual_grammar?.checkedAt ?? 0);
+          return leftTime - rightTime;
+        })
+        .slice(-40),
+    );
+    const entry: EssayFixCacheEntry = {
+      ...existing,
+      draft: existing?.draft ?? scope.document,
+      suggestions: existing?.suggestions ?? [],
+      checkedAt: Date.now(),
+      pipelineVersion: FIX_PIPELINE_VERSION,
+      paragraphs: boundedParagraphs,
+    };
+    const next = { ...fixCacheByPromptRef.current, [scope.promptId]: entry };
+    fixCacheByPromptRef.current = next;
+    updateProfile({ essayFixesByPromptId: next });
+  }
+
+  function applyFixCheckResult(scope: DraftCheckScope, result: EditorCheckResult, engine: FixEngine) {
+    if (scope.promptId !== activePromptIdRef.current) return;
+    if (result.draft_revision !== scope.revision) return;
+    const currentDraft = currentDraftRef.current;
+    const currentScope = rebaseDraftRange(scope.document, currentDraft, scope.start, scope.end);
+    if (!currentScope) return;
+    const [scopeStart, scopeEnd] = currentScope;
+    if (currentDraft.slice(scopeStart, scopeEnd) !== scope.text) return;
+
+    let refreshedSuggestions: CoachSentenceSuggestion[] = [];
+    for (const suggestion of result.sentence_suggestions ?? []) {
+      const relativeStart = typeof suggestion.start_offset === "number" ? suggestion.start_offset : null;
+      const relativeEnd = typeof suggestion.end_offset === "number" ? suggestion.end_offset : null;
+      if (relativeStart == null || relativeEnd == null) continue;
+      const absoluteStart = scopeStart + relativeStart;
+      const absoluteEnd = scopeStart + relativeEnd;
+      if (absoluteStart < scopeStart || absoluteEnd > scopeEnd) continue;
+      refreshedSuggestions.push({
+        ...suggestion,
+        source: engine,
+        start_offset: absoluteStart,
+        end_offset: absoluteEnd,
+      });
+    }
+
+    setAnchoredFixes((previous) => {
+      const rebased = rebaseCachedSuggestions(previous.draft, currentDraft, previous.suggestions);
+      let preserved = rebased.filter((suggestion) => {
+        if (suggestion.source !== engine) return true;
+        const start = suggestion.start_offset;
+        const end = suggestion.end_offset;
+        return typeof start !== "number" || typeof end !== "number" || end <= scopeStart || start >= scopeEnd;
+      });
+      const overlaps = (left: CoachSentenceSuggestion, right: CoachSentenceSuggestion) => {
+        const leftStart = left.start_offset ?? -1;
+        const leftEnd = left.end_offset ?? -1;
+        const rightStart = right.start_offset ?? -1;
+        const rightEnd = right.end_offset ?? -1;
+        return leftStart >= 0 && rightStart >= 0 && leftStart < rightEnd && leftEnd > rightStart;
+      };
+
+      if (engine === "language_tool") {
+        // LanguageTool is the fast candidate generator, but validated
+        // contextual suggestions should win when they cover the same text.
+        refreshedSuggestions = refreshedSuggestions.filter((fresh) =>
+          !preserved.some((suggestion) => suggestion.source === "contextual_grammar" && overlaps(suggestion, fresh)));
+      } else if (result.replaces_language_tool) {
+        // The contextual response is the authoritative final result for this
+        // paragraph: remove every provisional LanguageTool candidate in scope,
+        // including candidates the AI explicitly rejected.
+        preserved = preserved.filter((suggestion) => {
+          if (suggestion.source !== "language_tool") return true;
+          const start = suggestion.start_offset;
+          const end = suggestion.end_offset;
+          return typeof start !== "number" || typeof end !== "number" || end <= scopeStart || start >= scopeEnd;
+        });
+      } else {
+        preserved = preserved.filter((suggestion) =>
+          suggestion.source !== "language_tool"
+          || !refreshedSuggestions.some((fresh) => overlaps(suggestion, fresh)));
       }
-      setCoachRaw(result.sentence_suggestions ?? []);
-    } catch {
-      // Background checks fail silently; the main session remains authoritative.
+
+      return {
+        draft: currentDraft,
+        suggestions: [...preserved, ...refreshedSuggestions]
+          .sort((left, right) => (left.start_offset ?? 0) - (right.start_offset ?? 0)),
+      };
+    });
+  }
+
+  async function runLanguageToolCheck(scope: DraftCheckScope) {
+    if (coachLoading || isEvaluating || !scope.text.trim()) return;
+    const cached = cachedFixResult(scope, "language_tool");
+    if (cached) {
+      applyFixCheckResult(scope, cached, "language_tool");
+      setLanguageToolWarning(null);
+      return;
+    }
+    languageToolAbortRef.current?.abort();
+    const controller = new AbortController();
+    languageToolAbortRef.current = controller;
+    setLanguageToolLoading(true);
+    try {
+      let result: EditorCheckResult | null = null;
+      for (let attempt = 0; attempt < 24; attempt += 1) {
+        result = await runEditorCheck(
+          buildEditorCheckPayload(user, scope.text, scope.revision),
+          controller.signal,
+        );
+        if (controller.signal.aborted || result.status !== "warming") break;
+        setLanguageToolWarning(null);
+        await abortableDelay(result.retry_after_ms ?? 750, controller.signal);
+      }
+      if (controller.signal.aborted) return;
+      if (!result || result.status === "warming") return;
+      if (result.status !== "error") {
+        cacheFixResult(scope, result, "language_tool");
+        applyFixCheckResult(scope, result, "language_tool");
+      }
+      setLanguageToolWarning((result.warnings ?? []).join(" ") || null);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      setLanguageToolWarning("LanguageTool is temporarily unavailable. Immediate browser checks are still active.");
     } finally {
-      setCoachLoading(false);
-      setBgStatus(null);
+      if (languageToolAbortRef.current === controller) {
+        languageToolAbortRef.current = null;
+        setLanguageToolLoading(false);
+      }
+    }
+  }
+
+  async function runContextualCheck(scope: DraftCheckScope) {
+    if (coachLoading || isEvaluating || !scope.text.trim()) return;
+    const cached = cachedFixResult(scope, "contextual_grammar");
+    if (cached) {
+      applyFixCheckResult(scope, cached, "contextual_grammar");
+      setContextualGrammarWarning(null);
+      return;
+    }
+    contextualGrammarAbortRef.current?.abort();
+    const controller = new AbortController();
+    contextualGrammarAbortRef.current = controller;
+    setContextualGrammarLoading(true);
+    try {
+      const result = await runContextualGrammarCheck(
+        buildEditorCheckPayload(user, scope.text, scope.revision),
+        controller.signal,
+      );
+      if (controller.signal.aborted) return;
+      if (result.status !== "error") {
+        cacheFixResult(scope, result, "contextual_grammar");
+        applyFixCheckResult(scope, result, "contextual_grammar");
+      }
+      setContextualGrammarWarning((result.warnings ?? []).join(" ") || null);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      setContextualGrammarWarning("Contextual grammar checking is temporarily unavailable. LanguageTool remains active.");
+    } finally {
+      if (contextualGrammarAbortRef.current === controller) {
+        contextualGrammarAbortRef.current = null;
+        setContextualGrammarLoading(false);
+      }
+    }
+  }
+
+  async function runCoverageCheck() {
+    const currentDraft = currentDraftRef.current;
+    if (!currentDraft.trim() || !buildOutlinePoints(user?.personalizedOutline).length) return;
+    try {
+      const result = await runOutlineCoverageCheck(buildOutlineCoveragePayload(user, currentDraft));
+      const coveredIds = result.outline_coverage?.covered_point_ids;
+      if (!coveredIds) return;
+      const known = new Set(buildOutlinePoints(user?.personalizedOutline).map((point) => point.id));
+      setAutoCovered(new Set(coveredIds.filter((id) => known.has(id))));
+    } catch {
+      // Coverage is independent from Fixes and can safely wait for Evaluate.
     }
   }
 
   async function runCoachingSession() {
     if (coachLoading || isEvaluating || !user) return;
     if (!promptConfirmed) {
-      setAnalysisStatus("Confirm your writing focus first, then select Evaluate.");
       setPromptPickerOpen(true);
       setActiveTab("outline");
       setPanelOpen(true);
       return;
     }
     if (wordCount < 30) {
-      setAnalysisStatus("Write at least 30 words, then select Evaluate.");
       return;
     }
 
@@ -6444,28 +7001,17 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     setCoachLoading(true);
     setReviewReady(false);
     setSessionProgress(6);
-    setMechanicsNote(null);
-    setAnalysisStatus(null);
     setPanelOpen(true);
     setActiveTab("coach");
 
     try {
-      // One backend request owns mechanics and one Manager-led review graph.
-      // Seven criterion agents evaluate, simulate the reviewer, score, and
+      // One backend request owns the Manager-led review graph. It evaluates the
+      // submitted draft exactly as written; grammar corrections remain optional fixes.
+      // Six criterion agents evaluate in reviewer voice, score, and
       // propose one aligned action in parallel.
       const session = await runWorkspaceCoachingSession(buildCoachingSessionPayload(user, essayPrompt));
-      const workingDraft = session.cleaned_draft || draft;
-      const appliedCount = session.mechanics?.applied_count ?? 0;
-
-      if (workingDraft !== draft) updateActiveDraft(workingDraft);
-      setMechanicsNote(
-        appliedCount > 0
-          ? `${appliedCount} spelling/mechanics fix${appliedCount === 1 ? "" : "es"} applied before coaching.`
-          : null,
-      );
-
       const review = session.review ?? null;
-      const gotReview = !!review && review.schema_version === 3 && review.status !== "error";
+      const gotReview = !!review && review.schema_version === 4 && review.status !== "error";
       const coveredIds = session.outline_coverage?.covered_point_ids;
       if (coveredIds) {
         const known = new Set(buildOutlinePoints(user.personalizedOutline).map((p) => p.id));
@@ -6475,7 +7021,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
       const combinedWarnings = session.warnings ?? [];
 
       if (!gotReview) throw new Error(combinedWarnings[0] || "The coaching session could not review your draft.");
-      persistEssayReview(review, workingDraft);
+      persistEssayReview(review, draft);
       setReviewReady(true);
 
       setSessionProgress(100);
@@ -6483,8 +7029,6 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
       await new Promise((resolve) => window.setTimeout(resolve, 200));
     } catch (error) {
       console.error("Scholar-E coaching session failed.", error);
-      const message = error instanceof Error ? error.message : "The coaching session could not review your draft.";
-      setAnalysisStatus(message);
     } finally {
       setIsEvaluating(false);
       setCoachLoading(false);
@@ -6504,18 +7048,63 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     return () => window.clearInterval(interval);
   }, [isEvaluating]);
 
-  // Paste/upload auto-check: a paste bumps `pasteNonce`, and a debounced effect runs
-  // the cheap `auto_check` (grammar + outline coverage) once the draft has settled.
-  // `runAutoCheckRef` keeps the latest closure so the timeout sees the post-paste draft.
-  const runAutoCheckRef = useRef(runAutoCheck);
+  // Unaffected findings are synchronously rebased above on every draft render.
+  // LanguageTool refreshes the changed paragraph first; the slower contextual
+  // pass follows independently. New edits abort both stale requests without
+  // clearing still-valid underlines elsewhere in the essay.
+  const runLanguageToolCheckRef = useRef(runLanguageToolCheck);
+  const runContextualCheckRef = useRef(runContextualCheck);
   useEffect(() => {
-    runAutoCheckRef.current = runAutoCheck;
+    runLanguageToolCheckRef.current = runLanguageToolCheck;
+    runContextualCheckRef.current = runContextualCheck;
   });
-  const lastAutoCheckRef = useRef("");
+  useEffect(() => {
+    const previous = previousDraftForFixesRef.current;
+    previousDraftForFixesRef.current = draft;
+
+    const languageToolController = languageToolAbortRef.current;
+    const contextualController = contextualGrammarAbortRef.current;
+    languageToolAbortRef.current = null;
+    contextualGrammarAbortRef.current = null;
+    languageToolController?.abort();
+    contextualController?.abort();
+    setLanguageToolLoading(false);
+    setContextualGrammarLoading(false);
+
+    if (!draft.trim()) {
+      setAnchoredFixes({ draft: "", suggestions: [] });
+      setLanguageToolWarning(null);
+      setContextualGrammarWarning(null);
+      return;
+    }
+
+    const explicitFullScan = fullFixScanNonce !== handledFullFixScanNonceRef.current;
+    handledFullFixScanNonceRef.current = fullFixScanNonce;
+    const scope = explicitFullScan
+      ? { text: draft, start: 0, end: draft.length, revision: `full:${draftFingerprint(draft)}`, document: draft, promptId: activePromptId }
+      : draftCheckScope(previous, draft, activePromptId);
+    const languageToolTimer = window.setTimeout(
+      () => void runLanguageToolCheckRef.current(scope),
+      500,
+    );
+    const contextualTimer = window.setTimeout(
+      () => void runContextualCheckRef.current(scope),
+      1200,
+    );
+    return () => {
+      window.clearTimeout(languageToolTimer);
+      window.clearTimeout(contextualTimer);
+    };
+  }, [draft, fullFixScanNonce, isEvaluating, user?.personalDictionary]);
+
+  // Draft changes already trigger both Fixes passes. Paste/upload additionally
+  // refreshes the independent outline-coverage check after text settles.
   const [pasteNonce, setPasteNonce] = useState(0);
   useEffect(() => {
     if (pasteNonce === 0) return;
-    const id = window.setTimeout(() => void runAutoCheckRef.current(), 800);
+    const id = window.setTimeout(() => {
+      void runCoverageCheck();
+    }, 800);
     return () => window.clearTimeout(id);
   }, [pasteNonce]);
   function triggerAutoCheck() {
@@ -6531,7 +7120,6 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   }
 
   async function handlePdf(file: File) {
-    setPdfStatus(`Extracting text from ${file.name}...`);
     try {
       const w = window as unknown as {
         pdfjsLib?: {
@@ -6542,7 +7130,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
       type PdfDoc = {
         numPages: number;
         getPage: (n: number) => Promise<{
-          getTextContent: () => Promise<{ items: { str?: string }[] }>;
+          getTextContent: () => Promise<{ items: PdfTextItem[] }>;
         }>;
       };
 
@@ -6564,17 +7152,32 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
 
       const buf = await file.arrayBuffer();
       const pdf: PdfDoc = await w.pdfjsLib.getDocument({ data: buf }).promise;
-      const pages: string[] = [];
+      const pages: PdfTextItem[][] = [];
       for (let p = 1; p <= pdf.numPages; p++) {
         const page = await pdf.getPage(p);
         const tc = await page.getTextContent();
-        pages.push(tc.items.map((i) => i.str ?? "").join(" "));
+        pages.push(tc.items);
       }
-      updateActiveDraft(normalizePdfDraftText(pages));
-      setPdfStatus(`Imported ${pdf.numPages} pages from ${file.name}.`);
+      const imported = reconstructPdfDocumentText(pages, user?.name ?? "");
+      updateActiveDraft(imported.text);
+      // A PDF is a whole-document replacement even when its character count is
+      // close to the previous draft. Force both Fixes engines to review every
+      // imported paragraph after extraction and cleanup settles.
+      setFullFixScanNonce((nonce) => nonce + 1);
+      setReviewResult(null);
+      setReviewUpdatedAt(null);
+      setReviewDraftAtRun("");
+      setReviewReady(false);
+      setAnchoredFixes({ draft: imported.text, suggestions: [] });
+      setDismissed(new Set());
+      updateProfile({
+        essayReviewResult: undefined,
+        essayReviewUpdatedAt: undefined,
+        essayReviewDraftAtRun: undefined,
+      });
       triggerAutoCheck();
-    } catch (e) {
-      setPdfStatus(`Could not parse PDF: ${(e as Error).message}`);
+    } catch (error) {
+      console.error("Scholar-E could not parse the uploaded PDF.", error);
     }
   }
 
@@ -6612,12 +7215,6 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
     upsertVersion({ reviewOverall: score ?? undefined });
   }
 
-  function loadExampleEssay() {
-    updateActiveDraft(exampleEssayDraft);
-    setSavedAt(Date.now());
-    triggerAutoCheck();
-  }
-
   // Attach the canonical criterion scores to the current draft version.
   useEffect(() => {
     if (!reviewResult?.criteria) return;
@@ -6631,51 +7228,36 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
   }, [reviewResult]);
 
   return (
-    <div className="relative w-full border-t border-border bg-background" aria-busy={outlineLoading || isEvaluating}>
-      <div inert={outlineLoading || isEvaluating || workspaceTutorialActive ? true : undefined}>
-      {/* Zone 1 — slim top bar (Grammarly-style) */}
-      <header className="sticky top-0 z-20 border-b border-border bg-background/90 backdrop-blur">
-        <div className="mx-auto flex h-14 max-w-[1440px] items-center gap-2 px-3 md:px-4">
-          <button
-            type="button"
-            onClick={onBack}
-            aria-label="Back"
-            className="grid size-9 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground"
-          >
-            <ArrowLeft className="size-4" />
-          </button>
-
-          <div className="flex min-w-0 flex-1 flex-col justify-center">
+    <div className="relative flex h-full min-h-0 w-full flex-col overflow-hidden bg-background" aria-busy={outlineLoading || isEvaluating}>
+      <div
+        inert={outlineLoading || isEvaluating || workspaceTutorialActive ? true : undefined}
+        className="flex min-h-0 flex-1 flex-col overflow-hidden"
+      >
+      {topBarTarget && createPortal(
+        <div
+          inert={outlineLoading || isEvaluating || workspaceTutorialActive ? true : undefined}
+          className="flex min-w-0 flex-1 items-center"
+          aria-busy={outlineLoading || isEvaluating}
+        >
+          <div className="mx-10 hidden h-6 w-px shrink-0 bg-border lg:block" />
+          <div className="hidden min-w-0 flex-1 items-center gap-10 lg:flex">
             <input
               type="text"
               value={essayTitle}
               onChange={(e) => updateProfile({ essayTitle: e.target.value })}
               placeholder="Untitled scholarship essay"
               aria-label="Essay title"
-              className="w-full truncate border-none bg-transparent p-0 text-[15px] font-semibold leading-tight text-foreground outline-none placeholder:text-muted-foreground"
+              className="w-auto min-w-[10rem] max-w-[22rem] truncate border-none bg-transparent p-0 text-[15px] font-bold leading-tight tracking-tight text-foreground outline-none [field-sizing:content] placeholder:text-muted-foreground"
             />
-            <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+            <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap text-[11px] text-muted-foreground">
               <span className={`inline-block size-1.5 rounded-full ${savedAt ? "bg-success" : "bg-muted-foreground/40"}`} />
               {savedLabel}
             </div>
           </div>
 
-          <div className="flex shrink-0 items-center gap-1 md:gap-1.5">
+          <div className="ml-2 flex shrink-0 items-center gap-1 md:gap-1.5">
             <WordCountMeter wordCount={wordCount} characterCount={characterCount} target={wordTarget} />
             <div className="mx-1 hidden h-6 w-px bg-border sm:block" />
-
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  onClick={loadExampleEssay}
-                  className="hidden rounded-lg border border-border px-3 py-2 text-[13px] font-medium text-foreground transition-colors duration-150 hover:bg-accent sm:inline-flex"
-                >
-                  Load example
-                </button>
-              </TooltipTrigger>
-              <TooltipContent>Load only the example essay draft</TooltipContent>
-            </Tooltip>
 
             <Tooltip>
               <TooltipTrigger asChild>
@@ -6723,38 +7305,21 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
               className={`ml-0.5 inline-flex items-center gap-1.5 rounded-lg bg-info px-3 py-2 text-[13px] font-medium text-white transition-opacity duration-150 hover:opacity-90 disabled:opacity-60 ${coachLoading || isEvaluating ? "agent-loading" : ""}`}
             >
               {coachLoading || isEvaluating ? <Spinner className="size-4" /> : <Wand2 className="size-4" />}
-              {coachLoading || isEvaluating ? "Evaluating…" : "Evaluate"}
+              <span className="hidden sm:inline">{coachLoading || isEvaluating ? "Evaluating…" : "Evaluate"}</span>
             </button>
 
             <Tooltip>
               <TooltipTrigger asChild>
-                <div className="ml-1 hidden md:block">
+                <div className="ml-1 hidden xl:block">
                   <ScoreRing score={score} />
                 </div>
               </TooltipTrigger>
               <TooltipContent>{score == null ? "Run a coaching session to get your essay score" : `Essay score: ${score}/100`}</TooltipContent>
             </Tooltip>
-
-            <button
-              type="button"
-              onClick={() => setPanelOpen((open) => !open)}
-              aria-label={panelOpen ? "Hide panel" : "Show panel"}
-              className="ml-0.5 hidden size-9 place-items-center rounded-lg text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground lg:grid"
-            >
-              {panelOpen ? <ChevronRight className="size-4" /> : <ChevronLeft className="size-4" />}
-            </button>
           </div>
-        </div>
-
-        {(pdfStatus || analysisStatus || bgStatus || mechanicsNote) && (
-          <div className="flex items-center gap-1.5 border-t border-border bg-accent/40 px-4 py-1.5 text-[11px] text-muted-foreground">
-            {bgStatus && <span className="size-2.5 shrink-0 animate-spin rounded-full border-2 border-info/30 border-t-info" />}
-            <span className={mechanicsNote && !bgStatus && !pdfStatus && !analysisStatus ? "text-success" : undefined}>
-              {bgStatus ?? pdfStatus ?? analysisStatus ?? mechanicsNote}
-            </span>
-          </div>
-        )}
-      </header>
+        </div>,
+        topBarTarget,
+      )}
 
       <Dialog open={promptPickerOpen} onOpenChange={(open) => {
         // Keep the landing chooser intentional — only close via Confirm.
@@ -6849,32 +7414,38 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
         </DialogContent>
       </Dialog>
 
-      <section className="border-b border-border bg-card">
+      <section className="shrink-0 border-b border-border bg-card">
         <div className="mx-auto max-w-[1440px] space-y-3 px-4 py-3 md:px-6">
           {promptConfirmed && (
-            <div className="rounded-xl border border-info/20 bg-info/5 p-3">
-              <div className="flex items-center justify-between gap-2">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-info">
-                  {essayPrompt.trim()
-                    ? hasMultiplePrompts
-                      ? `Working on prompt ${selectedPromptIndex + 1}`
-                      : "Working on essay prompt"
-                    : "Scholarship-guided writing focus"}
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPendingPromptIndex(selectedPromptIndex);
-                    setPromptPickerOpen(true);
-                  }}
-                  className="text-[12px] font-semibold text-info hover:underline"
-                >
-                  Change prompt
-                </button>
+            <div className="flex items-center rounded-xl border border-info/20 bg-info/5 px-3 py-2.5">
+              <div className="shrink-0 text-[11px] font-semibold uppercase tracking-[0.12em] text-info">
+                {essayPrompt.trim()
+                  ? "Prompt"
+                  : "Scholarship-guided writing focus"}
               </div>
-              <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground line-clamp-2">
+              <div className="mx-3 h-7 w-px shrink-0 bg-border" aria-hidden="true" />
+              <p className="min-w-0 flex-1 text-[12px] leading-relaxed text-muted-foreground line-clamp-2">
                 {essayPrompt || "No formal prompt selected; evaluation uses the scholarship mission and selection criteria."}
               </p>
+              <div className="mx-3 h-7 w-px shrink-0 bg-border" aria-hidden="true" />
+              <Tooltip delayDuration={50}>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPendingPromptIndex(selectedPromptIndex);
+                      setPromptPickerOpen(true);
+                    }}
+                    aria-label="Change or edit prompt"
+                    className="inline-flex size-8 shrink-0 items-center justify-center rounded-md text-info outline-none transition-colors hover:bg-info/10 focus-visible:bg-info/10 focus-visible:ring-2 focus-visible:ring-info focus-visible:ring-offset-2"
+                  >
+                    <PencilLine className="size-4" aria-hidden="true" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" align="end" sideOffset={7}>
+                  Change or edit prompt
+                </TooltipContent>
+              </Tooltip>
             </div>
           )}
           {!promptConfirmed && (
@@ -6903,11 +7474,11 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
       </section>
 
       {/* Zone 2 (editor) + Zone 3 (sidebar) */}
-      <div className="mx-auto flex max-w-[1440px] flex-col items-stretch lg:flex-row lg:items-start">
-        <div className="flex min-h-[60vh] min-w-0 flex-1 flex-col lg:h-[calc(100vh-120px)] lg:min-h-0">
+      <div ref={workspaceColumnsRef} className="mx-auto flex min-h-0 w-full max-w-[1440px] flex-1 flex-col items-stretch overflow-hidden lg:flex-row">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           <div
             data-essay-workspace-tour="editor"
-            className={`mx-auto flex min-h-0 w-full flex-1 flex-col transition-[max-width] duration-300 ${panelOpen ? "max-w-[760px]" : "max-w-[960px]"}`}
+            className="flex min-h-0 w-full flex-1 flex-col"
           >
             <EssayEditor
               ref={editorApiRef}
@@ -6917,7 +7488,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
               onRichChange={updateActiveDraftHtml}
               suggestions={suggestions}
               onDismiss={dismissSuggestion}
-              onOpenHighlights={openHighlights}
+              onAddToDictionary={addSuggestionToDictionary}
               onAutoCheck={triggerAutoCheck}
               onRequestRewrite={requestRewrite}
               className="flex-1"
@@ -6928,7 +7499,7 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
         {panelOpen ? (
           <div
             style={{ "--essay-panel-width": `${panelWidth}px` } as React.CSSProperties}
-            className={`relative max-h-[1200px] w-full overflow-visible lg:w-[var(--essay-panel-width)] lg:min-w-[40vw] lg:shrink-0 ${
+            className={`relative min-h-0 w-full flex-1 overflow-hidden lg:w-[var(--essay-panel-width)] lg:flex-none ${
               panelResizing ? "transition-none" : "transition-[width] duration-300 ease-out"
             }`}
           >
@@ -6936,8 +7507,8 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
               role="separator"
               aria-label="Resize coaching sidebar"
               aria-orientation="vertical"
-              aria-valuemin={300}
-              aria-valuemax={Math.round(typeof window !== "undefined" ? window.innerWidth * 0.7 : 1200)}
+              aria-valuemin={panelBounds.minimum}
+              aria-valuemax={panelBounds.maximum}
               aria-valuenow={Math.round(panelWidth)}
               tabIndex={0}
               onPointerDown={(event) => {
@@ -6948,9 +7519,10 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
                 if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
                 event.preventDefault();
                 const direction = event.key === "ArrowLeft" ? 1 : -1;
-                const minimum = Math.max(300, Math.round(window.innerWidth * 0.4));
-                const maximum = Math.round(window.innerWidth * 0.7);
-                setPanelWidth((width) => Math.max(minimum, Math.min(maximum, width + direction * 24)));
+                setPanelWidth((width) => Math.max(
+                  panelBounds.minimum,
+                  Math.min(panelBounds.maximum, width + direction * 24),
+                ));
               }}
               className={`absolute inset-y-0 left-0 z-30 hidden w-2 -translate-x-1/2 cursor-col-resize touch-none items-center justify-center outline-none lg:flex ${
                 panelResizing ? "bg-info/10" : "hover:bg-info/10 focus:bg-info/10"
@@ -6972,9 +7544,9 @@ function StepEssayWorkspace({ onBack }: { onBack?: () => void }) {
               onAccept={acceptSuggestion}
               onDismiss={dismissSuggestion}
               onReveal={revealSuggestion}
-              onAcceptAllQuickFixes={acceptAllQuickFixes}
-              quickFixCount={quickFixSuggestions.length}
-              coachLoading={coachLoading}
+              onAddToDictionary={addSuggestionToDictionary}
+              fixesLoading={fixesLoading}
+              fixesWarning={fixesWarning}
               reviewResult={reviewResult}
               reviewUpdatedAt={reviewUpdatedAt}
               reviewDraftChanged={!!reviewUpdatedAt && draft !== reviewDraftAtRun}
@@ -7023,9 +7595,9 @@ function EssayWorkspacePanel({
   onAccept,
   onDismiss,
   onReveal,
-  onAcceptAllQuickFixes,
-  quickFixCount,
-  coachLoading,
+  onAddToDictionary,
+  fixesLoading,
+  fixesWarning,
   reviewResult,
   reviewUpdatedAt,
   reviewDraftChanged,
@@ -7046,9 +7618,9 @@ function EssayWorkspacePanel({
   onAccept: (s: Suggestion) => void;
   onDismiss: (s: Suggestion) => void;
   onReveal: (s: Suggestion) => void;
-  onAcceptAllQuickFixes: () => void;
-  quickFixCount: number;
-  coachLoading: boolean;
+  onAddToDictionary: (s: Suggestion) => void;
+  fixesLoading: boolean;
+  fixesWarning: string | null;
   reviewResult: EssayReviewResult | null;
   reviewUpdatedAt: number | null;
   reviewDraftChanged: boolean;
@@ -7067,7 +7639,7 @@ function EssayWorkspacePanel({
   return (
     <aside
       aria-busy={isEvaluating}
-      className="relative flex w-full shrink-0 flex-col border-t border-border bg-card lg:sticky lg:top-[56px] lg:h-[calc(100vh-120px)] lg:overflow-hidden lg:border-l lg:border-t-0"
+      className="relative flex h-full min-h-0 w-full flex-col overflow-hidden border-t border-border bg-card lg:border-l lg:border-t-0"
     >
       <div className="sticky top-0 z-10 flex items-center gap-1 border-b border-border bg-card/95 p-2 backdrop-blur">
         <div className="flex flex-1 items-center gap-1 rounded-lg bg-muted/60 p-1">
@@ -7085,6 +7657,13 @@ function EssayWorkspacePanel({
               >
                 <Icon className="size-3.5" />
                 <span className="hidden sm:inline">{tab.label}</span>
+                {tab.id === "highlights" && fixesLoading && (
+                  <span
+                    className="size-3 shrink-0 animate-spin rounded-full border-2 border-info/25 border-t-info"
+                    role="status"
+                    aria-label="Checking essay fixes"
+                  />
+                )}
                 {tab.count ? (
                   <span className={`grid h-4 min-w-4 place-items-center rounded-full px-1 text-[10px] font-bold ${active ? "bg-info text-white" : "bg-info/15 text-info"}`}>
                     {tab.count}
@@ -7135,9 +7714,9 @@ function EssayWorkspacePanel({
             onAccept={onAccept}
             onDismiss={onDismiss}
             onReveal={onReveal}
-            onAcceptAllQuickFixes={onAcceptAllQuickFixes}
-            quickFixCount={quickFixCount}
-            coachLoading={coachLoading}
+            onAddToDictionary={onAddToDictionary}
+            fixesLoading={fixesLoading}
+            fixesWarning={fixesWarning}
           />
         )}
       </div>
@@ -7246,9 +7825,9 @@ function OutlineCheckRow({
           <Check className="size-3" />
         </button>
         <div className="min-w-0 flex-1">
-          <div className={`text-[14px] leading-snug ${done ? "text-muted-foreground line-through" : "text-foreground"}`}>
-            {labelPrefix && <span className="font-bold">{labelPrefix}: </span>}
-            <strong className="font-semibold">{label}</strong>
+          <div className={`text-[14px] font-semibold leading-snug ${done ? "text-muted-foreground line-through" : "text-foreground"}`}>
+            {labelPrefix && <span>{labelPrefix}: </span>}
+            <span>{label}</span>
           </div>
           {detail && <div className="mt-1 text-[12px] leading-relaxed text-muted-foreground">{detail}</div>}
           {children}
@@ -7287,7 +7866,7 @@ function PersonalizedOutlinePanel({
   return (
     <div className="relative text-foreground" aria-busy={loading}>
         {wordLimit && (
-          <div className="border-b border-border pb-4">
+          <div className="pb-2.5">
             <div className="min-w-0">
               <div className="inline-flex items-center rounded-md border border-border bg-background px-2.5 py-1 text-xs text-muted-foreground">
                 {wordLimit}
@@ -7313,15 +7892,15 @@ function PersonalizedOutlinePanel({
           const sections = data.sections ?? [];
 
           return (
-            <div className="mt-4 space-y-3">
+            <div className="mt-3 space-y-3">
               {outline?.strategy?.tone_guidance && (
                 <div className="flex items-start gap-2.5 rounded-lg border border-info/20 bg-info/5 px-3 py-2.5">
                   <span className="grid size-7 shrink-0 place-items-center rounded-md bg-info/10 text-info">
                     <Lightbulb className="size-4" aria-hidden="true" />
                   </span>
                   <p className="pt-0.5 text-[13px] leading-relaxed text-muted-foreground">
-                    <span className="font-medium text-info">Recommended tip: </span>
-                    <strong className="font-semibold text-foreground">{outline.strategy.tone_guidance}</strong>
+                    <span className="font-semibold text-info">Recommended tip: </span>
+                    <span className="font-normal text-foreground">{outline.strategy.tone_guidance}</span>
                   </p>
                 </div>
               )}
@@ -7464,12 +8043,17 @@ function CriterionScoreButton({
   criterion,
   selected,
   onSelect,
+  edge,
 }: {
   criterion: EssayCriterionReview;
   selected: boolean;
   onSelect: () => void;
+  edge?: "left" | "right";
 }) {
   const score = typeof criterion.score === "number" ? criterion.score : null;
+  const displayLabel = criterion.criterion === "narrative_structure_flow_coherence"
+    ? "Flow & Coherence"
+    : criterion.label || labelize(criterion.criterion ?? "criterion");
 
   return (
     <button
@@ -7477,23 +8061,31 @@ function CriterionScoreButton({
       onClick={onSelect}
       aria-pressed={selected}
       aria-controls="essay-review-criterion-detail"
-      className={`group h-full w-full min-w-0 rounded-lg border px-2 py-2.5 text-center transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info focus-visible:ring-offset-2 ${
+      className={`group relative h-[5.5rem] w-full min-w-0 text-center transition-all focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-info ${
+        edge === "left"
+          ? "rounded-bl-xl after:rounded-bl-xl"
+          : edge === "right"
+            ? "rounded-br-xl after:rounded-br-xl"
+            : ""
+      } ${
         selected
-          ? "border-info bg-info/10 shadow-sm"
-          : "border-transparent bg-muted/35 hover:border-info/30 hover:bg-info/5"
+          ? "z-10 bg-background after:pointer-events-none after:absolute after:inset-0 after:border-[3px] after:border-info"
+          : "bg-background hover:bg-info/5"
       }`}
     >
-      <span className={`flex min-h-9 items-center justify-center text-[11px] font-semibold leading-tight ${selected ? "text-info" : "text-foreground/85"}`}>
-        {criterion.label || labelize(criterion.criterion ?? "criterion")}
-      </span>
-      <span className="mt-1 block text-[10px] font-semibold tabular-nums text-muted-foreground">
-        {criterion.weight ?? 0}%
-      </span>
-      <span
-        className="mt-1.5 block text-[22px] font-bold leading-none tabular-nums"
-        style={score != null ? { color: scoreColor(score) } : undefined}
-      >
-        {score ?? "—"}
+      <span className="absolute inset-0 grid grid-rows-[2rem_0.75rem_1.5rem] content-center items-center justify-items-center gap-1 px-1 py-1.5">
+        <span className={`flex h-full w-full items-center justify-center text-center text-[11px] leading-tight ${selected ? "font-black text-info" : "font-semibold text-foreground/85"}`}>
+          {displayLabel}
+        </span>
+        <span className="flex h-full w-full items-center justify-center text-center text-[10px] font-semibold leading-none text-muted-foreground">
+          {typeof criterion.weight === "number" ? `${criterion.weight}%` : ""}
+        </span>
+        <span
+          className="flex h-full w-full items-center justify-center text-center text-[20px] font-bold leading-none tabular-nums"
+          style={score != null ? { color: scoreColor(score) } : undefined}
+        >
+          {score ?? "—"}
+        </span>
       </span>
     </button>
   );
@@ -7501,6 +8093,9 @@ function CriterionScoreButton({
 
 function CriterionReviewDetails({ criterion }: { criterion: EssayCriterionReview }) {
   const score = typeof criterion.score === "number" ? criterion.score : null;
+  const displayLabel = criterion.criterion === "narrative_structure_flow_coherence"
+    ? "Flow & Coherence"
+    : criterion.label || labelize(criterion.criterion ?? "criterion");
   const feedback = criterion.coach_feedback;
   const action = criterion.priority_action;
   const rubricBands = [
@@ -7515,25 +8110,24 @@ function CriterionReviewDetails({ criterion }: { criterion: EssayCriterionReview
       aria-live="polite"
       className="overflow-hidden rounded-xl border border-border bg-background"
     >
-      <div className="flex items-start gap-3 border-b border-border bg-accent/25 px-4 py-3.5">
-        <div className="min-w-0 flex-1">
-          <div className="text-[15px] font-semibold">{criterion.label || labelize(criterion.criterion ?? "criterion")}</div>
-          <div className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground">
-            <span>{criterion.weight ?? 0}% ·</span>
+      <div className="border-b border-border bg-accent/25 px-4 py-3.5">
+        <div className="flex items-center gap-3">
+          <div className="min-w-0 flex-1 text-[15px] font-semibold">{displayLabel}</div>
+          <div className="flex shrink-0 items-center gap-2.5">
             {!!rubricBands.length ? (
               <Tooltip delayDuration={150}>
                 <TooltipTrigger asChild>
                   <button
                     type="button"
-                    className="font-semibold text-foreground/80 underline decoration-dotted underline-offset-2 outline-none transition-colors hover:text-info focus-visible:text-info"
-                    aria-label={`Show the complete ${criterion.label || "criterion"} scoring rubric`}
+                    className="text-[11px] font-semibold text-foreground/80 underline decoration-dotted underline-offset-2 outline-none transition-colors hover:text-info focus-visible:text-info"
+                    aria-label={`Show the complete ${displayLabel} scoring rubric`}
                   >
                     {criterion.level || "Not scored"}
                   </button>
                 </TooltipTrigger>
                 <TooltipContent
                   side="bottom"
-                  align="start"
+                  align="end"
                   sideOffset={7}
                   className="w-80 max-w-[calc(100vw-2rem)] p-3 text-left"
                 >
@@ -7548,22 +8142,22 @@ function CriterionReviewDetails({ criterion }: { criterion: EssayCriterionReview
                 </TooltipContent>
               </Tooltip>
             ) : (
-              <span>{criterion.level || "Not scored"}</span>
+              <span className="text-[11px] text-muted-foreground">{criterion.level || "Not scored"}</span>
             )}
+            <span className="text-[18px] font-bold tabular-nums" style={score != null ? { color: scoreColor(score) } : undefined}>
+              {score != null ? `${score}/100` : "Unavailable"}
+            </span>
           </div>
-          {criterion.rubric?.description && (
-            <p className="mt-2 text-[12px] leading-relaxed text-muted-foreground">{criterion.rubric.description}</p>
-          )}
         </div>
-        <span className="shrink-0 text-[18px] font-bold tabular-nums" style={score != null ? { color: scoreColor(score) } : undefined}>
-          {score != null ? `${score}/100` : "Unavailable"}
-        </span>
+        {criterion.rubric?.description && (
+          <p className="mt-1.5 text-[11px] italic leading-relaxed text-muted-foreground/70">{criterion.rubric.description}</p>
+        )}
       </div>
 
       <div className="space-y-3 p-3">
         {(feedback?.grounded_praise || feedback?.main_gap) && (
           <section className="space-y-2 rounded-lg border border-info/20 bg-info/5 p-3">
-            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-info">Scholarship Coach Feedback</div>
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-info">Essay Coach Feedback</div>
             {feedback?.grounded_praise && (
               <p className="text-[12px] leading-relaxed text-foreground/90">{feedback.grounded_praise}</p>
             )}
@@ -7629,15 +8223,20 @@ function UnifiedEssayReview({
     if (firstAvailable) setSelectedCriterionKey(firstAvailable);
   }, [review, selectedCriterionKey]);
   const selectedCriterion = criteriaByKey[selectedCriterionKey] ?? criteria[0];
-  const grammarCriterion = criteriaByKey.grammar;
   const score = typeof review.overall_score === "number" ? review.overall_score : null;
   const scoredVersions = (user?.drafts ?? []).filter((version) => typeof version.reviewOverall === "number");
+  const desktopCriterionKeys = ESSAY_REVIEW_SCORE_GROUPS.flatMap((group) => group.criteria);
 
   return (
     <div className="space-y-3">
-      <div>
-        <div className="text-[12px] text-muted-foreground">Last updated: {relativeTimeLabel(updatedAt, now)}</div>
-        {draftChanged && <div className="mt-1 text-[12px] font-medium text-warning">Essay changed since this review.</div>}
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px]">
+        <div className="text-muted-foreground">Last updated: {relativeTimeLabel(updatedAt, now)}</div>
+        {draftChanged && (
+          <>
+            <span className="text-border" aria-hidden="true">•</span>
+            <div className="font-medium text-warning">Essay changed since this review.</div>
+          </>
+        )}
       </div>
 
       <OverallEssayScoreCard score={score} versions={scoredVersions} />
@@ -7645,21 +8244,21 @@ function UnifiedEssayReview({
       <div className="overflow-hidden rounded-xl border border-border bg-border">
         <div className="hidden grid-cols-6 gap-px md:grid">
           {ESSAY_REVIEW_SCORE_GROUPS.map((group) => (
-            <h3 key={group.label} className={`bg-background px-3 py-3 text-center text-[18px] font-bold leading-tight text-foreground ${group.columnClass}`}>
+            <h3 key={group.label} className={`flex items-center justify-center bg-background px-2 py-1.5 text-center font-sans text-[10px] font-bold uppercase leading-tight tracking-[0.07em] text-info/90 ${group.columnClass}`}>
               {group.label}
             </h3>
           ))}
-          {ESSAY_REVIEW_SCORE_GROUPS.flatMap((group) => group.criteria).map((key) => {
+          {desktopCriterionKeys.map((key, index) => {
             const criterion = criteriaByKey[key];
             if (!criterion) return null;
             return (
-              <div key={key} className="min-w-0 bg-background p-1.5 pt-0">
-                <CriterionScoreButton
-                  criterion={criterion}
-                  selected={selectedCriterionKey === key}
-                  onSelect={() => setSelectedCriterionKey(key)}
-                />
-              </div>
+              <CriterionScoreButton
+                key={key}
+                criterion={criterion}
+                selected={selectedCriterionKey === key}
+                onSelect={() => setSelectedCriterionKey(key)}
+                edge={index === 0 ? "left" : index === desktopCriterionKeys.length - 1 ? "right" : undefined}
+              />
             );
           })}
         </div>
@@ -7672,7 +8271,7 @@ function UnifiedEssayReview({
             if (!groupCriteria.length) return null;
             return (
               <section key={group.label} className="min-w-0 bg-background p-3">
-                <h3 className="text-center text-[18px] font-bold leading-tight text-foreground">{group.label}</h3>
+                <h3 className="text-center font-sans text-[10px] font-bold uppercase leading-tight tracking-[0.07em] text-info/90">{group.label}</h3>
                 <div className={`mt-3 grid gap-1.5 ${groupCriteria.length === 3 ? "grid-cols-3" : groupCriteria.length === 2 ? "grid-cols-2" : "grid-cols-1"}`}>
                   {groupCriteria.map(([key, criterion]) => (
                     <CriterionScoreButton
@@ -7688,32 +8287,6 @@ function UnifiedEssayReview({
           })}
         </div>
 
-        {grammarCriterion && (
-          <section className="flex items-center gap-3 border-t border-border bg-background p-3">
-            <div className="min-w-0 flex-1">
-              <h3 className="text-[15px] font-bold text-foreground">Grammar</h3>
-              <p className="mt-0.5 text-[10px] leading-relaxed text-muted-foreground">Spelling, punctuation, usage, and sentence-level correctness</p>
-            </div>
-            <button
-              type="button"
-              onClick={() => setSelectedCriterionKey("grammar")}
-              aria-pressed={selectedCriterionKey === "grammar"}
-              aria-controls="essay-review-criterion-detail"
-              className={`flex min-w-28 items-center justify-center gap-2 rounded-lg border px-3 py-2 text-left transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info focus-visible:ring-offset-2 ${
-                selectedCriterionKey === "grammar"
-                  ? "border-info bg-info/10 shadow-sm"
-                  : "border-transparent bg-muted/35 hover:border-info/30 hover:bg-info/5"
-              }`}
-            >
-              <span className="flex flex-col items-center">
-                <span className="text-[10px] font-semibold tabular-nums text-muted-foreground">{grammarCriterion.weight ?? 0}%</span>
-                <span className="mt-1 text-[22px] font-bold leading-none tabular-nums" style={typeof grammarCriterion.score === "number" ? { color: scoreColor(grammarCriterion.score) } : undefined}>
-                  {typeof grammarCriterion.score === "number" ? grammarCriterion.score : "—"}
-                </span>
-              </span>
-            </button>
-          </section>
-        )}
       </div>
 
       {selectedCriterion && <CriterionReviewDetails criterion={selectedCriterion} />}
@@ -7739,10 +8312,10 @@ function WorkspaceEssayReviewTab({
       <CoachSkeleton />
     );
   }
-  if (!review || review.schema_version !== 3) {
+  if (!review || review.schema_version !== 4) {
     return (
       <PanelEmpty
-        message="No review yet. Select Evaluate to generate the weighted seven-criterion review for this draft."
+        message="No review yet. Click “Evaluate” in the top-right corner to review your essay."
       />
     );
   }
@@ -7756,72 +8329,72 @@ function WorkspaceEssayReviewTab({
   );
 }
 
-function Sparkline({ points }: { points: number[] }) {
-  const w = 320;
-  const h = 40;
-  const pad = 5;
-  const step = points.length > 1 ? (w - pad * 2) / (points.length - 1) : 0;
-  const coords = points.map((p, i) => [pad + i * step, h - pad - (Math.max(0, Math.min(100, p)) / 100) * (h - pad * 2)] as const);
-  const d = coords.map(([x, y], i) => `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
-  return (
-    <svg viewBox={`0 0 ${w} ${h}`} className="h-10 w-full" preserveAspectRatio="none" aria-hidden>
-      <path d={d} fill="none" stroke="var(--info)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-      {coords.map(([x, y], i) => (
-        <circle key={i} cx={x} cy={y} r={i === coords.length - 1 ? 3 : 2} fill="var(--info)" />
-      ))}
-    </svg>
-  );
-}
-
 function OverallEssayScoreCard({ score, versions }: { score: number | null; versions: EssayDraft[] }) {
   const scored = versions.filter((v) => typeof v.reviewOverall === "number");
   const latest = scored[scored.length - 1] ?? null;
   const prev = scored.length > 1 ? scored[scored.length - 2] : null;
   const overall = score ?? latest?.reviewOverall ?? null;
   const overallDelta = prev && overall != null ? overall - (prev.reviewOverall ?? 0) : null;
-  const deltas =
-    prev?.reviewScores && latest?.reviewScores
-      ? Object.entries(latest.reviewScores)
-          .map(([k, v]) => ({ key: k, delta: v - (prev.reviewScores?.[k] ?? v) }))
-          .filter((x) => x.delta !== 0)
-          .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta))
-      : [];
   return (
-    <div className="space-y-3 rounded-xl border border-border bg-background p-3">
-      <div className="flex items-center gap-3">
-        <ScoreRing score={overall} size={58} stroke={4} />
+    <div className="rounded-xl border border-border bg-background px-3 py-2.5">
+      <div className="flex items-center gap-2.5">
+        <Tooltip delayDuration={150}>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              aria-label={overall == null ? "Overall essay score unavailable" : `Overall essay score ${overall} out of 100`}
+              className="shrink-0 rounded-full outline-none focus-visible:ring-2 focus-visible:ring-info focus-visible:ring-offset-2"
+            >
+              <ScoreRing score={overall} />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent
+            side="bottom"
+            align="start"
+            sideOffset={7}
+            className="w-72 max-w-[calc(100vw-2rem)] p-3 text-left"
+          >
+            <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-primary-foreground/70">
+              {overall == null ? "Essay score: unavailable" : `Essay score: ${overall}/100`}
+            </div>
+            <div className="mt-1.5 text-[11px] leading-relaxed text-primary-foreground/85">
+              {overall == null
+                ? "Your overall score will be calculated using criteria weights tailored for this scholarship and essay prompt."
+                : "Overall score calculated based on criteria weights tailored for this scholarship and essay prompt."}
+            </div>
+          </TooltipContent>
+        </Tooltip>
         <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-semibold">Overall essay score</div>
-          <div className="text-[12px] text-muted-foreground">Criteria weights tailored for this scholarship and essay prompt</div>
-        </div>
-      </div>
-
-      {latest && (
-        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-2 text-[12px]">
-          <span className="text-muted-foreground">Draft {latest.version} · {latest.wordCount} words</span>
-          {prev && overallDelta != null ? (
-            <span className="font-semibold" style={{ color: overallDelta >= 0 ? "var(--success)" : "var(--destructive)" }}>
-              {overallDelta >= 0 ? `▲ +${overallDelta}` : `▼ ${overallDelta}`} since Draft {prev.version} · {scored.length} scored drafts
-            </span>
-          ) : (
-            <span className="text-muted-foreground">First scored draft</span>
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+            <div className="text-[13px] font-semibold">Overall essay score</div>
+            {prev && overallDelta != null ? (
+              <span
+                className="text-[11px] font-semibold"
+                style={{
+                  color: overallDelta > 0
+                    ? "var(--success)"
+                    : overallDelta < 0
+                      ? "var(--destructive)"
+                      : "var(--muted-foreground)",
+                }}
+              >
+                {overallDelta > 0
+                  ? `▲ +${overallDelta} since Draft ${prev.version}`
+                  : overallDelta < 0
+                    ? `▼ ${overallDelta} since Draft ${prev.version}`
+                    : `No change since Draft ${prev.version}`}
+              </span>
+            ) : latest ? (
+              <span className="text-[11px] font-medium text-muted-foreground">First scored draft</span>
+            ) : null}
+          </div>
+          {latest && (
+            <div className="mt-0.5 text-[10px] text-muted-foreground">
+              Draft {latest.version} · {latest.wordCount} words · {scored.length} scored draft{scored.length === 1 ? "" : "s"}
+            </div>
           )}
         </div>
-      )}
-
-      {scored.length > 1 && <Sparkline points={scored.map((v) => v.reviewOverall ?? 0)} />}
-      {deltas.length > 0 && (
-        <div className="flex flex-wrap gap-1">
-          {deltas.slice(0, 5).map((x) => (
-            <span
-              key={x.key}
-              className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${x.delta > 0 ? "bg-success/10 text-success" : "bg-destructive/10 text-destructive"}`}
-            >
-              {x.delta > 0 ? `▲ +${x.delta}` : `▼ ${x.delta}`} {labelize(x.key)}
-            </span>
-          ))}
-        </div>
-      )}
+      </div>
     </div>
   );
 }
@@ -7831,14 +8404,21 @@ function SuggestionCard({
   onAccept,
   onDismiss,
   onReveal,
+  onAddToDictionary,
 }: {
   s: Suggestion;
   onAccept: (s: Suggestion) => void;
   onDismiss: (s: Suggestion) => void;
   onReveal: (s: Suggestion) => void;
+  onAddToDictionary: (s: Suggestion) => void;
 }) {
   const meta = CATEGORY_META[s.category];
   const [copied, setCopied] = useState(false);
+  const canReplace = s.replacementAvailable !== false && s.replacement.length > 0;
+  const canAddToDictionary = s.engineSource === "language_tool"
+    && s.suggestionType?.startsWith("spelling")
+    && /^\p{L}[\p{L}'’-]*$/u.test(s.original.trim());
+  const possibleName = s.suggestionType === "spelling_name";
   async function copy() {
     try {
       await navigator.clipboard?.writeText(s.replacement);
@@ -7857,31 +8437,60 @@ function SuggestionCard({
             <span className="rounded bg-muted px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">{s.severity}</span>
           )}
         </div>
-        <div className="mt-1 text-[12px]">
-          <span className="text-muted-foreground line-through decoration-muted-foreground/50">{s.original.trim() || "␠"}</span>
-          <span className="mx-1 text-muted-foreground">→</span>
-          <span className="font-medium text-foreground">{s.replacement.trim() || "(removed)"}</span>
-        </div>
+        {canReplace ? (
+          <div className="mt-1 text-[12px]">
+            <span className="text-muted-foreground line-through decoration-muted-foreground/50">{s.original.trim() || "␠"}</span>
+            <span className="mx-1 text-muted-foreground">→</span>
+            <span className="font-medium text-foreground">{s.replacement.trim() || "(removed)"}</span>
+          </div>
+        ) : (
+          <div className="mt-1 text-[12px] font-medium text-foreground">{s.original.trim()}</div>
+        )}
         {s.source === "coach" && s.explanation && (
           <div className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{s.explanation}</div>
         )}
       </button>
       <div className="mt-2 flex items-center gap-1.5">
-        <button type="button" onClick={() => onAccept(s)} className="flex-1 rounded-md bg-info px-2.5 py-1 text-[11px] font-semibold text-white transition-opacity hover:opacity-90">
-          Accept
-        </button>
+        {canReplace && (
+          <button
+            type="button"
+            onClick={() => onAccept(s)}
+            className={`flex-1 rounded-md px-2.5 py-1 text-[11px] font-semibold transition-colors ${
+              possibleName
+                ? "border border-border text-muted-foreground hover:bg-accent hover:text-foreground"
+                : "bg-info text-white hover:opacity-90"
+            }`}
+          >
+            {possibleName ? "Use suggestion" : "Accept"}
+          </button>
+        )}
         <button type="button" onClick={() => onDismiss(s)} className="rounded-md border border-border px-2.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
           Ignore
         </button>
-        <button
-          type="button"
-          onClick={copy}
-          title="Copy suggested text"
-          aria-label="Copy suggested text"
-          className="grid size-7 place-items-center rounded-md border border-border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-        >
-          {copied ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
-        </button>
+        {canAddToDictionary && (
+          <button
+            type="button"
+            onClick={() => onAddToDictionary(s)}
+            className={`rounded-md border px-2.5 py-1 text-[11px] font-medium transition-colors ${
+              possibleName
+                ? "border-info bg-info text-white hover:opacity-90"
+                : "border-border text-muted-foreground hover:bg-accent hover:text-foreground"
+            }`}
+          >
+            Add word
+          </button>
+        )}
+        {canReplace && (
+          <button
+            type="button"
+            onClick={copy}
+            title="Copy suggested text"
+            aria-label="Copy suggested text"
+            className="grid size-7 place-items-center rounded-md border border-border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            {copied ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -7893,18 +8502,18 @@ function WorkspaceHighlightsTab({
   onAccept,
   onDismiss,
   onReveal,
-  onAcceptAllQuickFixes,
-  quickFixCount,
-  coachLoading,
+  onAddToDictionary,
+  fixesLoading,
+  fixesWarning,
 }: {
   isEvaluating: boolean;
   suggestions: Suggestion[];
   onAccept: (s: Suggestion) => void;
   onDismiss: (s: Suggestion) => void;
   onReveal: (s: Suggestion) => void;
-  onAcceptAllQuickFixes: () => void;
-  quickFixCount: number;
-  coachLoading: boolean;
+  onAddToDictionary: (s: Suggestion) => void;
+  fixesLoading: boolean;
+  fixesWarning: string | null;
 }) {
   const counts = countByCategory(suggestions);
 
@@ -7914,23 +8523,17 @@ function WorkspaceHighlightsTab({
     <div className="space-y-3">
       <div className="text-[12px] font-semibold text-muted-foreground">{suggestions.length} open</div>
 
-      {quickFixCount > 0 && (
-        <button
-          type="button"
-          onClick={onAcceptAllQuickFixes}
-          className="flex w-full items-center justify-center gap-2 rounded-lg border border-border px-3 py-1.5 text-[12px] font-semibold text-foreground transition-colors duration-150 hover:bg-accent"
-          title="Applies grammar, spelling, spacing, and capitalization fixes — stylistic rewrites stay for individual review"
-        >
-          <Check className="size-3.5 text-success" />
-          Accept {quickFixCount} quick fix{quickFixCount === 1 ? "" : "es"}
-        </button>
+      {fixesLoading && !suggestions.length && <HighlightsSkeleton />}
+
+      {fixesWarning && (
+        <div className="rounded-lg border border-warning/30 bg-warning/5 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
+          {fixesWarning}
+        </div>
       )}
 
-      {coachLoading && <HighlightsSkeleton />}
-
-      {!coachLoading && !suggestions.length && (
+      {!fixesLoading && !suggestions.length && (
         <div className="rounded-xl border border-dashed border-border bg-background p-4 text-[13px] leading-relaxed text-muted-foreground">
-          No sentence-level fixes are available for this draft. Run the main coaching session after making changes.
+          No fixes found. Fixes update automatically as you type.
         </div>
       )}
 
@@ -7945,7 +8548,14 @@ function WorkspaceHighlightsTab({
               <span className="text-[11px] text-muted-foreground">· {items.length}</span>
             </div>
             {items.map((s) => (
-              <SuggestionCard key={s.id} s={s} onAccept={onAccept} onDismiss={onDismiss} onReveal={onReveal} />
+              <SuggestionCard
+                key={s.id}
+                s={s}
+                onAccept={onAccept}
+                onDismiss={onDismiss}
+                onReveal={onReveal}
+                onAddToDictionary={onAddToDictionary}
+              />
             ))}
           </div>
         );
@@ -8151,7 +8761,7 @@ function lowEssayReviewCriteria(review?: EssayReviewResult | null): string[] {
 
 function StepFinalCheck({ onNavigate }: { onNavigate?: (slug: string) => void }) {
   const { user, updateProfile } = useUser();
-  const review = user?.essayReviewResult?.schema_version === 3 ? user.essayReviewResult : null;
+  const review = user?.essayReviewResult?.schema_version === 4 ? user.essayReviewResult : null;
   const docs = user?.documents ?? [];
   const hasDoc = (kind: string) => docs.some((doc) => doc.kind.toLowerCase().includes(kind));
   const [zipping, setZipping] = useState(false);
@@ -8446,7 +9056,7 @@ function DraftDot({ cx, cy, index, payload, r = 4, onSelect }: DraftDotProps & {
 function StepTracker({ onNavigate }: { onNavigate?: (slug: string) => void }) {
   const { user, updateProfile } = useUser();
   const scholarship = user?.activeScholarship;
-  const review = user?.essayReviewResult?.schema_version === 3 ? user.essayReviewResult : null;
+  const review = user?.essayReviewResult?.schema_version === 4 ? user.essayReviewResult : null;
   const currentScore = typeof review?.overall_score === "number" ? review.overall_score : undefined;
   const applications = useMemo(() => user?.applications ?? [], [user?.applications]);
   const [openColumn, setOpenColumn] = useState<ApplicationStatus | null>(null);

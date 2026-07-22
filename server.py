@@ -4,6 +4,8 @@ FastAPI server for Scholar-E MVP.
 Exposes Scholar-E API routes for frontend-react.
 """
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -13,6 +15,7 @@ from api.routes import (
     FitAnalyzeRequest,
     OpportunityExtractRequest,
     OutlineGenerateRequest,
+    OutlineCoverageRequest,
     RewriteRequest,
     WikiDiscoverRequest,
     WikiBootstrapRequest,
@@ -22,14 +25,30 @@ from api.routes import (
     get_scholarship_discovery_bootstrap,
     extract_scholarship_opportunity,
     generate_personalized_outline,
+    run_contextual_grammar_check,
     run_editor_check,
+    run_outline_coverage_check,
     rewrite_selection,
     run_workspace_coaching_session,
 )
 from persistence.database import initialize_database
 from education_catalog import get_education_catalog
+from essay_editor_service import close_language_tool, start_language_tool_warmup
 
-app = FastAPI(title="Scholar-E", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    initialize_database()
+    # Do not hold the entire API behind Java's one-time warm-up. The editor's
+    # browser checks and every unrelated endpoint remain available immediately.
+    start_language_tool_warmup()
+    try:
+        yield
+    finally:
+        close_language_tool()
+
+
+app = FastAPI(title="Scholar-E", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -38,11 +57,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.on_event("startup")
-def startup() -> None:
-    initialize_database()
 
 
 @app.get("/health")
@@ -137,6 +151,31 @@ def generate_outline(request: OutlineGenerateRequest):
 def editor_check(request: EditorCheckRequest):
     try:
         return run_editor_check(request)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/apply/editor-warmup")
+def editor_warmup():
+    return start_language_tool_warmup()
+
+
+@app.post("/api/apply/contextual-grammar")
+def contextual_grammar_check(request: EditorCheckRequest):
+    try:
+        return run_contextual_grammar_check(request)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/apply/outline-coverage")
+def outline_coverage_check(request: OutlineCoverageRequest):
+    try:
+        return run_outline_coverage_check(request)
     except HTTPException:
         raise
     except Exception as exc:
