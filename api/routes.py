@@ -62,11 +62,14 @@ class ProfileAutofillResponse(BaseModel):
     optional: dict = Field(default_factory=dict)
 
 
+OPPORTUNITY_ADDITIONAL_NOTES_MAX_LENGTH = 12_000
+
+
 class OpportunityExtractRequest(BaseModel):
     user_id: str = Field(default="", max_length=100)
     scholarship_name: str = Field(default="", max_length=500)
     scholarship_url: str = Field(default="", max_length=2000)
-    additional_notes: str = Field(default="", max_length=12000)
+    additional_notes: str = Field(default="", max_length=OPPORTUNITY_ADDITIONAL_NOTES_MAX_LENGTH)
 
 
 class EssayPromptResponse(BaseModel):
@@ -349,6 +352,75 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
             status_code=422,
             detail=f"Failed to parse PDF text: {str(exc)}",
         ) from exc
+
+
+def _safe_upload_filename(filename: str) -> str:
+    basename = Path(filename or "scholarship.pdf").name
+    sanitized = re.sub(r"[^A-Za-z0-9._ -]+", "_", basename).strip(" ._")
+    return sanitized or "scholarship.pdf"
+
+
+def validate_scholarship_pdf_upload(
+    *,
+    filename: str,
+    content_type: str,
+    file_bytes: bytes,
+) -> str:
+    """Validate an in-memory scholarship PDF and return its safe display name."""
+    safe_filename = _safe_upload_filename(filename)
+    if Path(safe_filename).suffix.lower() != ".pdf" or content_type.lower() != "application/pdf":
+        raise HTTPException(status_code=400, detail="Upload a PDF file.")
+    max_bytes = max(1, settings.scholarship_pdf_max_bytes)
+    if len(file_bytes) > max_bytes:
+        max_megabytes = max_bytes / (1024 * 1024)
+        display_limit = f"{max_megabytes:g} MB"
+        raise HTTPException(
+            status_code=413,
+            detail=f"This PDF exceeds the {display_limit} file limit.",
+        )
+    if not file_bytes.startswith(b"%PDF-"):
+        raise HTTPException(status_code=400, detail="Upload a PDF file.")
+    return safe_filename
+
+
+async def extract_scholarship_pdf_text(file: UploadFile) -> dict:
+    """Read scholarship PDF text in memory without retaining the uploaded file."""
+    max_bytes = max(1, settings.scholarship_pdf_max_bytes)
+    try:
+        file_bytes = await file.read(max_bytes + 1)
+        safe_filename = validate_scholarship_pdf_upload(
+            filename=file.filename or "scholarship.pdf",
+            content_type=file.content_type or "",
+            file_bytes=file_bytes,
+        )
+        try:
+            text = extract_text_from_pdf(file_bytes)
+        except HTTPException as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="We couldn’t upload this PDF. Try again.",
+            ) from exc
+    finally:
+        await file.close()
+    if len(text) < 80:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "We couldn’t read enough text from this PDF. "
+                "Try a webpage link or paste the scholarship text instead."
+            ),
+        )
+    # The existing extraction request accepts 12,000 characters of user-provided
+    # source text. Preserve that contract while keeping the most relevant lead text.
+    text_limit = OPPORTUNITY_ADDITIONAL_NOTES_MAX_LENGTH
+    extracted_text = text[:text_limit]
+    return {
+        "filename": safe_filename,
+        "size_bytes": len(file_bytes),
+        "text": extracted_text,
+        "truncated": len(text) > len(extracted_text),
+        "max_size_bytes": max_bytes,
+    }
 
 
 def _gather_opportunity_source_text(request: OpportunityExtractRequest):

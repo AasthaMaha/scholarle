@@ -15,11 +15,13 @@ import {
   Copy,
   Download,
   ExternalLink,
+  FileText,
   FileUp,
   FlaskConical,
   Gauge,
   GraduationCap,
   Lightbulb,
+  Link2,
   LineChart,
   ListChecks,
   Lock,
@@ -87,7 +89,9 @@ import {
   buildRewritePayload,
   profileToText,
   extractPromptWordLimits,
+  extractScholarshipTextFromPdf,
   extractScholarshipOpportunity,
+  getScholarshipPdfUploadConfig,
   generatePersonalizedOutline,
   runEditorCheck,
   runContextualGrammarCheck,
@@ -100,6 +104,13 @@ import {
   serializeEssayPromptEntries,
   type EditorCheckResult,
 } from "@/lib/api/scholarE";
+import {
+  formatUploadSize,
+  isMeaningfulScholarshipText,
+  isValidScholarshipUrl,
+  scholarshipSourceIsReady,
+  type ScholarshipInputSource,
+} from "@/lib/scholarshipInput";
 import {
   useUser,
   initials as toInitials,
@@ -3562,6 +3573,24 @@ type TrustedPlatformGuide = DiscoverySource & {
   matchTerms: string[];
 };
 
+type ScholarshipPdfUploadState = {
+  status: "idle" | "uploading" | "ready" | "error";
+  filename: string;
+  sizeBytes: number;
+  extractedText: string;
+  error: string;
+  truncated: boolean;
+};
+
+const EMPTY_SCHOLARSHIP_PDF: ScholarshipPdfUploadState = {
+  status: "idle",
+  filename: "",
+  sizeBytes: 0,
+  extractedText: "",
+  error: "",
+  truncated: false,
+};
+
 const TRUSTED_PLATFORM_GUIDES: TrustedPlatformGuide[] = [
   {
     name: "Bold.org",
@@ -3668,9 +3697,18 @@ function StepDiscovery({
   );
   const [searchError, setSearchError] = useState("");
   const discoveryRequestStartedRef = useRef(false);
-  const [bringValue, setBringValue] = useState("");
+  const [scholarshipUrl, setScholarshipUrl] = useState("");
+  const [urlTouched, setUrlTouched] = useState(false);
+  const [showCopiedText, setShowCopiedText] = useState(false);
+  const [copiedScholarshipText, setCopiedScholarshipText] = useState("");
+  const [activeInputSource, setActiveInputSource] = useState<ScholarshipInputSource | null>(null);
+  const [pdfUpload, setPdfUpload] = useState<ScholarshipPdfUploadState>(EMPTY_SCHOLARSHIP_PDF);
+  const [pdfDragOver, setPdfDragOver] = useState(false);
+  const [pdfMaxBytes, setPdfMaxBytes] = useState<number | null>(null);
   const [bringError, setBringError] = useState("");
   const [platformContext, setPlatformContext] = useState("");
+  const pdfInputRef = useRef<HTMLInputElement | null>(null);
+  const pdfRequestIdRef = useRef(0);
 
   useEffect(() => {
     if (wiki || discoveryRequestStartedRef.current) return;
@@ -3678,6 +3716,20 @@ function StepDiscovery({
     void refreshWiki();
     // Discovery starts once when this page opens without cached results.
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    void getScholarshipPdfUploadConfig()
+      .then((result) => {
+        if (active && Number.isFinite(result.max_size_bytes)) setPdfMaxBytes(result.max_size_bytes);
+      })
+      .catch(() => {
+        // The server still validates the configured limit during upload.
+      });
+    return () => {
+      active = false;
+    };
   }, []);
 
   async function refreshWiki() {
@@ -3770,17 +3822,122 @@ function StepDiscovery({
     setPlatformContext(source.name || "the platform");
   }
 
-  function resizeScholarshipInput(element: HTMLTextAreaElement) {
+  function resizeCopiedTextInput(element: HTMLTextAreaElement) {
     element.style.height = "auto";
-    element.style.height = `${Math.min(Math.max(element.scrollHeight, 168), 360)}px`;
+    element.style.height = `${Math.min(Math.max(element.scrollHeight, 104), 280)}px`;
+  }
+
+  async function handleScholarshipPdf(file: File) {
+    const requestId = pdfRequestIdRef.current + 1;
+    pdfRequestIdRef.current = requestId;
+    setActiveInputSource("pdf");
+    setBringError("");
+    if (file.type !== "application/pdf" || !file.name.toLowerCase().endsWith(".pdf")) {
+      setPdfUpload({
+        ...EMPTY_SCHOLARSHIP_PDF,
+        status: "error",
+        filename: file.name,
+        error: "Upload a PDF file.",
+      });
+      if (isValidScholarshipUrl(scholarshipUrl)) setActiveInputSource("url");
+      else if (isMeaningfulScholarshipText(copiedScholarshipText)) setActiveInputSource("text");
+      else setActiveInputSource(null);
+      return;
+    }
+    setPdfUpload({
+      status: "uploading",
+      filename: file.name,
+      sizeBytes: file.size,
+      extractedText: "",
+      error: "",
+      truncated: false,
+    });
+    try {
+      const result = await extractScholarshipTextFromPdf(file);
+      if (pdfRequestIdRef.current !== requestId) return;
+      setPdfUpload({
+        status: "ready",
+        filename: result.filename,
+        sizeBytes: result.size_bytes,
+        extractedText: result.text,
+        error: "",
+        truncated: result.truncated,
+      });
+      setPdfMaxBytes(result.max_size_bytes);
+      setActiveInputSource("pdf");
+    } catch (error) {
+      if (pdfRequestIdRef.current !== requestId) return;
+      const message = error instanceof Error && error.message
+        ? error.message
+        : "We couldn’t upload this PDF. Try again.";
+      setPdfUpload({
+        ...EMPTY_SCHOLARSHIP_PDF,
+        status: "error",
+        filename: file.name,
+        sizeBytes: file.size,
+        error: message,
+      });
+      if (isValidScholarshipUrl(scholarshipUrl)) setActiveInputSource("url");
+      else if (isMeaningfulScholarshipText(copiedScholarshipText)) setActiveInputSource("text");
+      else setActiveInputSource(null);
+    }
+  }
+
+  function removeScholarshipPdf() {
+    pdfRequestIdRef.current += 1;
+    setPdfUpload(EMPTY_SCHOLARSHIP_PDF);
+    if (isValidScholarshipUrl(scholarshipUrl)) setActiveInputSource("url");
+    else if (isMeaningfulScholarshipText(copiedScholarshipText)) setActiveInputSource("text");
+    else setActiveInputSource(null);
+    if (pdfInputRef.current) pdfInputRef.current.value = "";
   }
 
   function continueWithOwnOpportunity() {
-    const raw = bringValue.trim();
-    if (!raw) {
-      setBringError("Paste a scholarship URL, description, or listing details first.");
+    const sourceReady = scholarshipSourceIsReady(activeInputSource, {
+      url: scholarshipUrl,
+      pdfReady: pdfUpload.status === "ready",
+      copiedText: copiedScholarshipText,
+    });
+    if (!sourceReady) {
+      setBringError("Add a valid scholarship URL, upload a readable PDF, or paste scholarship text first.");
       return;
     }
+    if (activeInputSource === "url") {
+      const url = scholarshipUrl.trim();
+      setBringError("");
+      updateProfile({
+        activeScholarship: {
+          name: "",
+          url,
+          officialWebsite: url,
+          additionalNotes: platformContext ? `Discovered on platform: ${platformContext}` : "",
+          discoverySource: platformContext || "User-provided scholarship URL",
+          discoverySourceKind: "user_entry",
+        },
+        fitAnalysis: undefined,
+        personalizedOutline: undefined,
+      });
+      onUseSource();
+      return;
+    }
+    if (activeInputSource === "pdf") {
+      const displayName = pdfUpload.filename.replace(/\.pdf$/i, "").replace(/[_-]+/g, " ").trim();
+      setBringError("");
+      updateProfile({
+        activeScholarship: {
+          name: displayName,
+          url: "",
+          additionalNotes: pdfUpload.extractedText,
+          discoverySource: `Uploaded PDF: ${pdfUpload.filename}`,
+          discoverySourceKind: "user_entry",
+        },
+        fitAnalysis: undefined,
+        personalizedOutline: undefined,
+      });
+      onUseSource();
+      return;
+    }
+    const raw = copiedScholarshipText.trim();
     const platformOnly = platformSources.some(
       (platform) => (platform.name || "").trim().toLowerCase() === raw.toLowerCase(),
     );
@@ -3831,6 +3988,22 @@ function StepDiscovery({
   const savedIds = new Set((user?.savedWikiSources ?? []).map((item) => item.id));
   const resultsVisible = showResults && hasWiki;
   const profileContext = buildDiscoveryProfileContext(user);
+  const validScholarshipUrl = isValidScholarshipUrl(scholarshipUrl);
+  const showUrlError = urlTouched && activeInputSource === "url" && !!scholarshipUrl.trim() && !validScholarshipUrl;
+  const pdfReady = pdfUpload.status === "ready";
+  const copiedTextReady = isMeaningfulScholarshipText(copiedScholarshipText);
+  const activeSourceReady = scholarshipSourceIsReady(activeInputSource, {
+    url: scholarshipUrl,
+    pdfReady,
+    copiedText: copiedScholarshipText,
+  });
+  const activeSourceLabel = activeSourceReady
+    ? activeInputSource === "pdf"
+      ? "Using uploaded PDF"
+      : activeInputSource === "text"
+        ? "Using copied scholarship text"
+        : "Using scholarship URL"
+    : "";
 
   return (
     <div className="space-y-5 pb-5">
@@ -3911,53 +4084,202 @@ function StepDiscovery({
             </div>
           </div>
           <p className="mt-2.5 max-w-2xl text-[15px] leading-6 text-foreground/80">
-            Paste a scholarship URL or copied listing. Scholar-E will extract the requirements and compare them with your student profile.
+            Scholar-E can extract requirements from a scholarship webpage or PDF.
           </p>
 
-          <div className="mt-3.5">
-          <label htmlFor="bring-opportunity" className="text-sm font-semibold text-foreground">
-            Scholarship link or details
-          </label>
-          <textarea
-            id="bring-opportunity"
-            rows={4}
-            value={bringValue}
-            onChange={(event) => {
-              setBringValue(event.target.value);
-              resizeScholarshipInput(event.currentTarget);
-              if (bringError) setBringError("");
-            }}
-            aria-invalid={!!bringError || undefined}
-            aria-describedby={bringError ? "bring-opportunity-help bring-opportunity-error" : "bring-opportunity-help"}
-            placeholder="Paste a scholarship link or copied scholarship details…"
-            className="mt-1.5 min-h-[168px] w-full resize-y overflow-y-auto rounded-lg border border-info/20 bg-accent/20 px-4 py-3 text-sm leading-6 text-foreground shadow-inner shadow-info/[0.02] outline-none transition-[border-color,box-shadow,background-color] placeholder:text-foreground/55 focus:border-info/70 focus:bg-white focus:ring-3 focus:ring-info/20"
-          />
-          {bringError && (
-            <p id="bring-opportunity-error" role="alert" className="mt-2 text-xs font-medium text-destructive">
-              {bringError}
-            </p>
-          )}
-          <div id="bring-opportunity-help" className="mt-4 rounded-lg bg-success/[0.035] px-3 py-2.5 text-sm leading-6 text-foreground/80">
-            <div className="font-semibold text-foreground">Supported inputs</div>
-            <ul className="mt-1.5 grid gap-x-4 gap-y-1 sm:grid-cols-2" aria-label="Accepted scholarship input formats">
-              {["Scholarship URL", "Scholarship page or listing", "Copied eligibility requirements", "Application description"].map((item) => (
-                <li key={item} className="flex items-start gap-2">
-                  <Check className="mt-1 size-3.5 shrink-0 text-success" aria-hidden="true" />
-                  <span>{item}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-          <div className="mt-4 flex justify-end">
-            <button
-              type="button"
-              onClick={continueWithOwnOpportunity}
-              disabled={!bringValue.trim()}
-              className="inline-flex min-h-11 w-full shrink-0 items-center justify-center gap-2 rounded-lg bg-primary px-6 py-3 text-sm font-semibold text-primary-foreground shadow-sm transition-[background-color,opacity,box-shadow] hover:bg-primary/90 hover:shadow-md disabled:cursor-not-allowed disabled:bg-accent disabled:text-muted-foreground disabled:shadow-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/45 focus-visible:ring-offset-2 sm:w-auto"
-            >
-              Analyze Scholarship <ArrowRight className="size-4" aria-hidden="true" />
-            </button>
-          </div>
+          <div className="mt-4 space-y-3.5">
+            <div className={`rounded-lg border px-3.5 py-3 transition-[border-color,background-color,box-shadow] duration-150 motion-reduce:transition-none ${activeInputSource === "url" && validScholarshipUrl ? "border-info/55 bg-info/[0.045]" : "border-info/15 bg-white/70"}`}>
+              <label htmlFor="scholarship-url" className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                <Link2 className="size-4 text-info" aria-hidden="true" />
+                Paste scholarship URL
+              </label>
+              <input
+                id="scholarship-url"
+                type="url"
+                inputMode="url"
+                autoComplete="url"
+                value={scholarshipUrl}
+                onChange={(event) => {
+                  setScholarshipUrl(event.target.value);
+                  setActiveInputSource("url");
+                  if (bringError) setBringError("");
+                }}
+                onFocus={() => {
+                  if (validScholarshipUrl) setActiveInputSource("url");
+                }}
+                onBlur={() => setUrlTouched(true)}
+                aria-invalid={showUrlError || undefined}
+                aria-describedby={showUrlError ? "scholarship-url-error" : undefined}
+                placeholder="https://..."
+                className="mt-2 h-11 w-full rounded-lg border border-info/20 bg-background px-3.5 text-sm text-foreground outline-none transition-[border-color,box-shadow,background-color] duration-150 placeholder:text-foreground/45 focus:border-info/70 focus:bg-white focus:ring-3 focus:ring-info/20"
+              />
+              {showUrlError && (
+                <p id="scholarship-url-error" role="alert" className="mt-1.5 text-xs font-medium text-destructive">
+                  Enter a complete scholarship webpage URL beginning with http:// or https://.
+                </p>
+              )}
+              {activeInputSource === "url" && validScholarshipUrl && (
+                <p className="mt-1.5 inline-flex items-center gap-1.5 text-xs font-semibold text-info">
+                  <Check className="size-3.5" aria-hidden="true" />
+                  Using scholarship URL
+                </p>
+              )}
+            </div>
+
+            <div className="flex items-center gap-3" aria-hidden="true">
+              <span className="h-px flex-1 bg-border/80" />
+              <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-foreground/55">OR</span>
+              <span className="h-px flex-1 bg-border/80" />
+            </div>
+
+            <div className={`rounded-lg border px-3.5 py-3 transition-[border-color,background-color,box-shadow] duration-150 motion-reduce:transition-none ${activeInputSource === "pdf" && pdfReady ? "border-info/55 bg-info/[0.045]" : "border-info/15 bg-accent/20"}`}>
+              <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                <FileText className="size-4 text-info" aria-hidden="true" />
+                Upload scholarship PDF
+              </div>
+              {pdfUpload.status === "ready" || pdfUpload.status === "uploading" ? (
+                <div className="mt-2.5 flex min-w-0 items-center gap-3 rounded-lg border border-info/15 bg-white/80 px-3 py-2.5 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-150">
+                  <span className={`grid size-8 shrink-0 place-items-center rounded-md ${pdfUpload.status === "ready" ? "bg-success/10 text-success" : "bg-info/10 text-info"}`}>
+                    {pdfUpload.status === "uploading" ? <Spinner className="size-4" /> : <FileText className="size-4" aria-hidden="true" />}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-semibold text-foreground">{pdfUpload.filename}</p>
+                    <p className="mt-0.5 text-xs text-foreground/60">
+                      {pdfUpload.status === "uploading"
+                        ? "Reading PDF text…"
+                        : [formatUploadSize(pdfUpload.sizeBytes), pdfUpload.truncated ? "Text prepared for analysis" : "Ready to analyze"].filter(Boolean).join(" · ")}
+                    </p>
+                  </div>
+                  {pdfUpload.status === "ready" && (
+                    <div className="flex shrink-0 items-center gap-2">
+                      <button type="button" onClick={() => pdfInputRef.current?.click()} className="min-h-8 rounded px-1.5 text-xs font-medium text-info/75 hover:text-info hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/35">Replace</button>
+                      <button type="button" onClick={removeScholarshipPdf} className="min-h-8 rounded px-1.5 text-xs font-medium text-foreground/60 hover:text-destructive hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/35" aria-label={`Remove uploaded PDF ${pdfUpload.filename}`}>Remove</button>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <label
+                  htmlFor="scholarship-pdf"
+                  role="button"
+                  tabIndex={0}
+                  aria-disabled={pdfUpload.status === "uploading" || undefined}
+                  aria-describedby="scholarship-pdf-help scholarship-pdf-status"
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      pdfInputRef.current?.click();
+                    }
+                  }}
+                  onDragEnter={(event) => {
+                    event.preventDefault();
+                    setPdfDragOver(true);
+                  }}
+                  onDragOver={(event) => {
+                    event.preventDefault();
+                    setPdfDragOver(true);
+                  }}
+                  onDragLeave={(event) => {
+                    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setPdfDragOver(false);
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    setPdfDragOver(false);
+                    const file = event.dataTransfer.files?.[0];
+                    if (file) void handleScholarshipPdf(file);
+                  }}
+                  className={`mt-2.5 flex min-h-24 cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed px-4 py-3 text-center outline-none transition-[border-color,background-color,box-shadow] duration-150 motion-reduce:transition-none ${pdfDragOver ? "border-info/70 bg-info/[0.07] ring-2 ring-info/15" : "border-info/25 bg-white/65 hover:border-info/50 hover:bg-info/[0.035] focus-visible:border-info/65 focus-visible:ring-3 focus-visible:ring-info/20"}`}
+                >
+                  <FileUp className="size-5 text-info" aria-hidden="true" />
+                  <span className="mt-1.5 text-sm font-medium text-foreground">Drag and drop a PDF here, or <span className="font-semibold text-info underline-offset-4 hover:underline">browse files</span></span>
+                  <span id="scholarship-pdf-help" className="mt-1 text-xs text-foreground/55">
+                    {pdfMaxBytes ? `PDF files only · Up to ${formatUploadSize(pdfMaxBytes)}` : "PDF files only. File size is validated during upload."}
+                  </span>
+                </label>
+              )}
+              <input
+                ref={pdfInputRef}
+                id="scholarship-pdf"
+                type="file"
+                accept="application/pdf,.pdf"
+                className="hidden"
+                disabled={pdfUpload.status === "uploading"}
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) void handleScholarshipPdf(file);
+                  event.currentTarget.value = "";
+                }}
+              />
+              <div id="scholarship-pdf-status" aria-live="polite">
+                {pdfUpload.error && <p role="alert" className="mt-2 text-xs font-medium text-destructive">{pdfUpload.error}</p>}
+                {activeInputSource === "pdf" && pdfReady && (
+                  <p className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold text-info">
+                    <Check className="size-3.5" aria-hidden="true" />
+                    Using uploaded PDF
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div>
+              <button
+                type="button"
+                onClick={() => setShowCopiedText((current) => !current)}
+                aria-expanded={showCopiedText}
+                aria-controls="copied-scholarship-text-panel"
+                className="rounded-sm text-xs font-semibold text-info underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/35"
+              >
+                {showCopiedText ? "Hide copied scholarship text" : "Paste copied scholarship text instead"}
+              </button>
+              {showCopiedText && (
+                <div id="copied-scholarship-text-panel" className="mt-2 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-150">
+                  <label htmlFor="copied-scholarship-text" className="text-sm font-semibold text-foreground">Copied scholarship text</label>
+                  <textarea
+                    id="copied-scholarship-text"
+                    rows={3}
+                    value={copiedScholarshipText}
+                    onChange={(event) => {
+                      setCopiedScholarshipText(event.target.value);
+                      setActiveInputSource("text");
+                      resizeCopiedTextInput(event.currentTarget);
+                      if (bringError) setBringError("");
+                    }}
+                    onFocus={() => {
+                      if (copiedTextReady) setActiveInputSource("text");
+                    }}
+                    placeholder="Paste copied eligibility requirements or application details…"
+                    className="mt-1.5 min-h-24 w-full resize-y rounded-lg border border-info/20 bg-background px-3.5 py-2.5 text-sm leading-6 text-foreground outline-none transition-[border-color,box-shadow] placeholder:text-foreground/45 focus:border-info/70 focus:ring-3 focus:ring-info/20"
+                  />
+                  {activeInputSource === "text" && copiedTextReady && <p className="mt-1.5 inline-flex items-center gap-1.5 text-xs font-semibold text-info"><Check className="size-3.5" aria-hidden="true" />Using copied scholarship text</p>}
+                  {!!copiedScholarshipText.trim() && !copiedTextReady && <p className="mt-1.5 text-xs text-foreground/60">Add a little more scholarship information before analyzing.</p>}
+                </div>
+              )}
+            </div>
+
+            {bringError && <p id="bring-opportunity-error" role="alert" className="text-xs font-medium text-destructive">{bringError}</p>}
+
+            <div id="bring-opportunity-help" className="rounded-lg bg-success/[0.035] px-3 py-2.5 text-sm leading-6 text-foreground/80">
+              <div className="font-semibold text-foreground">Supported inputs</div>
+              <ul className="mt-1.5 grid gap-x-4 gap-y-1 sm:grid-cols-2" aria-label="Accepted scholarship input formats">
+                {["Scholarship webpage URL", "Scholarship PDF", "Copied scholarship text", "Eligibility or application details"].map((item) => (
+                  <li key={item} className="flex items-start gap-2">
+                    <Check className="mt-1 size-3.5 shrink-0 text-success" aria-hidden="true" />
+                    <span>{item}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            <div className="flex justify-end">
+              <p className="sr-only" aria-live="polite">{activeSourceLabel}</p>
+              <button
+                type="button"
+                onClick={continueWithOwnOpportunity}
+                disabled={!activeSourceReady || pdfUpload.status === "uploading"}
+                className="inline-flex min-h-11 w-full shrink-0 items-center justify-center gap-2 rounded-lg bg-primary px-6 py-3 text-sm font-semibold text-primary-foreground shadow-sm transition-[background-color,opacity,box-shadow] hover:bg-primary/90 hover:shadow-md disabled:cursor-not-allowed disabled:bg-accent disabled:text-muted-foreground disabled:shadow-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/45 focus-visible:ring-offset-2 sm:w-auto"
+              >
+                Analyze Scholarship <ArrowRight className="size-4" aria-hidden="true" />
+              </button>
+            </div>
           </div>
         </section>
 

@@ -28,6 +28,18 @@ export type OpportunityExtractResult = ActiveScholarship & {
   sourceUrls?: string[];
 };
 
+export type ScholarshipPdfTextResult = {
+  filename: string;
+  size_bytes: number;
+  text: string;
+  truncated: boolean;
+  max_size_bytes: number;
+};
+
+export type ScholarshipPdfUploadConfig = {
+  max_size_bytes: number;
+};
+
 export type FitAnalyzePayload = {
   scholarship_record: ActiveScholarship;
   student_profile: Record<string, unknown>;
@@ -322,6 +334,33 @@ export async function extractScholarshipOpportunity(
   }
 
   return data as OpportunityExtractResult;
+}
+
+export async function extractScholarshipTextFromPdf(file: File): Promise<ScholarshipPdfTextResult> {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const response = await fetch(`${API_BASE}/api/opportunity/pdf-text`, {
+    method: "POST",
+    body: formData,
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    const detail = data?.detail;
+    const validationResponse = response.status === 400 || response.status === 413 || response.status === 422;
+    throw new Error(
+      validationResponse && typeof detail === "string"
+        ? detail
+        : "We couldn’t upload this PDF. Try again.",
+    );
+  }
+  return data as ScholarshipPdfTextResult;
+}
+
+export async function getScholarshipPdfUploadConfig(): Promise<ScholarshipPdfUploadConfig> {
+  const response = await fetch(`${API_BASE}/api/opportunity/pdf-upload-config`);
+  if (!response.ok) throw new Error("Scholarship PDF upload configuration is unavailable.");
+  return response.json() as Promise<ScholarshipPdfUploadConfig>;
 }
 
 export function buildFitPayload(user: UserProfile | null): FitAnalyzePayload {
