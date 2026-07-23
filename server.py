@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
+from config import settings
 from api.routes import (
     CoachingSessionRequest,
     EditorCheckRequest,
@@ -23,6 +24,7 @@ from api.routes import (
     analyze_scholarship_fit,
     autofill_profile_from_resume,
     discover_scholarship_wiki,
+    extract_scholarship_pdf_text,
     get_scholarship_discovery_bootstrap,
     extract_scholarship_opportunity,
     generate_personalized_outline,
@@ -107,6 +109,24 @@ def extract_opportunity(request: OpportunityExtractRequest):
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/opportunity/pdf-text")
+async def extract_opportunity_pdf(file: UploadFile = File(...)):
+    try:
+        return await extract_scholarship_pdf_text(file)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="We couldn’t upload this PDF. Try again.",
+        ) from exc
+
+
+@app.get("/api/opportunity/pdf-upload-config")
+def opportunity_pdf_upload_config():
+    return {"max_size_bytes": max(1, settings.scholarship_pdf_max_bytes)}
 
 
 @app.post("/api/fit/analyze")
