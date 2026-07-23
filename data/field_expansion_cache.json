@@ -116,5 +116,22 @@
       "government studies grants",
       "law school funding opportunities"
     ]
+  },
+  "bachelor s degree": {
+    "canonical_label": "Bachelor's Degree",
+    "synonyms": [
+      "Undergraduate Degree",
+      "Baccalaureate Degree"
+    ],
+    "parent_disciplines": [],
+    "umbrella_terms": [
+      "Higher Education",
+      "Undergraduate Studies"
+    ],
+    "funder_vocabulary": [
+      "undergraduate scholarships",
+      "bachelor's degree funding",
+      "college grants for undergraduates"
+    ]
   }
 }

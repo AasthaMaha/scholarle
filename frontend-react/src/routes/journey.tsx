@@ -69,6 +69,7 @@ import {
   type FixEngine,
 } from "@/lib/fixCache";
 import { journeySteps } from "@/lib/persona";
+import { incompleteReviewMessage, isCompleteEssayReview } from "@/lib/essayReview";
 import { getFile, removeFile, storeFile } from "@/lib/fileStore";
 import { Spinner } from "@/components/Spinner";
 import { AcademicOnboarding } from "@/components/AcademicOnboarding";
@@ -84,6 +85,7 @@ import {
   buildWikiPayload,
   discoverScholarshipWiki,
   buildRewritePayload,
+  profileToText,
   extractPromptWordLimits,
   extractScholarshipOpportunity,
   generatePersonalizedOutline,
@@ -109,6 +111,7 @@ import {
   type EssayCriterionReview,
   type EssayDraft,
   type EssayReviewResult,
+  type EssayRevisionPriority,
   type ActiveScholarship,
   type EssayPromptEntry,
   type WikiDiscoveryResult,
@@ -147,9 +150,11 @@ export const Route = createFileRoute("/journey")({
   component: Journey,
 });
 
-// 232px is the narrowest safe expanded width for both the header controls and
-// the longest remaining journey label ("Application Tracker") on one line.
-const SIDEBAR_EXPANDED_WIDTH = 232;
+// The expanded rail stays deliberately compact so every Journey page keeps as
+// much horizontal workspace as possible. Labels use the space saved by smaller
+// internal padding and step markers; exceptionally long names may truncate and
+// remain available through their accessible label/tooltip.
+const SIDEBAR_EXPANDED_WIDTH = 208;
 
 function needsAcademicOnboarding(user: UserProfile | null) {
   return !!(
@@ -402,7 +407,7 @@ function Journey() {
 function isProfileComplete(user: UserProfile | null) {
   return !!(
     isRequiredAboutComplete(user) &&
-    (user.educationHistory?.some((entry) => entry.educationLevel?.trim()) || user.educationLevel)
+    (user?.educationHistory?.some((entry) => entry.educationLevel?.trim()) || user?.educationLevel)
   );
 }
 
@@ -468,7 +473,7 @@ function Sidebar({
           isOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
-        <div className="flex items-center gap-2 px-5 h-14 border-b border-border">
+        <div className="flex h-14 items-center gap-2 border-b border-border px-3">
           <Link to="/" className="flex min-w-0 flex-1 items-center gap-2">
             <img src={scholarELogoUrl} alt="" className="size-7 rounded-full object-cover" />
             <div className="text-sm font-display font-semibold tracking-tight">Scholar-E</div>
@@ -490,10 +495,10 @@ function Sidebar({
           </Tooltip>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-3 py-4 space-y-5">
+        <div className="flex-1 space-y-5 overflow-y-auto px-2 py-4">
           {groups.map(([group, steps]) => (
             <div key={group} data-journey-group={group}>
-              <div className="px-3 text-[10px] uppercase tracking-widest text-muted-foreground mb-2">{group}</div>
+              <div className="mb-2 px-2 text-[10px] uppercase tracking-widest text-muted-foreground">{group}</div>
               <div className="space-y-0.5">
                 {steps.map((s) => {
                   const idx = journeySteps.findIndex((x) => x.id === s.id);
@@ -508,7 +513,7 @@ function Sidebar({
                           onClick={() => { if (!isLocked) onSelect(idx); }}
                           aria-disabled={isLocked || undefined}
                           aria-label={isLocked ? `${s.title}. Complete your profile to unlock this step.` : s.title}
-                          className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-left text-[13px] transition-colors ${
+                          className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[13px] font-semibold transition-colors ${
                             isActive
                               ? "bg-info/10 text-info"
                               : isLocked
@@ -517,7 +522,7 @@ function Sidebar({
                           }`}
                         >
                           <span
-                            className={`relative grid size-8 shrink-0 place-items-center rounded-lg ${
+                            className={`relative grid size-7 shrink-0 place-items-center rounded-lg ${
                               isActive
                                 ? "bg-info text-white"
                                 : isDone
@@ -525,7 +530,7 @@ function Sidebar({
                                 : "bg-secondary text-muted-foreground"
                             }`}
                           >
-                            <span className="text-sm font-bold tabular-nums">{idx + 1}</span>
+                            <span className="text-xs font-bold tabular-nums">{idx + 1}</span>
                             {isDone && (
                               <span className="absolute -bottom-1 -right-1 grid size-4 place-items-center rounded-full bg-success text-white ring-2 ring-card">
                                 <Check className="size-2.5" strokeWidth={4} />
@@ -536,7 +541,9 @@ function Sidebar({
                           {isLocked && <Lock className="size-3.5 shrink-0" aria-hidden="true" />}
                         </button>
                       </TooltipTrigger>
-                      {isLocked && <TooltipContent side="right">Complete your profile to unlock this step.</TooltipContent>}
+                      <TooltipContent side="right">
+                        {isLocked ? "Complete your profile to unlock this step." : s.title}
+                      </TooltipContent>
                     </Tooltip>
                   );
                 })}
@@ -545,11 +552,11 @@ function Sidebar({
           ))}
         </div>
 
-        <div className="px-6 py-4">
+        <div className="px-3 py-4">
           <SidebarUser />
         </div>
 
-        <div className="flex h-16 shrink-0 flex-col justify-center border-t border-border px-6">
+        <div className="flex h-16 shrink-0 flex-col justify-center border-t border-border px-3">
           <button
             type="button"
             onClick={onClearAll}
@@ -3629,8 +3636,10 @@ function buildDiscoveryProfileContext(user: UserProfile | null) {
     || currentLevel === user.educationLevel;
   const major = currentEducation?.majorField?.trim()
     || (currentMatchesSelectedLevel ? branchMajor : "");
-  const gpa = currentEducation?.gpa?.trim()
-    || ("gpa" in (alignedBranch ?? {}) ? String(alignedBranch?.gpa ?? "").trim() : "");
+  const branchGpa = alignedBranch && "gpa" in alignedBranch
+    ? String(alignedBranch.gpa ?? "").trim()
+    : "";
+  const gpa = currentEducation?.gpa?.trim() || branchGpa;
   const values = [
     discoveryEducationLabel(currentEducation, user.educationLevel),
     major,
@@ -5491,6 +5500,28 @@ const ESSAY_REVIEW_DIMENSIONS = [
   "clarity_concision",
 ] as const;
 
+/** Match the backend's formatting-insensitive evaluation fingerprint input. */
+function canonicalEssayForReview(value: string): string {
+  const normalized = value
+    .normalize("NFKC")
+    .replace(/\r\n?/g, "\n")
+    .replace(/\u00a0/g, " ")
+    .replace(/[\u200b-\u200d\uFEFF]/g, "");
+  const output: string[] = [];
+  let pendingBlank = false;
+  for (const rawLine of normalized.split("\n")) {
+    const line = rawLine.replace(/[ \t]+/g, " ").trim();
+    if (!line) {
+      pendingBlank = output.length > 0;
+      continue;
+    }
+    if (pendingBlank) output.push("");
+    output.push(line);
+    pendingBlank = false;
+  }
+  return output.join("\n").trim();
+}
+
 type DraftCheckScope = { text: string; start: number; end: number; revision: string; document: string; promptId: string };
 type AnchoredFixState = { draft: string; suggestions: CoachSentenceSuggestion[] };
 const FIX_PIPELINE_VERSION = "6";
@@ -5542,28 +5573,6 @@ function rebaseDraftRange(
 }
 
 type EssayReviewDimension = (typeof ESSAY_REVIEW_DIMENSIONS)[number];
-
-const ESSAY_REVIEW_SCORE_GROUPS: ReadonlyArray<{
-  label: string;
-  criteria: readonly EssayReviewDimension[];
-  columnClass: string;
-}> = [
-  {
-    label: "Content",
-    criteria: ["alignment", "evidence_strength", "insight"],
-    columnClass: "md:col-span-3",
-  },
-  {
-    label: "Structure",
-    criteria: ["narrative_structure_flow_coherence"],
-    columnClass: "md:col-span-1",
-  },
-  {
-    label: "Voice",
-    criteria: ["tone_authenticity", "clarity_concision"],
-    columnClass: "md:col-span-2",
-  },
-];
 
 type PdfTextItem = {
   str?: string;
@@ -5722,7 +5731,7 @@ function reflowPdfVisualLines(lines: PdfVisualLine[]) {
     const indented = current.x - commonLeft > Math.max(12, current.averageCharacterWidth * 1.75);
     const fontScaleChanged =
       Math.max(previous.height, current.height) / Math.max(1, Math.min(previous.height, current.height)) > 1.2;
-    const listItem = /^(?:[•▪◦*\-]|\(?\d+[.)])\s+/.test(current.text);
+    const listItem = /^(?:[-•▪◦*]|\(?\d+[.)])\s+/.test(current.text);
     const previousLooksComplete =
       typicalWidth > 0 &&
       previous.width < typicalWidth * 0.72 &&
@@ -6272,10 +6281,14 @@ function StepEssayWorkspace() {
   const [anchoredFixes, setAnchoredFixes] = useState<AnchoredFixState>(() => ({ draft: "", suggestions: [] }));
   const [coachLoading, setCoachLoading] = useState(false);
   const [reviewResult, setReviewResult] = useState<EssayReviewResult | null>(
-    () => user?.essayReviewResult?.schema_version === 4 ? user.essayReviewResult : null,
+    () => isCompleteEssayReview(user?.essayReviewResult) ? user.essayReviewResult : null,
   );
   const [reviewUpdatedAt, setReviewUpdatedAt] = useState<number | null>(() => user?.essayReviewUpdatedAt ?? null);
   const [reviewDraftAtRun, setReviewDraftAtRun] = useState<string>(() => user?.essayReviewDraftAtRun ?? "");
+  const [reviewPromptAtRun, setReviewPromptAtRun] = useState<string>(() => user?.essayReviewPromptAtRun ?? "");
+  const [reviewProfileFingerprintAtRun, setReviewProfileFingerprintAtRun] = useState<string>(
+    () => user?.essayReviewProfileFingerprintAtRun ?? "",
+  );
   // Outline coverage is layered: `autoCovered` comes from the AI coverage agent;
   // `manualChecked`/`manualUnchecked` are the student's overrides, which persist
   // across auto-runs. Displayed = (auto ∪ manualChecked) − manualUnchecked.
@@ -6303,6 +6316,7 @@ function StepEssayWorkspace() {
   const [contextualGrammarLoading, setContextualGrammarLoading] = useState(false);
   const [sessionProgress, setSessionProgress] = useState(0);
   const [reviewReady, setReviewReady] = useState(false);
+  const [reviewRunError, setReviewRunError] = useState<string | null>(null);
   const [languageToolWarning, setLanguageToolWarning] = useState<string | null>(null);
   const [contextualGrammarWarning, setContextualGrammarWarning] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
@@ -6358,6 +6372,19 @@ function StepEssayWorkspace() {
   const hasMultiplePrompts = availablePrompts.length > 1;
   const fixesLoading = languageToolLoading || contextualGrammarLoading;
   const fixesWarning = [languageToolWarning, contextualGrammarWarning].filter(Boolean).join(" ") || null;
+  const canonicalDraftForReview = useMemo(() => canonicalEssayForReview(draft), [draft]);
+  const canonicalPromptForReview = useMemo(() => canonicalEssayForReview(essayPrompt), [essayPrompt]);
+  const currentProfileFingerprint = useMemo(
+    () => draftFingerprint(canonicalEssayForReview(profileToText(user))),
+    [user],
+  );
+  const reviewScoringInputChanged = !!reviewResult && (
+    canonicalDraftForReview !== canonicalEssayForReview(reviewDraftAtRun)
+    || canonicalPromptForReview !== canonicalEssayForReview(reviewPromptAtRun)
+  );
+  const reviewProfileChanged = !!reviewResult
+    && currentProfileFingerprint !== reviewProfileFingerprintAtRun;
+  const reviewInputChanged = !reviewResult || reviewScoringInputChanged || reviewProfileChanged;
 
   useEffect(() => {
     languageToolAbortRef.current?.abort();
@@ -6626,14 +6653,26 @@ function StepEssayWorkspace() {
     return () => window.clearInterval(id);
   }, []);
 
-  // Restore only schema-v4 six-criterion Essay Review data. Older payloads
+  // Restore only schema-v5 six-criterion Essay Review data. Older payloads
   // are intentionally ignored and render as an empty Evaluate state.
   useEffect(() => {
     const restored = user?.essayReviewResult;
-    setReviewResult(restored?.schema_version === 4 ? restored : null);
-    setReviewUpdatedAt(restored?.schema_version === 4 ? user?.essayReviewUpdatedAt ?? null : null);
-    setReviewDraftAtRun(restored?.schema_version === 4 ? user?.essayReviewDraftAtRun ?? "" : "");
-  }, [user?.email, user?.essayReviewResult, user?.essayReviewUpdatedAt, user?.essayReviewDraftAtRun]);
+    const complete = isCompleteEssayReview(restored);
+    setReviewResult(complete ? restored : null);
+    setReviewUpdatedAt(complete ? user?.essayReviewUpdatedAt ?? null : null);
+    setReviewDraftAtRun(complete ? user?.essayReviewDraftAtRun ?? "" : "");
+    setReviewPromptAtRun(complete ? user?.essayReviewPromptAtRun ?? "" : "");
+    setReviewProfileFingerprintAtRun(
+      complete ? user?.essayReviewProfileFingerprintAtRun ?? "" : "",
+    );
+  }, [
+    user?.email,
+    user?.essayReviewResult,
+    user?.essayReviewUpdatedAt,
+    user?.essayReviewDraftAtRun,
+    user?.essayReviewPromptAtRun,
+    user?.essayReviewProfileFingerprintAtRun,
+  ]);
 
   useEffect(() => {
     if (!panelResizing) return;
@@ -6751,15 +6790,24 @@ function StepEssayWorkspace() {
     editorApiRef.current?.reveal(s);
   }
 
-  function persistEssayReview(result: EssayReviewResult, draftForRun: string) {
+  function persistEssayReview(
+    result: EssayReviewResult,
+    draftForRun: string,
+    promptForRun: string,
+    profileFingerprintForRun: string,
+  ) {
     const updatedAt = Date.now();
     setReviewResult(result);
     setReviewUpdatedAt(updatedAt);
     setReviewDraftAtRun(draftForRun);
+    setReviewPromptAtRun(promptForRun);
+    setReviewProfileFingerprintAtRun(profileFingerprintForRun);
     updateProfile({
       essayReviewResult: result,
       essayReviewUpdatedAt: updatedAt,
       essayReviewDraftAtRun: draftForRun,
+      essayReviewPromptAtRun: promptForRun,
+      essayReviewProfileFingerprintAtRun: profileFingerprintForRun,
     });
   }
 
@@ -6993,13 +7041,14 @@ function StepEssayWorkspace() {
       setPanelOpen(true);
       return;
     }
-    if (wordCount < 30) {
+    if (!canonicalDraftForReview) {
       return;
     }
 
     setIsEvaluating(true);
     setCoachLoading(true);
     setReviewReady(false);
+    setReviewRunError(null);
     setSessionProgress(6);
     setPanelOpen(true);
     setActiveTab("coach");
@@ -7007,21 +7056,27 @@ function StepEssayWorkspace() {
     try {
       // One backend request owns the Manager-led review graph. It evaluates the
       // submitted draft exactly as written; grammar corrections remain optional fixes.
-      // Six criterion agents evaluate in reviewer voice, score, and
-      // propose one aligned action in parallel.
+      // Six profile-blind specialists answer fixed questions in parallel.
+      // Python scores them; one later profile-aware planner consolidates actions.
       const session = await runWorkspaceCoachingSession(buildCoachingSessionPayload(user, essayPrompt));
       const review = session.review ?? null;
-      const gotReview = !!review && review.schema_version === 4 && review.status !== "error";
+      const gotReview = isCompleteEssayReview(review);
       const coveredIds = session.outline_coverage?.covered_point_ids;
       if (coveredIds) {
         const known = new Set(buildOutlinePoints(user.personalizedOutline).map((p) => p.id));
         setAutoCovered(new Set(coveredIds.filter((id) => known.has(id))));
       }
 
-      const combinedWarnings = session.warnings ?? [];
-
-      if (!gotReview) throw new Error(combinedWarnings[0] || "The coaching session could not review your draft.");
-      persistEssayReview(review, draft);
+      if (!gotReview) {
+        setReviewRunError(incompleteReviewMessage(review, !!reviewResult));
+        setReviewReady(true);
+        setSessionProgress(100);
+        setActiveTab("coach");
+        await new Promise((resolve) => window.setTimeout(resolve, 200));
+        return;
+      }
+      persistEssayReview(review, draft, essayPrompt, currentProfileFingerprint);
+      setReviewRunError(null);
       setReviewReady(true);
 
       setSessionProgress(100);
@@ -7029,6 +7084,13 @@ function StepEssayWorkspace() {
       await new Promise((resolve) => window.setTimeout(resolve, 200));
     } catch (error) {
       console.error("Scholar-E coaching session failed.", error);
+      setReviewRunError(
+        reviewResult
+          ? "The new evaluation could not be completed. Your previous complete review remains displayed."
+          : "The evaluation could not be completed. Please try again; no score was saved.",
+      );
+      setReviewReady(true);
+      setActiveTab("coach");
     } finally {
       setIsEvaluating(false);
       setCoachLoading(false);
@@ -7167,13 +7229,18 @@ function StepEssayWorkspace() {
       setReviewResult(null);
       setReviewUpdatedAt(null);
       setReviewDraftAtRun("");
+      setReviewPromptAtRun("");
+      setReviewProfileFingerprintAtRun("");
       setReviewReady(false);
+      setReviewRunError(null);
       setAnchoredFixes({ draft: imported.text, suggestions: [] });
       setDismissed(new Set());
       updateProfile({
         essayReviewResult: undefined,
         essayReviewUpdatedAt: undefined,
         essayReviewDraftAtRun: undefined,
+        essayReviewPromptAtRun: undefined,
+        essayReviewProfileFingerprintAtRun: undefined,
       });
       triggerAutoCheck();
     } catch (error) {
@@ -7212,18 +7279,28 @@ function StepEssayWorkspace() {
 
   function saveAsDraft() {
     if (wordCount < 1) return;
-    upsertVersion({ reviewOverall: score ?? undefined });
+    upsertVersion({
+      reviewOverall: score ?? undefined,
+      reviewOverallLevel: reviewResult?.overall_level,
+    });
   }
 
   // Attach the canonical criterion scores to the current draft version.
   useEffect(() => {
     if (!reviewResult?.criteria) return;
     const reviewScores: Record<string, number> = {};
+    const reviewLevels: Record<string, string> = {};
     for (const [key, value] of Object.entries(reviewResult.criteria)) {
       if (typeof value?.score === "number") reviewScores[key] = value.score;
+      if (value?.level) reviewLevels[key] = value.level;
     }
     if (!Object.keys(reviewScores).length) return;
-    upsertVersion({ reviewScores, reviewOverall: reviewResult.overall_score ?? undefined });
+    upsertVersion({
+      reviewScores,
+      reviewLevels,
+      reviewOverall: reviewResult.overall_score ?? undefined,
+      reviewOverallLevel: reviewResult.overall_level,
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reviewResult]);
 
@@ -7300,12 +7377,20 @@ function StepEssayWorkspace() {
               data-essay-workspace-tour="evaluate"
               type="button"
               onClick={() => void runCoachingSession()}
-              disabled={wordCount < 30 || !promptConfirmed || coachLoading || isEvaluating}
+              disabled={!canonicalDraftForReview || !promptConfirmed || coachLoading || isEvaluating || !reviewInputChanged}
               aria-busy={coachLoading || isEvaluating}
               className={`ml-0.5 inline-flex items-center gap-1.5 rounded-lg bg-info px-3 py-2 text-[13px] font-medium text-white transition-opacity duration-150 hover:opacity-90 disabled:opacity-60 ${coachLoading || isEvaluating ? "agent-loading" : ""}`}
             >
               {coachLoading || isEvaluating ? <Spinner className="size-4" /> : <Wand2 className="size-4" />}
-              <span className="hidden sm:inline">{coachLoading || isEvaluating ? "Evaluating…" : "Evaluate"}</span>
+              <span className="hidden sm:inline">
+                {coachLoading || isEvaluating
+                  ? "Evaluating…"
+                  : !reviewResult
+                    ? "Evaluate"
+                    : reviewProfileChanged && !reviewScoringInputChanged
+                      ? "Update Coaching"
+                      : "Evaluate Again"}
+              </span>
             </button>
 
             <Tooltip>
@@ -7548,8 +7633,9 @@ function StepEssayWorkspace() {
               fixesLoading={fixesLoading}
               fixesWarning={fixesWarning}
               reviewResult={reviewResult}
+              reviewRunError={reviewRunError}
               reviewUpdatedAt={reviewUpdatedAt}
-              reviewDraftChanged={!!reviewUpdatedAt && draft !== reviewDraftAtRun}
+              reviewDraftChanged={!!reviewUpdatedAt && reviewScoringInputChanged}
               now={nowTick}
               covered={coveredPoints}
               onToggleCovered={toggleCovered}
@@ -7599,6 +7685,7 @@ function EssayWorkspacePanel({
   fixesLoading,
   fixesWarning,
   reviewResult,
+  reviewRunError,
   reviewUpdatedAt,
   reviewDraftChanged,
   now,
@@ -7622,6 +7709,7 @@ function EssayWorkspacePanel({
   fixesLoading: boolean;
   fixesWarning: string | null;
   reviewResult: EssayReviewResult | null;
+  reviewRunError: string | null;
   reviewUpdatedAt: number | null;
   reviewDraftChanged: boolean;
   now: number;
@@ -7701,6 +7789,7 @@ function EssayWorkspacePanel({
         {activeTab === "coach" && (
           <WorkspaceEssayReviewTab
             review={reviewResult}
+            runError={reviewRunError}
             loading={isEvaluating && !reviewReady}
             updatedAt={reviewUpdatedAt}
             draftChanged={reviewDraftChanged}
@@ -8051,9 +8140,16 @@ function CriterionScoreButton({
   edge?: "left" | "right";
 }) {
   const score = typeof criterion.score === "number" ? criterion.score : null;
-  const displayLabel = criterion.criterion === "narrative_structure_flow_coherence"
-    ? "Flow & Coherence"
-    : criterion.label || labelize(criterion.criterion ?? "criterion");
+  const displayLabel = criterion.short_label
+    || (criterion.criterion === "narrative_structure_flow_coherence"
+      ? "Flow"
+      : criterion.criterion === "evidence_strength"
+        ? "Evidence"
+        : criterion.criterion === "tone_authenticity"
+          ? "Tone"
+          : criterion.criterion === "clarity_concision"
+            ? "Clarity"
+            : criterion.label || labelize(criterion.criterion ?? "criterion"));
 
   return (
     <button
@@ -8061,7 +8157,7 @@ function CriterionScoreButton({
       onClick={onSelect}
       aria-pressed={selected}
       aria-controls="essay-review-criterion-detail"
-      className={`group relative h-[5.5rem] w-full min-w-0 text-center transition-all focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-info ${
+      className={`group relative h-[5rem] w-full min-w-0 text-center transition-all focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-info ${
         edge === "left"
           ? "rounded-bl-xl after:rounded-bl-xl"
           : edge === "right"
@@ -8073,7 +8169,7 @@ function CriterionScoreButton({
           : "bg-background hover:bg-info/5"
       }`}
     >
-      <span className="absolute inset-0 grid grid-rows-[2rem_0.75rem_1.5rem] content-center items-center justify-items-center gap-1 px-1 py-1.5">
+      <span className="absolute inset-0 grid grid-rows-[1.25rem_0.75rem_1.5rem] content-center items-center justify-items-center gap-1 px-1 py-1">
         <span className={`flex h-full w-full items-center justify-center text-center text-[11px] leading-tight ${selected ? "font-black text-info" : "font-semibold text-foreground/85"}`}>
           {displayLabel}
         </span>
@@ -8091,18 +8187,64 @@ function CriterionScoreButton({
   );
 }
 
-function CriterionReviewDetails({ criterion }: { criterion: EssayCriterionReview }) {
+function RevisionPrioritiesSection({ priorities }: { priorities: EssayRevisionPriority[] }) {
+  if (!priorities.length) return null;
+  return (
+    <section className="rounded-xl border border-success/20 bg-success/5 p-3">
+      <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-success">
+        Top revision priorities
+      </div>
+      <div className="mt-2 space-y-2">
+        {priorities.slice(0, 3).map((priority, index) => (
+          <article
+            key={priority.id || `${priority.title}-${index}`}
+            id={priority.id}
+            className="rounded-lg border border-success/15 bg-background/80 p-3"
+          >
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div className="text-[13px] font-semibold">
+                {index + 1}. {priority.title || "Priority revision"}
+              </div>
+              <div className="flex gap-1 text-[10px] font-semibold text-muted-foreground">
+                {priority.impact && <span className="rounded-full bg-success/10 px-2 py-0.5">{priority.impact} impact</span>}
+                {priority.estimated_effort && <span className="rounded-full bg-accent px-2 py-0.5">{priority.estimated_effort}</span>}
+              </div>
+            </div>
+            {priority.action && <p className="mt-1.5 text-[12px] leading-relaxed">{priority.action}</p>}
+            {priority.location && (
+              <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+                <span className="font-semibold text-foreground">Where: </span>{priority.location}
+              </p>
+            )}
+            {priority.completion_condition && (
+              <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+                <span className="font-semibold text-foreground">Done when: </span>{priority.completion_condition}
+              </p>
+            )}
+            <p className="mt-1.5 text-[10px] text-muted-foreground">
+              Primary: {labelize(priority.primary_criterion || "criterion")}
+              {!!priority.also_improves?.length && ` · Also improves: ${priority.also_improves.map(labelize).join(", ")}`}
+            </p>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function CriterionReviewDetails({
+  criterion,
+  priorities,
+}: {
+  criterion: EssayCriterionReview;
+  priorities: EssayRevisionPriority[];
+}) {
   const score = typeof criterion.score === "number" ? criterion.score : null;
   const displayLabel = criterion.criterion === "narrative_structure_flow_coherence"
     ? "Flow & Coherence"
     : criterion.label || labelize(criterion.criterion ?? "criterion");
   const feedback = criterion.coach_feedback;
-  const action = criterion.priority_action;
-  const rubricBands = [
-    ["Excellent", criterion.rubric?.excellent],
-    ["Developing", criterion.rubric?.developing],
-    ["Weak", criterion.rubric?.weak],
-  ].filter((entry): entry is [string, string] => !!entry[1]);
+  const related = priorities.filter((priority) => criterion.related_priority_ids?.includes(priority.id || ""));
 
   return (
     <section
@@ -8114,36 +8256,7 @@ function CriterionReviewDetails({ criterion }: { criterion: EssayCriterionReview
         <div className="flex items-center gap-3">
           <div className="min-w-0 flex-1 text-[15px] font-semibold">{displayLabel}</div>
           <div className="flex shrink-0 items-center gap-2.5">
-            {!!rubricBands.length ? (
-              <Tooltip delayDuration={150}>
-                <TooltipTrigger asChild>
-                  <button
-                    type="button"
-                    className="text-[11px] font-semibold text-foreground/80 underline decoration-dotted underline-offset-2 outline-none transition-colors hover:text-info focus-visible:text-info"
-                    aria-label={`Show the complete ${displayLabel} scoring rubric`}
-                  >
-                    {criterion.level || "Not scored"}
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent
-                  side="bottom"
-                  align="end"
-                  sideOffset={7}
-                  className="w-80 max-w-[calc(100vw-2rem)] p-3 text-left"
-                >
-                  <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-primary-foreground/70">Tailored scoring rubric</div>
-                  <div className="mt-2 space-y-2">
-                    {rubricBands.map(([label, description]) => (
-                      <div key={label} className="text-[11px] leading-relaxed text-primary-foreground/85">
-                        <span className="font-semibold text-primary-foreground">{label}: </span>{description}
-                      </div>
-                    ))}
-                  </div>
-                </TooltipContent>
-              </Tooltip>
-            ) : (
-              <span className="text-[11px] text-muted-foreground">{criterion.level || "Not scored"}</span>
-            )}
+            <span className="text-[11px] font-semibold text-foreground/80">{criterion.level || "Not scored"}</span>
             <span className="text-[18px] font-bold tabular-nums" style={score != null ? { color: scoreColor(score) } : undefined}>
               {score != null ? `${score}/100` : "Unavailable"}
             </span>
@@ -8157,39 +8270,83 @@ function CriterionReviewDetails({ criterion }: { criterion: EssayCriterionReview
       <div className="space-y-3 p-3">
         {(feedback?.grounded_praise || feedback?.main_gap) && (
           <section className="space-y-2 rounded-lg border border-info/20 bg-info/5 p-3">
-            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-info">Essay Coach Feedback</div>
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-info">What is working</div>
             {feedback?.grounded_praise && (
               <p className="text-[12px] leading-relaxed text-foreground/90">{feedback.grounded_praise}</p>
             )}
             {feedback?.main_gap && (
-              <p className="text-[12px] leading-relaxed"><span className="font-semibold">Main gap: </span>{feedback.main_gap}</p>
+              <div className="border-t border-info/15 pt-2">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-warning">Main gap</div>
+                <p className="mt-1 text-[12px] leading-relaxed">{feedback.main_gap}</p>
+              </div>
             )}
           </section>
         )}
 
-        {action && (
-          <section className="space-y-2 rounded-lg border border-success/20 bg-success/5 p-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-success">Priority revision action</div>
-              {(action.impact || action.estimated_effort) && (
-                <div className="flex gap-1.5 text-[10px] font-semibold text-muted-foreground">
-                  {action.impact && <span className="rounded-full bg-background/80 px-2 py-0.5">{action.impact} impact</span>}
-                  {action.estimated_effort && <span className="rounded-full bg-background/80 px-2 py-0.5">{action.estimated_effort} effort</span>}
-                </div>
-              )}
-            </div>
-            {action.title && <div className="text-[13px] font-semibold">{action.title}</div>}
-            {action.location && <p className="text-[12px] leading-relaxed"><span className="font-semibold">Where: </span>{action.location}</p>}
-            {action.how_to_fix && <p className="text-[12px] leading-relaxed"><span className="font-semibold">How to fix it: </span>{action.how_to_fix}</p>}
-            {action.why_this_fixes_the_gap && (
-              <p className="text-[12px] leading-relaxed text-muted-foreground"><span className="font-semibold text-foreground">Why this fixes the gap: </span>{action.why_this_fixes_the_gap}</p>
-            )}
-            {action.evidence_safety && (
-              <p className="text-[11px] leading-relaxed text-muted-foreground">Evidence guardrail: {action.evidence_safety}</p>
-            )}
+        {!!related.length && (
+          <section className="rounded-lg border border-success/20 bg-success/5 p-3">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-success">Related revision</div>
+            {related.map((priority) => (
+              <a key={priority.id} href={`#${priority.id}`} className="mt-1 block text-[12px] font-semibold text-info hover:underline">
+                {priority.title}
+              </a>
+            ))}
           </section>
         )}
+
+        {!!criterion.answers?.length && (
+          <details className="rounded-lg border border-border bg-accent/15 p-3">
+            <summary className="cursor-pointer text-[11px] font-semibold text-foreground">
+              How this was evaluated
+            </summary>
+            <div className="mt-2 space-y-2">
+              {criterion.answers.map((answer) => (
+                <div key={answer.question_id} className="rounded-md bg-background p-2 text-[11px] leading-relaxed">
+                  <div className="font-semibold">{answer.question}</div>
+                  <div className="mt-0.5 text-muted-foreground">
+                    {answer.answer_label} · {Math.round((criterion.normalized_question_weights?.[answer.question_id || ""] ?? 0) * 100)}% of this criterion
+                  </div>
+                  {answer.explanation && <p className="mt-1">{answer.explanation}</p>}
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
       </div>
+    </section>
+  );
+}
+
+function DraftProgressSection({ review }: { review: EssayReviewResult }) {
+  const progress = review.draft_progress;
+  if (!progress?.has_previous_draft) {
+    return (
+      <section className="rounded-xl border border-border bg-background p-3 text-[11px] text-muted-foreground">
+        Draft progress will appear after your next evaluated revision.
+      </section>
+    );
+  }
+  const changes = (progress.criterion_changes ?? []).filter(
+    (change) => change.level_changed || change.previous_gap_changed || change.score_change,
+  );
+  return (
+    <section className="rounded-xl border border-border bg-background p-3">
+      <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-info">Draft progress</div>
+      <div className="mt-1 text-[12px]">
+        Overall {Number(progress.overall_change) > 0 ? `improved by ${progress.overall_change}` : Number(progress.overall_change) < 0 ? `changed by ${progress.overall_change}` : "level is stable"}.
+        {!!progress.resolved_gap_count && ` ${progress.resolved_gap_count} previous gap${progress.resolved_gap_count === 1 ? "" : "s"} changed or resolved.`}
+      </div>
+      {!!changes.length && (
+        <div className="mt-2 space-y-1 text-[11px] text-muted-foreground">
+          {changes.slice(0, 6).map((change) => (
+            <div key={change.criterion}>
+              <span className="font-semibold text-foreground">{change.label}: </span>
+              {change.previous_level} → {change.current_level}
+              {change.previous_level === change.current_level && change.previous_gap_changed ? " · previous gap addressed" : ""}
+            </div>
+          ))}
+        </div>
+      )}
     </section>
   );
 }
@@ -8225,7 +8382,7 @@ function UnifiedEssayReview({
   const selectedCriterion = criteriaByKey[selectedCriterionKey] ?? criteria[0];
   const score = typeof review.overall_score === "number" ? review.overall_score : null;
   const scoredVersions = (user?.drafts ?? []).filter((version) => typeof version.reviewOverall === "number");
-  const desktopCriterionKeys = ESSAY_REVIEW_SCORE_GROUPS.flatMap((group) => group.criteria);
+  const priorities = review.revision_priorities ?? review.revision_plan?.priorities ?? [];
 
   return (
     <div className="space-y-3">
@@ -8239,16 +8396,37 @@ function UnifiedEssayReview({
         )}
       </div>
 
-      <OverallEssayScoreCard score={score} versions={scoredVersions} />
+      <OverallEssayScoreCard score={score} level={review.overall_level} versions={scoredVersions} />
+
+      {review.status === "scoring_success_coaching_partial" && (
+        <section role="status" className="rounded-xl border border-warning/25 bg-warning/5 p-3">
+          <div className="flex items-start gap-2">
+            <AlertCircle className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden="true" />
+            <div className="min-w-0">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-warning">
+                Revision priorities unavailable
+              </div>
+              <p className="mt-1 text-[11px] leading-relaxed text-foreground/85">
+                {review.status_message || "Your evaluation scores were verified, but revision priorities could not be safely completed."}
+              </p>
+              {import.meta.env.DEV && !!review.diagnostics?.error_codes?.length && (
+                <details className="mt-2 text-[10px] text-muted-foreground">
+                  <summary className="cursor-pointer font-semibold">Evaluation diagnostics</summary>
+                  <div className="mt-1">
+                    Stage: {review.diagnostics.failure_stage || "coaching"} · Codes: {review.diagnostics.error_codes.join(", ")}
+                  </div>
+                </details>
+              )}
+            </div>
+          </div>
+        </section>
+      )}
+
+      <RevisionPrioritiesSection priorities={priorities} />
 
       <div className="overflow-hidden rounded-xl border border-border bg-border">
-        <div className="hidden grid-cols-6 gap-px md:grid">
-          {ESSAY_REVIEW_SCORE_GROUPS.map((group) => (
-            <h3 key={group.label} className={`flex items-center justify-center bg-background px-2 py-1.5 text-center font-sans text-[10px] font-bold uppercase leading-tight tracking-[0.07em] text-info/90 ${group.columnClass}`}>
-              {group.label}
-            </h3>
-          ))}
-          {desktopCriterionKeys.map((key, index) => {
+        <div className="grid grid-cols-6 gap-px">
+          {ESSAY_REVIEW_DIMENSIONS.map((key, index) => {
             const criterion = criteriaByKey[key];
             if (!criterion) return null;
             return (
@@ -8257,51 +8435,29 @@ function UnifiedEssayReview({
                 criterion={criterion}
                 selected={selectedCriterionKey === key}
                 onSelect={() => setSelectedCriterionKey(key)}
-                edge={index === 0 ? "left" : index === desktopCriterionKeys.length - 1 ? "right" : undefined}
+                edge={index === 0 ? "left" : index === ESSAY_REVIEW_DIMENSIONS.length - 1 ? "right" : undefined}
               />
             );
           })}
         </div>
-
-        <div className="grid gap-px md:hidden">
-          {ESSAY_REVIEW_SCORE_GROUPS.map((group) => {
-            const groupCriteria = group.criteria
-              .map((key) => [key, criteriaByKey[key]] as const)
-              .filter((entry): entry is readonly [EssayReviewDimension, EssayCriterionReview] => !!entry[1]);
-            if (!groupCriteria.length) return null;
-            return (
-              <section key={group.label} className="min-w-0 bg-background p-3">
-                <h3 className="text-center font-sans text-[10px] font-bold uppercase leading-tight tracking-[0.07em] text-info/90">{group.label}</h3>
-                <div className={`mt-3 grid gap-1.5 ${groupCriteria.length === 3 ? "grid-cols-3" : groupCriteria.length === 2 ? "grid-cols-2" : "grid-cols-1"}`}>
-                  {groupCriteria.map(([key, criterion]) => (
-                    <CriterionScoreButton
-                      key={key}
-                      criterion={criterion}
-                      selected={selectedCriterionKey === key}
-                      onSelect={() => setSelectedCriterionKey(key)}
-                    />
-                  ))}
-                </div>
-              </section>
-            );
-          })}
-        </div>
-
       </div>
 
-      {selectedCriterion && <CriterionReviewDetails criterion={selectedCriterion} />}
+      {selectedCriterion && <CriterionReviewDetails criterion={selectedCriterion} priorities={priorities} />}
+      <DraftProgressSection review={review} />
     </div>
   );
 }
 
 function WorkspaceEssayReviewTab({
   review,
+  runError,
   loading,
   updatedAt,
   draftChanged,
   now,
 }: {
   review: EssayReviewResult | null;
+  runError: string | null;
   loading: boolean;
   updatedAt: number | null;
   draftChanged: boolean;
@@ -8312,24 +8468,35 @@ function WorkspaceEssayReviewTab({
       <CoachSkeleton />
     );
   }
-  if (!review || review.schema_version !== 4) {
+  if (!review) {
     return (
       <PanelEmpty
-        message="No review yet. Click “Evaluate” in the top-right corner to review your essay."
+        message={runError || "No review yet. Click “Evaluate” in the top-right corner to review your essay."}
       />
     );
   }
+  if (!isCompleteEssayReview(review)) {
+    return <PanelEmpty message={runError || review.status_message || "The evaluation could not be completed."} />;
+  }
   return (
-    <UnifiedEssayReview
-      review={review}
-      updatedAt={updatedAt}
-      draftChanged={draftChanged}
-      now={now}
-    />
+    <div className="space-y-3">
+      {runError && (
+        <div role="alert" className="flex items-start gap-2 rounded-xl border border-warning/30 bg-warning/5 p-3 text-[11px] leading-relaxed text-foreground">
+          <AlertCircle className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden="true" />
+          <span>{runError}</span>
+        </div>
+      )}
+      <UnifiedEssayReview
+        review={review}
+        updatedAt={updatedAt}
+        draftChanged={draftChanged}
+        now={now}
+      />
+    </div>
   );
 }
 
-function OverallEssayScoreCard({ score, versions }: { score: number | null; versions: EssayDraft[] }) {
+function OverallEssayScoreCard({ score, level, versions }: { score: number | null; level?: string; versions: EssayDraft[] }) {
   const scored = versions.filter((v) => typeof v.reviewOverall === "number");
   const latest = scored[scored.length - 1] ?? null;
   const prev = scored.length > 1 ? scored[scored.length - 2] : null;
@@ -8366,7 +8533,10 @@ function OverallEssayScoreCard({ score, versions }: { score: number | null; vers
         </Tooltip>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-            <div className="text-[13px] font-semibold">Overall essay score</div>
+            <div>
+              <div className="text-[13px] font-semibold">Overall essay score</div>
+              {level && <div className="text-[11px] font-semibold text-info">{level}</div>}
+            </div>
             {prev && overallDelta != null ? (
               <span
                 className="text-[11px] font-semibold"
@@ -8429,7 +8599,15 @@ function SuggestionCard({
     }
   }
   return (
-    <div className={`rounded-lg border border-l-4 border-border bg-background p-2.5 ${meta.borderClass}`}>
+    <div
+      className={`cursor-pointer rounded-lg border border-l-4 border-border bg-background p-2.5 ${meta.borderClass}`}
+      onClick={(event) => {
+        // Preserve the dedicated Accept/Ignore/dictionary/copy actions while
+        // letting the card padding and other non-action surface reveal the fix.
+        const target = event.target;
+        if (!(target instanceof Element) || !target.closest("button")) onReveal(s);
+      }}
+    >
       <button type="button" onClick={() => onReveal(s)} className="block w-full text-left" title="Jump to this text in the editor">
         <div className="flex items-center gap-1.5">
           <span className={`text-[11px] font-semibold ${meta.textClass}`}>{s.title}</span>
@@ -8743,9 +8921,8 @@ function StepRevise() {
 }
 
 function essayReviewPriorityActions(review?: EssayReviewResult | null): string[] {
-  if (!review?.criteria) return [];
-  return ESSAY_REVIEW_DIMENSIONS
-    .map((key) => review.criteria[key]?.priority_action?.title)
+  return (review?.revision_priorities ?? review?.revision_plan?.priorities ?? [])
+    .map((priority) => priority.title)
     .filter((item): item is string => !!item?.trim());
 }
 
@@ -8761,7 +8938,7 @@ function lowEssayReviewCriteria(review?: EssayReviewResult | null): string[] {
 
 function StepFinalCheck({ onNavigate }: { onNavigate?: (slug: string) => void }) {
   const { user, updateProfile } = useUser();
-  const review = user?.essayReviewResult?.schema_version === 4 ? user.essayReviewResult : null;
+  const review = user?.essayReviewResult?.schema_version === 5 ? user.essayReviewResult : null;
   const docs = user?.documents ?? [];
   const hasDoc = (kind: string) => docs.some((doc) => doc.kind.toLowerCase().includes(kind));
   const [zipping, setZipping] = useState(false);
@@ -9056,7 +9233,7 @@ function DraftDot({ cx, cy, index, payload, r = 4, onSelect }: DraftDotProps & {
 function StepTracker({ onNavigate }: { onNavigate?: (slug: string) => void }) {
   const { user, updateProfile } = useUser();
   const scholarship = user?.activeScholarship;
-  const review = user?.essayReviewResult?.schema_version === 4 ? user.essayReviewResult : null;
+  const review = user?.essayReviewResult?.schema_version === 5 ? user.essayReviewResult : null;
   const currentScore = typeof review?.overall_score === "number" ? review.overall_score : undefined;
   const applications = useMemo(() => user?.applications ?? [], [user?.applications]);
   const [openColumn, setOpenColumn] = useState<ApplicationStatus | null>(null);

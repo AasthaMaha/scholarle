@@ -443,20 +443,21 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
   useLayoutEffect(() => {
     const editor = editorRef.current;
     if (!editor) return;
+    const hydratedEditor = editor;
     const currentText = normalizeEditorText(editor.innerText ?? "");
     const savedHtml = richValue?.trim() ? sanitizeRichHtml(richValue) : "";
 
     function restoreHtml(html: string, deriveText: boolean) {
-      editor.innerHTML = html || "<br>";
-      const canonicalHtml = sanitizeRichHtml(editor.innerHTML);
-      if (editor.innerHTML !== canonicalHtml) editor.innerHTML = canonicalHtml || "<br>";
+      hydratedEditor.innerHTML = html || "<br>";
+      const canonicalHtml = sanitizeRichHtml(hydratedEditor.innerHTML);
+      if (hydratedEditor.innerHTML !== canonicalHtml) hydratedEditor.innerHTML = canonicalHtml || "<br>";
       lastSyncedHtml.current = canonicalHtml;
 
       // Keep the persisted rich document canonical after sanitization. When a
       // saved rich document is restored, its rendered text is authoritative too.
       if (canonicalHtml !== (richValue ?? "")) onRichChangeRef.current?.(canonicalHtml);
       if (deriveText) {
-        const restoredText = normalizeEditorText(editor.innerText ?? "");
+        const restoredText = normalizeEditorText(hydratedEditor.innerText ?? "");
         if (restoredText !== value) onChangeRef.current(restoredText);
       }
     }
@@ -636,11 +637,16 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
       setCard(null);
     },
     reveal(s: Suggestion) {
-      scrollOffsetIntoView(s.start, s.end);
-      requestAnimationFrame(() => addFlash(s.start, s.end - s.start, true));
-      editorRef.current?.focus();
+      // Focusing and changing a contenteditable selection can trigger the
+      // browser's own scroll adjustment. Establish both first, then center the
+      // range on the next frame so one Fixes-card click always lands correctly.
+      editorRef.current?.focus({ preventScroll: true });
       setSelectionByOffsets(s.start, s.end);
-      scheduleGutterUpdate();
+      requestAnimationFrame(() => {
+        scrollOffsetIntoView(s.start, s.end);
+        addFlash(s.start, s.end - s.start, true);
+        scheduleGutterUpdate();
+      });
     },
   }));
 

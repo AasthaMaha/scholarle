@@ -593,7 +593,7 @@ def _complete_audit(criterion: str) -> dict:
     }
 
 
-def test_active_specialists_have_complete_private_audit_playbooks():
+def test_active_specialists_use_fixed_profile_blind_question_contracts():
     assert set(CRITERION_AUDIT_PLAYBOOKS) == set(READINESS_DIMENSIONS)
     for criterion in READINESS_DIMENSIONS:
         playbook = CRITERION_AUDIT_PLAYBOOKS[criterion]
@@ -601,62 +601,75 @@ def test_active_specialists_have_complete_private_audit_playbooks():
         assert playbook["schema"]
         prompt = build_criterion_review_prompt(
             criterion,
-            "PROFILE: Real profile evidence\nDRAFT: Real essay evidence",
+            "STUDENT ESSAY: Real essay evidence",
             normalize_manager_plan({})["criteria"][criterion],
         )
-        assert "PRIVATE CRITERION AUDIT" in prompt
-        assert "not hidden reasoning" in prompt
-        assert "ESSAY COACH FEEDBACK" in prompt
-        assert "exactly one main_gap" in prompt
+        assert "APPLICABLE FIXED RUBRIC QUESTIONS" in prompt
+        assert "Do not assign a numerical score or performance level" in prompt
+        assert "You do not have access to the student profile" in prompt
+        assert "criterion-specific main gap" in prompt
         for field in playbook["schema"]:
             assert field in prompt
 
 
-def test_active_evidence_coach_compares_full_profile_and_surfaces_strongest_gap():
+def test_active_evidence_scorer_is_strictly_profile_blind():
     prompt = build_criterion_review_prompt(
         "evidence_strength",
         (
             "ESSAY PROMPT: Describe your community impact.\n"
             "SCHOLARSHIP: Values sustained service.\n"
-            "PROFILE: Tutored 12 students for 40 hours.\n"
             "DRAFT: I led our tutoring program."
         ),
         normalize_manager_plan({})["criteria"]["evidence_strength"],
     )
 
-    assert "Compare the entire relevant student profile with the essay" in prompt
-    assert "Rank profile experiences by relevance" in prompt
-    assert "strongest_relevant_profile_evidence" in prompt
-    assert "strongest_evidence_used" in prompt
-    assert "unused_relevant_profile_evidence" in prompt
-    assert "most consequential gap" in prompt
-    assert "surface it in the reviewer feedback and priority action" in prompt
-    assert "Tutored 12 students for 40 hours." in prompt
+    assert "You do not have access to the student profile" in prompt
+    assert "Answer every applicable fixed rubric question with exactly 0, 0.5, or 1" in prompt
+    assert "Tutored 12 students for 40 hours." not in prompt
+    assert "Do not assign a numerical score or performance level" in prompt
 
 
-def test_normalized_private_audit_is_available_to_backend_validation():
+def test_normalized_fixed_questions_are_available_to_backend_validation():
     criterion = "evidence_strength"
+    plan = normalize_manager_plan({})["criteria"][criterion]
     review = normalize_criterion_review(
         criterion,
         {
-            "audit": _complete_audit(criterion),
-            "score": 70,
+            "answers": [
+                {
+                    "question_id": question["id"],
+                    "value": 0,
+                    "evidence": [],
+                    "explanation": "The requirement is not demonstrated in the draft.",
+                }
+                for question in plan["questions"]
+                if question["applicable"]
+            ],
             "coach_feedback": {
                 "grounded_praise": "The tutoring claim gives the draft a real foundation.",
-                "main_gap": "The draft omits the profile's 12-student and 40-hour details.",
+                "main_gap": "The draft does not yet ground the tutoring claim in an action or result.",
             },
-            "priority_action": {
-                "title": "Add the tutoring evidence",
+            "criterion_specific_gap": {
+                "statement": "The claim lacks a concrete action or result.",
+                "root_cause_tag": "unsupported_claim",
+                "severity": "high",
+                "evidence": [],
+            },
+            "candidate_actions": [{
+                "action_type": "add_concrete_evidence",
                 "location": "Tutoring paragraph",
-                "how_to_fix": "Add the truthful student count and hours from the profile.",
-                "why_this_fixes_the_gap": "It makes the impact concrete.",
-            },
+                "instruction": "Add one truthful action and observable result.",
+                "completion_condition": "The paragraph states what happened and what changed.",
+                "estimated_effort": "Moderate",
+            }],
         },
-        normalize_manager_plan({})["criteria"][criterion],
+        plan,
     )
 
     assert criterion_audit_is_complete(criterion, review)
-    assert "strongest_relevant_profile_evidence" in review["_internal_audit"]
+    assert len(review["answers"]) == 5
+    assert review["score"] == 0
+    assert review["level"] == "Minimal"
 
 
 def test_grammar_prompt_owns_sentence_level_correctness_only():
@@ -827,7 +840,7 @@ def test_unified_coaching_session_reviews_submitted_draft_without_rewriting(monk
         seen["draft"] = kwargs["essay_draft"]
         return {
             "review": {
-                "schema_version": 4,
+                "schema_version": 5,
                 "status": "success",
                 "overall_score": 70,
                 "criteria": {},
@@ -845,7 +858,7 @@ def test_unified_coaching_session_reviews_submitted_draft_without_rewriting(monk
     result = routes.run_workspace_coaching_session(_coaching_session_request())
 
     assert result["status"] == "success"
-    assert result["review"]["schema_version"] == 4
+    assert result["review"]["schema_version"] == 5
     assert result["review"]["overall_score"] == 70
     assert result["outline_coverage"]["covered_point_ids"] == ["p-sec-0"]
     assert "components" not in result
@@ -865,7 +878,7 @@ def test_unified_coaching_session_preserves_partial_review_and_warning(monkeypat
     def fake_unified(**_kwargs):
         return {
             "review": {
-                "schema_version": 4,
+                "schema_version": 5,
                 "status": "partial",
                 "overall_score": 62,
                 "criteria": {},
@@ -1036,3 +1049,141 @@ def test_manager_first_review_runs_six_criterion_lanes_and_weights_once(monkeypa
     assert len(manager_contexts) == 1
     assert second["agent_status"]["manager"] == "reused"
     assert second["review"]["manager_plan"]["criteria"] == result["review"]["manager_plan"]["criteria"]
+
+
+# Schema-v5 replacement for the legacy test above. Reusing the name deliberately
+# replaces the retired schema-v4 contract during pytest collection.
+def test_manager_first_review_runs_six_criterion_lanes_and_weights_once(monkeypatch):
+    import unified_coaching_service as unified
+
+    monkeypatch.setattr(
+        unified,
+        "analyze_opportunity_text",
+        lambda _text: {
+            "opportunity_type": "Scholarship",
+            "requirements": ["Leadership"],
+            "evaluation_themes": ["Community impact"],
+            "deadlines": [],
+        },
+    )
+    manager_contexts = []
+    scorer_calls = []
+    planner_contexts = []
+
+    def fake_manager(context):
+        manager_contexts.append(context)
+        return unified.normalize_manager_plan({})
+
+    def fake_scorer(key, context, plan, **_kwargs):
+        scorer_calls.append((key, context))
+        return unified.normalize_criterion_review(
+            key,
+            {
+                "answers": [
+                    {
+                        "question_id": question["id"],
+                        "value": 0,
+                        "evidence": [],
+                        "explanation": "This requirement is not demonstrated.",
+                    }
+                    for question in plan["questions"]
+                    if question["applicable"]
+                ],
+                "coach_feedback": {
+                    "grounded_praise": f"The draft names a relevant focus for {key}.",
+                    "main_gap": f"The {key} requirement is not yet demonstrated.",
+                },
+                "criterion_specific_gap": {
+                    "statement": f"The {key} requirement is not yet demonstrated.",
+                    "root_cause_tag": "vague_takeaway",
+                    "severity": "high",
+                    "evidence": [],
+                },
+                "candidate_actions": [{
+                    "action_type": "clarify",
+                    "location": "Paragraph 1",
+                    "instruction": f"Add grounded support for {key}.",
+                    "completion_condition": "The requirement is directly demonstrated.",
+                    "estimated_effort": "Moderate",
+                }],
+            },
+            plan,
+        )
+
+    def fake_planner(context, reviews, **_kwargs):
+        planner_contexts.append(context)
+        assert len(reviews) == 6
+        return {
+            "available": True,
+            "priorities": [{
+                "id": "priority_1",
+                "title": "Ground the central claim",
+                "action": "Add one truthful action and result.",
+                "primary_criterion": "evidence_strength",
+                "also_improves": ["insight"],
+            }],
+        }
+
+    monkeypatch.setattr(unified, "run_manager_agent", fake_manager)
+    monkeypatch.setattr(unified, "run_criterion_review_agent", fake_scorer)
+    monkeypatch.setattr(unified, "run_revision_planner", fake_planner)
+    monkeypatch.setattr(
+        unified, "run_outline_coverage",
+        lambda *_args: {"covered_point_ids": ["p-sec-0"]},
+    )
+    monkeypatch.setattr(
+        unified,
+        "run_criterion_qa",
+        lambda _contexts, _plan, reviews, _revision_plan: {
+            "approved": len(reviews) == 6,
+            "failed_criteria": [],
+            "planner_failed": False,
+            "issues": [],
+        },
+    )
+    monkeypatch.setattr(
+        unified,
+        "run_action_guardrail",
+        lambda _context, reviews, _revision_plan: {
+            "approved": len(reviews) == 6,
+            "unsafe_criteria": [],
+            "planner_failed": False,
+            "issues": [],
+        },
+    )
+
+    result = unified.run_unified_coaching_session(
+        student_profile={"profile_text": "PRIVATE PROFILE: mentors robotics students."},
+        clean_scholarship_record={"name": "Engineering Award"},
+        essay_prompt="Describe your leadership and impact.",
+        essay_draft="I mentor younger robotics students each week.",
+        outline_points=[{"id": "p-sec-0", "label": "Leadership impact"}],
+        scholarship_name="Engineering Award",
+        opportunity_prompt="Describe your leadership and impact.",
+    )
+
+    assert len(manager_contexts) == 1
+    assert "PRIVATE PROFILE" not in manager_contexts[0]
+    assert len(scorer_calls) == 6
+    assert {key for key, _context in scorer_calls} == set(READINESS_DIMENSIONS)
+    assert all("PRIVATE PROFILE" not in context for _key, context in scorer_calls)
+    assert "PRIVATE PROFILE" in planner_contexts[0]
+    assert result["review"]["schema_version"] == 5
+    assert result["review"]["overall_score"] == 0
+    assert result["review"]["overall_level"] == "Minimal"
+    assert result["review"]["manager_plan"]["weight_total"] == 100
+    assert len(result["review"]["criteria"]) == 6
+    assert len(result["review"]["revision_priorities"]) == 1
+    assert result["outline_coverage"]["covered_point_ids"] == ["p-sec-0"]
+
+    second = unified.run_unified_coaching_session(
+        student_profile={"profile_text": "PRIVATE PROFILE: mentors robotics students."},
+        clean_scholarship_record={"name": "Engineering Award"},
+        essay_prompt="Describe your leadership and impact.",
+        essay_draft="I mentor younger robotics students and now explain the result.",
+        scholarship_name="Engineering Award",
+        opportunity_prompt="Describe your leadership and impact.",
+        previous_manager_plan=result["review"]["manager_plan"],
+    )
+    assert len(manager_contexts) == 1
+    assert second["agent_status"]["manager"] == "reused"

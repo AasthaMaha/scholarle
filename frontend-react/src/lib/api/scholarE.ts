@@ -179,6 +179,8 @@ export function normalizeEssayPromptEntries(scholarship?: ActiveScholarship | nu
       promptText,
       minimumWords: null,
       maximumWords: null,
+      minimumWordsReviewed: false,
+      maximumWordsReviewed: false,
     }));
 
   return source.map((entry, index) => {
@@ -659,6 +661,7 @@ export type CoachingSessionPayload = {
   scholarship_type: string;
   prompt: string;
   previous_manager_plan?: EssayReviewResult["manager_plan"];
+  previous_review?: EssayReviewResult;
   student_profile: Record<string, unknown>;
   clean_scholarship_record: ActiveScholarship;
   essay_prompt: string;
@@ -669,10 +672,16 @@ export type CoachingSessionPayload = {
 export type CoachingSessionResult = {
   session_id?: string;
   draft_hash?: string;
-  status: "success" | "partial" | "error";
+  status:
+    | "success"
+    | "scoring_success_coaching_partial"
+    | "partial"
+    | "error"
+    | "insufficient_to_assess"
+    | "evaluation_unavailable";
   review?: EssayReviewResult | null;
   outline_coverage?: { covered_point_ids?: string[] };
-  agents?: Record<string, "success" | "error" | "fallback" | "reused">;
+  agents?: Record<string, string>;
   warnings?: string[];
   duration_ms?: number;
 };
@@ -701,6 +710,8 @@ export function buildCoachingSessionPayload(
     essayReviewResult,
     essayReviewUpdatedAt,
     essayReviewDraftAtRun,
+    essayReviewPromptAtRun,
+    essayReviewProfileFingerprintAtRun,
     ...studentProfile
   } = user ?? { name: "", email: "" };
   void fitAnalysis;
@@ -712,6 +723,8 @@ export function buildCoachingSessionPayload(
   void essayReviewResult;
   void essayReviewUpdatedAt;
   void essayReviewDraftAtRun;
+  void essayReviewPromptAtRun;
+  void essayReviewProfileFingerprintAtRun;
   const prompt = buildOpportunityPrompt(user, essayPromptOverride)
     || "No formal essay prompt was provided; evaluate against the scholarship context.";
 
@@ -723,6 +736,9 @@ export function buildCoachingSessionPayload(
     scholarship_type: (scholarship.type ?? "").slice(0, 200),
     prompt,
     previous_manager_plan: user?.essayReviewResult?.manager_plan,
+    previous_review: user?.essayReviewResult?.schema_version === 5
+      ? user.essayReviewResult
+      : undefined,
     student_profile: { ...studentProfile, profile_text: profileToText(user) },
     clean_scholarship_record: workflowScholarship,
     essay_prompt: essayPrompt,

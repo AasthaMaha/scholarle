@@ -1,12 +1,13 @@
 // @vitest-environment happy-dom
 
-import { act } from "react";
+import { act, createRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { EssayEditor } from "./EssayEditor";
+import { EssayEditor, type EssayEditorHandle } from "./EssayEditor";
+import type { Suggestion } from "@/lib/suggestions";
 
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const mountedRoots: Array<{ root: Root; host: HTMLDivElement }> = [];
 
@@ -35,6 +36,7 @@ function mountEditor(value: string, richValue: string) {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   while (mountedRoots.length) {
     const mounted = mountedRoots.pop()!;
     act(() => mounted.root.unmount());
@@ -70,5 +72,57 @@ describe("EssayEditor rich-document restoration", () => {
     );
     expect(remountedEditor.querySelector("strong")?.textContent).toBe("Bold opening");
     expect(remountedEditor.querySelector<HTMLElement>("div")?.style.textAlign).toBe("center");
+  });
+});
+
+describe("EssayEditor suggestion reveal", () => {
+  it("prevents focus scrolling and defers centering until selection has settled", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    mountedRoots.push({ root, host });
+    const handle = createRef<EssayEditorHandle>();
+    const animationFrames: FrameRequestCallback[] = [];
+    vi.spyOn(window, "requestAnimationFrame")
+      .mockImplementation((callback) => {
+        animationFrames.push(callback);
+        return animationFrames.length;
+      });
+    const focusSpy = vi.spyOn(HTMLElement.prototype, "focus");
+    const suggestion: Suggestion = {
+      id: "fix-1",
+      category: "correctness",
+      start: 6,
+      end: 10,
+      original: "mist",
+      title: "Spelling",
+      explanation: "Correct the spelling.",
+      replacement: "miss",
+    };
+
+    act(() => {
+      root.render(
+        <EssayEditor
+          ref={handle}
+          value="Start mist end"
+          richValue=""
+          onChange={vi.fn()}
+          onRichChange={vi.fn()}
+          suggestions={[suggestion]}
+          onDismiss={vi.fn()}
+        />,
+      );
+    });
+    animationFrames.length = 0;
+    focusSpy.mockClear();
+
+    act(() => handle.current?.reveal(suggestion));
+
+    expect(focusSpy).toHaveBeenCalledWith({ preventScroll: true });
+    expect(animationFrames.length).toBeGreaterThanOrEqual(1);
+
+    act(() => {
+      [...animationFrames].forEach((callback) => callback(0));
+    });
   });
 });

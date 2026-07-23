@@ -134,6 +134,8 @@ export type EssayDraft = {
   // Per-version snapshots of the canonical Essay Review.
   reviewScores?: Record<string, number>;
   reviewOverall?: number;
+  reviewLevels?: Record<string, string>;
+  reviewOverallLevel?: string;
 };
 
 export type ApplicationStatus = "Drafting" | "Submitted" | "Awarded";
@@ -254,51 +256,184 @@ export type AnalysisScore = {
 export type EssayCriterionReview = {
   criterion?: string;
   label?: string;
+  short_label?: string;
   weight?: number;
+  raw_score?: number | null;
   score?: number | null;
   level?: string;
+  applied_safeguards?: string[];
+  answers?: Array<{
+    question_id?: string;
+    question?: string;
+    value?: 0 | 0.5 | 1;
+    answer_label?: string;
+    evidence?: Array<{ paragraph_id?: string; quote?: string }>;
+    explanation?: string;
+  }>;
+  normalized_question_weights?: Record<string, number>;
   coach_feedback?: {
     grounded_praise?: string;
     main_gap?: string;
   };
-  priority_action?: {
-    title?: string;
-    location?: string;
-    how_to_fix?: string;
-    why_this_fixes_the_gap?: string;
-    evidence_safety?: string;
-    impact?: string;
-    estimated_effort?: string;
+  criterion_specific_gap?: {
+    statement?: string;
+    root_cause_tag?: string;
+    severity?: "high" | "medium" | "low" | string;
+    evidence?: Array<{ paragraph_id?: string; quote?: string }>;
   };
-  rubric?: AnalysisScore["rubric"];
+  candidate_actions?: Array<{
+    action_type?: string;
+    location?: string;
+    instruction?: string;
+    completion_condition?: string;
+    estimated_effort?: string;
+  }>;
+  related_priority_ids?: string[];
+  rubric?: {
+    version?: string;
+    description?: string;
+    levels?: Array<{ label?: string; minimum?: number; maximum?: number }>;
+    questions?: Array<{
+      id?: string;
+      question?: string;
+      weight?: number;
+      normalized_weight?: number;
+      anchors?: Record<string, string>;
+      applicable?: boolean;
+      not_applicable?: {
+        reason?: string;
+        reason_code?: string;
+        source_quote?: string;
+      } | null;
+    }>;
+  };
   available?: boolean;
 };
 
 export type EssayManagerPlan = {
+  rubric_version?: string;
+  weight_policy_version?: string;
   manager_summary?: string;
+  weight_source?: "published" | "deterministic_source_signals" | string;
   weight_total?: number;
+  base_weights?: Record<string, number>;
+  evidence_points?: Record<string, number>;
+  source_signals?: Array<{
+    criterion?: string;
+    signal_type?: string;
+    source_field?: string;
+    source_quote?: string;
+    construct?: string;
+    points?: number;
+  }>;
+  published_weights?: Array<Record<string, unknown>>;
+  context_hash?: string;
   criteria?: Record<string, {
     label?: string;
+    short_label?: string;
     weight?: number;
+    base_weight?: number;
+    weight_adjustment?: number;
+    evidence_points?: number;
     weight_rationale?: string;
     description?: string;
-    excellent?: string;
-    developing?: string;
-    weak?: string;
     reviewer_lens?: string;
+    questions?: EssayCriterionReview["rubric"] extends infer R
+      ? R extends { questions?: infer Q }
+        ? Q
+        : never
+      : never;
   }>;
 };
 
+export type EssayRevisionPriority = {
+  id?: string;
+  title?: string;
+  action?: string;
+  location?: string;
+  completion_condition?: string;
+  primary_criterion?: string;
+  also_improves?: string[];
+  source_gap_criteria?: string[];
+  impact?: "High" | "Medium" | "Low" | string;
+  estimated_effort?: "Quick" | "Moderate" | "Deep" | string;
+  evidence_safety?: string;
+  profile_opportunity?: {
+    used?: boolean;
+    fact?: string;
+    included_in_score?: false;
+  };
+};
+
 export type EssayReviewResult = {
-  schema_version: 4;
-  status: "success" | "partial" | "error";
+  schema_version: 5;
+  status:
+    | "success"
+    | "scoring_success_coaching_partial"
+    | "partial"
+    | "error"
+    | "insufficient_to_assess"
+    | "evaluation_unavailable";
+  status_message?: string;
+  reason_code?: string;
   overall_score?: number | null;
+  overall_raw_score?: number | null;
+  overall_level?: string;
+  overall_safeguards?: string[];
   criteria: Record<string, EssayCriterionReview>;
+  revision_priorities?: EssayRevisionPriority[];
+  revision_plan?: {
+    version?: string;
+    priorities?: EssayRevisionPriority[];
+    available?: boolean;
+  };
   manager_plan: EssayManagerPlan;
   quality_review: {
     approved?: boolean;
+    scoring_approved?: boolean;
+    coaching_approved?: boolean;
     qa?: Record<string, unknown>;
     guardrail?: Record<string, unknown>;
+    programmatic_failed_criteria?: string[];
+    planner_available?: boolean;
+  };
+  diagnostics?: {
+    failure_stage?: string;
+    failed_components?: string[];
+    error_codes?: string[];
+    criterion_errors?: Array<{
+      criterion?: string;
+      error_code?: string;
+      question_id?: string;
+    }>;
+    retry_attempts?: Record<string, number>;
+    agent_status?: Record<string, string>;
+    warnings?: string[];
+  };
+  draft_progress?: {
+    has_previous_draft?: boolean;
+    overall_change?: number;
+    resolved_gap_count?: number;
+    criterion_changes?: Array<{
+      criterion?: string;
+      label?: string;
+      previous_score?: number;
+      current_score?: number;
+      score_change?: number;
+      previous_level?: string;
+      current_level?: string;
+      level_changed?: boolean;
+      previous_gap_changed?: boolean;
+    }>;
+  };
+  metadata?: {
+    rubric_version?: string;
+    evaluator_version?: string;
+    revision_planner_version?: string;
+    scoring_fingerprint?: string;
+    coaching_fingerprint?: string;
+    scoring_reused?: boolean;
+    cache_hit?: boolean;
   };
 };
 
@@ -522,10 +657,12 @@ export type UserProfile = {
   lastStep?: number;
   // scholarship currently being analyzed
   activeScholarship?: ActiveScholarship;
-  // latest schema-v4 six-criterion Essay Review, persisted across remounts
+  // latest schema-v5 six-criterion Essay Review, persisted across remounts
   essayReviewResult?: EssayReviewResult;
   essayReviewUpdatedAt?: number;
   essayReviewDraftAtRun?: string;
+  essayReviewPromptAtRun?: string;
+  essayReviewProfileFingerprintAtRun?: string;
   // latest dedicated scholarship fit analysis
   fitAnalysis?: FitAnalysisResult;
   // latest discovery wiki recommendations
@@ -612,13 +749,15 @@ function withoutLegacyEssayReviewData(user: UserProfile): UserProfile {
   });
 
   const reviewSchema = (current.essayReviewResult as { schema_version?: number } | undefined)?.schema_version;
-  const currentReview = reviewSchema === 4
+  const currentReview = reviewSchema === 5
     ? current
     : {
         ...current,
         essayReviewResult: undefined,
         essayReviewUpdatedAt: undefined,
         essayReviewDraftAtRun: undefined,
+        essayReviewPromptAtRun: undefined,
+        essayReviewProfileFingerprintAtRun: undefined,
       };
 
   return drafts ? { ...currentReview, drafts } : currentReview;
@@ -665,7 +804,9 @@ export function UserProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     try {
       window.localStorage.removeItem(LEGACY_STORAGE_KEY);
-    } catch {}
+    } catch {
+      // Storage may be disabled; hydration can still continue in memory.
+    }
     const store = readStore();
     const saved = store.accounts[store.currentEmail] ?? store.accounts[""];
     if (saved) setUser(withoutLegacyEssayReviewData(saved));

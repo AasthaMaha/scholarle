@@ -308,7 +308,7 @@ def test_unified_coaching_session_reviews_submitted_draft_without_rewriting(monk
         seen["draft"] = kwargs["essay_draft"]
         return {
             "review": {
-                "schema_version": 4,
+                "schema_version": 5,
                 "status": "success",
                 "overall_score": 70,
                 "criteria": {},
@@ -326,7 +326,7 @@ def test_unified_coaching_session_reviews_submitted_draft_without_rewriting(monk
     result = routes.run_workspace_coaching_session(_coaching_session_request())
 
     assert result["status"] == "success"
-    assert result["review"]["schema_version"] == 4
+    assert result["review"]["schema_version"] == 5
     assert result["review"]["overall_score"] == 70
     assert result["outline_coverage"]["covered_point_ids"] == ["p-core"]
     assert "components" not in result
@@ -346,7 +346,7 @@ def test_unified_coaching_session_preserves_partial_review_and_warning(monkeypat
     def fake_unified(**_kwargs):
         return {
             "review": {
-                "schema_version": 4,
+                "schema_version": 5,
                 "status": "partial",
                 "overall_score": 62,
                 "criteria": {},
@@ -515,3 +515,108 @@ def test_manager_first_review_runs_six_criterion_lanes_and_weights_once(monkeypa
     assert len(manager_contexts) == 1
     assert second["agent_status"]["manager"] == "reused"
     assert second["review"]["manager_plan"]["criteria"] == result["review"]["manager_plan"]["criteria"]
+
+
+# Schema-v5 replacement for the duplicate legacy contract above.
+def test_manager_first_review_runs_six_criterion_lanes_and_weights_once(monkeypatch):
+    import unified_coaching_service as unified
+
+    monkeypatch.setattr(
+        unified,
+        "analyze_opportunity_text",
+        lambda _text: {
+            "opportunity_type": "Scholarship",
+            "requirements": ["Leadership"],
+            "evaluation_themes": ["Community impact"],
+            "deadlines": [],
+        },
+    )
+    scorer_calls = []
+    planner_contexts = []
+    monkeypatch.setattr(unified, "run_manager_agent", lambda _context: unified.normalize_manager_plan({}))
+
+    def fake_scorer(key, context, plan, **_kwargs):
+        scorer_calls.append((key, context))
+        return unified.normalize_criterion_review(
+            key,
+            {
+                "answers": [
+                    {
+                        "question_id": question["id"],
+                        "value": 0,
+                        "evidence": [],
+                        "explanation": "This requirement is not demonstrated.",
+                    }
+                    for question in plan["questions"]
+                    if question["applicable"]
+                ],
+                "coach_feedback": {
+                    "grounded_praise": f"The draft names a relevant focus for {key}.",
+                    "main_gap": f"The {key} requirement is not yet demonstrated.",
+                },
+                "criterion_specific_gap": {
+                    "statement": f"The {key} requirement is not yet demonstrated.",
+                    "root_cause_tag": "vague_takeaway",
+                    "severity": "high",
+                    "evidence": [],
+                },
+                "candidate_actions": [{
+                    "instruction": f"Add grounded support for {key}.",
+                    "location": "Paragraph 1",
+                    "completion_condition": "The requirement is directly demonstrated.",
+                    "estimated_effort": "Moderate",
+                }],
+            },
+            plan,
+        )
+
+    def fake_planner(context, reviews, **_kwargs):
+        planner_contexts.append(context)
+        return {
+            "available": True,
+            "priorities": [{
+                "id": "priority_1",
+                "title": "Ground the central claim",
+                "action": "Add one truthful action and result.",
+                "primary_criterion": "evidence_strength",
+                "also_improves": ["insight"],
+            }],
+        }
+
+    monkeypatch.setattr(unified, "run_criterion_review_agent", fake_scorer)
+    monkeypatch.setattr(unified, "run_revision_planner", fake_planner)
+    monkeypatch.setattr(
+        unified,
+        "run_criterion_qa",
+        lambda _contexts, _plan, reviews, _revision_plan: {
+            "approved": len(reviews) == 6,
+            "failed_criteria": [],
+            "planner_failed": False,
+            "issues": [],
+        },
+    )
+    monkeypatch.setattr(
+        unified,
+        "run_action_guardrail",
+        lambda _context, reviews, _revision_plan: {
+            "approved": len(reviews) == 6,
+            "unsafe_criteria": [],
+            "planner_failed": False,
+            "issues": [],
+        },
+    )
+
+    result = unified.run_unified_coaching_session(
+        student_profile={"profile_text": "PRIVATE PROFILE: mentors robotics students."},
+        clean_scholarship_record={"name": "Engineering Award"},
+        essay_prompt="Describe your leadership and impact.",
+        essay_draft="I mentor younger robotics students each week.",
+        scholarship_name="Engineering Award",
+        opportunity_prompt="Describe your leadership and impact.",
+    )
+
+    assert len(scorer_calls) == 6
+    assert all("PRIVATE PROFILE" not in context for _key, context in scorer_calls)
+    assert "PRIVATE PROFILE" in planner_contexts[0]
+    assert result["review"]["schema_version"] == 5
+    assert result["review"]["overall_level"] == "Minimal"

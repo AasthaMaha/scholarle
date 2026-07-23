@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from fastapi import HTTPException, UploadFile
 
 from config import settings
+from essay_context import canonicalize_essay_text
 from essay_editor_service import run_contextual_grammar_check as run_contextual_grammar_check_service
 from essay_editor_service import run_editor_check as run_editor_check_service
 from essay_editor_service import run_outline_coverage_check as run_outline_coverage_check_service
@@ -214,11 +215,12 @@ class CoachingSessionRequest(BaseModel):
 
     user_id: str = Field(default="", max_length=100)
     cv_text: str = Field(default="", max_length=50000)
-    essay_text: str = Field(..., min_length=1, max_length=20000)
+    essay_text: str = Field(default="", max_length=20000)
     scholarship_name: str = Field(default="", max_length=500)
     scholarship_type: str = Field(default="", max_length=200)
-    prompt: str = Field(..., min_length=1, max_length=10000)
+    prompt: str = Field(default="", max_length=10000)
     previous_manager_plan: Optional[dict] = None
+    previous_review: Optional[dict] = None
     student_profile: dict = Field(default_factory=dict)
     clean_scholarship_record: dict = Field(default_factory=dict)
     essay_prompt: str = Field(default="", max_length=12000)
@@ -682,7 +684,8 @@ def run_workspace_coaching_session(request: CoachingSessionRequest) -> dict:
 
     started_at = time.perf_counter()
     essay_draft = request.essay_text
-    draft_hash = hashlib.sha256(essay_draft.encode("utf-8")).hexdigest()
+    canonical_draft = canonicalize_essay_text(essay_draft)
+    draft_hash = hashlib.sha256(canonical_draft.encode("utf-8")).hexdigest()
     session_seed = f"{request.user_id}:{time.time_ns()}:{draft_hash}"
     session_id = f"coach_{hashlib.sha256(session_seed.encode('utf-8')).hexdigest()[:16]}"
     essay_prompt = (request.essay_prompt or request.prompt or "").strip()
@@ -699,11 +702,19 @@ def run_workspace_coaching_session(request: CoachingSessionRequest) -> dict:
         scholarship_type=request.scholarship_type,
         opportunity_prompt=request.prompt,
         previous_manager_plan=request.previous_manager_plan,
+        previous_review=request.previous_review,
     )
     review = merged.get("review")
     warnings = list(merged.get("warnings") or [])
     status = str((review or {}).get("status") or "error").lower()
-    if status not in {"success", "partial", "error"}:
+    if status not in {
+        "success",
+        "scoring_success_coaching_partial",
+        "partial",
+        "error",
+        "insufficient_to_assess",
+        "evaluation_unavailable",
+    }:
         status = "partial"
 
     return {
