@@ -16,6 +16,7 @@ from api.routes import (
     OpportunityExtractRequest,
     OutlineGenerateRequest,
     OutlineCoverageRequest,
+    RevisionCoachRequest,
     RewriteRequest,
     WikiDiscoverRequest,
     WikiBootstrapRequest,
@@ -28,6 +29,7 @@ from api.routes import (
     run_contextual_grammar_check,
     run_editor_check,
     run_outline_coverage_check,
+    run_revision_coach,
     rewrite_selection,
     run_workspace_coaching_session,
 )
@@ -196,6 +198,16 @@ def coaching_session(request: CoachingSessionRequest):
 def rewrite_selection_endpoint(request: RewriteRequest):
     try:
         return rewrite_selection(request)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/apply/revision-coach")
+def revision_coach_endpoint(request: RevisionCoachRequest):
+    try:
+        return run_revision_coach(request)
     except HTTPException:
         raise
     except Exception as exc:

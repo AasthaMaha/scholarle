@@ -20,6 +20,7 @@ from essay_editor_service import run_editor_check as run_editor_check_service
 from essay_editor_service import run_outline_coverage_check as run_outline_coverage_check_service
 from essay_editor_service import run_selection_rewrite
 from prompt_adaptation import format_brief_for_prompt, resolve_writing_brief
+from revision_coach_service import run_revision_coach as run_revision_coach_service
 from graph.fit_builder import build_fit_analysis_graph
 from graph.opportunity_builder import build_opportunity_extraction_graph
 from graph.profile_builder import build_profile_extraction_graph
@@ -232,6 +233,17 @@ class RewriteRequest(BaseModel):
     action: str = Field(default="rewrite", max_length=40)
     selected_text: str = Field(..., min_length=1, max_length=6000)
     surrounding_text: str = Field(default="", max_length=20000)
+    essay_prompt: str = Field(default="", max_length=12000)
+    clean_scholarship_record: dict = Field(default_factory=dict)
+    student_profile: dict = Field(default_factory=dict)
+
+
+class RevisionCoachRequest(BaseModel):
+    priority: dict = Field(default_factory=dict)
+    essay_text: str = Field(..., min_length=1, max_length=20000)
+    target_start: int = Field(..., ge=0)
+    target_end: int = Field(..., ge=1)
+    draft_revision: str = Field(default="", max_length=100)
     essay_prompt: str = Field(default="", max_length=12000)
     clean_scholarship_record: dict = Field(default_factory=dict)
     student_profile: dict = Field(default_factory=dict)
@@ -743,6 +755,28 @@ def rewrite_selection(request: RewriteRequest) -> dict:
         action=request.action,
         selected_text=request.selected_text,
         surrounding_text=request.surrounding_text,
+        essay_prompt=request.essay_prompt,
+        clean_scholarship_record=request.clean_scholarship_record,
+        student_profile=request.student_profile,
+    )
+
+
+def run_revision_coach(request: RevisionCoachRequest) -> dict:
+    if not settings.openai_api_key:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Missing OPENAI_API_KEY. Add a .env file in the project root "
+                "with OPENAI_API_KEY=your_key, then restart the server."
+            ),
+        )
+
+    return run_revision_coach_service(
+        priority=request.priority,
+        essay_text=request.essay_text,
+        target_start=request.target_start,
+        target_end=request.target_end,
+        draft_revision=request.draft_revision,
         essay_prompt=request.essay_prompt,
         clean_scholarship_record=request.clean_scholarship_record,
         student_profile=request.student_profile,

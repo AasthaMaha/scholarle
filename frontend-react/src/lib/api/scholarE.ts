@@ -1,4 +1,4 @@
-import type { ActiveScholarship, DiscoveryIntent, EssayPromptEntry, EssayReviewResult, FitAnalysisResult, PersonalizedOutlineResult, UserProfile, WikiDiscoveryResult } from "@/lib/userStore";
+import type { ActiveScholarship, DiscoveryIntent, EssayPromptEntry, EssayReviewResult, EssayRevisionPriority, FitAnalysisResult, PersonalizedOutlineResult, UserProfile, WikiDiscoveryResult } from "@/lib/userStore";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 
@@ -845,6 +845,146 @@ export async function runSelectionRewrite(payload: SelectionRewritePayload): Pro
     throw new Error(typeof detail === "string" ? detail : "Rewrite failed.");
   }
   return data as SelectionRewriteResult;
+}
+
+export type RevisionCoachPayload = {
+  priority: EssayRevisionPriority;
+  essay_text: string;
+  target_start: number;
+  target_end: number;
+  draft_revision: string;
+  essay_prompt: string;
+  clean_scholarship_record: ActiveScholarship;
+  student_profile: Record<string, unknown>;
+};
+
+export type RevisionCoachSelectedFact = {
+  fact_id: string;
+  category?: string;
+  field?: string;
+  fact?: string;
+  value?: string;
+  source?: string;
+  confirmation_status?: string;
+  sensitivity?: "standard" | "sensitive" | string;
+  relevance?: string;
+};
+
+export type RevisionCoachResult = {
+  status: "success" | "error";
+  version?: string;
+  mode?: "exact_edit" | "evidence_grounded_edit" | "student_input_scaffold" | "structural_guidance" | string;
+  original_text?: string;
+  suggested_text?: string;
+  reason?: string;
+  selected_profile_facts?: RevisionCoachSelectedFact[];
+  student_input_required?: boolean;
+  target?: { start: number; end: number };
+  draft_revision?: string;
+  profile_inventory_hash?: string;
+  guardrail?: { approved?: boolean; issues?: string[] };
+  message?: string;
+  issues?: string[];
+};
+
+function revisionCoachProfile(user: UserProfile | null): Record<string, unknown> {
+  if (!user) return {};
+  const {
+    id,
+    email,
+    activeScholarship,
+    applications,
+    documents,
+    drafts,
+    essayDraft,
+    essayDraftHtml,
+    essayDraftsByPromptId,
+    essayDraftHtmlByPromptId,
+    essayFixesByPromptId,
+    ignoredEssayFixesByPromptId,
+    essayReviewResult,
+    essayReviewUpdatedAt,
+    essayReviewDraftAtRun,
+    essayReviewPromptAtRun,
+    essayReviewProfileFingerprintAtRun,
+    fitAnalysis,
+    wikiDiscovery,
+    savedWikiSources,
+    personalizedOutline,
+    personalDictionary,
+    ...profile
+  } = user;
+  void id;
+  void email;
+  void activeScholarship;
+  void applications;
+  void documents;
+  void drafts;
+  void essayDraft;
+  void essayDraftHtml;
+  void essayDraftsByPromptId;
+  void essayDraftHtmlByPromptId;
+  void essayFixesByPromptId;
+  void ignoredEssayFixesByPromptId;
+  void essayReviewResult;
+  void essayReviewUpdatedAt;
+  void essayReviewDraftAtRun;
+  void essayReviewPromptAtRun;
+  void essayReviewProfileFingerprintAtRun;
+  void fitAnalysis;
+  void wikiDiscovery;
+  void savedWikiSources;
+  void personalizedOutline;
+  void personalDictionary;
+  return profile;
+}
+
+export function buildRevisionCoachPayload(
+  user: UserProfile | null,
+  priority: EssayRevisionPriority,
+  essayText: string,
+  target: { start: number; end: number },
+  draftRevision: string,
+  essayPromptOverride?: string,
+): RevisionCoachPayload {
+  const scholarship = user?.activeScholarship ?? {};
+  const selectedEntry = promptEntryFor(scholarship, essayPromptOverride);
+  const essayPrompt = essayPromptOverride
+    || selectedEntry?.promptText
+    || (!hasEssayPromptDecision(scholarship) ? scholarship.essayPrompts : "")
+    || (!hasEssayPromptDecision(scholarship) ? scholarship.otherRequiredMaterials : "")
+    || (!hasEssayPromptDecision(scholarship) ? scholarship.requirementsPreview : "")
+    || "";
+  return {
+    priority,
+    essay_text: essayText,
+    target_start: target.start,
+    target_end: target.end,
+    draft_revision: draftRevision,
+    essay_prompt: essayPrompt,
+    clean_scholarship_record: scholarshipForEssayWorkflow(scholarship),
+    student_profile: revisionCoachProfile(user),
+  };
+}
+
+export async function runRevisionCoach(
+  payload: RevisionCoachPayload,
+): Promise<RevisionCoachResult> {
+  const response = await fetch(`${API_BASE}/api/apply/revision-coach`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    const detail = data?.detail;
+    throw new Error(
+      typeof detail === "string"
+        ? detail
+        : "Scholar-E could not create a grounded revision suggestion.",
+    );
+  }
+  return data as RevisionCoachResult;
 }
 
 export async function generatePersonalizedOutline(payload: OutlineGeneratePayload): Promise<PersonalizedOutlineResult> {

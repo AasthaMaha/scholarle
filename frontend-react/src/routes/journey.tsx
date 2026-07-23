@@ -70,6 +70,11 @@ import {
 } from "@/lib/fixCache";
 import { journeySteps } from "@/lib/persona";
 import { incompleteReviewMessage, isCompleteEssayReview } from "@/lib/essayReview";
+import { revisionDiff } from "@/lib/revisionDiff";
+import {
+  containingSentenceRange,
+  revisionPriorityRange,
+} from "@/lib/revisionPriorityTarget";
 import { getFile, removeFile, storeFile } from "@/lib/fileStore";
 import { Spinner } from "@/components/Spinner";
 import { AcademicOnboarding } from "@/components/AcademicOnboarding";
@@ -82,6 +87,7 @@ import {
   buildOutlineCoveragePayload,
   buildOutlinePayload,
   buildOutlinePoints,
+  buildRevisionCoachPayload,
   buildWikiPayload,
   discoverScholarshipWiki,
   buildRewritePayload,
@@ -92,6 +98,7 @@ import {
   runEditorCheck,
   runContextualGrammarCheck,
   runOutlineCoverageCheck,
+  runRevisionCoach,
   runSelectionRewrite,
   runWorkspaceCoachingSession,
   warmEditorTools,
@@ -99,6 +106,7 @@ import {
   normalizeSelectedEssayPromptEntries,
   serializeEssayPromptEntries,
   type EditorCheckResult,
+  type RevisionCoachResult,
 } from "@/lib/api/scholarE";
 import {
   useUser,
@@ -6273,6 +6281,16 @@ function EssayReviewWorkspaceLoadingOverlay({
   );
 }
 
+type RevisionCoachUiState = {
+  status: "loading" | "ready" | "error" | "applied";
+  result?: RevisionCoachResult;
+  message?: string;
+};
+
+function revisionPriorityKey(priority: EssayRevisionPriority, index = 0) {
+  return priority.id || `${priority.title || "priority"}-${index}`;
+}
+
 function StepEssayWorkspace() {
   const { user, updateProfile } = useUser();
   const [topBarTarget, setTopBarTarget] = useState<HTMLElement | null>(null);
@@ -6289,6 +6307,7 @@ function StepEssayWorkspace() {
   const [reviewProfileFingerprintAtRun, setReviewProfileFingerprintAtRun] = useState<string>(
     () => user?.essayReviewProfileFingerprintAtRun ?? "",
   );
+  const [revisionCoachStates, setRevisionCoachStates] = useState<Record<string, RevisionCoachUiState>>({});
   // Outline coverage is layered: `autoCovered` comes from the AI coverage agent;
   // `manualChecked`/`manualUnchecked` are the student's overrides, which persist
   // across auto-runs. Displayed = (auto ∪ manualChecked) − manualUnchecked.
@@ -6397,6 +6416,10 @@ function StepEssayWorkspace() {
     setDismissed(new Set(user?.ignoredEssayFixesByPromptId?.[activePromptId] ?? []));
     previousDraftForFixesRef.current = "";
   }, [activePromptId, user?.email]);
+
+  useEffect(() => {
+    setRevisionCoachStates({});
+  }, [activePromptId, reviewUpdatedAt]);
 
   useEffect(() => {
     if (selectedPromptIndex >= availablePrompts.length) {
@@ -6788,6 +6811,136 @@ function StepEssayWorkspace() {
 
   function revealSuggestion(s: Suggestion) {
     editorApiRef.current?.reveal(s);
+  }
+
+  function revealReviewPriority(priority: EssayRevisionPriority) {
+    if (!reviewResult) return;
+    const range = revisionPriorityRange(priority, reviewResult, draft);
+    if (!range) return;
+    editorApiRef.current?.reveal({
+      id: `review-${priority.id || priority.title || range.start}`,
+      category: "clarity",
+      start: range.start,
+      end: range.end,
+      original: draft.slice(range.start, range.end),
+      title: priority.title || "Revision priority",
+      explanation: priority.action || "",
+      replacement: "",
+      source: "coach",
+      replacementAvailable: false,
+    });
+  }
+
+  async function requestRevisionCoachSuggestion(priority: EssayRevisionPriority) {
+    const key = revisionPriorityKey(priority);
+    if (!reviewResult) {
+      setRevisionCoachStates((current) => ({
+        ...current,
+        [key]: { status: "error", message: "Evaluate the essay before requesting a suggested change." },
+      }));
+      return;
+    }
+    const citedTarget = revisionPriorityRange(priority, reviewResult, draft);
+    if (!citedTarget) {
+      setRevisionCoachStates((current) => ({
+        ...current,
+        [key]: {
+          status: "error",
+          message: "Scholar-E could not locate a specific passage for this priority.",
+        },
+      }));
+      return;
+    }
+    const target = containingSentenceRange(draft, citedTarget);
+    revealReviewPriority(priority);
+    setRevisionCoachStates((current) => ({
+      ...current,
+      [key]: { status: "loading" },
+    }));
+    try {
+      const result = await runRevisionCoach(buildRevisionCoachPayload(
+        user,
+        priority,
+        draft,
+        target,
+        draftFingerprint(draft),
+        essayPrompt,
+      ));
+      if (result.status !== "success" || !result.suggested_text || !result.target) {
+        throw new Error(result.message || "Scholar-E could not create a grounded suggestion.");
+      }
+      setRevisionCoachStates((current) => ({
+        ...current,
+        [key]: { status: "ready", result },
+      }));
+    } catch (error) {
+      setRevisionCoachStates((current) => ({
+        ...current,
+        [key]: {
+          status: "error",
+          message: error instanceof Error ? error.message : "Scholar-E could not create a grounded suggestion.",
+        },
+      }));
+    }
+  }
+
+  function applyRevisionCoachSuggestion(
+    priority: EssayRevisionPriority,
+    result: RevisionCoachResult,
+    replacement: string,
+  ) {
+    const key = revisionPriorityKey(priority);
+    const target = result.target;
+    const stale = !target
+      || result.draft_revision !== draftFingerprint(draft)
+      || draft.slice(target.start, target.end) !== result.original_text;
+    if (stale) {
+      setRevisionCoachStates((current) => ({
+        ...current,
+        [key]: {
+          ...current[key],
+          status: "error",
+          message: "The essay changed after this suggestion was created. Request a new suggestion.",
+        },
+      }));
+      return;
+    }
+    if (!replacement.trim() || /\[[^\]]+\]/.test(replacement)) {
+      setRevisionCoachStates((current) => ({
+        ...current,
+        [key]: {
+          ...current[key],
+          status: "error",
+          message: "Replace every placeholder with your own real detail before using this suggestion.",
+        },
+      }));
+      return;
+    }
+    editorApiRef.current?.accept({
+      id: `revision-coach-${key}`,
+      category: "engagement",
+      start: target.start,
+      end: target.end,
+      original: result.original_text || "",
+      title: priority.title || "Revision Coach",
+      explanation: result.reason || "",
+      replacement: replacement.trim(),
+      source: "coach",
+      replacementAvailable: true,
+    });
+    setRevisionCoachStates((current) => ({
+      ...current,
+      [key]: { ...current[key], status: "applied" },
+    }));
+  }
+
+  function dismissRevisionCoachSuggestion(priority: EssayRevisionPriority) {
+    const key = revisionPriorityKey(priority);
+    setRevisionCoachStates((current) => {
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
   }
 
   function persistEssayReview(
@@ -7637,6 +7790,11 @@ function StepEssayWorkspace() {
               reviewUpdatedAt={reviewUpdatedAt}
               reviewDraftChanged={!!reviewUpdatedAt && reviewScoringInputChanged}
               now={nowTick}
+              onRevealPriority={revealReviewPriority}
+              revisionCoachStates={revisionCoachStates}
+              onRequestRevisionCoach={requestRevisionCoachSuggestion}
+              onApplyRevisionCoach={applyRevisionCoachSuggestion}
+              onDismissRevisionCoach={dismissRevisionCoachSuggestion}
               covered={coveredPoints}
               onToggleCovered={toggleCovered}
             />
@@ -7689,6 +7847,11 @@ function EssayWorkspacePanel({
   reviewUpdatedAt,
   reviewDraftChanged,
   now,
+  onRevealPriority,
+  revisionCoachStates,
+  onRequestRevisionCoach,
+  onApplyRevisionCoach,
+  onDismissRevisionCoach,
   covered,
   onToggleCovered,
 }: {
@@ -7713,6 +7876,15 @@ function EssayWorkspacePanel({
   reviewUpdatedAt: number | null;
   reviewDraftChanged: boolean;
   now: number;
+  onRevealPriority: (priority: EssayRevisionPriority) => void;
+  revisionCoachStates: Record<string, RevisionCoachUiState>;
+  onRequestRevisionCoach: (priority: EssayRevisionPriority) => void;
+  onApplyRevisionCoach: (
+    priority: EssayRevisionPriority,
+    result: RevisionCoachResult,
+    replacement: string,
+  ) => void;
+  onDismissRevisionCoach: (priority: EssayRevisionPriority) => void;
   covered: Set<string>;
   onToggleCovered: (id: string) => void;
 }) {
@@ -7794,6 +7966,11 @@ function EssayWorkspacePanel({
             updatedAt={reviewUpdatedAt}
             draftChanged={reviewDraftChanged}
             now={now}
+            onRevealPriority={onRevealPriority}
+            revisionCoachStates={revisionCoachStates}
+            onRequestRevisionCoach={onRequestRevisionCoach}
+            onApplyRevisionCoach={onApplyRevisionCoach}
+            onDismissRevisionCoach={onDismissRevisionCoach}
           />
         )}
         {activeTab === "highlights" && (
@@ -8187,7 +8364,25 @@ function CriterionScoreButton({
   );
 }
 
-function RevisionPrioritiesSection({ priorities }: { priorities: EssayRevisionPriority[] }) {
+function RevisionPrioritiesSection({
+  priorities,
+  onRevealPriority,
+  revisionCoachStates,
+  onRequestRevisionCoach,
+  onApplyRevisionCoach,
+  onDismissRevisionCoach,
+}: {
+  priorities: EssayRevisionPriority[];
+  onRevealPriority: (priority: EssayRevisionPriority) => void;
+  revisionCoachStates: Record<string, RevisionCoachUiState>;
+  onRequestRevisionCoach: (priority: EssayRevisionPriority) => void;
+  onApplyRevisionCoach: (
+    priority: EssayRevisionPriority,
+    result: RevisionCoachResult,
+    replacement: string,
+  ) => void;
+  onDismissRevisionCoach: (priority: EssayRevisionPriority) => void;
+}) {
   if (!priorities.length) return null;
   return (
     <section className="rounded-xl border border-success/20 bg-success/5 p-3">
@@ -8212,9 +8407,14 @@ function RevisionPrioritiesSection({ priorities }: { priorities: EssayRevisionPr
             </div>
             {priority.action && <p className="mt-1.5 text-[12px] leading-relaxed">{priority.action}</p>}
             {priority.location && (
-              <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-                <span className="font-semibold text-foreground">Where: </span>{priority.location}
-              </p>
+              <button
+                type="button"
+                onClick={() => onRevealPriority(priority)}
+                className="mt-1 inline-flex items-center gap-1 text-[11px] font-semibold text-info transition-colors hover:text-info/80 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info focus-visible:ring-offset-2"
+              >
+                Show in essay
+                <ArrowRight className="size-3" aria-hidden="true" />
+              </button>
             )}
             {priority.completion_condition && (
               <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
@@ -8225,8 +8425,196 @@ function RevisionPrioritiesSection({ priorities }: { priorities: EssayRevisionPr
               Primary: {labelize(priority.primary_criterion || "criterion")}
               {!!priority.also_improves?.length && ` · Also improves: ${priority.also_improves.map(labelize).join(", ")}`}
             </p>
+            <RevisionCoachSuggestionPanel
+              priority={priority}
+              state={revisionCoachStates[revisionPriorityKey(priority)]}
+              onRequest={() => onRequestRevisionCoach(priority)}
+              onApply={(result, replacement) => onApplyRevisionCoach(priority, result, replacement)}
+              onDismiss={() => onDismissRevisionCoach(priority)}
+            />
           </article>
         ))}
+      </div>
+    </section>
+  );
+}
+
+function RevisionCoachSuggestionPanel({
+  priority,
+  state,
+  onRequest,
+  onApply,
+  onDismiss,
+}: {
+  priority: EssayRevisionPriority;
+  state?: RevisionCoachUiState;
+  onRequest: () => void;
+  onApply: (result: RevisionCoachResult, replacement: string) => void;
+  onDismiss: () => void;
+}) {
+  const result = state?.result;
+  const [editing, setEditing] = useState(false);
+  const [editedText, setEditedText] = useState("");
+  useEffect(() => {
+    setEditedText(result?.suggested_text ?? "");
+    setEditing(false);
+  }, [result?.suggested_text]);
+  const diff = useMemo(
+    () => revisionDiff(result?.original_text ?? "", editedText),
+    [editedText, result?.original_text],
+  );
+  const unresolvedPlaceholders = /\[[^\]]+\]/.test(editedText);
+
+  if (!state) {
+    return (
+      <button
+        type="button"
+        onClick={onRequest}
+        className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-info/25 bg-info/5 px-2.5 py-1.5 text-[11px] font-semibold text-info transition-colors hover:bg-info/10"
+      >
+        <Wand2 className="size-3.5" aria-hidden="true" />
+        Preview suggested change
+      </button>
+    );
+  }
+
+  if (state.status === "loading") {
+    return (
+      <div role="status" className="mt-2 flex items-center gap-2 rounded-md border border-info/20 bg-info/5 px-2.5 py-2 text-[11px] text-muted-foreground">
+        <span className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-info/20 border-t-info" />
+        Creating a grounded suggestion…
+      </div>
+    );
+  }
+
+  if (state.status === "error") {
+    return (
+      <div role="alert" className="mt-2 rounded-md border border-warning/25 bg-warning/5 p-2.5">
+        <p className="text-[11px] leading-relaxed text-foreground/85">{state.message}</p>
+        <div className="mt-2 flex gap-2">
+          <button type="button" onClick={onRequest} className="rounded-md bg-info px-2.5 py-1 text-[10px] font-semibold text-white">
+            Try again
+          </button>
+          <button type="button" onClick={onDismiss} className="rounded-md border border-border px-2.5 py-1 text-[10px] font-semibold text-muted-foreground">
+            Dismiss
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (state.status === "applied") {
+    return (
+      <div role="status" className="mt-2 flex items-center gap-2 rounded-md border border-success/25 bg-success/5 px-2.5 py-2 text-[11px] text-success">
+        <Check className="size-3.5" aria-hidden="true" />
+        Added to your essay. Review it in your own voice.
+      </div>
+    );
+  }
+
+  if (!result) return null;
+
+  return (
+    <section className="mt-2 rounded-lg border border-info/20 bg-info/5 p-2.5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-info">
+          Suggested change
+        </div>
+        <div className="text-[9px] font-semibold text-muted-foreground">
+          Preview only · your essay is unchanged
+        </div>
+      </div>
+
+      {editing ? (
+        <label className="mt-2 block">
+          <span className="text-[10px] font-semibold text-foreground">Edit before using</span>
+          <textarea
+            value={editedText}
+            onChange={(event) => setEditedText(event.target.value)}
+            rows={5}
+            className="mt-1 w-full resize-y rounded-md border border-input bg-background px-2.5 py-2 text-[12px] leading-relaxed outline-none focus:border-info focus:ring-2 focus:ring-info/15"
+          />
+        </label>
+      ) : (
+        <div className="mt-2 rounded-md border border-border bg-background p-2.5">
+          <div className="mb-1.5 flex gap-3 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">
+            <span><span className="mr-1 text-destructive">−</span>Removed</span>
+            <span><span className="mr-1 text-success">+</span>Added</span>
+          </div>
+          <p className="whitespace-pre-wrap text-[12px] leading-relaxed">
+            {diff.map((segment, index) => {
+              if (segment.type === "remove") {
+                return (
+                  <del key={`${segment.type}-${index}`} className="bg-destructive/10 text-destructive decoration-destructive/70">
+                    {segment.text}
+                  </del>
+                );
+              }
+              if (segment.type === "add") {
+                return (
+                  <ins key={`${segment.type}-${index}`} className="border-b border-success/60 bg-success/10 text-success no-underline">
+                    {segment.text}
+                  </ins>
+                );
+              }
+              return <span key={`${segment.type}-${index}`}>{segment.text}</span>;
+            })}
+          </p>
+        </div>
+      )}
+
+      {result.reason && (
+        <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">
+          <span className="font-semibold text-foreground">Why this helps: </span>
+          {result.reason}
+        </p>
+      )}
+
+      {!!result.selected_profile_facts?.length && (
+        <details className="mt-2 text-[10px] text-muted-foreground">
+          <summary className="cursor-pointer font-semibold text-foreground">
+            Profile details used ({result.selected_profile_facts.length})
+          </summary>
+          <ul className="mt-1 list-disc space-y-1 pl-4">
+            {result.selected_profile_facts.map((fact) => (
+              <li key={fact.fact_id}>
+                {fact.fact || fact.value}
+                {fact.sensitivity === "sensitive" && " · sensitive detail"}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+
+      {unresolvedPlaceholders && (
+        <p className="mt-2 text-[10px] font-medium text-warning">
+          Replace every bracketed placeholder with your own real detail before using this suggestion.
+        </p>
+      )}
+
+      <div className="mt-2.5 flex flex-wrap gap-1.5">
+        <button
+          type="button"
+          onClick={() => setEditing((current) => !current)}
+          className="rounded-md bg-info px-2.5 py-1.5 text-[10px] font-semibold text-white"
+        >
+          {editing ? "Review changes" : "Edit suggestion"}
+        </button>
+        <button
+          type="button"
+          onClick={() => onApply(result, editedText)}
+          disabled={!editedText.trim() || unresolvedPlaceholders}
+          className="rounded-md border border-info/30 bg-background px-2.5 py-1.5 text-[10px] font-semibold text-info disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          Use in essay
+        </button>
+        <button
+          type="button"
+          onClick={onDismiss}
+          className="rounded-md border border-border px-2.5 py-1.5 text-[10px] font-semibold text-muted-foreground"
+        >
+          Dismiss
+        </button>
       </div>
     </section>
   );
@@ -8356,11 +8744,25 @@ function UnifiedEssayReview({
   updatedAt,
   draftChanged,
   now,
+  onRevealPriority,
+  revisionCoachStates,
+  onRequestRevisionCoach,
+  onApplyRevisionCoach,
+  onDismissRevisionCoach,
 }: {
   review: EssayReviewResult;
   updatedAt: number | null;
   draftChanged: boolean;
   now: number;
+  onRevealPriority: (priority: EssayRevisionPriority) => void;
+  revisionCoachStates: Record<string, RevisionCoachUiState>;
+  onRequestRevisionCoach: (priority: EssayRevisionPriority) => void;
+  onApplyRevisionCoach: (
+    priority: EssayRevisionPriority,
+    result: RevisionCoachResult,
+    replacement: string,
+  ) => void;
+  onDismissRevisionCoach: (priority: EssayRevisionPriority) => void;
 }) {
   const { user } = useUser();
   const criteria = ESSAY_REVIEW_DIMENSIONS
@@ -8422,9 +8824,27 @@ function UnifiedEssayReview({
         </section>
       )}
 
-      <RevisionPrioritiesSection priorities={priorities} />
+      <RevisionPrioritiesSection
+        priorities={priorities}
+        onRevealPriority={onRevealPriority}
+        revisionCoachStates={revisionCoachStates}
+        onRequestRevisionCoach={onRequestRevisionCoach}
+        onApplyRevisionCoach={onApplyRevisionCoach}
+        onDismissRevisionCoach={onDismissRevisionCoach}
+      />
 
       <div className="overflow-hidden rounded-xl border border-border bg-border">
+        <div className="grid grid-cols-6 gap-px border-b border-border">
+          <div className="col-span-3 bg-secondary/70 py-1.5 text-center text-[10px] font-bold uppercase tracking-[0.12em] text-info">
+            Content
+          </div>
+          <div className="bg-secondary/70 py-1.5 text-center text-[10px] font-bold uppercase tracking-[0.12em] text-info">
+            Structure
+          </div>
+          <div className="col-span-2 bg-secondary/70 py-1.5 text-center text-[10px] font-bold uppercase tracking-[0.12em] text-info">
+            Voice
+          </div>
+        </div>
         <div className="grid grid-cols-6 gap-px">
           {ESSAY_REVIEW_DIMENSIONS.map((key, index) => {
             const criterion = criteriaByKey[key];
@@ -8455,6 +8875,11 @@ function WorkspaceEssayReviewTab({
   updatedAt,
   draftChanged,
   now,
+  onRevealPriority,
+  revisionCoachStates,
+  onRequestRevisionCoach,
+  onApplyRevisionCoach,
+  onDismissRevisionCoach,
 }: {
   review: EssayReviewResult | null;
   runError: string | null;
@@ -8462,6 +8887,15 @@ function WorkspaceEssayReviewTab({
   updatedAt: number | null;
   draftChanged: boolean;
   now: number;
+  onRevealPriority: (priority: EssayRevisionPriority) => void;
+  revisionCoachStates: Record<string, RevisionCoachUiState>;
+  onRequestRevisionCoach: (priority: EssayRevisionPriority) => void;
+  onApplyRevisionCoach: (
+    priority: EssayRevisionPriority,
+    result: RevisionCoachResult,
+    replacement: string,
+  ) => void;
+  onDismissRevisionCoach: (priority: EssayRevisionPriority) => void;
 }) {
   if (loading) {
     return (
@@ -8491,6 +8925,11 @@ function WorkspaceEssayReviewTab({
         updatedAt={updatedAt}
         draftChanged={draftChanged}
         now={now}
+        onRevealPriority={onRevealPriority}
+        revisionCoachStates={revisionCoachStates}
+        onRequestRevisionCoach={onRequestRevisionCoach}
+        onApplyRevisionCoach={onApplyRevisionCoach}
+        onDismissRevisionCoach={onDismissRevisionCoach}
       />
     </div>
   );
