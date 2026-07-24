@@ -272,9 +272,18 @@ class OutlineSection(BaseModel):
             "the interface adds those structural labels."
         ),
     )
-    purpose: str = ""
-    suggested_content: list[str] = Field(default_factory=list)
-    profile_evidence_to_use: list[str] = Field(default_factory=list)
+    purpose: str = Field(
+        default="",
+        description="One concise coaching paragraph, no more than 60 words.",
+    )
+    suggested_content: list[str] = Field(
+        default_factory=list,
+        description="Concise content suggestions; scholarship-guided sections use no more than two.",
+    )
+    profile_evidence_to_use: list[str] = Field(
+        default_factory=list,
+        description="Relevant profile evidence; scholarship-guided sections use no more than two.",
+    )
     scholarship_requirement_addressed: list[str] = Field(
         default_factory=list,
         description=(
@@ -282,8 +291,14 @@ class OutlineSection(BaseModel):
             "Every item must be phrased as a direct question ending in a question mark, without category headings."
         ),
     )
-    estimated_word_count: str = ""
-    coaching_notes: list[str] = Field(default_factory=list)
+    estimated_word_count: str = Field(
+        default="",
+        description="A compact section-level word allocation that fits within the overall word limit.",
+    )
+    coaching_notes: list[str] = Field(
+        default_factory=list,
+        description="Brief coaching notes; scholarship-guided sections use no more than two.",
+    )
 
 
 class PersonalizedOutline(BaseModel):
@@ -444,9 +459,43 @@ def _gather_opportunity_source_text(request: OpportunityExtractRequest):
     )
 
 
+SCHOLARSHIP_GUIDED_DEFAULT_WORD_LIMIT = "Maximum 500 words"
+
+
+def _effective_outline_word_limit(request: OutlineGenerateRequest) -> str:
+    explicit_limit = request.word_limit.strip()
+    if explicit_limit:
+        return explicit_limit
+    if not request.essay_prompt.strip():
+        return SCHOLARSHIP_GUIDED_DEFAULT_WORD_LIMIT
+    return ""
+
+
+def _outline_section_word_budgets(word_limit: str) -> tuple[str, str, str]:
+    counts = [int(value) for value in re.findall(r"\d{1,5}", word_limit)]
+    if not counts:
+        return ("Opening section", "Middle section", "Closing section")
+    if len(counts) >= 2:
+        lower, upper = min(counts[0], counts[1]), max(counts[0], counts[1])
+        target = round(lower + ((upper - lower) * 0.35))
+    else:
+        target = counts[0]
+    opening = max(1, round(target * 0.2))
+    middle = max(1, round(target * 0.5))
+    closing = max(1, target - opening - middle)
+    return (
+        f"About {opening} words",
+        f"About {middle} words",
+        f"About {closing} words",
+    )
+
+
 def _outline_fallback(request: OutlineGenerateRequest, message: str = "") -> dict:
     scholarship = request.clean_scholarship_record or {}
     prompt = request.essay_prompt.strip() or scholarship.get("essayPrompts") or scholarship.get("requirementsPreview") or ""
+    effective_word_limit = _effective_outline_word_limit(request)
+    section_word_budgets = _outline_section_word_budgets(effective_word_limit)
+    scholarship_guided = not request.essay_prompt.strip()
     warnings = []
     if message:
         warnings.append(message)
@@ -462,25 +511,25 @@ def _outline_fallback(request: OutlineGenerateRequest, message: str = "") -> dic
         "outline": {
             "sections": [
                 {
-                    "section_name": "Opening motivation tied to the prompt",
+                    "section_name": "Personal Motivation and Connection" if scholarship_guided else "Opening Motivation",
                     "purpose": "Open with a specific real moment, project, question, or responsibility that introduces the motivation or problem connecting you to this opportunity. This would place the reader in a concrete context and help them quickly understand why the opportunity matters to you.",
                     "suggested_content": ["Use one concrete real experience from your profile.", "Name the academic, service, or career direction the essay will explain."],
                     "profile_evidence_to_use": ["Use a real profile detail you have already provided."],
                     "scholarship_requirement_addressed": [
                         "What experience or motivation connects you to this opportunity?"
                     ],
-                    "estimated_word_count": request.word_limit or "Adjust to the final word limit.",
+                    "estimated_word_count": section_word_budgets[0],
                     "coaching_notes": ["Do not invent a dramatic story. Avoid generic openings."],
                 },
                 {
-                    "section_name": "Evidence of preparation and fit",
+                    "section_name": "Evidence of Fit and Contribution",
                     "purpose": "Use two or three strong experiences, skills, courses, research projects, work responsibilities, or leadership examples from your profile, then explain what each one demonstrates. This would give the reader concrete reasons to trust your preparation and recognize your fit with the scholarship.",
                     "suggested_content": ["Choose two or three strongest facts from your profile.", "Explain what each fact proves about readiness or alignment."],
-                    "profile_evidence_to_use": ["Academic background", "Skills", "Leadership, research, work, or projects if provided"],
+                    "profile_evidence_to_use": ["Academic background and skills", "Strongest leadership, research, work, or project example"],
                     "scholarship_requirement_addressed": [
                         "What evidence demonstrates your preparation and fit?"
                     ],
-                    "estimated_word_count": "Middle section",
+                    "estimated_word_count": section_word_budgets[1],
                     "coaching_notes": ["Use evidence, not a list of achievements."],
                 },
                 {
@@ -491,7 +540,7 @@ def _outline_fallback(request: OutlineGenerateRequest, message: str = "") -> dic
                     "scholarship_requirement_addressed": [
                         "How would this scholarship support your future goals and intended impact?"
                     ],
-                    "estimated_word_count": "Closing section",
+                    "estimated_word_count": section_word_budgets[2],
                     "coaching_notes": ["Keep the ending specific to the scholarship."],
                 },
             ],
@@ -553,25 +602,83 @@ def _coerce_direct_question(value: object) -> str:
     return f"What does this section need to address about {clean[0].lower()}{clean[1:]}?"
 
 
-def _outline_contract_violations(data: dict, writing_brief: dict) -> list[str]:
+def _word_limit_upper_bound(word_limit: str) -> int | None:
+    counts = [int(value) for value in re.findall(r"\d{1,5}", word_limit)]
+    if not counts:
+        return None
+    normalized = word_limit.casefold()
+    minimum_only = len(counts) == 1 and any(
+        phrase in normalized
+        for phrase in ("at least", "minimum", "no fewer than")
+    )
+    if minimum_only:
+        return None
+    return max(counts[:2])
+
+
+def _outline_contract_violations(
+    data: dict,
+    writing_brief: dict,
+    word_limit: str = "",
+) -> list[str]:
     sections = ((data or {}).get("outline") or {}).get("sections") or []
     violations: list[str] = []
     prompt_driven = writing_brief.get("mode") == "prompt_driven"
+    scholarship_guided = writing_brief.get("mode") == "scholarship_guided"
     expected_asks = writing_brief.get("prompt_asks") or []
+    word_limit_upper_bound = _word_limit_upper_bound(word_limit)
+    guided_max_sections = 3 if word_limit_upper_bound and word_limit_upper_bound <= 300 else 4
+    guided_estimated_counts: list[int] = []
     if prompt_driven and len(sections) != len(expected_asks):
         violations.append(f"Expected {len(expected_asks)} ordered sections but received {len(sections)}.")
+    if scholarship_guided and not 3 <= len(sections) <= guided_max_sections:
+        section_rule = "exactly 3" if guided_max_sections == 3 else "3 to 4"
+        violations.append(
+            f"Scholarship-guided outlines must contain {section_rule} concise sections; "
+            f"received {len(sections)}."
+        )
     for index, section in enumerate(sections):
         title = " ".join(str(section.get("section_name") or "").split())
         questions = section.get("scholarship_requirement_addressed") or []
+        purpose = " ".join(str(section.get("purpose") or "").split())
+        suggested_content = section.get("suggested_content") or []
+        profile_evidence = section.get("profile_evidence_to_use") or []
+        coaching_notes = section.get("coaching_notes") or []
         if title.endswith("?"):
             violations.append(f"Section {index + 1} title is a question instead of a descriptive phrase.")
         if prompt_driven and len(questions) != 1:
             violations.append(f"Section {index + 1} must contain exactly one prompt question.")
+        if scholarship_guided:
+            if len(questions) != 1:
+                violations.append(f"Section {index + 1} must contain exactly one scholarship-focus question.")
+            if len(purpose.split()) > 60:
+                violations.append(f"Section {index + 1} purpose exceeds the 60-word concise limit.")
+            if len(suggested_content) > 2:
+                violations.append(f"Section {index + 1} has more than two content suggestions.")
+            if len(profile_evidence) > 2:
+                violations.append(f"Section {index + 1} has more than two profile-evidence suggestions.")
+            if len(coaching_notes) > 2:
+                violations.append(f"Section {index + 1} has more than two coaching notes.")
+            estimated_counts = re.findall(r"\d{1,5}", str(section.get("estimated_word_count") or ""))
+            if not estimated_counts:
+                violations.append(f"Section {index + 1} is missing a numeric estimated word count.")
+            else:
+                guided_estimated_counts.append(int(estimated_counts[-1]))
         for question in questions:
             if not _is_direct_question(question):
                 violations.append(f"Section {index + 1} contains a malformed prompt question: {question!r}.")
             if title.rstrip("?").casefold() == str(question).strip().rstrip("?").casefold():
                 violations.append(f"Section {index + 1} title duplicates its prompt question.")
+    if (
+        scholarship_guided
+        and word_limit_upper_bound
+        and len(guided_estimated_counts) == len(sections)
+        and sum(guided_estimated_counts) > word_limit_upper_bound
+    ):
+        violations.append(
+            f"Section word allocations total {sum(guided_estimated_counts)} words, exceeding the "
+            f"{word_limit_upper_bound}-word limit."
+        )
     return violations
 
 
@@ -596,6 +703,7 @@ def generate_personalized_outline(request: OutlineGenerateRequest) -> dict:
         clean_scholarship_record=scholarship,
         allow_scholarship_fallback=True,
     )
+    effective_word_limit = _effective_outline_word_limit(request)
     if writing_brief.get("mode") == "empty" and not scholarship:
         return _outline_fallback(request)
 
@@ -607,6 +715,10 @@ def generate_personalized_outline(request: OutlineGenerateRequest) -> dict:
                     "read-only essay outline that is ADAPTIVE to the writing brief for this specific opportunity. "
                     "Use only the provided student profile, cleaned scholarship requirements, essay prompt / writing "
                     "brief, selection criteria, and word limit. "
+                    "Treat WORD LIMIT as a hard planning constraint whenever it states an exact count or maximum. "
+                    "Keep the outline compact, and make all section estimated_word_count values add up to no more than "
+                    "that maximum. For a range, target the shorter half of the range. For a minimum-only requirement, "
+                    "stay close to the minimum unless the scholarship requires more. "
                     "Do not invent student experiences or scholarship requirements. Do not write the full essay. Do not "
                     "make the outline generic. "
                     "If WRITING MODE is prompt_driven: every section must map to one distinct ask in the selected essay prompt. "
@@ -614,7 +726,14 @@ def generate_personalized_outline(request: OutlineGenerateRequest) -> dict:
                     "never merge two asks into one section. Each section must contain exactly one corresponding "
                     "scholarship_requirement_addressed question. "
                     "If WRITING MODE is scholarship_guided: there is no formal prompt — structure the outline around the "
-                    "scholarship mission, selection criteria, and materials, and say so in coaching notes. "
+                    "scholarship mission, selection criteria, and materials, and say so in coaching notes. Return only "
+                    "3 or 4 compact sections; when the maximum is 300 words or fewer, return exactly 3. Cover, in a tailored "
+                    "order, the student's motivation and connection, strongest evidence of fit or contribution, goals and "
+                    "scholarship alignment, and a brief future-impact close. Merge the close into the goals section when "
+                    "using 3 sections. These are structural roles, not required titles: create short opportunity-specific "
+                    "headings and do not copy scholarship language verbatim. Each section must have exactly one concise "
+                    "scholarship-focus question, a purpose of no more than 60 words, no more than two suggested_content "
+                    "items, no more than two profile_evidence_to_use items, and no more than two coaching_notes. "
                     "Write each section_name as a short descriptive noun phrase, such as 'Outcome and Impact' or "
                     "'Reflection and Growth'. A section name must never be a question, end in '?', or repeat its purple "
                     "scholarship_requirement_addressed question. Do not prefix a section name with 'Introduction:' or "
@@ -643,6 +762,9 @@ def generate_personalized_outline(request: OutlineGenerateRequest) -> dict:
                     "outline, and ensure every prompt ask is assigned to at least one specific section. "
                     "In prompt-driven mode, return one section per distinct prompt ask in the supplied order; do not combine "
                     "asks even when the source prompt places them in the same sentence. "
+                    "In scholarship-guided mode, keep the result as compact as a prompt-driven outline: use only the "
+                    "3 or 4 structural roles needed for this scholarship, paraphrase its priorities, avoid repeated advice, "
+                    "and assign a numeric word budget to every section without exceeding WORD LIMIT. "
                     "Keep confirmed requirements separate from suggestions. Use meaningful section names tied to the brief. "
                     "Make every section purpose a single, specific coaching paragraph that combines the writing action with "
                     "what it would help the reader understand, feel, or conclude. Do not return separate opening or closing tips. "
@@ -654,7 +776,7 @@ def generate_personalized_outline(request: OutlineGenerateRequest) -> dict:
                     f"Clean scholarship record:\n{json.dumps(scholarship, indent=2, default=str)}\n\n"
                     f"Selected essay prompt text (may be empty if scholarship-guided):\n{essay_prompt or '(none provided)'}\n\n"
                     f"Essay type:\n{request.essay_type}\n\n"
-                    f"Word limit:\n{request.word_limit or 'Not stated'}\n\n"
+                    f"Word limit:\n{effective_word_limit or 'Not stated'}\n\n"
                     f"Student profile:\n{json.dumps(request.student_profile or {}, indent=2, default=str)}\n\n"
                     f"User notes:\n{request.user_notes}",
                 ),
@@ -662,7 +784,7 @@ def generate_personalized_outline(request: OutlineGenerateRequest) -> dict:
     try:
         result = model.invoke(messages)
         data = result.model_dump() if hasattr(result, "model_dump") else result.dict()
-        violations = _outline_contract_violations(data, writing_brief)
+        violations = _outline_contract_violations(data, writing_brief, effective_word_limit)
         if violations:
             violation_list = "\n- ".join(violations)
             repair_result = model.invoke(
@@ -706,7 +828,7 @@ def generate_personalized_outline(request: OutlineGenerateRequest) -> dict:
         )
     elif writing_brief.get("mode") == "empty":
         warnings.append("Add an essay prompt or more scholarship details to personalize this outline further.")
-    if not request.word_limit:
+    if not effective_word_limit:
         warnings.append("No word limit was found. Adjust section lengths after confirming the official limit.")
     if not request.student_profile:
         warnings.append("Add your student profile to make this outline more personalized.")

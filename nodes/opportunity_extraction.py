@@ -966,7 +966,7 @@ def clean_scholarship_output(state):
         str(prompt_id)
         for prompt_id in state.get("selectedEssayPromptIds") or []
         if str(prompt_id) in valid_prompt_ids
-    ]
+    ][:1]
     mapped["noEssayPromptSelected"] = bool(state.get("noEssayPromptSelected"))
     mapped["noEssayPromptConflictConfirmed"] = bool(state.get("noEssayPromptConflictConfirmed"))
     if mapped["noEssayPromptSelected"]:

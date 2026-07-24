@@ -4840,14 +4840,14 @@ function PromptReviewRow({
   entry,
   index,
   selected,
-  onToggle,
+  onSelect,
   onSave,
   onRemove,
 }: {
   entry: EssayPromptEntry;
   index: number;
   selected: boolean;
-  onToggle: () => void;
+  onSelect: () => void;
   onSave: (patch: Partial<EssayPromptEntry>) => void;
   onRemove: () => void;
 }) {
@@ -4907,7 +4907,7 @@ function PromptReviewRow({
     <article className={`my-2 rounded-lg border px-3 py-3 transition-[border-color,background-color,box-shadow,transform] duration-150 motion-safe:hover:-translate-y-px motion-reduce:transform-none motion-reduce:transition-none ${selected ? "border-info/65 bg-info/[0.10] shadow-sm hover:border-info/75 hover:bg-info/[0.12] focus-within:border-info/75 focus-within:bg-info/[0.12]" : "border-info/15 bg-white/85 hover:border-info/35 hover:bg-info/[0.035] hover:shadow-sm focus-within:border-info/40 focus-within:bg-info/[0.035]"}`}>
       <div className="flex items-start gap-3">
         <label className="mt-0.5 inline-flex min-h-8 min-w-8 cursor-pointer items-start justify-center pt-1" aria-label={`Select Prompt ${index + 1}`}>
-          <input type="checkbox" checked={selected} onChange={onToggle} className="size-4 rounded border-border text-info focus:ring-2 focus:ring-info/30" />
+          <input type="radio" name="essay-prompt-choice" checked={selected} onChange={onSelect} className="size-4 border-border text-info focus:ring-2 focus:ring-info/30" />
         </label>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -5092,9 +5092,11 @@ function EditableScholarshipFields({
   const essayRequiredByMaterials = requiredMaterials.some((item) => /\bessay|personal statement|short[- ]answer\b/i.test(item));
   const validPromptIds = new Set(promptEntries.map((entry) => entry.id));
   const noEssayPromptSelected = !!scholarship.noEssayPromptSelected;
-  const selectedPromptIds = noEssayPromptSelected
-    ? []
-    : (scholarship.selectedEssayPromptIds ?? []).filter((id) => validPromptIds.has(id));
+  const storedSelectedPromptIds = new Set(scholarship.selectedEssayPromptIds ?? []);
+  const selectedPromptId = noEssayPromptSelected
+    ? undefined
+    : promptEntries.find((entry) => validPromptIds.has(entry.id) && storedSelectedPromptIds.has(entry.id))?.id;
+  const selectedPromptIds = selectedPromptId ? [selectedPromptId] : [];
   const selectedPromptIdSet = new Set(selectedPromptIds);
   const selectedPromptEntries = promptEntries.filter((entry) => selectedPromptIdSet.has(entry.id));
   const promptEntryIsValid = (entry: EssayPromptEntry) => {
@@ -5132,23 +5134,17 @@ function EditableScholarshipFields({
     updatePromptEntries(promptEntries.map((entry) => entry.id === promptId ? { ...entry, ...patch } : entry));
   }
 
-  function togglePrompt(promptId: string) {
-    const next = new Set(selectedPromptIds);
-    if (next.has(promptId)) next.delete(promptId);
-    else next.add(promptId);
+  function choosePrompt(promptId: string) {
     setPendingNoEssayConfirmation(false);
     updateScholarship({
-      selectedEssayPromptIds: promptEntries.filter((entry) => next.has(entry.id)).map((entry) => entry.id),
+      selectedEssayPromptIds: [promptId],
       noEssayPromptSelected: false,
       noEssayPromptConflictConfirmed: false,
     });
   }
 
   function chooseNoEssayPrompt() {
-    if (noEssayPromptSelected) {
-      updateScholarship({ noEssayPromptSelected: false, noEssayPromptConflictConfirmed: false });
-      return;
-    }
+    if (noEssayPromptSelected) return;
     if (essayRequiredByMaterials) {
       setPendingNoEssayConfirmation(true);
       return;
@@ -5279,22 +5275,22 @@ function EditableScholarshipFields({
 
         <section aria-labelledby="essay-requirements-heading" className="border-l-2 border-info/55 bg-accent/20 px-3 py-4 sm:px-4">
           <h3 id="essay-requirements-heading" className="text-base font-semibold text-foreground">Essay requirements</h3>
-          <p className="mt-1 max-w-3xl text-sm leading-5 text-foreground/70">Review the prompts and word limits, then choose the prompt or prompts you want to use.</p>
+          <p className="mt-1 max-w-3xl text-sm leading-5 text-foreground/70">Review the prompts and word limits, then choose the one prompt you want to use.</p>
           <p className="mt-1 text-xs text-muted-foreground">Use N/A when the scholarship does not specify a limit.</p>
 
-          <div className="mt-3">
+          <div className="mt-3" role="radiogroup" aria-label="Essay prompt choice">
             {promptEntries.map((entry, index) => (
               <PromptReviewRow
                 key={entry.id}
                 entry={entry}
                 index={index}
                 selected={selectedPromptIdSet.has(entry.id)}
-                onToggle={() => togglePrompt(entry.id)}
+                onSelect={() => choosePrompt(entry.id)}
                 onSave={(patch) => updatePrompt(entry.id, patch)}
                 onRemove={() => updatePromptEntries(promptEntries.filter((candidate) => candidate.id !== entry.id))}
               />
             ))}
-            {promptEntries.length === 0 && <p className="py-4 text-sm text-muted-foreground">No essay prompt was extracted. Add one or explicitly choose No essay prompt.</p>}
+            {promptEntries.length === 0 && <p className="py-4 text-sm text-muted-foreground">No essay prompt was extracted. Add one or explicitly choose No formal essay prompt.</p>}
           </div>
 
           <button
@@ -5307,10 +5303,10 @@ function EditableScholarshipFields({
 
           <div className="mt-4 border-t border-info/10 pt-4">
             <label className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-3 transition-colors ${noEssayPromptSelected ? "border-info/40 bg-accent/50" : "border-info/10 bg-white/65 hover:border-info/25"}`}>
-              <input type="checkbox" checked={noEssayPromptSelected} onChange={chooseNoEssayPrompt} className="mt-0.5 size-4 rounded border-border text-info focus:ring-2 focus:ring-info/30" />
+              <input type="radio" name="essay-prompt-choice" checked={noEssayPromptSelected} onChange={chooseNoEssayPrompt} className="mt-0.5 size-4 border-border text-info focus:ring-2 focus:ring-info/30" />
               <span>
-                <span className="block text-sm font-semibold text-foreground">No essay prompt</span>
-                <span className="mt-0.5 block text-xs leading-5 text-muted-foreground">Choose this only when the scholarship does not require a written response.</span>
+                <span className="block text-sm font-semibold text-foreground">No formal essay prompt</span>
+                <span className="mt-0.5 block text-xs leading-5 text-muted-foreground">Choose this when the scholarship does not publish a specific question. Scholar-E will build a scholarship-guided outline from its mission and requirements.</span>
               </span>
             </label>
             {(pendingNoEssayConfirmation || (noEssayPromptSelected && essayRequiredByMaterials && !scholarship.noEssayPromptConflictConfirmed)) && (
@@ -5340,9 +5336,9 @@ function EditableScholarshipFields({
         {!promptDecisionValid && (
           <p role="status" aria-live="polite" className="text-right text-sm font-medium text-warning">
             {!promptDecisionMade
-              ? "Select at least one prompt or choose No essay prompt."
+              ? "Select one prompt or choose No formal essay prompt."
               : noEssayPromptSelected
-                ? "Confirm that no essay prompt applies to continue."
+                ? "Confirm that no formal essay prompt applies to continue."
                 : "Review the selected prompt text and enter a number or N/A for both word limits."}
           </p>
         )}
@@ -5459,6 +5455,7 @@ function StepRequirementsAndFit() {
     }
   }
   const fitAnalysis = user?.fitAnalysis;
+  const boundedFitScore = clampFitScore(fitAnalysis?.fit_score);
   const hasExtractedDetails = !!scholarship.extractionCompletedAt;
   const stepTwoLocked = !hasExtractedDetails || extracting;
   const stepThreeLocked = !fitAnalysis || fitAnalyzing || extracting;
@@ -5533,16 +5530,16 @@ function StepRequirementsAndFit() {
                       cx="50"
                       cy="50"
                       r="42"
-                      stroke={fitScoreStroke(fitAnalysis.fit_score ?? 0, fitAnalysis.fit_label)}
+                      stroke={fitScoreStroke(boundedFitScore, fitAnalysis.fit_label)}
                       strokeWidth="7"
                       fill="none"
                       strokeLinecap="round"
-                      strokeDasharray={`${((fitAnalysis.fit_score ?? 0) / 100) * 2 * Math.PI * 42} 999`}
+                      strokeDasharray={`${(boundedFitScore / 100) * 2 * Math.PI * 42} 999`}
                     />
                   </svg>
                   <div className="absolute inset-0 grid place-items-center">
                     <div>
-                      <div className="font-display text-4xl tracking-tight">{fitAnalysis.fit_score ?? 0}</div>
+                      <div className="font-display text-4xl tracking-tight">{boundedFitScore}</div>
                       <div className="text-[11px] text-muted-foreground">out of 100</div>
                     </div>
                   </div>
@@ -5771,6 +5768,11 @@ function fitScoreStroke(score: number, label?: string) {
   if (score >= 75) return "var(--gold)";
   if (score >= 55) return "var(--warning, #d97706)";
   return "var(--warning, #d97706)";
+}
+
+function clampFitScore(score?: number) {
+  const numericScore = typeof score === "number" && Number.isFinite(score) ? Math.round(score) : 15;
+  return Math.max(15, Math.min(95, numericScore));
 }
 
 function fitLabelTone(
@@ -6659,9 +6661,7 @@ function StepEssayWorkspace() {
   const [nowTick, setNowTick] = useState(() => Date.now());
   const [outlineLoading, setOutlineLoading] = useState(false);
   const [outlineStatus, setOutlineStatus] = useState<string | null>(null);
-  const [promptConfirmed, setPromptConfirmed] = useState(false);
-  const [promptPickerOpen, setPromptPickerOpen] = useState(false);
-  const [pendingPromptIndex, setPendingPromptIndex] = useState(0);
+  const outlineAttemptKeyRef = useRef<string | null>(null);
   const [workspaceTutorialActive, setWorkspaceTutorialActive] = useState(false);
   const workspaceTutorialHandled = useRef(false);
   const languageToolAbortRef = useRef<AbortController | null>(null);
@@ -6685,12 +6685,9 @@ function StepEssayWorkspace() {
   const availablePromptEntries = useMemo(() => {
     const selected = normalizeSelectedEssayPromptEntries(user?.activeScholarship);
     if (selected.length > 0 || hasPromptDecisionState) return selected;
-    return normalizeEssayPromptEntries({ essayPrompts: legacyPromptBlob });
+    return normalizeEssayPromptEntries({ essayPrompts: legacyPromptBlob }).slice(0, 1);
   }, [hasPromptDecisionState, legacyPromptBlob, user?.activeScholarship]);
-  const availablePrompts = useMemo(() => availablePromptEntries.map((entry) => entry.promptText), [availablePromptEntries]);
-  const promptDataKey = useMemo(() => JSON.stringify(availablePromptEntries), [availablePromptEntries]);
-  const [selectedPromptIndex, setSelectedPromptIndex] = useState(0);
-  const activePromptEntry = availablePromptEntries[Math.min(selectedPromptIndex, Math.max(0, availablePromptEntries.length - 1))];
+  const activePromptEntry = availablePromptEntries[0];
   const activePromptId = activePromptEntry?.id ?? "no-essay-prompt";
   const activePromptIdRef = useRef(activePromptId);
   activePromptIdRef.current = activePromptId;
@@ -6699,13 +6696,12 @@ function StepEssayWorkspace() {
   const essayPrompt =
     activePromptEntry?.promptText || (hasPromptDecisionState ? "" : legacyPromptBlob);
   const draft = user?.essayDraftsByPromptId?.[activePromptId]
-    ?? (selectedPromptIndex === 0 && activePromptId !== "no-essay-prompt" ? user?.essayDraft ?? "" : "");
+    ?? (activePromptId !== "no-essay-prompt" ? user?.essayDraft ?? "" : "");
   const draftHtml = user?.essayDraftHtmlByPromptId?.[activePromptId]
-    ?? (selectedPromptIndex === 0 && activePromptId !== "no-essay-prompt" ? user?.essayDraftHtml ?? "" : "");
+    ?? (activePromptId !== "no-essay-prompt" ? user?.essayDraftHtml ?? "" : "");
   currentDraftRef.current = draft;
   const wordCount = draft.trim() ? draft.trim().split(/\s+/).filter(Boolean).length : 0;
   const characterCount = draft.length;
-  const hasMultiplePrompts = availablePrompts.length > 1;
   const fixesLoading = languageToolLoading || contextualGrammarLoading;
   const fixesWarning = [languageToolWarning, contextualGrammarWarning].filter(Boolean).join(" ") || null;
   const canonicalDraftForReview = useMemo(() => canonicalEssayForReview(draft), [draft]);
@@ -6738,12 +6734,6 @@ function StepEssayWorkspace() {
     setRevisionCoachStates({});
   }, [activePromptId, reviewUpdatedAt]);
 
-  useEffect(() => {
-    if (selectedPromptIndex >= availablePrompts.length) {
-      setSelectedPromptIndex(0);
-    }
-  }, [availablePrompts.length, selectedPromptIndex]);
-
   const wordTarget = useMemo(
     () => parseWordTarget(buildOutlinePayload(user, essayPrompt).word_limit),
     [user, essayPrompt],
@@ -6773,41 +6763,6 @@ function StepEssayWorkspace() {
     fixCacheByPromptRef.current = next;
     updateProfile({ essayFixesByPromptId: next });
   }, [activePromptId, anchoredFixes, draft, updateProfile, user?.email]);
-
-  function updateEssayPrompt(value: string, index = hasMultiplePrompts ? pendingPromptIndex : selectedPromptIndex) {
-    if (!user) return;
-    const allEntries = normalizeEssayPromptEntries(user.activeScholarship);
-    const selectedEntry = availablePromptEntries[Math.min(index, Math.max(0, availablePromptEntries.length - 1))];
-    const nextEntries = selectedEntry
-      ? allEntries.map((entry) => entry.id === selectedEntry.id ? { ...entry, promptText: value } : entry)
-      : [...allEntries, { id: `prompt-${Date.now()}`, promptNumber: allEntries.length + 1, promptText: value, minimumWords: null, maximumWords: null, minimumWordsReviewed: false, maximumWordsReviewed: false }];
-    updateProfile({
-      activeScholarship: {
-        ...(user.activeScholarship ?? {}),
-        essayPromptEntries: nextEntries,
-        essayPrompts: serializeEssayPromptEntries(nextEntries),
-      },
-      personalizedOutline: undefined,
-    });
-    setPromptConfirmed(false);
-    setPromptPickerOpen(true);
-    setOutlineStatus(null);
-  }
-
-  function selectEssayPrompt(index: number) {
-    if (index === selectedPromptIndex && promptConfirmed) return;
-    setSelectedPromptIndex(index);
-    setPendingPromptIndex(index);
-    setPromptConfirmed(false);
-    const nextPromptId = availablePromptEntries[index]?.id ?? "no-essay-prompt";
-    const nextDraft = user?.essayDraftsByPromptId?.[nextPromptId] ?? "";
-    const nextDraftHtml = user?.essayDraftHtmlByPromptId?.[nextPromptId] ?? "";
-    updateProfile({ essayDraft: nextDraft, essayDraftHtml: nextDraftHtml, personalizedOutline: undefined });
-    setOutlineStatus("Prompt changed — confirm the new prompt to build its outline.");
-    setActiveTab("outline");
-    setPanelOpen(true);
-    setPromptPickerOpen(true);
-  }
 
   function updateActiveDraft(value: string) {
     updateProfile({
@@ -6843,34 +6798,10 @@ function StepEssayWorkspace() {
       prompts: user?.prompts ?? {},
     });
   }, [essayPrompt, user]);
-
-  // Landing: after profile hydration, open the prompt popup unless this visit
-  // already confirmed a writing focus. Re-open when the prompt blob changes.
-  useEffect(() => {
-    if (!user) return;
-    if (promptConfirmed) return;
-    if (user.activeScholarship?.noEssayPromptSelected) {
-      setPromptConfirmed(true);
-      setPromptPickerOpen(false);
-      return;
-    }
-    // Resume silently only when the stored outline was generated for this exact focus.
-    if (user.personalizedOutline?.generatedForKey === outlineKey) {
-      setPromptConfirmed(true);
-      setPromptPickerOpen(false);
-      return;
-    }
-    setPendingPromptIndex(Math.min(selectedPromptIndex, Math.max(0, availablePrompts.length - 1)));
-    setPromptPickerOpen(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.email, promptDataKey, outlineKey]);
-
   useEffect(() => {
     if (
       workspaceTutorialHandled.current
       || outlineLoading
-      || promptPickerOpen
-      || !promptConfirmed
       || !user?.personalizedOutline?.outline
     ) return;
     try {
@@ -6886,7 +6817,7 @@ function StepEssayWorkspace() {
       setWorkspaceTutorialActive(true);
     }, 500);
     return () => window.clearTimeout(timer);
-  }, [outlineLoading, promptConfirmed, promptPickerOpen, user?.personalizedOutline?.generatedForKey, user?.personalizedOutline?.outline]);
+  }, [outlineLoading, user?.personalizedOutline?.generatedForKey, user?.personalizedOutline?.outline]);
 
   function closeWorkspaceTutorial() {
     workspaceTutorialHandled.current = true;
@@ -6901,8 +6832,13 @@ function StepEssayWorkspace() {
   async function runOutlineGeneration(promptOverride?: string) {
     if (!user || outlineLoading) return;
     const promptForOutline = (promptOverride ?? essayPrompt).trim();
+    const scholarshipGuided = !promptForOutline;
     setOutlineLoading(true);
-    setOutlineStatus("Building an outline adapted to your selected essay prompt…");
+    setOutlineStatus(
+      scholarshipGuided
+        ? "Building a scholarship-guided outline from the mission and selection criteria…"
+        : "Building an outline adapted to your selected essay prompt…",
+    );
     setPanelOpen(true);
     setActiveTab("outline");
     const scholarship = user.activeScholarship ?? {};
@@ -6926,7 +6862,13 @@ function StepEssayWorkspace() {
     try {
       const result = await generatePersonalizedOutline(buildOutlinePayload(user, promptForOutline));
       updateProfile({ personalizedOutline: { ...result, generatedForKey: keyForOutline } });
-      setOutlineStatus(result.status === "error" ? "A fallback outline is ready." : "Personalized outline ready. Start drafting against it.");
+      setOutlineStatus(
+        result.status === "error"
+          ? "A fallback outline is ready."
+          : scholarshipGuided
+            ? "Scholarship-guided outline ready. Start drafting against it."
+            : "Personalized outline ready. Start drafting against it.",
+      );
       setActiveTab("outline");
     } catch (error) {
       setOutlineStatus(error instanceof Error ? error.message : "Could not generate the outline.");
@@ -6935,50 +6877,15 @@ function StepEssayWorkspace() {
     }
   }
 
-  async function confirmEssayPrompt(index?: number) {
-    const nextIndex = typeof index === "number" ? index : pendingPromptIndex;
-    const nextPrompt = (availablePrompts[nextIndex] || legacyPromptBlob).trim();
-    if (!nextPrompt) {
-      setOutlineStatus("Add an essay prompt, or continue without a formal prompt.");
-      return;
-    }
-    setSelectedPromptIndex(nextIndex);
-    setPendingPromptIndex(nextIndex);
-    const nextPromptId = availablePromptEntries[nextIndex]?.id ?? "no-essay-prompt";
-    updateProfile({
-      essayDraft: user?.essayDraftsByPromptId?.[nextPromptId] ?? "",
-      essayDraftHtml: user?.essayDraftHtmlByPromptId?.[nextPromptId] ?? "",
-    });
-    setPromptConfirmed(true);
-    setPromptPickerOpen(false);
-    setPanelOpen(true);
-    setActiveTab("outline");
-    setOutlineStatus("Prompt confirmed — generating an outline adapted to this prompt…");
-    await runOutlineGeneration(nextPrompt);
-  }
-
-  function continueWithoutFormalPrompt() {
-    // Clear any stale pasted materials masquerading as a prompt so evaluation
-    // uses scholarship-guided adaptation without generating an outline.
-    if (!user) return;
-    updateProfile({
-      activeScholarship: {
-        ...(user.activeScholarship ?? {}),
-        selectedEssayPromptIds: [],
-        noEssayPromptSelected: true,
-      },
-      essayDraft: user.essayDraftsByPromptId?.["no-essay-prompt"] ?? "",
-      essayDraftHtml: user.essayDraftHtmlByPromptId?.["no-essay-prompt"] ?? "",
-      personalizedOutline: undefined,
-    });
-    setSelectedPromptIndex(0);
-    setPendingPromptIndex(0);
-    setPromptConfirmed(true);
-    setPromptPickerOpen(false);
-    setPanelOpen(true);
-    setActiveTab("outline");
-    setOutlineStatus("No formal prompt selected. Evaluation will use the scholarship mission and selection criteria.");
-  }
+  useEffect(() => {
+    if (!user || outlineLoading) return;
+    if (user.personalizedOutline?.generatedForKey === outlineKey) return;
+    if (outlineAttemptKeyRef.current === outlineKey) return;
+    outlineAttemptKeyRef.current = outlineKey;
+    void runOutlineGeneration(essayPrompt);
+    // runOutlineGeneration uses the same outline inputs represented by outlineKey.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [outlineKey, outlineLoading, user?.email, user?.personalizedOutline?.generatedForKey]);
 
   // Lightweight autosave indicator — the working draft is continuously synced to
   // the store, so treat each settled edit as an autosave checkpoint.
@@ -7505,12 +7412,6 @@ function StepEssayWorkspace() {
 
   async function runCoachingSession() {
     if (coachLoading || isEvaluating || !user) return;
-    if (!promptConfirmed) {
-      setPromptPickerOpen(true);
-      setActiveTab("outline");
-      setPanelOpen(true);
-      return;
-    }
     if (!canonicalDraftForReview) {
       return;
     }
@@ -7847,7 +7748,7 @@ function StepEssayWorkspace() {
               data-essay-workspace-tour="evaluate"
               type="button"
               onClick={() => void runCoachingSession()}
-              disabled={!canonicalDraftForReview || !promptConfirmed || coachLoading || isEvaluating || !reviewInputChanged}
+              disabled={!canonicalDraftForReview || coachLoading || isEvaluating || !reviewInputChanged}
               aria-busy={coachLoading || isEvaluating}
               className={`ml-0.5 inline-flex items-center gap-1.5 rounded-lg bg-info px-3 py-2 text-[13px] font-medium text-white transition-opacity duration-150 hover:opacity-90 disabled:opacity-60 ${coachLoading || isEvaluating ? "agent-loading" : ""}`}
             >
@@ -7876,153 +7777,20 @@ function StepEssayWorkspace() {
         topBarTarget,
       )}
 
-      <Dialog open={promptPickerOpen} onOpenChange={(open) => {
-        // Keep the landing chooser intentional — only close via Confirm.
-        if (!open && !promptConfirmed) return;
-        setPromptPickerOpen(open);
-      }}>
-        <DialogContent className="max-w-xl gap-0 p-0 sm:max-w-xl" onPointerDownOutside={(event) => {
-          if (!promptConfirmed) event.preventDefault();
-        }} onEscapeKeyDown={(event) => {
-          if (!promptConfirmed) event.preventDefault();
-        }}>
-          <DialogHeader className="space-y-2 border-b border-border px-5 py-4 text-left">
-            <DialogTitle className="text-[18px]">
-              {availablePrompts.length > 0 ? "Which essay are you writing?" : "Set your writing focus"}
-            </DialogTitle>
-            <DialogDescription className="text-[13px] leading-relaxed">
-              {availablePrompts.length > 0
-                ? "Outline and coaching adapt to the prompt you confirm. You can also edit the prompt if it looks wrong."
-                : "Some scholarships do not publish a formal essay prompt. Add one if you have it, or continue with a scholarship-guided outline."}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="max-h-[55vh] space-y-3 overflow-y-auto px-5 py-4">
-            {availablePrompts.length > 0 && (
-              availablePrompts.map((prompt, index) => {
-                const active = index === pendingPromptIndex;
-                return (
-                  <button
-                    key={`landing-prompt-${index}`}
-                    type="button"
-                    onClick={() => setPendingPromptIndex(index)}
-                    aria-pressed={active}
-                    className={`w-full rounded-xl border px-4 py-3 text-left transition-colors ${
-                      active
-                        ? "border-info bg-info/5 shadow-sm"
-                        : "border-border bg-background hover:border-info/40"
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-                        {availablePrompts.length > 1 ? `Prompt ${index + 1}` : "Essay prompt"}
-                      </span>
-                      {active && <span className="text-[11px] font-semibold text-info">Selected</span>}
-                    </div>
-                    <p className="mt-1.5 text-[13px] leading-relaxed text-foreground/90">{prompt}</p>
-                  </button>
-                );
-              })
-            )}
-
-            <div className="space-y-2 rounded-xl border border-dashed border-border bg-background p-3">
-              <label htmlFor="landing-essay-prompt" className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-                {availablePrompts.length > 0 ? "Edit or correct the prompt" : "Add an essay prompt (optional)"}
-              </label>
-              <textarea
-                id="landing-essay-prompt"
-                value={availablePrompts[pendingPromptIndex] ?? ""}
-                onChange={(event) => updateEssayPrompt(event.target.value, pendingPromptIndex)}
-                rows={4}
-                placeholder={
-                  availablePrompts.length > 0
-                    ? "Correct the prompt text if extraction missed something…"
-                    : "Paste an official prompt if you have one. Leave blank to continue without a formal prompt."
-                }
-                className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-info focus:ring-2 focus:ring-info/10"
-              />
-              <p className="text-[11px] leading-relaxed text-muted-foreground">
-                Outline and coaching agents adapt dynamically to whatever prompt text you confirm here.
-              </p>
-            </div>
-          </div>
-          <DialogFooter className="flex-col gap-2 border-t border-border px-5 py-4 sm:flex-col sm:space-x-0">
-            <button
-              type="button"
-              onClick={() => void confirmEssayPrompt()}
-              disabled={!(availablePrompts[pendingPromptIndex] || legacyPromptBlob).trim()}
-              className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
-            >
-              <Sparkles className="size-4" />
-              Use this prompt & build outline
-            </button>
-            <button
-              type="button"
-              onClick={continueWithoutFormalPrompt}
-              className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-border bg-background px-4 py-2.5 text-sm font-semibold text-foreground transition-colors hover:bg-accent"
-            >
-              Continue without a formal prompt
-            </button>
-            <p className="text-center text-[12px] text-muted-foreground">
-              Without a prompt, evaluation adapts to the scholarship mission and selection criteria; no outline is generated.
-            </p>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
       <section className="shrink-0 border-b border-border bg-card">
         <div className="mx-auto max-w-[1440px] space-y-3 px-4 py-3 md:px-6">
-          {promptConfirmed && (
-            <div className="flex items-center rounded-xl border border-info/20 bg-info/5 px-3 py-2.5">
-              <div className="shrink-0 text-[11px] font-semibold uppercase tracking-[0.12em] text-info">
-                {essayPrompt.trim()
-                  ? "Prompt"
-                  : "Scholarship-guided writing focus"}
-              </div>
-              <div className="mx-3 h-7 w-px shrink-0 bg-border" aria-hidden="true" />
-              <p className="min-w-0 flex-1 text-[12px] leading-relaxed text-muted-foreground line-clamp-2">
-                {essayPrompt || "No formal prompt selected; evaluation uses the scholarship mission and selection criteria."}
-              </p>
-              <div className="mx-3 h-7 w-px shrink-0 bg-border" aria-hidden="true" />
-              <Tooltip delayDuration={50}>
-                <TooltipTrigger asChild>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPendingPromptIndex(selectedPromptIndex);
-                      setPromptPickerOpen(true);
-                    }}
-                    aria-label="Change or edit prompt"
-                    className="inline-flex size-8 shrink-0 items-center justify-center rounded-md text-info outline-none transition-colors hover:bg-info/10 focus-visible:bg-info/10 focus-visible:ring-2 focus-visible:ring-info focus-visible:ring-offset-2"
-                  >
-                    <PencilLine className="size-4" aria-hidden="true" />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom" align="end" sideOffset={7}>
-                  Change or edit prompt
-                </TooltipContent>
-              </Tooltip>
+          <div className="flex items-center rounded-xl border border-info/20 bg-info/5 px-3 py-2.5">
+            <div className="shrink-0 text-[11px] font-semibold uppercase tracking-[0.12em] text-info">
+              {essayPrompt.trim() ? "Selected prompt" : "Scholarship-guided writing focus"}
             </div>
-          )}
-          {!promptConfirmed && (
-            <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-info/30 bg-info/10 px-3 py-2.5">
-              <p className="text-[12px] font-medium text-foreground">
-                Step 1 of 5 — confirm your essay prompt (or continue without one) to unlock outline and coaching.
-              </p>
-              <button
-                type="button"
-                onClick={() => {
-                  setPendingPromptIndex(selectedPromptIndex);
-                  setPromptPickerOpen(true);
-                }}
-                className="shrink-0 rounded-lg bg-info px-3 py-1.5 text-[12px] font-semibold text-white hover:opacity-90"
-              >
-                Open prompt picker
-              </button>
-            </div>
-          )}
-          {promptConfirmed && !essayPrompt.trim() && (
+            <div className="mx-3 h-7 w-px shrink-0 bg-border" aria-hidden="true" />
+            <p className="min-w-0 flex-1 text-[12px] leading-relaxed text-muted-foreground line-clamp-2">
+              {essayPrompt || "No formal prompt selected. The outline uses the scholarship mission, selection criteria, and requirements."}
+            </p>
+          </div>
+          {!essayPrompt.trim() && (
             <p className="text-xs text-muted-foreground">
-              Scholarship-guided mode: evaluation adapts to the mission and selection criteria. Use Change prompt to add a formal prompt and build an outline.
+              Scholarship-guided mode is active. Change the prompt choice in Fit Analysis if the scholarship publishes a formal question.
             </p>
           )}
         </div>
@@ -8091,7 +7859,6 @@ function StepEssayWorkspace() {
               isEvaluating={isEvaluating}
               onCollapse={() => setPanelOpen(false)}
               essayPrompt={essayPrompt}
-              promptConfirmed={promptConfirmed}
               outlineLoading={outlineLoading}
               outlineStatus={outlineStatus}
               reviewReady={reviewReady}
@@ -8148,7 +7915,6 @@ function EssayWorkspacePanel({
   isEvaluating,
   onCollapse,
   essayPrompt,
-  promptConfirmed,
   outlineLoading,
   outlineStatus,
   reviewReady,
@@ -8177,7 +7943,6 @@ function EssayWorkspacePanel({
   isEvaluating: boolean;
   onCollapse: () => void;
   essayPrompt: string;
-  promptConfirmed: boolean;
   outlineLoading: boolean;
   outlineStatus: string | null;
   reviewReady: boolean;
@@ -8466,7 +8231,7 @@ function PersonalizedOutlinePanel({
 
         {!loading && !data && (
           <div className="mt-5 rounded-lg border border-dashed border-border bg-background p-4 text-sm text-muted-foreground">
-            Add a scholarship prompt or requirement details to generate a personalized outline.
+            Scholar-E can build this outline from the selected prompt or, when no formal prompt exists, from the scholarship mission, selection criteria, and requirements.
           </div>
         )}
 

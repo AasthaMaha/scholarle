@@ -7,6 +7,8 @@ from nodes.readiness_matrix import build_application_readiness_matrix
 # affect fit_score / fit_label.
 ELIGIBILITY_WEIGHT = 0.65
 CRITERIA_WEIGHT = 0.35
+FIT_SCORE_MIN = 15
+FIT_SCORE_MAX = 95
 
 ELIGIBILITY_POINTS = {
     "met": 1.0,
@@ -122,6 +124,10 @@ def _average(points: list[float]) -> float | None:
     return sum(points) / len(points)
 
 
+def _bound_fit_score(score: int) -> int:
+    return max(FIT_SCORE_MIN, min(FIT_SCORE_MAX, score))
+
+
 def compute_fit_score(
     eligibility_analysis: list,
     selection_criteria_alignment: list,
@@ -172,15 +178,15 @@ def compute_fit_score(
     unclear_ratio = (unclear_count / active_count) if active_count else 1.0
     met_ratio = (met_count / active_count) if active_count else 0.0
 
-    # Hard gate: any mandatory Not met => Not Eligible in 0-39.
+    # Hard gate: any mandatory Not met => Not Eligible in 15-39.
     if has_clear_fail:
         # More failed hard requirements => lower score inside the band.
-        score = max(5, 32 - (8 * not_met_count))
+        score = _bound_fit_score(32 - (8 * not_met_count))
         return score, "Not Eligible", "No"
 
     # No usable eligibility checks and no criteria => insufficient information.
     if active_count == 0 and not criteria_points:
-        return 20, "Insufficient Information", "Unclear"
+        return _bound_fit_score(20), "Insufficient Information", "Unclear"
 
     eligibility_avg = _average(eligibility_points)
     criteria_avg = _average(criteria_points)
@@ -197,12 +203,14 @@ def compute_fit_score(
     # Too much missing evidence to score confidently high.
     mostly_unclear = active_count > 0 and unclear_ratio >= 0.5 and met_ratio < 0.5
     if mostly_unclear:
-        score = min(score, 39)
+        score = _bound_fit_score(min(score, 39))
         return score, "Insufficient Information", "Unclear"
 
     # Moderate uncertainty: keep below Strong/Good unless evidence is solid.
     if active_count > 0 and unclear_ratio >= 0.4:
         score = min(score, 74)
+
+    score = _bound_fit_score(score)
 
     if met_ratio >= 0.8 and unclear_count == 0:
         likely_eligible = "Yes"

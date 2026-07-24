@@ -109,6 +109,20 @@ class OpportunityExtractionFinalizerTests(unittest.TestCase):
         self.assertTrue(result["noEssayPromptSelected"])
         self.assertTrue(result["noEssayPromptConflictConfirmed"])
 
+    def test_finalizer_keeps_only_one_selected_essay_prompt(self):
+        result = clean_scholarship_output(
+            {
+                "essayPromptEntries": [
+                    {"id": "one", "promptText": "First prompt", "minimumWords": 100, "maximumWords": 300},
+                    {"id": "two", "promptText": "Second prompt", "minimumWords": 200, "maximumWords": 400},
+                ],
+                "selectedEssayPromptIds": ["two", "one"],
+                "noEssayPromptSelected": False,
+            }
+        )
+
+        self.assertEqual(result["selectedEssayPromptIds"], ["two"])
+
     def test_finalizer_scores_critical_fields_and_keeps_valid_evidence(self):
         url = "https://official.edu/political-award"
         source_text = (

@@ -227,9 +227,9 @@ export function normalizeEssayPromptEntries(scholarship?: ActiveScholarship | nu
 export function normalizeSelectedEssayPromptEntries(scholarship?: ActiveScholarship | null): EssayPromptEntry[] {
   const entries = normalizeEssayPromptEntries(scholarship);
   if (scholarship?.noEssayPromptSelected) return [];
-  if (!Array.isArray(scholarship?.selectedEssayPromptIds)) return entries;
+  if (!Array.isArray(scholarship?.selectedEssayPromptIds)) return entries.slice(0, 1);
   const selectedIds = new Set(scholarship.selectedEssayPromptIds);
-  return entries.filter((entry) => selectedIds.has(entry.id));
+  return entries.filter((entry) => selectedIds.has(entry.id)).slice(0, 1);
 }
 
 export function serializeEssayPromptEntries(entries: EssayPromptEntry[]): string {
@@ -481,6 +481,33 @@ function findWordLimit(text: string) {
   return formatEssayPromptWordLimit({ id: "fallback", promptNumber: 1, promptText: text, ...limits });
 }
 
+const SCHOLARSHIP_GUIDED_DEFAULT_WORD_LIMIT = "Maximum 500 words";
+
+function resolveWorkflowWordLimit(
+  scholarship: ActiveScholarship,
+  selectedEntry: EssayPromptEntry | undefined,
+  essayPrompt: string,
+) {
+  const selectedPromptLimit = formatEssayPromptWordLimit(selectedEntry)
+    || findWordLimit(essayPrompt);
+  if (selectedPromptLimit) return selectedPromptLimit;
+
+  const scholarshipRequirementsText = [
+    scholarship.otherRequiredMaterials,
+    scholarship.requirementsPreview,
+    ...(scholarship.requiredApplicationMaterials ?? []),
+    ...(scholarship.requiredDocumentTypes ?? []),
+    ...(scholarship.importantNotes ?? []),
+    scholarship.fullText,
+  ].filter(Boolean).join("\n");
+  const publishedScholarshipLimit = findWordLimit(scholarshipRequirementsText);
+  if (publishedScholarshipLimit) return publishedScholarshipLimit;
+
+  return scholarship.noEssayPromptSelected
+    ? SCHOLARSHIP_GUIDED_DEFAULT_WORD_LIMIT
+    : "";
+}
+
 export function buildOutlinePayload(user: UserProfile | null, essayPromptOverride?: string): OutlineGeneratePayload {
   const scholarship = user?.activeScholarship ?? {};
   const workflowScholarship = scholarshipForEssayWorkflow(scholarship);
@@ -507,10 +534,7 @@ export function buildOutlinePayload(user: UserProfile | null, essayPromptOverrid
     clean_scholarship_record: workflowScholarship,
     essay_prompt: essayPrompt,
     essay_type: scholarship.type || "Scholarship essay",
-    word_limit: formatEssayPromptWordLimit(selectedEntry)
-      || findWordLimit((hasEssayPromptDecision(scholarship)
-        ? [essayPrompt]
-        : [essayPrompt, scholarship.otherRequiredMaterials, scholarship.requirementsPreview]).filter(Boolean).join("\n")),
+    word_limit: resolveWorkflowWordLimit(scholarship, selectedEntry, essayPrompt),
     student_profile: {
       ...studentProfile,
       profile_text: profileToText(user),
@@ -783,10 +807,7 @@ export function buildCoachingSessionPayload(
     student_profile: { ...studentProfile, profile_text: profileToText(user) },
     clean_scholarship_record: workflowScholarship,
     essay_prompt: essayPrompt,
-    word_limit: formatEssayPromptWordLimit(selectedEntry)
-      || findWordLimit((hasEssayPromptDecision(scholarship)
-        ? [essayPrompt]
-        : [essayPrompt, scholarship.otherRequiredMaterials, scholarship.requirementsPreview]).filter(Boolean).join("\n")),
+    word_limit: resolveWorkflowWordLimit(scholarship, selectedEntry, essayPrompt),
     outline_points: buildOutlinePoints(user?.personalizedOutline).map((p) => ({ id: p.id, label: p.label })),
   };
 }
