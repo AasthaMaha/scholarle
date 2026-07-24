@@ -87,9 +87,7 @@ export const journeySteps: JourneyStep[] = [
   { id: 2, slug: "discovery", title: "Scholarship Discovery", goal: "Find opportunities", group: "Discover" },
   { id: 3, slug: "requirements", title: "Fit Analysis", goal: "Understand fit", group: "Analyze" },
   { id: 4, slug: "essay-workspace", title: "Essay Workspace", goal: "Draft and review", group: "Apply" },
-  { id: 5, slug: "revise", title: "Revise Essay", goal: "Make it stronger", group: "Apply" },
-  { id: 6, slug: "final-check", title: "Final Submission Check", goal: "Ensure readiness", group: "Track" },
-  { id: 7, slug: "tracker", title: "Application Tracker", goal: "Stay organized", group: "Track" },
+  { id: 5, slug: "application-dashboard", title: "Application Dashboard", goal: "Review and submit", group: "Track" },
 ];
 
 // Curated scholarships matched to Maya's profile

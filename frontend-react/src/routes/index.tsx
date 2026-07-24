@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowLeft, ArrowRight, Check, ChevronDown, ChevronLeft, ChevronRight, FileText, Search, Sparkles, UserRound } from "lucide-react";
+import { ArrowLeft, ArrowRight, Award, Check, ChevronDown, ChevronLeft, ChevronRight, FileText, Folder, ListChecks, Search, Sparkles, UserRound } from "lucide-react";
 import scholarELogoUrl from "../../logo/logoPic.jpeg";
 
 export const Route = createFileRoute("/")({
@@ -25,7 +25,7 @@ const stages = [
 
 function Landing() {
   return (
-    <div className="scholar-landing min-h-screen overflow-x-clip bg-white text-[#111b36]">
+    <div className="scholar-landing min-h-screen w-full max-w-full overflow-x-hidden bg-white text-[#111b36]">
       <Header />
       <main><Hero /><Workflow /><Benefits /><FinalCTA /></main>
       <Footer />
@@ -46,8 +46,8 @@ function Header() {
           <a href="#benefits" className="transition-colors hover:text-[#111b36]">Why Scholar-E</a>
         </nav>
         <div className="flex items-center gap-2 sm:gap-3">
-          <Link to="/auth" className="hidden rounded-full px-3 py-2 text-sm font-semibold text-[#4b5368] transition-colors hover:text-[#111b36] sm:block">Sign in</Link>
-          <Link to="/auth" className="group inline-flex items-center gap-2 rounded-full bg-[#111b36] px-4 py-2.5 text-sm font-semibold text-white shadow-[0_8px_24px_-10px_#111b36] transition-all hover:-translate-y-0.5 hover:bg-[#202d50]">
+          <Link to="/auth" className="hidden rounded-xl px-3 py-2 text-sm font-semibold text-[#4b5368] transition-colors hover:text-[#111b36] sm:block">Sign in</Link>
+          <Link to="/auth" className="group inline-flex items-center gap-2 rounded-xl bg-[#111b36] px-4 py-2.5 text-sm font-semibold text-white shadow-[0_8px_24px_-10px_#111b36] transition-all hover:-translate-y-0.5 hover:bg-[#202d50]">
             Get started <ArrowRight className="size-3.5 transition-transform group-hover:translate-x-0.5" />
           </Link>
         </div>
@@ -58,7 +58,7 @@ function Header() {
 
 function Hero() {
   return (
-    <section className="relative px-5 pb-16 pt-32 lg:px-8 lg:pb-24 lg:pt-40">
+    <section className="relative px-5 pb-10 pt-24 lg:px-8 lg:pb-12 lg:pt-28">
       <div className="hero-glow absolute left-1/2 top-20 -z-10 h-[480px] w-[760px] -translate-x-1/2 rounded-full opacity-80 blur-3xl" />
       <div className="relative mx-auto max-w-[1120px] text-center">
         <HeroFloaters />
@@ -66,17 +66,17 @@ function Hero() {
         <div className="reveal-up mx-auto inline-flex items-center gap-2 rounded-full border border-[#7567f8]/20 bg-[#f7f5ff] px-3.5 py-1.5 text-xs font-semibold text-[#5d50cf] shadow-sm">
           <Sparkles className="size-3.5" /> Personalized guidance that keeps you the author
         </div>
-        <h1 className="reveal-up delay-1 mx-auto mt-7 max-w-[930px] text-balance text-[clamp(3.4rem,7.4vw,7rem)] font-bold leading-[.91] tracking-[-.067em]">
+        <h1 className="reveal-up delay-1 mx-auto mt-7 max-w-[930px] text-balance text-[clamp(3.2rem,6.9vw,6.65rem)] font-bold leading-[.91] tracking-[-.067em]">
           Win scholarships<br /><span className="hero-voice">in your own voice.</span>
         </h1>
         <p className="reveal-up delay-2 mx-auto mt-7 max-w-[620px] text-balance text-lg leading-8 text-[#5b6377] md:text-xl">
           One intelligent workspace to find the right opportunities, build stronger applications, and submit with confidence.
         </p>
         <div className="reveal-up delay-3 mt-8 flex flex-wrap justify-center gap-3">
-          <Link to="/journey" className="button-lift group inline-flex items-center gap-2 rounded-full bg-[#6757e8] px-6 py-3.5 text-sm font-bold text-white shadow-[0_16px_35px_-14px_#6757e8]">
+          <Link to="/journey" className="button-lift group inline-flex items-center gap-2 rounded-xl bg-[#6757e8] px-6 py-3.5 text-sm font-bold text-white shadow-[0_16px_35px_-14px_#6757e8]">
             Start your journey <ArrowRight className="size-4 transition-transform group-hover:translate-x-1" />
           </Link>
-          <a href="#workflow" className="inline-flex items-center gap-2 rounded-full border border-[#dcdde4] bg-white px-6 py-3.5 text-sm font-bold text-[#202a46] shadow-sm transition-all hover:border-[#b9b5df] hover:shadow-md">See it in action <ChevronDown className="size-4" /></a>
+          <a href="#workflow" className="inline-flex items-center gap-2 rounded-xl border border-[#dcdde4] bg-white px-6 py-3.5 text-sm font-bold text-[#202a46] shadow-sm transition-all hover:border-[#b9b5df] hover:shadow-md">See it in action <ChevronDown className="size-4" /></a>
         </div>
         </div>
       </div>
@@ -87,17 +87,50 @@ function Hero() {
 function HeroFloaters() {
   return (
     <div aria-hidden="true" className="hero-floaters pointer-events-none absolute inset-0">
-      <div className="scholar-cap hero-cap">
-        <span className="cap-board" />
-        <span className="cap-band" />
-        <span className="cap-tassel" />
+      <div className="hero-icon-pair hero-pair-profile-document">
+        <svg viewBox="0 0 100 100" preserveAspectRatio="none">
+          <path d="M 89 31 C 98 41, 90 55, 69 67" />
+        </svg>
+        <div className="hero-orbit-icon hero-orbit-profile">
+          <UserRound strokeWidth={1.45} />
+          <span className="hero-orbit-success"><Check /></span>
+        </div>
+        <div className="hero-orbit-icon hero-orbit-document">
+          <FileText strokeWidth={1.45} />
+        </div>
       </div>
-      <div className="mini-paper hero-paper">
-        <span />
-        <span className="paper-highlight" />
-        <span />
+      <div className="hero-orbit-icon hero-orbit-folder">
+        <Folder strokeWidth={1.45} />
       </div>
-      <span className="hero-sparkle">+</span>
+      <svg className="hero-tail-connector hero-tail-right-head" viewBox="0 0 100 100" preserveAspectRatio="none">
+        <path d="M 30 18 C 34 43, 51 66, 72 82" />
+      </svg>
+      <div className="hero-icon-pair hero-pair-search-checklist">
+        <svg viewBox="0 0 100 100" preserveAspectRatio="none">
+          <path d="M 38 35 C 27 42, 20 51, 27 62" />
+        </svg>
+        <div className="hero-orbit-icon hero-orbit-search">
+          <Search strokeWidth={1.45} />
+        </div>
+        <div className="hero-orbit-icon hero-orbit-checklist">
+          <ListChecks strokeWidth={1.45} />
+        </div>
+      </div>
+      <div className="hero-orbit-icon hero-orbit-award">
+        <Award strokeWidth={1.45} />
+      </div>
+      <div className="hero-orbit-icon hero-orbit-sparkle">
+        <Sparkles strokeWidth={1.35} />
+      </div>
+      <svg className="hero-tail-connector hero-tail-left" viewBox="0 0 100 100" preserveAspectRatio="none">
+        <path d="M 27 20 C 29 38, 44 57, 72 74" />
+      </svg>
+      <svg className="hero-tail-connector hero-tail-right" viewBox="0 0 100 100" preserveAspectRatio="none">
+        <path d="M 76 20 C 72 35, 64 45, 51 48 C 39 51, 31 60, 30 71" />
+      </svg>
+      <span className="hero-accent hero-accent-one">+</span>
+      <span className="hero-accent hero-accent-two">+</span>
+      <span className="hero-accent hero-accent-three">·</span>
     </div>
   );
 }
@@ -194,7 +227,7 @@ function Workflow() {
   };
 
   return (
-    <section id="workflow" className="scroll-mt-16 bg-[#fbfbfd] px-5 py-20 lg:px-8 lg:py-28">
+    <section id="workflow" className="scroll-mt-16 bg-[#fbfbfd] px-5 pb-20 pt-10 lg:px-8 lg:pb-28 lg:pt-12">
       <div
         ref={carouselRef}
         role="region"
@@ -258,11 +291,13 @@ function WorkflowWindow({ active, onPrevious, onNext }: { active: number; onPrev
       <div className="absolute -inset-10 -z-10 rounded-full bg-[#7567ef]/[.08] blur-3xl" />
       <WorkflowFloaters active={active} />
       <button type="button" aria-label="Previous workflow step" onClick={onPrevious} disabled={active === 0} className="carousel-arrow absolute -left-5 top-1/2 z-20 hidden -translate-x-1/2 -translate-y-1/2 lg:grid"><ChevronLeft className="size-5" /></button>
-      <WindowShell progress={(active + 1) / 5}>
-        <div className="min-h-[410px] overflow-hidden bg-[#fcfcfd] p-5 sm:min-h-[480px] sm:p-8">
-          <div key={`scene-${active}`} className="carousel-preview-in">{active === 0 ? <ProfileScene /> : active === 1 ? <DiscoveryScene /> : active === 2 ? <AnalyzeScene /> : active === 3 ? <WritingScene /> : <SubmitScene />}</div>
-        </div>
-      </WindowShell>
+      <div className="workflow-browser">
+        <WindowShell progress={(active + 1) / 5}>
+          <div className="min-h-[410px] overflow-hidden bg-[#fcfcfd] p-5 sm:min-h-[480px] sm:p-8">
+            <div key={`scene-${active}`} className="carousel-preview-in">{active === 0 ? <ProfileScene /> : active === 1 ? <DiscoveryScene /> : active === 2 ? <AnalyzeScene /> : active === 3 ? <WritingScene /> : <SubmitScene />}</div>
+          </div>
+        </WindowShell>
+      </div>
       <button type="button" aria-label="Next workflow step" onClick={onNext} disabled={active === stages.length - 1} className="carousel-arrow absolute -right-5 top-1/2 z-20 hidden translate-x-1/2 -translate-y-1/2 lg:grid"><ChevronRight className="size-5" /></button>
       <div className="mt-4 flex justify-center gap-3 lg:hidden">
         <button type="button" aria-label="Previous workflow step" onClick={onPrevious} disabled={active === 0} className="carousel-arrow"><ArrowLeft className="size-4" /></button>
@@ -273,11 +308,11 @@ function WorkflowWindow({ active, onPrevious, onNext }: { active: number; onPrev
 }
 
 const floaterStatuses = [
-  { label: "Profile connected", tone: "complete" },
-  { label: "94% match", tone: "complete" },
-  { label: "4 verified", tone: "complete" },
+  { label: "Profile synced", tone: "complete" },
+  { label: "Strong match", tone: "complete" },
+  { label: "Requirements extracted", tone: "complete" },
   { label: "Voice preserved", tone: "coaching" },
-  { label: "1 action", tone: "attention" },
+  { label: "Ready to submit", tone: "complete" },
 ] as const;
 
 function WorkflowFloaters({ active }: { active: number }) {
@@ -285,79 +320,77 @@ function WorkflowFloaters({ active }: { active: number }) {
 
   return (
     <div aria-hidden="true" className={`workflow-floaters pointer-events-none absolute inset-0 z-20 workflow-step-${active + 1}`}>
-      <div className="orbit-object orbit-cap">
-        <div className="scholar-cap">
-          <span className="cap-board" />
-          <span className="cap-band" />
-          <span className="cap-tassel" />
-        </div>
+      <div key={`floater-a-${active}`} className="workflow-fragment workflow-fragment-primary">
+        <WorkflowFragment active={active} variant="primary" />
       </div>
-      <div className="orbit-object orbit-calendar">
-        <div className="mini-calendar">
-          <span className="calendar-rings" />
-          <strong>17</strong>
-          <i />
-        </div>
+      <div key={`floater-b-${active}`} className="workflow-fragment workflow-fragment-secondary">
+        <WorkflowFragment active={active} variant="secondary" />
       </div>
-      <div className="orbit-object orbit-paper">
-        <div className="mini-paper">
-          <span />
-          <span className="paper-highlight" />
-          <span />
-        </div>
-      </div>
-      <div className="orbit-sparkles">
-        <i>+</i><i /><i />
-      </div>
-
-      <div key={`floater-a-${active}`} className="step-object step-object-a">
-        <StepFloater active={active} variant="primary" />
-      </div>
-      <div key={`floater-b-${active}`} className="step-object step-object-b">
-        <StepFloater active={active} variant="secondary" />
-      </div>
-      <div key={`status-${active}`} className={`orbit-status orbit-status-${status.tone}`}>
+      <div key={`status-${active}`} className={`workflow-fragment-status workflow-fragment-status-${status.tone}`}>
         <span />
         {status.label}
       </div>
-      <div key={`connector-${active}`} className={`orbit-connector connector-${active + 1}`}><i /></div>
+      <div key={`connector-${active}`} className={`workflow-fragment-connector fragment-connector-${active + 1}`}><i /></div>
     </div>
   );
 }
 
-function StepFloater({ active, variant }: { active: number; variant: "primary" | "secondary" }) {
+function WorkflowFragment({ active, variant }: { active: number; variant: "primary" | "secondary" }) {
   if (active === 0) {
     return variant === "primary" ? (
-      <div className="profile-glyph"><span className="profile-head" /><span className="profile-body" /><i>✓</i></div>
+      <div className="fragment-card fragment-profile">
+        <div className="fragment-avatar"><span /><i>✓</i></div>
+        <div><b>Student profile</b><small>12 details synced</small></div>
+        <span className="fragment-meter"><i /></span>
+      </div>
     ) : (
-      <div className="resume-glyph"><b>CV</b><span /><span /></div>
+      <div className="fragment-file"><span className="fragment-file-fold" /><b>Resume.pdf</b><small>Added to profile</small><i className="fragment-file-check">✓</i></div>
     );
   }
   if (active === 1) {
     return variant === "primary" ? (
-      <div className="scholarship-glyph"><b>$</b><span /><span /></div>
+      <div className="fragment-card fragment-award">
+        <span className="fragment-ribbon">$</span>
+        <div><b>Future Leaders</b><small>$5,000 award</small></div>
+        <strong>94%</strong>
+      </div>
     ) : (
-      <div className="search-glyph"><span /><i /></div>
+      <div className="fragment-bookmark"><i /><div><b>Saved</b><small>Deadline Oct 17</small></div></div>
     );
   }
   if (active === 2) {
     return variant === "primary" ? (
-      <div className="checklist-glyph"><span>✓</span><i /><span>✓</span><i /><span>✓</span><i /></div>
+      <div className="fragment-card fragment-requirements">
+        <b>Requirements</b>
+        <span><i>✓</i> GPA 3.5+</span>
+        <span><i>✓</i> Personal essay</span>
+        <span><i>✓</i> Transcript</span>
+      </div>
     ) : (
-      <div className="verified-glyph"><span>4</span><b>verified</b></div>
+      <div className="fragment-eligibility"><span>✓</span><div><b>Eligible</b><small>4 of 4 verified</small></div></div>
     );
   }
   if (active === 3) {
     return variant === "primary" ? (
-      <div className="essay-glyph"><span /><span className="essay-mark" /><span /></div>
+      <div className="fragment-card fragment-essay">
+        <small>Essay draft</small>
+        <span />
+        <span className="fragment-highlight" />
+        <span />
+      </div>
     ) : (
-      <div className="coach-glyph"><b>Coach</b><span /><i /></div>
+      <div className="fragment-coach"><b>Coach note</b><p>Add one concrete moment.</p><span>Student decides</span></div>
     );
   }
   return variant === "primary" ? (
-    <div className="ready-glyph"><span>✓</span><i /><span>✓</span><i /><span className="attention-dot">!</span><i /></div>
+    <div className="fragment-card fragment-submit">
+      <b>Submission check</b>
+      <span><i>✓</i> Essay ready</span>
+      <span><i>✓</i> Materials attached</span>
+      <span><i>✓</i> Deadline confirmed</span>
+    </div>
   ) : (
-    <div className="envelope-glyph"><span /><i>✓</i></div>
+    <div className="fragment-deadline"><small>Deadline</small><b>OCT 17</b><span>Tracked</span></div>
   );
 }
 
@@ -370,8 +403,8 @@ function SubmitScene() { return <><SceneHead icon={<Check className="size-5" />}
 
 function Benefits() {
   const data=[{n:"01",t:"Everything stays connected",d:"Your profile, requirements, drafts, and deadlines move together—so you never start from zero."},{n:"02",t:"Guidance you can verify",d:"See the source behind extracted requirements and understand why an opportunity fits your profile."},{n:"03",t:"Your voice stays yours",d:"Scholar-E points to what can be stronger. The choices and the final words always belong to you."}];
-  return <section id="benefits" className="scroll-mt-16 bg-white px-5 py-24 lg:px-8 lg:py-32"><div className="mx-auto max-w-[1120px]"><div className="grid gap-6 md:grid-cols-[1fr_.9fr] md:items-end"><div><div className="text-xs font-bold uppercase tracking-[.15em] text-[#7164df]">Built for the whole journey</div><h2 className="mt-4 max-w-2xl text-balance text-[clamp(2.6rem,5vw,4.8rem)] font-bold leading-[.98] tracking-[-.055em]">Less guesswork.<br />More momentum.</h2></div><p className="max-w-md text-lg leading-8 text-[#646b7d] md:justify-self-end">Scholar-E turns a scattered, stressful process into one clear path forward.</p></div><div className="mt-16 grid gap-px overflow-hidden rounded-3xl border border-[#e3e3e8] bg-[#e3e3e8] md:grid-cols-3">{data.map((x)=><article key={x.n} className="benefit-card group bg-white p-7 sm:p-8"><div className="flex items-center justify-between"><span className="font-mono text-xs text-[#7567e9]">{x.n}</span><ArrowRight className="size-4 -translate-x-2 text-[#7567e9] opacity-0 transition-all group-hover:translate-x-0 group-hover:opacity-100" /></div><h3 className="mt-16 text-xl font-bold tracking-[-.035em]">{x.t}</h3><p className="mt-3 text-sm leading-6 text-[#687083]">{x.d}</p></article>)}</div></div></section>;
+  return <section id="benefits" className="scroll-mt-16 bg-white px-5 py-16 lg:px-8 lg:py-20"><div className="mx-auto max-w-[1120px]"><div className="grid gap-5 md:grid-cols-[1fr_.9fr] md:items-end"><div><div className="text-xs font-bold uppercase tracking-[.15em] text-[#7164df]">Built for the whole journey</div><h2 className="mt-3 max-w-2xl text-balance text-[clamp(2.6rem,5vw,4.8rem)] font-bold leading-[.98] tracking-[-.055em]">Less guesswork.<br />More momentum.</h2></div><p className="max-w-md text-lg leading-8 text-[#646b7d] md:justify-self-end">Scholar-E turns a scattered, stressful process into one clear path forward.</p></div><div className="mt-10 grid gap-px overflow-hidden rounded-3xl border border-[#e3e3e8] bg-[#e3e3e8] md:grid-cols-3">{data.map((x)=><article key={x.n} className="benefit-card bg-white p-7"><h3 className="text-xl font-bold tracking-[-.035em]">{x.t}</h3><p className="mt-3 text-sm leading-6 text-[#687083]">{x.d}</p></article>)}</div></div></section>;
 }
 
-function FinalCTA() { return <section className="px-5 pb-10 lg:px-8"><div className="cta-glow mx-auto max-w-[1120px] overflow-hidden rounded-[32px] border border-[#ddd9ff] px-6 py-16 text-center shadow-[0_30px_80px_-48px_#6757e8] sm:px-10 sm:py-20"><div className="mx-auto grid size-12 place-items-center rounded-2xl bg-white text-[#6757e8] shadow-lg"><Sparkles className="size-5" /></div><h2 className="mx-auto mt-6 max-w-3xl text-balance text-[clamp(2.5rem,5vw,4.8rem)] font-bold leading-[.98] tracking-[-.055em]">Your best application is still your story.</h2><p className="mx-auto mt-5 max-w-xl text-base leading-7 text-[#62677c]">Bring the ambition. Scholar-E will help you find the opportunity, understand the path, and do your strongest work.</p><Link to="/auth" className="button-lift group mt-8 inline-flex items-center gap-2 rounded-full bg-[#6757e8] px-6 py-3.5 text-sm font-bold text-white shadow-[0_16px_35px_-14px_#6757e8]">Create your free account <ArrowRight className="size-4 transition-transform group-hover:translate-x-1" /></Link></div></section>; }
+function FinalCTA() { return <section className="px-5 pb-10 lg:px-8"><div className="cta-glow mx-auto max-w-[1120px] overflow-hidden rounded-[32px] border border-[#ddd9ff] px-6 py-14 text-center shadow-[0_30px_80px_-48px_#6757e8] sm:px-10 sm:py-16"><h2 className="mx-auto max-w-3xl text-balance text-[clamp(2.5rem,5vw,4.8rem)] font-bold leading-[.98] tracking-[-.055em]">Your best application is still your story.</h2><p className="mx-auto mt-4 max-w-xl text-base leading-7 text-[#62677c]">Bring the ambition. Scholar-E will help you find the opportunity, understand the path, and do your strongest work.</p><Link to="/auth" className="button-lift group mt-7 inline-flex items-center gap-2 rounded-xl bg-[#6757e8] px-6 py-3.5 text-sm font-bold text-white shadow-[0_16px_35px_-14px_#6757e8]">Create your free account <ArrowRight className="size-4 transition-transform group-hover:translate-x-1" /></Link></div></section>; }
 function Footer() { return <footer className="px-5 py-8 lg:px-8"><div className="mx-auto flex max-w-[1120px] flex-col items-center justify-between gap-4 border-t border-[#e6e6eb] pt-8 text-xs text-[#747b8d] sm:flex-row"><div className="flex items-center gap-2 font-bold text-[#26304b]"><img src={scholarELogoUrl} alt="" className="size-6 rounded-full" /> Scholar-E</div><span>A coach, not a ghostwriter.</span><div className="flex gap-5"><Link to="/auth" className="hover:text-[#111b36]">Sign in</Link><a href="#workflow" className="hover:text-[#111b36]">How it works</a></div></div></footer>; }
