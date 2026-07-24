@@ -133,5 +133,26 @@
       "bachelor's degree funding",
       "college grants for undergraduates"
     ]
+  },
+  "early childhood development": {
+    "canonical_label": "Early Childhood Development",
+    "synonyms": [
+      "Child Development",
+      "Early Childhood Education",
+      "Preschool Education"
+    ],
+    "parent_disciplines": [
+      "Education",
+      "Child Development"
+    ],
+    "umbrella_terms": [
+      "Education",
+      "Social Sciences"
+    ],
+    "funder_vocabulary": [
+      "early childhood education grants",
+      "child development scholarships",
+      "preschool education funding"
+    ]
   }
 }

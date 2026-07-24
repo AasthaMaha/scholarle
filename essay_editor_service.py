@@ -14,7 +14,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
 from threading import Event, RLock, Thread
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -47,7 +47,7 @@ _language_tool_state_lock = RLock()
 _language_tool_check_lock = RLock()
 _language_tool_warmup_event = Event()
 _language_tool_warmup_thread: Optional[Thread] = None
-_FIX_PIPELINE_VERSION = "6"
+_FIX_PIPELINE_VERSION = "7"
 logger = logging.getLogger(__name__)
 
 
@@ -60,11 +60,12 @@ class LanguageToolNotReadyError(RuntimeError):
 class SentenceSuggestion(BaseModel):
     original_text: str = ""
     suggested_text: str = ""
-    suggestion_type: str = "clarity"
+    suggestion_type: Literal["grammar"] = "grammar"
     reason: str = ""
-    severity: str = "medium"
-    source: str = "contextual_grammar"
-    confidence: str = "medium"
+    severity: Literal["low", "medium", "high"] = "medium"
+    risk_tier: Literal["C0"] = "C0"
+    source: Literal["contextual_grammar"] = "contextual_grammar"
+    confidence: Literal["low", "medium", "high"] = "medium"
     replacement_available: bool = True
     start_offset: Optional[int] = None
     end_offset: Optional[int] = None
@@ -72,10 +73,10 @@ class SentenceSuggestion(BaseModel):
 
 class LanguageToolCandidateReview(BaseModel):
     candidate_index: int = -1
-    verdict: str = "reject"
+    verdict: Literal["accept", "reject", "revise"] = "reject"
     suggested_text: str = ""
     reason: str = ""
-    confidence: str = "medium"
+    confidence: Literal["low", "medium", "high"] = "medium"
 
 
 class GrammarOutput(BaseModel):
@@ -240,6 +241,8 @@ def _run_grammar(
     essay_draft: str,
     user_notes: str = "",
     language_tool_candidates: Optional[list[dict]] = None,
+    *,
+    verification_mode: bool = False,
 ) -> dict:
     prompt_candidates = [
         {
@@ -256,6 +259,7 @@ def _run_grammar(
         essay_draft=essay_draft,
         user_notes=user_notes,
         language_tool_candidates_json=json.dumps(prompt_candidates, ensure_ascii=False),
+        verification_mode=verification_mode,
     )
     model = llm._get_client().with_structured_output(GrammarOutput)
     result = model.invoke([("system", system), ("human", human)])
@@ -618,15 +622,101 @@ def _contextual_paragraph_spans(essay_draft: str) -> list[tuple[int, int]]:
     return spans if len(spans) > 1 else [(0, len(essay_draft))]
 
 
+_CONTEXTUAL_ISSUE_KEYS = (
+    "spelling_issues",
+    "punctuation_issues",
+    "capitalization_issues",
+    "verb_tense_issues",
+    "agreement_issues",
+    "other_grammar_issues",
+    "sentence_level_correctness_issues",
+)
+
+
+def _reported_contextual_issues(grammar: dict) -> list[str]:
+    return list(dict.fromkeys(
+        str(issue).strip()
+        for key in _CONTEXTUAL_ISSUE_KEYS
+        for issue in (grammar.get(key) or [])
+        if str(issue).strip()
+    ))
+
+
+def _is_obvious_spelling_candidate(candidate: dict) -> bool:
+    return (
+        str(candidate.get("suggestion_type") or "") == "spelling"
+        and str(candidate.get("confidence") or "").lower() == "high"
+        and str(candidate.get("risk_tier") or "") == "C0"
+        and bool(candidate.get("replacement_available"))
+        and bool(str(candidate.get("suggested_text") or "").strip())
+    )
+
+
+def _requires_contextual_review(candidate: dict) -> bool:
+    explicit = candidate.get("requires_contextual_review")
+    if isinstance(explicit, bool):
+        return explicit
+    return not str(candidate.get("suggestion_type") or "").startswith("spelling")
+
+
+def _candidate_is_sensitive_or_substantial(candidate: dict, protected_terms: Optional[list[str]]) -> bool:
+    original = str(candidate.get("original_text") or "")
+    suggested = str(candidate.get("suggested_text") or "")
+    if not original or not suggested:
+        return True
+    if re.search(r"\d", original) or re.search(r"\d", suggested):
+        return True
+    if re.search(r"\b[A-Z][A-Za-z'’-]{2,}\b", original):
+        return True
+    protected = _protected_words(protected_terms)
+    if protected.intersection(_protected_words([original, suggested])):
+        return True
+    if len(original.split()) > 4 or abs(len(suggested) - len(original)) > 12:
+        return True
+    return SequenceMatcher(None, original, suggested).ratio() < 0.72
+
+
+def _review_requires_verification(
+    candidate: dict,
+    review,
+    protected_terms: Optional[list[str]],
+) -> bool:
+    if _is_obvious_spelling_candidate(candidate):
+        return False
+    if review is None:
+        return _requires_contextual_review(candidate) or str(candidate.get("confidence") or "") != "high"
+    verdict = str(_item_value(review, "verdict") or "reject").lower()
+    confidence = str(_item_value(review, "confidence") or "medium").lower()
+    if verdict == "reject" and confidence == "high":
+        return False
+    if verdict != "accept" or confidence != "high":
+        return True
+    return _candidate_is_sensitive_or_substantial(candidate, protected_terms)
+
+
+def _append_unique_candidate(candidates: list[dict], candidate: dict) -> None:
+    start = candidate.get("start_offset")
+    end = candidate.get("end_offset")
+    replacement = str(candidate.get("suggested_text") or "")
+    if any(
+        existing.get("start_offset") == start
+        and existing.get("end_offset") == end
+        and str(existing.get("suggested_text") or "") == replacement
+        for existing in candidates
+    ):
+        return
+    candidates.append(candidate)
+
+
 def _contextual_segment_review(
     essay_draft: str,
     user_notes: str,
     language_tool_candidates: list[dict],
     protected_terms: Optional[list[str]],
-) -> tuple[dict, list[dict]]:
+) -> tuple[dict, list[dict], int]:
     initial_grammar = _run_grammar(essay_draft, user_notes, language_tool_candidates)
 
-    def suggestions_from(output: dict) -> list[dict]:
+    def suggestions_from(output: dict, candidates: list[dict]) -> list[dict]:
         independent = _clean_sentence_suggestions(
             essay_draft,
             output.get("sentence_suggestions") or [],
@@ -637,7 +727,7 @@ def _contextual_segment_review(
         )
         reviewed = _reviewed_language_tool_suggestions(
             essay_draft,
-            language_tool_candidates,
+            candidates,
             output.get("candidate_reviews") or [],
             protected_terms,
         )
@@ -652,11 +742,7 @@ def _contextual_segment_review(
             )
         ]
 
-    # A separate contextual QA pass validates the first pass's proposed edits
-    # and independently scans every clause for errors the first pass and
-    # LanguageTool may both have missed. Treat first-pass AI edits as review
-    # candidates so no contextual correction reaches the UI on one model
-    # judgment alone.
+    initial_contextual = suggestions_from(initial_grammar, language_tool_candidates)
     initial_independent = _clean_sentence_suggestions(
         essay_draft,
         initial_grammar.get("sentence_suggestions") or [],
@@ -665,66 +751,72 @@ def _contextual_segment_review(
         protected_terms=protected_terms,
         strict_contextual=True,
     )
-    verification_candidates = list(language_tool_candidates)
+
+    review_by_index = {
+        int(_item_value(review, "candidate_index")): review
+        for review in (initial_grammar.get("candidate_reviews") or [])
+        if isinstance(_item_value(review, "candidate_index"), int)
+    }
+    verification_candidates: list[dict] = []
+    for index, candidate in enumerate(language_tool_candidates):
+        if _review_requires_verification(candidate, review_by_index.get(index), protected_terms):
+            _append_unique_candidate(verification_candidates, candidate)
+
+    # AI-originated findings are never trusted on a single model judgment. They
+    # become candidates for one targeted verifier pass. Direct, high-confidence
+    # LanguageTool accepts can finish after the primary adjudication.
     for suggestion in initial_independent:
         if not _suggestion_overlaps_any(suggestion, verification_candidates):
-            verification_candidates.append(suggestion)
+            if not _suggestion_overlaps_any(suggestion, language_tool_candidates):
+                _append_unique_candidate(verification_candidates, suggestion)
+
+    reported_issues = _reported_contextual_issues(initial_grammar)
+    missing_actionable_issue = len(reported_issues) > len(initial_contextual)
+    if not verification_candidates and not missing_actionable_issue:
+        return initial_grammar, initial_contextual, 1
 
     verification_notes = (
         f"{user_notes}\n\n"
-        "INDEPENDENT CONTEXTUAL QA: Validate every supplied candidate against "
-        "its complete sentence, rejecting any change that would alter a "
-        "grammatical noun phrase or clause. Independently audit every clause "
-        "for missed subject-verb agreement, tense, auxiliary/modal, pronoun, "
-        "capitalization, spelling, and punctuation errors. For each finite "
-        "verb, identify its actual grammatical subject before deciding whether "
-        "the verb agrees. Return an exact minimal suggestion for every "
-        "high-confidence error you find."
+        "SELECTIVE CONTEXTUAL QA: Re-check only the supplied uncertain, novel, "
+        "meaning-sensitive, or substantial candidates against their complete "
+        "sentences. Reject any change that alters meaning, facts, names, numbers, "
+        "voice, or a grammatical phrase or clause. Return only exact, minimal, "
+        "high-confidence corrections. Do not rewrite for style."
     ).strip()
-    grammar = _run_grammar(essay_draft, verification_notes, verification_candidates)
-    language_tool_candidates = verification_candidates
-    contextual = suggestions_from(grammar)
-    issue_keys = (
-        "spelling_issues",
-        "punctuation_issues",
-        "capitalization_issues",
-        "verb_tense_issues",
-        "agreement_issues",
-        "other_grammar_issues",
-        "sentence_level_correctness_issues",
-    )
-    reported_issues = list(dict.fromkeys(
-        str(issue).strip()
-        for key in issue_keys
-        for issue in (grammar.get(key) or [])
-        if str(issue).strip()
-    ))
-    if len(reported_issues) > len(contextual):
-        retry_notes = (
-            f"{user_notes}\n\n"
-            "OUTPUT COMPLETENESS RETRY: The previous analysis diagnosed the "
-            "following correctness issues but did not return an anchored "
-            "sentence_suggestion for every one. Return exact, minimal, "
-            "high-confidence corrections for all valid issues:\n- "
-            + "\n- ".join(reported_issues)
-        ).strip()
-        retry = _run_grammar(essay_draft, retry_notes, language_tool_candidates)
-        retry_suggestions = suggestions_from(retry)
-        occupied = [
-            (item.get("start_offset", -1), item.get("end_offset", -1))
-            for item in contextual
-        ]
-        contextual.extend(
-            suggestion
-            for suggestion in retry_suggestions
-            if not any(
-                suggestion.get("start_offset", -1) < end
-                and suggestion.get("end_offset", -1) > start
-                for start, end in occupied
-            )
+    if missing_actionable_issue:
+        verification_notes += (
+            "\nThe primary pass diagnosed these issues without an actionable "
+            "anchored correction. Return a correction only when it is valid and "
+            "high confidence:\n- " + "\n- ".join(reported_issues)
         )
-        grammar = _merge_grammar_feedback([(1, grammar), (1, retry)])
-    return grammar, contextual
+
+    verification = _run_grammar(
+        essay_draft,
+        verification_notes,
+        verification_candidates,
+        verification_mode=True,
+    )
+    verified_contextual = suggestions_from(verification, verification_candidates)
+    preserved = [
+        suggestion
+        for suggestion in initial_contextual
+        if not _suggestion_overlaps_any(suggestion, verification_candidates)
+    ]
+    occupied = [
+        (item.get("start_offset", -1), item.get("end_offset", -1))
+        for item in preserved
+    ]
+    contextual = preserved + [
+        suggestion
+        for suggestion in verified_contextual
+        if not any(
+            suggestion.get("start_offset", -1) < end
+            and suggestion.get("end_offset", -1) > start
+            for start, end in occupied
+        )
+    ]
+    grammar = _merge_grammar_feedback([(1, initial_grammar), (1, verification)])
+    return grammar, contextual, 2
 
 
 def _merge_grammar_feedback(parts: list[tuple[int, dict]]) -> dict:
@@ -760,7 +852,7 @@ def run_contextual_grammar_check(
     protected_terms: Optional[list[str]] = None,
     draft_revision: str = "",
 ) -> dict:
-    """Run the slower meaning-aware grammar pass independently from LanguageTool."""
+    """Run selectively routed meaning-aware grammar checks behind LanguageTool."""
     essay_draft = essay_draft or ""
     if not essay_draft.strip():
         return {
@@ -774,52 +866,80 @@ def run_contextual_grammar_check(
     grammar: dict = {}
     contextual: list[dict] = []
     language_tool_candidates: list[dict] = []
+    ai_passes = 0
+    contextual_route = "single_pass"
     try:
         try:
             language_tool_candidates = _language_tool_suggestions(essay_draft, protected_terms)
         except LanguageToolNotReadyError:
             language_tool_candidates = []
-        spans = _contextual_paragraph_spans(essay_draft) if draft_revision.startswith("full:") else [(0, len(essay_draft))]
+        full_scan = draft_revision.startswith("full:")
 
-        def review_span(span: tuple[int, int]) -> tuple[int, dict, list[dict]]:
-            start, end = span
-            segment = essay_draft[start:end]
-            local_candidates = [
-                {
-                    **candidate,
-                    "start_offset": candidate["start_offset"] - start,
-                    "end_offset": candidate["end_offset"] - start,
-                }
-                for candidate in language_tool_candidates
-                if isinstance(candidate.get("start_offset"), int)
-                and isinstance(candidate.get("end_offset"), int)
-                and candidate["start_offset"] >= start
-                and candidate["end_offset"] <= end
-            ]
-            segment_grammar, suggestions = _contextual_segment_review(
-                segment, user_notes, local_candidates, protected_terms
+        # Incremental edits containing only obvious spelling corrections do not
+        # need a model call. Full-document scans still audit for issues that a
+        # deterministic checker may have missed.
+        if (
+            not full_scan
+            and language_tool_candidates
+            and all(_is_obvious_spelling_candidate(item) for item in language_tool_candidates)
+        ):
+            contextual = list(language_tool_candidates)
+            contextual_route = "local_only"
+            logger.info(
+                "Contextual Fixes skipped AI: route=local_only lt_candidates=%d final=%d",
+                len(language_tool_candidates),
+                len(contextual),
             )
-            for suggestion in suggestions:
-                suggestion["start_offset"] += start
-                suggestion["end_offset"] += start
-            return len(segment), segment_grammar, suggestions
-
-        if len(spans) > 1:
-            with ThreadPoolExecutor(max_workers=min(4, len(spans))) as executor:
-                segment_results = list(executor.map(review_span, spans))
         else:
-            segment_results = [review_span(spans[0])]
-        grammar = _merge_grammar_feedback([(weight, result) for weight, result, _items in segment_results])
-        contextual = sorted(
-            [item for _weight, _result, items in segment_results for item in items],
-            key=lambda item: int(item.get("start_offset") or 0),
-        )[:40]
-        logger.info(
-            "Contextual Fixes completed: segments=%d lt_candidates=%d final=%d",
-            len(spans),
-            len(language_tool_candidates),
-            len(contextual),
-        )
+            spans = _contextual_paragraph_spans(essay_draft) if full_scan else [(0, len(essay_draft))]
+
+            def review_span(span: tuple[int, int]) -> tuple[int, dict, list[dict], int]:
+                start, end = span
+                segment = essay_draft[start:end]
+                local_candidates = [
+                    {
+                        **candidate,
+                        "start_offset": candidate["start_offset"] - start,
+                        "end_offset": candidate["end_offset"] - start,
+                    }
+                    for candidate in language_tool_candidates
+                    if isinstance(candidate.get("start_offset"), int)
+                    and isinstance(candidate.get("end_offset"), int)
+                    and candidate["start_offset"] >= start
+                    and candidate["end_offset"] <= end
+                ]
+                segment_grammar, suggestions, segment_ai_passes = _contextual_segment_review(
+                    segment, user_notes, local_candidates, protected_terms
+                )
+                for suggestion in suggestions:
+                    suggestion["start_offset"] += start
+                    suggestion["end_offset"] += start
+                return len(segment), segment_grammar, suggestions, segment_ai_passes
+
+            if len(spans) > 1:
+                with ThreadPoolExecutor(max_workers=min(4, len(spans))) as executor:
+                    segment_results = list(executor.map(review_span, spans))
+            else:
+                segment_results = [review_span(spans[0])]
+            grammar = _merge_grammar_feedback([
+                (weight, result) for weight, result, _items, _passes in segment_results
+            ])
+            contextual = sorted(
+                [item for _weight, _result, items, _passes in segment_results for item in items],
+                key=lambda item: int(item.get("start_offset") or 0),
+            )[:40]
+            ai_passes = sum(passes for _weight, _result, _items, passes in segment_results)
+            contextual_route = "verified" if any(
+                passes > 1 for _weight, _result, _items, passes in segment_results
+            ) else "single_pass"
+            logger.info(
+                "Contextual Fixes completed: route=%s segments=%d ai_passes=%d lt_candidates=%d final=%d",
+                contextual_route,
+                len(spans),
+                ai_passes,
+                len(language_tool_candidates),
+                len(contextual),
+            )
     except Exception as exc:  # LanguageTool remains independently useful
         warnings.append(f"Contextual grammar check unavailable: {exc}")
 
@@ -834,6 +954,8 @@ def run_contextual_grammar_check(
         "warnings": warnings,
         "draft_revision": draft_revision,
         "replaces_language_tool": True,
+        "contextual_route": contextual_route,
+        "ai_passes": ai_passes,
         "fix_pipeline_version": _FIX_PIPELINE_VERSION,
     }
 

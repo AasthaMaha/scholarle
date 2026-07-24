@@ -497,10 +497,11 @@ POST /api/apply/editor-warmup
 If a check arrives during the one-time warm-up, the frontend quietly retries
 while keeping the editor usable and its immediate browser mechanics active.
 
-This endpoint runs the reusable local LanguageTool service for spelling, grammar,
-and punctuation. It returns exact text offsets and every change requires the
-student's individual approval. Profile terms plus the student's personal
-dictionary are protected.
+This endpoint runs the reusable local LanguageTool service as a candidate
+generator for spelling, grammar, and punctuation. It never calls
+`LanguageTool.correct(...)` and never mutates the draft. It returns exact text
+offsets, and every change requires the student's individual approval. Profile
+terms plus the student's personal dictionary are protected.
 
 The slower meaning-dependent pass is separate so it cannot delay LanguageTool:
 
@@ -508,9 +509,18 @@ The slower meaning-dependent pass is separate so it cannot delay LanguageTool:
 POST /api/apply/contextual-grammar
 ```
 
-The frontend merges the two result streams, keeps LanguageTool when findings
-overlap, and preserves unaffected underlines while the changed paragraph is being
-rechecked. Neither endpoint runs the six-criterion evaluation.
+The contextual endpoint routes work by risk. Incremental checks containing only
+high-confidence C0 spelling findings use no model calls. Ordinary ambiguous
+grammar receives one structured adjudication pass. A second verifier runs only
+when the first pass proposes a LanguageTool-independent correction, leaves an
+uncertain candidate, touches names/numbers/protected terms, makes a substantial
+edit, or diagnoses an issue without an actionable anchor. Each segment is capped
+at two model calls.
+
+The frontend merges the two result streams. Validated contextual findings replace
+overlapping provisional LanguageTool grammar, while unaffected underlines remain
+visible as the changed paragraph is rechecked. Neither endpoint runs the
+six-criterion evaluation.
 
 Conditional outline coverage is kept separate:
 
@@ -530,6 +540,12 @@ suggested_text
 suggestion_type
 reason
 severity
+risk_tier
+source
+confidence
+replacement_available
+start_offset
+end_offset
 ```
 
 Frontend anchoring happens in:
@@ -586,8 +602,10 @@ Location:
 essay_editor_service.py
 ```
 
-This rewrite path only works on selected text. It has guardrails to avoid large,
-fabricated expansions.
+This rewrite path only works on explicitly selected text. It has guardrails to
+avoid large, fabricated expansions and returns structured output. The editor
+shows the original and suggested passages side by side; the rewrite is applied
+only after the student presses **Accept**, and can be discarded with **Reject**.
 
 ---
 

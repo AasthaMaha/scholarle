@@ -184,6 +184,82 @@ def test_contextual_grammar_keeps_high_confidence_independent_finding(monkeypatc
     assert result["sentence_suggestions"][0]["original_text"] == "problem"
     assert result["sentence_suggestions"][0]["suggested_text"] == "problems"
     assert result["replaces_language_tool"] is True
+    assert result["contextual_route"] == "verified"
+    assert result["ai_passes"] == 2
+
+
+def test_incremental_contextual_check_skips_ai_for_obvious_spelling(monkeypatch):
+    draft = "I recieve support."
+    start = draft.index("recieve")
+    spelling = {
+        "original_text": "recieve",
+        "suggested_text": "receive",
+        "suggestion_type": "spelling",
+        "reason": "Possible spelling mistake.",
+        "severity": "medium",
+        "risk_tier": "C0",
+        "source": "language_tool",
+        "confidence": "high",
+        "replacement_available": True,
+        "start_offset": start,
+        "end_offset": start + len("recieve"),
+        "requires_contextual_review": False,
+    }
+    monkeypatch.setattr(editor_service, "_language_tool_suggestions", lambda *_args, **_kwargs: [spelling])
+    monkeypatch.setattr(
+        editor_service,
+        "_run_grammar",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("AI should not run")),
+    )
+
+    result = run_contextual_grammar_check(essay_draft=draft, draft_revision="paragraph:spelling")
+
+    assert result["sentence_suggestions"] == [spelling]
+    assert result["contextual_route"] == "local_only"
+    assert result["ai_passes"] == 0
+
+
+def test_contextual_grammar_uses_one_pass_for_certain_language_tool_accept(monkeypatch):
+    draft = "This scholarship would gave me freedom."
+    start = draft.index("gave")
+    candidate = {
+        "original_text": "gave",
+        "suggested_text": "give",
+        "suggestion_type": "grammar",
+        "reason": "Use the base form after a modal verb.",
+        "severity": "high",
+        "risk_tier": "C0",
+        "source": "language_tool",
+        "confidence": "high",
+        "replacement_available": True,
+        "start_offset": start,
+        "end_offset": start + len("gave"),
+        "requires_contextual_review": True,
+    }
+    calls = []
+    monkeypatch.setattr(editor_service, "_language_tool_suggestions", lambda *_args, **_kwargs: [candidate])
+
+    def accept_candidate(*_args, **_kwargs):
+        calls.append(True)
+        return {
+            "grammar_score": 90,
+            "sentence_suggestions": [],
+            "candidate_reviews": [{
+                "candidate_index": 0,
+                "verdict": "accept",
+                "reason": "A modal verb requires the base form.",
+                "confidence": "high",
+            }],
+        }
+
+    monkeypatch.setattr(editor_service, "_run_grammar", accept_candidate)
+
+    result = run_contextual_grammar_check(essay_draft=draft, draft_revision="paragraph:grammar")
+
+    assert len(calls) == 1
+    assert result["sentence_suggestions"][0]["suggested_text"] == "give"
+    assert result["contextual_route"] == "single_pass"
+    assert result["ai_passes"] == 1
 
 
 def test_full_contextual_scan_reviews_and_reanchors_every_paragraph(monkeypatch):
@@ -229,7 +305,7 @@ def test_full_contextual_scan_reviews_and_reanchors_every_paragraph(monkeypatch)
         assert draft[item["start_offset"]:item["end_offset"]] == item["original_text"]
 
 
-def test_contextual_completeness_retry_turns_every_diagnosed_issue_into_a_suggestion(monkeypatch):
+def test_selective_verifier_turns_every_diagnosed_issue_into_a_suggestion(monkeypatch):
     draft = (
         "At my core, I am commmitted to service. This scholarship would not only "
         "support my education but also strengthened my ability to give back."
@@ -252,8 +328,8 @@ def test_contextual_completeness_retry_turns_every_diagnosed_issue_into_a_sugges
     monkeypatch.setattr(editor_service, "_language_tool_suggestions", lambda *_args, **_kwargs: [spelling])
     calls = []
 
-    def incomplete_then_complete(_draft, notes, *_args, **_kwargs):
-        calls.append(notes)
+    def incomplete_then_complete(_draft, notes, *_args, **kwargs):
+        calls.append((notes, kwargs.get("verification_mode", False)))
         base = {
             "grammar_score": 80,
             "spelling_issues": ["commmitted"],
@@ -276,10 +352,12 @@ def test_contextual_completeness_retry_turns_every_diagnosed_issue_into_a_sugges
 
     monkeypatch.setattr(editor_service, "_run_grammar", incomplete_then_complete)
 
-    result = run_contextual_grammar_check(essay_draft=draft, draft_revision="paragraph:retry")
+    result = run_contextual_grammar_check(essay_draft=draft, draft_revision="full:retry")
 
     assert len(calls) == 2
-    assert "INDEPENDENT CONTEXTUAL QA" in calls[1]
+    assert calls[0][1] is False
+    assert calls[1][1] is True
+    assert "SELECTIVE CONTEXTUAL QA" in calls[1][0]
     assert [(item["original_text"], item["suggested_text"]) for item in result["sentence_suggestions"]] == [
         ("commmitted", "committed"),
         ("strengthened", "strengthen"),
@@ -337,7 +415,7 @@ def test_contextual_qa_finds_missed_agreement_and_rejects_plural_false_positive(
     result = run_contextual_grammar_check(essay_draft=draft, draft_revision="paragraph:qa")
 
     assert len(calls) == 2
-    assert "INDEPENDENT CONTEXTUAL QA" in calls[1]
+    assert "SELECTIVE CONTEXTUAL QA" in calls[1]
     assert [(item["original_text"], item["suggested_text"]) for item in result["sentence_suggestions"]] == [
         ("come", "comes"),
     ]
@@ -510,7 +588,7 @@ def test_possible_name_is_suppressed_when_added_to_dictionary(monkeypatch):
     assert _language_tool_suggestions(draft, protected_terms=["Morogoro"]) == []
 
 
-def test_language_tool_and_contextual_ai_fail_independently(monkeypatch):
+def test_language_tool_spelling_does_not_depend_on_contextual_ai(monkeypatch):
     deterministic = [{
         "original_text": "recieve",
         "suggested_text": "receive",
@@ -537,6 +615,54 @@ def test_language_tool_and_contextual_ai_fail_independently(monkeypatch):
     assert language_tool_result["status"] == "success"
     assert language_tool_result["sentence_suggestions"] == deterministic
     assert language_tool_result["draft_revision"] == "draft-7"
+    assert contextual_result["status"] == "success"
+    assert contextual_result["sentence_suggestions"] == deterministic
+    assert contextual_result["contextual_route"] == "local_only"
+    assert contextual_result["ai_passes"] == 0
+    assert contextual_result["warnings"] == []
+
+
+def test_ambiguous_contextual_failure_leaves_fast_spelling_available(monkeypatch):
+    draft = "I recieve support that would gave me freedom."
+    spelling = {
+        "original_text": "recieve",
+        "suggested_text": "receive",
+        "suggestion_type": "spelling",
+        "reason": "Possible spelling mistake.",
+        "severity": "medium",
+        "risk_tier": "C0",
+        "source": "language_tool",
+        "confidence": "high",
+        "replacement_available": True,
+        "start_offset": draft.index("recieve"),
+        "end_offset": draft.index("recieve") + len("recieve"),
+        "requires_contextual_review": False,
+    }
+    grammar = {
+        "original_text": "gave",
+        "suggested_text": "give",
+        "suggestion_type": "grammar",
+        "reason": "Use the base form after a modal verb.",
+        "severity": "high",
+        "risk_tier": "C0",
+        "source": "language_tool",
+        "confidence": "high",
+        "replacement_available": True,
+        "start_offset": draft.index("gave"),
+        "end_offset": draft.index("gave") + len("gave"),
+        "requires_contextual_review": True,
+    }
+    monkeypatch.setattr(editor_service, "_language_tool_suggestions", lambda *_args, **_kwargs: [spelling, grammar])
+    monkeypatch.setattr(
+        editor_service,
+        "_run_grammar",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("AI unavailable")),
+    )
+
+    language_tool_result = run_editor_check(essay_draft=draft, draft_revision="draft-8")
+    contextual_result = run_contextual_grammar_check(essay_draft=draft, draft_revision="draft-8")
+
+    assert language_tool_result["sentence_suggestions"] == [spelling]
     assert contextual_result["status"] == "error"
     assert any("Contextual grammar check unavailable" in warning for warning in contextual_result["warnings"])
 

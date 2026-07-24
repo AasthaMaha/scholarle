@@ -554,6 +554,8 @@ export type EditorCheckResult = {
   language_tool_status?: "idle" | "warming" | "ready" | "error" | string;
   retry_after_ms?: number;
   replaces_language_tool?: boolean;
+  contextual_route?: "local_only" | "single_pass" | "verified" | string;
+  ai_passes?: number;
   fix_pipeline_version?: string;
 };
 

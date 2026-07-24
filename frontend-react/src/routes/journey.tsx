@@ -5849,7 +5849,7 @@ function canonicalEssayForReview(value: string): string {
 
 type DraftCheckScope = { text: string; start: number; end: number; revision: string; document: string; promptId: string };
 type AnchoredFixState = { draft: string; suggestions: CoachSentenceSuggestion[] };
-const FIX_PIPELINE_VERSION = "6";
+const FIX_PIPELINE_VERSION = "7";
 
 function abortableDelay(milliseconds: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {

@@ -22,7 +22,10 @@ Background editor support is intentionally narrow:
 
 - `POST /api/apply/contextual-grammar`
   - runs after a longer typing pause for meaning-dependent grammar
-  - merges behind LanguageTool, which wins when findings overlap
+  - skips the model for incremental, high-confidence spelling-only findings
+  - uses one model pass to adjudicate ordinary ambiguous grammar candidates
+  - adds one selective verifier pass only for novel, uncertain, sensitive, or substantial edits
+  - returns structured, exactly anchored suggestions; contextual findings win when they overlap provisional LanguageTool grammar
   - fails independently so the faster Fixes remain available
 
 - `POST /api/apply/outline-coverage`
@@ -32,6 +35,7 @@ Selected-text tools are separate:
 
 - `POST /api/apply/rewrite-selection`
   - rewrites, expands, shortens, or adjusts tone for selected text only
+  - returns a structured preview that the student must explicitly accept or reject
 
 The frontend stores the latest full evaluation in `user.essayReviewResult`.
 Legacy `lastAnalysis` data is ignored and removed during store hydration.

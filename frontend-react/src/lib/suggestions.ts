@@ -1,10 +1,10 @@
 // Anchored Essay Workspace Fixes.
 //
 // A small deterministic browser layer provides immediate, unquestionably local
-// mechanics feedback. Debounced backend results add LanguageTool spelling,
-// grammar, and punctuation findings followed by a contextual AI pass. Unknown
-// words may intentionally have no replacement: the student can ignore them or
-// add them to a personal dictionary.
+// mechanics feedback. Debounced backend results add LanguageTool candidates;
+// obvious spelling stays local, while ambiguous grammar is contextually
+// adjudicated and selectively verified. Unknown words may intentionally have no
+// replacement: the student can ignore them or add them to a personal dictionary.
 
 export type SuggestionCategory = "correctness" | "clarity" | "engagement" | "tone";
 export type EditRiskTier = "C0" | "C1" | "C2" | "C3";

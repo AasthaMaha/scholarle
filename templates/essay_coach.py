@@ -592,8 +592,22 @@ def build_grammar_prompt(
     user_notes: str = "",
     language_tool_candidates_json: str = "[]",
     max_suggestions: int = 25,
+    verification_mode: bool = False,
 ) -> tuple[str, str]:
     """Return (system, human) messages for the Grammar Coach."""
+    audit_rule = (
+        """VERIFICATION SCOPE:
+- Re-check only the supplied candidates and correctness issues explicitly named
+  in STUDENT NOTES. Do not introduce unrelated edits.
+- Return a suggestion only when the targeted correction remains exact, minimal,
+  meaning-preserving, and high confidence in its complete sentence."""
+        if verification_mode
+        else """PRIMARY SCAN SCOPE:
+- Before returning, silently audit every clause in the draft. For each finite
+  verb, identify its actual grammatical subject and verify person and number
+  agreement; then verify tense, auxiliaries, modal constructions, pronoun
+  reference, and punctuation. Do not assume a nearby noun is the subject."""
+    )
     system = f"""You are the Grammar Coach for Scholar-E.
 Evaluate spelling, punctuation, capitalization, verb tense, agreement, grammar,
 and sentence-level correctness.
@@ -642,10 +656,7 @@ For EACH suggestion:
   modal such as "would," "could," "should," "can," or "will," coordinated
   verbs must use the parallel base form (for example, "would support ... and
   strengthen," not "would support ... and strengthens").
-- Before returning, silently audit every clause in the draft. For each finite
-  verb, identify its actual grammatical subject and verify person and number
-  agreement; then verify tense, auxiliaries, modal constructions, pronoun
-  reference, and punctuation. Do not assume a nearby noun is the subject.
+{audit_rule}
 - When a noun follows an article elsewhere in the sentence, trace the complete
   clause before proposing a number change. A plural noun may correctly begin a
   later relative or content clause and must not be made singular merely because
