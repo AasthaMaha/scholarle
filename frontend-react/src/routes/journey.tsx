@@ -35,6 +35,7 @@ import {
   Send,
   ShieldCheck,
   Sparkles,
+  Trash2,
   UserRound,
   Wand2,
 } from "lucide-react";
@@ -79,8 +80,6 @@ import {
   buildOutlinePayload,
   buildOutlinePoints,
   buildRevisionCoachPayload,
-  buildWikiPayload,
-  discoverScholarshipWiki,
   buildRewritePayload,
   profileToText,
   extractPromptWordLimits,
@@ -177,6 +176,7 @@ function needsAcademicOnboarding(user: UserProfile | null) {
 function Journey() {
   const { user, isHydrated, updateProfile, resetProfile } = useUser();
   const [stepIdx, setStepIdx] = useState(0);
+  const [highestJourneyStep, setHighestJourneyStep] = useState(0);
   const [profileError, setProfileError] = useState("");
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [academicOnboardingActive, setAcademicOnboardingActive] = useState<boolean | null>(null);
@@ -227,24 +227,53 @@ function Journey() {
 
   // Resume the last step once the saved profile hydrates from storage.
   const restoredStep = useRef(false);
+  const restoredJourneySnapshot = useRef<{ step: number; highest: number } | null>(null);
   useEffect(() => {
     if (restoredStep.current || !user) return;
     restoredStep.current = true;
-    if (typeof user.lastStep === "number" && user.lastStep > 0) {
-      // Versions before the dashboard consolidation persisted indices 4–6 for
-      // Revise, Final Check, and Tracker. They now all resume at the dashboard.
-      setStepIdx(Math.min(user.lastStep, journeySteps.length - 1));
-    }
+    // Versions before sequential unlocking only stored the active page. Treat
+    // that page as already reached so returning users keep their prior access.
+    const restoredStepIndex = Math.min(
+      Math.max(0, typeof user.lastStep === "number" ? user.lastStep : 0),
+      journeySteps.length - 1,
+    );
+    const restoredHighestStep = Math.min(
+      Math.max(
+        restoredStepIndex,
+        typeof user.highestJourneyStep === "number" ? user.highestJourneyStep : 0,
+      ),
+      journeySteps.length - 1,
+    );
+    restoredJourneySnapshot.current = {
+      step: Math.min(restoredStepIndex, restoredHighestStep),
+      highest: restoredHighestStep,
+    };
+    setHighestJourneyStep(restoredHighestStep);
+    setStepIdx(Math.min(restoredStepIndex, restoredHighestStep));
   }, [user]);
   useEffect(() => {
-    if (!restoredStep.current || !user || user.lastStep === stepIdx) return;
-    updateProfile({ lastStep: stepIdx });
+    if (!restoredStep.current || !user) return;
+    const restoredSnapshot = restoredJourneySnapshot.current;
+    if (
+      restoredSnapshot &&
+      (stepIdx !== restoredSnapshot.step || highestJourneyStep !== restoredSnapshot.highest)
+    ) {
+      return;
+    }
+    restoredJourneySnapshot.current = null;
+    const patch: Partial<UserProfile> = {};
+    if (user.lastStep !== stepIdx) patch.lastStep = stepIdx;
+    if (user.highestJourneyStep !== highestJourneyStep) {
+      patch.highestJourneyStep = highestJourneyStep;
+    }
+    if (Object.keys(patch).length > 0) updateProfile(patch);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stepIdx]);
+  }, [stepIdx, highestJourneyStep]);
 
   function handleClearAll() {
     resetProfile();
     setStepIdx(0);
+    setHighestJourneyStep(0);
     setProfileError("");
   }
 
@@ -266,20 +295,25 @@ function Journey() {
     if (window.matchMedia("(min-width: 768px)").matches) setIsSidebarOpen(true);
   }, [guidedProfileSetupActive]);
 
+  const advanceToStep = (idx: number) => {
+    const nextIndex = Math.min(Math.max(0, idx), journeySteps.length - 1);
+    setHighestJourneyStep((current) => Math.max(current, nextIndex));
+    setStepIdx(nextIndex);
+  };
   const goNext = () => {
     if (step.slug === "profile" && !isProfileComplete(user)) {
       setProfileError("Fill out the required fields");
       return;
     }
     setProfileError("");
-    setStepIdx((i) => Math.min(i + 1, journeySteps.length - 1));
+    advanceToStep(stepIdx + 1);
   };
   const goPrev = () => {
     setProfileError("");
     setStepIdx((i) => Math.max(i - 1, 0));
   };
   const selectStep = (idx: number) => {
-    if (journeyTutorialActive || (guidedProfileSetupActive && idx > 0)) return;
+    if (journeyTutorialActive || idx > highestJourneyStep || (guidedProfileSetupActive && idx > 0)) return;
     setStepIdx(idx);
   };
   const goToStep = (slug: string) => {
@@ -303,7 +337,7 @@ function Journey() {
       journeyTutorialSkipped: skipped,
     });
     setJourneyTutorialActive(false);
-    setStepIdx(1);
+    advanceToStep(1);
     window.requestAnimationFrame(() => journeyMainRef.current?.focus());
   }
 
@@ -334,13 +368,13 @@ function Journey() {
       >
         <SidebarRail
           activeIdx={visibleStepIdx}
-          laterStepsLocked={guidedProfileSetupActive}
+          highestReachableStep={guidedProfileSetupActive ? 0 : highestJourneyStep}
           onSelect={selectStep}
           onExpand={() => setIsSidebarOpen(true)}
         />
         <Sidebar
           activeIdx={visibleStepIdx}
-          laterStepsLocked={guidedProfileSetupActive}
+          highestReachableStep={guidedProfileSetupActive ? 0 : highestJourneyStep}
           tutorialActive={journeyTutorialActive}
           isOpen={isSidebarOpen}
           onClose={() => setIsSidebarOpen(false)}
@@ -365,14 +399,16 @@ function Journey() {
           } ${
             step.slug === "discovery"
               ? "bg-[radial-gradient(circle_at_85%_8%,rgba(109,93,246,0.10),transparent_28%),linear-gradient(180deg,#f4f6fb_0%,#ffffff_48%,#f4f2fb_100%)]"
-              : ""
+              : step.slug === "application-dashboard"
+                ? "bg-[radial-gradient(circle_at_88%_5%,rgba(109,93,246,0.09),transparent_30%),linear-gradient(180deg,#f4f6fb_0%,#fafaff_54%,#f4f2fb_100%)]"
+                : ""
           }`}>
             <div
               className={`mx-auto ${
                 step.slug === "essay-workspace"
                   ? "h-full min-h-0 w-full max-w-none px-0 py-0"
                   : `px-6 md:px-10 ${
-                      ["discovery", "requirements"].includes(step.slug)
+                      ["discovery", "requirements", "application-dashboard"].includes(step.slug)
                         ? "max-w-7xl py-6"
                         : step.slug === "profile"
                           ? "max-w-7xl py-10"
@@ -385,8 +421,7 @@ function Journey() {
                 slug={step.slug}
                 goNext={goNext}
                 goPrev={goPrev}
-                goToProfile={() => setStepIdx(Math.max(0, journeySteps.findIndex((s) => s.slug === "profile")))}
-                goToRequirements={() => setStepIdx(Math.max(0, journeySteps.findIndex((s) => s.slug === "requirements")))}
+                goToRequirements={() => advanceToStep(Math.max(0, journeySteps.findIndex((s) => s.slug === "requirements")))}
                 goToStep={goToStep}
                 profileError={profileError}
                 startProfilePrompt={showResumePrompt}
@@ -402,6 +437,7 @@ function Journey() {
                 onNext={goNext}
                 onPrev={goPrev}
                 hideNext={step.slug === "discovery"}
+                accentNext={step.slug === "application-dashboard"}
                 nextLabel={step.slug === "essay-workspace" ? "Review & Submit" : "Continue"}
               />
             </div>
@@ -446,7 +482,7 @@ function isRequiredAboutComplete(user: UserProfile | null) {
 
 function Sidebar({
   activeIdx,
-  laterStepsLocked,
+  highestReachableStep,
   tutorialActive,
   isOpen,
   onClose,
@@ -454,7 +490,7 @@ function Sidebar({
   onClearAll,
 }: {
   activeIdx: number;
-  laterStepsLocked: boolean;
+  highestReachableStep: number;
   tutorialActive: boolean;
   isOpen: boolean;
   onClose: () => void;
@@ -518,7 +554,7 @@ function Sidebar({
                   const idx = journeySteps.findIndex((x) => x.id === s.id);
                   const isActive = idx === activeIdx;
                   const isDone = idx < activeIdx;
-                  const isLocked = laterStepsLocked && idx > 0;
+                  const isLocked = idx > highestReachableStep;
                   return (
                     <Tooltip key={s.id}>
                       <TooltipTrigger asChild>
@@ -526,7 +562,7 @@ function Sidebar({
                           type="button"
                           onClick={() => { if (!isLocked) onSelect(idx); }}
                           aria-disabled={isLocked || undefined}
-                          aria-label={isLocked ? `${s.title}. Complete your profile to unlock this step.` : s.title}
+                          aria-label={isLocked ? `${s.title}. Complete the previous steps to unlock this page.` : s.title}
                           className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[13px] font-semibold transition-colors ${
                             isActive
                               ? "bg-info/10 text-info"
@@ -540,23 +576,18 @@ function Sidebar({
                               isActive
                                 ? "bg-info text-white"
                                 : isDone
-                                ? "bg-success/20 text-success"
-                                : "bg-secondary text-muted-foreground"
+                                  ? "bg-info/10 text-info"
+                                  : "bg-secondary text-muted-foreground"
                             }`}
                           >
                             <span className="text-xs font-bold tabular-nums">{idx + 1}</span>
-                            {isDone && (
-                              <span className="absolute -bottom-1 -right-1 grid size-4 place-items-center rounded-full bg-success text-white ring-2 ring-card">
-                                <Check className="size-2.5" strokeWidth={4} />
-                              </span>
-                            )}
                           </span>
                           <span className="min-w-0 flex-1 truncate">{s.title}</span>
                           {isLocked && <Lock className="size-3.5 shrink-0" aria-hidden="true" />}
                         </button>
                       </TooltipTrigger>
                       <TooltipContent side="right">
-                        {isLocked ? "Complete your profile to unlock this step." : s.title}
+                        {isLocked ? "Complete the previous steps to unlock this page." : s.title}
                       </TooltipContent>
                     </Tooltip>
                   );
@@ -1076,12 +1107,12 @@ function FloatingSidebarToggle({
  */
 function SidebarRail({
   activeIdx,
-  laterStepsLocked,
+  highestReachableStep,
   onSelect,
   onExpand,
 }: {
   activeIdx: number;
-  laterStepsLocked: boolean;
+  highestReachableStep: number;
   onSelect: (i: number) => void;
   onExpand: () => void;
 }) {
@@ -1117,14 +1148,14 @@ function SidebarRail({
         {journeySteps.map((s, idx) => {
           const isActive = idx === activeIdx;
           const isDone = idx < activeIdx;
-          const isLocked = laterStepsLocked && idx > 0;
+          const isLocked = idx > highestReachableStep;
           return (
             <Tooltip key={s.id}>
               <TooltipTrigger asChild>
                 <button
                   type="button"
                   onClick={() => { if (!isLocked) onSelect(idx); }}
-                  aria-label={isLocked ? `Step ${idx + 1}: ${s.title}. Complete your profile to unlock this step.` : `Step ${idx + 1}: ${s.title}`}
+                  aria-label={isLocked ? `Step ${idx + 1}: ${s.title}. Complete the previous steps to unlock this page.` : `Step ${idx + 1}: ${s.title}`}
                   aria-disabled={isLocked || undefined}
                   aria-current={isActive ? "step" : undefined}
                   className={`relative grid size-10 shrink-0 place-items-center rounded-full transition-colors ${
@@ -1133,20 +1164,15 @@ function SidebarRail({
                       : isLocked
                         ? "cursor-not-allowed text-muted-foreground opacity-45"
                       : isDone
-                        ? "bg-success/20 text-success hover:bg-success/30"
+                        ? "bg-info/10 text-info hover:bg-info/15"
                         : "text-muted-foreground hover:bg-accent hover:text-foreground"
                   }`}
                 >
                   <span className="text-sm font-bold tabular-nums">{idx + 1}</span>
-                  {isDone && (
-                    <span className="absolute -bottom-1 -right-1 grid size-4 place-items-center rounded-full bg-success text-white ring-2 ring-card">
-                      <Check className="size-2.5" strokeWidth={3.5} />
-                    </span>
-                  )}
                 </button>
               </TooltipTrigger>
               <TooltipContent side="right">
-                {isLocked ? "Complete your profile to unlock this step." : `${idx + 1} — ${s.title}`}
+                {isLocked ? "Complete the previous steps to unlock this page." : `${idx + 1} — ${s.title}`}
               </TooltipContent>
             </Tooltip>
           );
@@ -1177,12 +1203,14 @@ function Nav({
   onNext,
   onPrev,
   hideNext = false,
+  accentNext = false,
   nextLabel = "Continue",
 }: {
   stepIdx: number;
   onNext: () => void;
   onPrev: () => void;
   hideNext?: boolean;
+  accentNext?: boolean;
   nextLabel?: string;
 }) {
   return (
@@ -1203,7 +1231,9 @@ function Nav({
         disabled={stepIdx === journeySteps.length - 1}
         aria-hidden={hideNext}
         tabIndex={hideNext ? -1 : undefined}
-        className={`inline-flex items-center gap-2 rounded-lg bg-primary px-6 py-2 text-sm text-primary-foreground hover:opacity-90 disabled:opacity-40 ${hideNext ? "invisible" : ""}`}
+        className={`inline-flex items-center gap-2 rounded-lg px-6 py-2 text-sm text-white transition-colors disabled:opacity-40 ${
+          accentNext ? "bg-info hover:bg-info/90" : "bg-primary hover:bg-primary/90"
+        } ${hideNext ? "invisible" : ""}`}
       >
         {nextLabel}
         <ArrowRight className="size-4" />
@@ -1216,7 +1246,6 @@ function StepBody({
   slug,
   goNext,
   goPrev,
-  goToProfile,
   goToRequirements,
   goToStep,
   profileError,
@@ -1226,7 +1255,6 @@ function StepBody({
   slug: string;
   goNext: () => void;
   goPrev: () => void;
-  goToProfile: () => void;
   goToRequirements: () => void;
   goToStep: (slug: string) => void;
   profileError: string;
@@ -1235,7 +1263,7 @@ function StepBody({
 }) {
   switch (slug) {
     case "profile": return <StepProfile error={profileError} onComplete={onProfileSetupComplete} startWithResumePrompt={startProfilePrompt} />;
-    case "discovery": return <StepDiscovery onUpdateProfile={goToProfile} onUseSource={goToRequirements} />;
+    case "discovery": return <StepDiscovery onUseSource={goToRequirements} />;
     case "opportunities": return <StepOpportunities onAnalyze={goNext} />;
     case "requirements": return <StepRequirementsAndFit />;
     case "essay-workspace": return <StepEssayWorkspace />;
@@ -2194,19 +2222,18 @@ function StepProfile({
     <div className="mx-auto max-w-7xl">
       <Dialog open={showStartDialog}>
         <DialogContent
-          className="top-[45%] w-[calc(100%-1.5rem)] max-w-xl gap-0 border-0 bg-transparent p-0 shadow-none motion-reduce:animate-none [&>button]:hidden"
+          className="top-[42.5%] w-[calc(100%-1.5rem)] max-w-2xl gap-0 border-0 bg-transparent p-0 shadow-none motion-reduce:animate-none [&>button]:hidden"
           overlayClassName="bg-[radial-gradient(circle_at_50%_24%,rgba(109,93,246,0.08),transparent_34%),linear-gradient(180deg,#f9faff_0%,#f3f5fb_100%)] data-[state=open]:animate-none data-[state=closed]:animate-none"
           onEscapeKeyDown={(event) => event.preventDefault()}
           onPointerDownOutside={(event) => event.preventDefault()}
         >
-          <DialogHeader className="pb-7 text-center sm:text-center">
-            <div className="mb-3 flex items-center justify-center gap-2">
-              <img src={scholarELogoUrl} alt="" className="size-8 rounded-full object-cover" />
-              <span className="font-display text-sm font-semibold tracking-tight text-foreground">Scholar-E</span>
+          <DialogHeader className="pb-8 text-center sm:text-center">
+            <div className="mb-3.5 flex items-center justify-center gap-2.5">
+              <img src={scholarELogoUrl} alt="" className="size-9 rounded-full object-cover" />
+              <span className="font-display text-base font-semibold tracking-tight text-foreground">Scholar-E</span>
             </div>
             {user?.academicOnboardingCompleted && (
-              <div className="mb-3 flex items-center justify-center gap-1.5 text-sm font-medium text-success motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-200">
-                <Check className="size-4" aria-hidden="true" />
+              <div className="mb-3.5 flex items-center justify-center text-base font-medium text-info motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-200">
                 <span>Education details saved</span>
               </div>
             )}
@@ -2214,8 +2241,8 @@ function StepProfile({
               className="motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-300"
               style={{ animationDelay: "75ms", animationFillMode: "both" }}
             >
-              <DialogTitle className="font-display text-2xl font-bold tracking-tight sm:text-3xl">Start your profile</DialogTitle>
-              <DialogDescription className="mt-1.5 text-base font-medium leading-6 text-foreground/75 sm:text-lg">
+              <DialogTitle className="font-display text-3xl font-bold tracking-tight sm:text-4xl">Start your profile</DialogTitle>
+              <DialogDescription className="mt-2 text-lg font-medium leading-7 text-foreground/75 sm:text-xl">
                 Upload your resume to automatically fill in many of your profile details. You can
                 review and edit everything before continuing.
               </DialogDescription>
@@ -2223,7 +2250,7 @@ function StepProfile({
           </DialogHeader>
 
           <div
-            className="grid gap-2 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-300"
+            className="grid gap-2.5 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-300"
             style={{ animationDelay: "75ms", animationFillMode: "both" }}
           >
             <button
@@ -2231,12 +2258,12 @@ function StepProfile({
               onClick={() => startResumeInputRef.current?.click()}
               disabled={!!resumeStatus}
               aria-busy={!!resumeStatus && !resumeError}
-              className={`flex min-h-12 w-full items-center gap-3 rounded-xl border border-border bg-card px-4 py-3 text-left text-sm font-medium text-foreground shadow-sm transition-colors hover:bg-accent disabled:opacity-90 ${resumeStatus && !resumeError ? "agent-loading" : ""}`}
+              className={`flex min-h-14 w-full items-center gap-3.5 rounded-xl border border-border bg-card px-5 py-3.5 text-left text-base font-medium text-foreground shadow-sm transition-colors hover:bg-accent disabled:opacity-90 ${resumeStatus && !resumeError ? "agent-loading" : ""}`}
             >
               {resumeStatus && !resumeError ? (
-                <Spinner className="size-5" />
+                <Spinner className="size-5.5" />
               ) : (
-                <FileUp className="size-5 shrink-0" />
+                <FileUp className="size-5.5 shrink-0" />
               )}
               <span>{resumeStatus && !resumeError ? "Reading your resume…" : "Autofill with Resume"}</span>
             </button>
@@ -2253,9 +2280,9 @@ function StepProfile({
                 setShowStartDialog(false);
               }}
               disabled={!!resumeStatus}
-              className="flex min-h-12 w-full items-center gap-3 rounded-xl border border-border bg-card px-4 py-3 text-left text-sm font-medium shadow-sm transition-colors hover:bg-accent"
+              className="flex min-h-14 w-full items-center gap-3.5 rounded-xl border border-border bg-card px-5 py-3.5 text-left text-base font-medium shadow-sm transition-colors hover:bg-accent"
             >
-              <PencilLine className="size-5 shrink-0" />
+              <PencilLine className="size-5.5 shrink-0" />
               <span>Apply Manually</span>
             </button>
           </div>
@@ -2423,7 +2450,7 @@ function GuidedProfileSetup({
                     : "border-transparent text-muted-foreground opacity-50"
               }`}
             >
-              <span className="block">{index < highestStep && index !== currentStep ? "✓" : index + 1}</span>
+              <span className="block">{index + 1}</span>
               <span className="mt-0.5 hidden truncate text-[10px] font-normal sm:block">{item.title}</span>
             </button>
           ))}
@@ -2457,10 +2484,10 @@ function GuidedProfileSetup({
                     isActive
                       ? "bg-primary text-primary-foreground"
                       : isComplete
-                        ? "bg-success/20 text-success"
+                        ? "bg-primary/10 text-primary"
                         : "bg-secondary text-secondary-foreground"
                   }`}>
-                    {isComplete ? "✓" : index + 1}
+                    {index + 1}
                   </span>
                   <span className="min-w-0">
                     <span className="block truncate text-[13px] font-medium leading-4">{item.title}</span>
@@ -2494,12 +2521,11 @@ function GuidedProfileSetup({
             {requiredProgressText && (
               <p
                 className={`mt-1.5 flex items-center gap-1.5 text-xs font-medium ${
-                  currentComplete ? "text-success" : "text-muted-foreground"
+                  currentComplete ? "text-primary" : "text-muted-foreground"
                 }`}
                 role="status"
                 aria-live="polite"
               >
-                {currentComplete && <Check className="size-3.5" aria-hidden="true" />}
                 {requiredProgressText}
               </p>
             )}
@@ -3629,77 +3655,9 @@ const TRUSTED_PLATFORM_GUIDES: TrustedPlatformGuide[] = [
   },
 ];
 
-function discoveryEducationLabel(entry?: EducationHistoryEntry, fallback?: EducationLevel) {
-  const normalized = normalizeEducationLevelLabel(entry?.educationLevel)
-    || inferEducationLevelLabel(entry ?? {});
-  if (/high school/i.test(normalized)) return "High school student";
-  if (/associate/i.test(normalized)) return "Associate degree student";
-  if (/bachelor/i.test(normalized)) return "Undergraduate student";
-  if (/master/i.test(normalized)) return "Graduate student";
-  if (/doctoral|doctor|phd/i.test(normalized)) return "Doctoral student";
-  if (/professional/i.test(normalized)) return "Professional degree student";
-  return fallback ? eduLevelLabel(fallback) : "";
-}
-
-function discoveryCitizenshipLabel(value?: string) {
-  const citizenship = value?.trim() ?? "";
-  if (!citizenship) return "";
-  if (/u\.s\. citizen|us citizen|permanent resident/i.test(citizenship)) return "Domestic student";
-  if (/international/i.test(citizenship)) return "International student";
-  return citizenship;
-}
-
-function buildDiscoveryProfileContext(user: UserProfile | null) {
-  if (!user) return [];
-  const currentEducation = user.educationHistory?.find((entry) => entry.isCurrent);
-  const alignedBranch = user.educationLevel === "high_school"
-    ? user.highSchool
-    : user.educationLevel === "undergrad"
-      ? user.undergrad
-      : user.graduate;
-  const branchMajor = user.educationLevel === "undergrad"
-    ? user.undergrad?.major?.trim()
-    : user.educationLevel === "grad" || user.educationLevel === "phd"
-      ? (user.graduate?.program || user.graduate?.researchArea)?.trim()
-      : "";
-  const currentLevel = educationLevelCode(currentEducation?.educationLevel);
-  const currentMatchesSelectedLevel = !currentEducation
-    || !currentLevel
-    || currentLevel === user.educationLevel;
-  const major = currentEducation?.majorField?.trim()
-    || (currentMatchesSelectedLevel ? branchMajor : "");
-  const branchGpa = alignedBranch && "gpa" in alignedBranch
-    ? String(alignedBranch.gpa ?? "").trim()
-    : "";
-  const gpa = currentEducation?.gpa?.trim() || branchGpa;
-  const values = [
-    discoveryEducationLabel(currentEducation, user.educationLevel),
-    major,
-    discoveryCitizenshipLabel(user.citizenshipStatus),
-    user.location?.trim(),
-    gpa ? `GPA ${gpa}` : "",
-  ].filter((value): value is string => !!value);
-  return values.filter(
-    (value, index) => values.findIndex((candidate) => candidate.toLowerCase() === value.toLowerCase()) === index,
-  );
-}
-
-function StepDiscovery({
-  onUpdateProfile,
-  onUseSource,
-}: {
-  onUpdateProfile: () => void;
-  onUseSource: () => void;
-}) {
+function StepDiscovery({ onUseSource }: { onUseSource: () => void }) {
   const { user, updateProfile } = useUser();
   const wiki = user?.wikiDiscovery;
-  const [loading, setLoading] = useState(!wiki);
-  const [showResults, setShowResults] = useState(!!wiki);
-  const [status, setStatus] = useState<string | null>(
-    wiki ? null : "Reviewing your verified profile...",
-  );
-  const [searchError, setSearchError] = useState("");
-  const discoveryRequestStartedRef = useRef(false);
   const [scholarshipUrl, setScholarshipUrl] = useState("");
   const [urlTouched, setUrlTouched] = useState(false);
   const [showCopiedText, setShowCopiedText] = useState(false);
@@ -3714,14 +3672,6 @@ function StepDiscovery({
   const pdfRequestIdRef = useRef(0);
 
   useEffect(() => {
-    if (wiki || discoveryRequestStartedRef.current) return;
-    discoveryRequestStartedRef.current = true;
-    void refreshWiki();
-    // Discovery starts once when this page opens without cached results.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
     let active = true;
     void getScholarshipPdfUploadConfig()
       .then((result) => {
@@ -3734,92 +3684,6 @@ function StepDiscovery({
       active = false;
     };
   }, []);
-
-  async function refreshWiki() {
-    setLoading(true);
-    setShowResults(false);
-    setSearchError("");
-    setStatus("Looking for scholarships related to your profile...");
-    const progressTimer = window.setTimeout(
-      () => setStatus("Checking trusted sources and organizing useful places to search..."),
-      5000,
-    );
-    try {
-      const result = await discoverScholarshipWiki({
-        ...buildWikiPayload(user),
-        selected_intents: [],
-        free_text_intent: "",
-      });
-      updateProfile({ wikiDiscovery: result, discoveryFocus: "", discoveryIntents: [] });
-      setStatus(result.result_note || "Your discovery results are ready.");
-      setShowResults(true);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "We couldn't complete this search. Please try again.";
-      setStatus(message);
-      setSearchError(message);
-      setShowResults(false);
-    } finally {
-      window.clearTimeout(progressTimer);
-      setLoading(false);
-    }
-  }
-
-  function selectSourceForExtraction(source: DiscoverySource) {
-    const sourceUrl = source.url ?? "";
-    const deadlineStatus = source.deadline_status === "open"
-      ? "Applications open"
-      : source.deadline_status === "upcoming"
-        ? "Upcoming application cycle"
-        : "Current deadline needs confirmation";
-    const transferNotes = [
-      source.category && `Source category: ${source.category}`,
-      source.source_authority && `Source authority: ${source.source_authority}`,
-      source.award_amount && `Award amount: ${source.award_amount}`,
-      source.deadline_window && `Deadline: ${source.deadline_window}`,
-      `Discovery deadline status: ${deadlineStatus}`,
-      source.why_recommended && `Why this appeared in discovery: ${source.why_recommended}`,
-      source.status_note,
-    ].filter(Boolean).join("\n");
-    updateProfile({
-      activeScholarship: {
-        name: source.name ?? "",
-        url: sourceUrl,
-        officialWebsite: sourceUrl,
-        awardAmount: source.award_amount ?? "",
-        applicationDeadline: source.deadline_window ?? "",
-        currentStatus: deadlineStatus,
-        description: source.why_recommended ?? "",
-        importantNotes: source.status_note ? [source.status_note] : [],
-        sourceUrls: sourceUrl ? [sourceUrl] : [],
-        discoverySource: "Scholar-E discovery",
-        discoverySourceKind: "scholarship",
-        additionalNotes: transferNotes,
-      },
-      fitAnalysis: undefined,
-      personalizedOutline: undefined,
-    });
-    onUseSource();
-  }
-
-  function toggleSaved(source: DiscoverySource, kind: "scholarship" | "platform") {
-    const id = (source.url || source.name || "").toLowerCase();
-    if (!id) return;
-    const saved = user?.savedWikiSources ?? [];
-    const exists = saved.some((item) => item.id === id);
-    updateProfile({
-      savedWikiSources: exists
-        ? saved.filter((item) => item.id !== id)
-        : [...saved, {
-            id,
-            name: source.name || "Saved discovery source",
-            url: source.url,
-            category: source.category || kind,
-            notes: source.why_recommended,
-            saved_at: new Date().toISOString(),
-          }],
-    });
-    setStatus(exists ? "Removed from saved opportunities." : "Saved for later.");
-  }
 
   function rememberPlatform(source: DiscoverySource) {
     setPlatformContext(source.name || "the platform");
@@ -3967,9 +3831,6 @@ function StepDiscovery({
     onUseSource();
   }
 
-  const hasWiki = !!wiki;
-  const dismissedUrls = new Set(user?.dismissedDiscoveryUrls ?? []);
-  const directSources = (wiki?.specific_opportunities ?? []).filter((source) => !dismissedUrls.has(source.url ?? "")).slice(0, 3);
   const apiPlatforms = (wiki?.top_free_platforms ?? []).filter((source) => source.name && source.url);
   const returnedPlatforms = [...apiPlatforms, ...(user?.discoveryPlatformDefaults ?? [])]
     .filter((source, index, sources) => sources.findIndex((candidate) => candidate.url === source.url) === index);
@@ -3988,9 +3849,6 @@ function StepDiscovery({
       matchTerms: guide.matchTerms,
     };
   });
-  const savedIds = new Set((user?.savedWikiSources ?? []).map((item) => item.id));
-  const resultsVisible = showResults && hasWiki;
-  const profileContext = buildDiscoveryProfileContext(user);
   const validScholarshipUrl = isValidScholarshipUrl(scholarshipUrl);
   const showUrlError = urlTouched && activeInputSource === "url" && !!scholarshipUrl.trim() && !validScholarshipUrl;
   const pdfReady = pdfUpload.status === "ready";
@@ -4011,62 +3869,13 @@ function StepDiscovery({
   return (
     <div className="space-y-5 pb-5">
       <header className="border-b border-info/10 pb-4">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div>
-            <h2 className="font-display text-3xl font-bold tracking-tight">Scholarship Discovery</h2>
-            <p className="mt-1.5 max-w-2xl text-[15px] leading-6 text-foreground/75">
-              Paste a scholarship you found, or use one of the trusted sources below to find one.
-            </p>
-          </div>
-          {hasWiki && (
-            <button
-              type="button"
-              onClick={refreshWiki}
-              disabled={loading}
-              className="inline-flex min-h-9 shrink-0 items-center justify-center rounded-lg border border-info/15 bg-card px-3 py-2 text-xs font-semibold text-foreground/70 transition-colors hover:border-info/30 hover:bg-accent/70 hover:text-foreground disabled:cursor-wait disabled:opacity-55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/35"
-            >
-              {loading ? "Refreshing…" : "Refresh results"}
-            </button>
-          )}
+        <div>
+          <h2 className="font-display text-3xl font-bold tracking-tight">Scholarship Discovery</h2>
+          <p className="mt-1.5 max-w-2xl text-[15px] leading-6 text-foreground/75">
+            Paste a scholarship you found, or use one of the trusted sources below to find one.
+          </p>
         </div>
       </header>
-
-      <section
-        aria-labelledby="verified-profile-heading"
-        className="flex flex-col gap-2 border-b border-success/25 pb-4 sm:flex-row sm:items-center sm:justify-between"
-      >
-        <div className="flex min-w-0 items-start gap-2.5">
-          <span className="mt-0.5 grid size-6 shrink-0 place-items-center rounded-full bg-success/12 text-success">
-            <Check className="size-3.5" aria-hidden="true" />
-          </span>
-          <div className="min-w-0">
-            <h3 id="verified-profile-heading" className="text-sm font-semibold text-foreground">
-              Using your verified profile
-            </h3>
-          {profileContext.length ? (
-            <ul className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1" aria-label="Profile details used for analysis">
-              {profileContext.map((item, index) => (
-                <li key={item} className="inline-flex items-center gap-2 text-sm text-foreground/75">
-                  {index > 0 && <span className="text-success/70" aria-hidden="true">·</span>}
-                  <span>{item}</span>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="mt-2 text-xs text-foreground/70">
-              Add profile details to improve the comparison in Step 3.
-            </p>
-          )}
-          </div>
-        </div>
-        <button
-          type="button"
-          onClick={onUpdateProfile}
-          className="shrink-0 self-start text-xs font-semibold text-info underline-offset-4 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/35 sm:self-center"
-        >
-          Edit profile
-        </button>
-      </section>
 
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1.9fr)_minmax(280px,1fr)] lg:items-start">
         <section
@@ -4331,157 +4140,9 @@ function StepDiscovery({
               </a>
             ))}
           </div>
-
-          {resultsVisible && !directSources.length && !loading && (
-            <p className="mt-3 text-xs leading-5 text-foreground/65">
-              Scholar-E did not find a recommendation it could verify confidently, so these trusted sources are the best places to continue.
-            </p>
-          )}
         </section>
       </div>
-
-      {loading && (
-        <section className="border-t border-border/70 pt-6" aria-labelledby="recommendation-search-heading">
-          <div className="flex items-start gap-3">
-            <Spinner className="mt-0.5 size-4 shrink-0 text-primary" />
-            <div>
-              <h3 id="recommendation-search-heading" className="text-sm font-semibold">
-                Looking for additional Scholar-E suggestions
-              </h3>
-              <p role="status" aria-live="polite" className="mt-1 text-sm leading-5 text-foreground/70">
-                {status}
-              </p>
-            </div>
-          </div>
-          <div className="mt-4 grid gap-3 sm:grid-cols-2">
-            {[0, 1].map((item) => <Skeleton key={item} className="h-24 rounded-xl" />)}
-          </div>
-        </section>
-      )}
-
-      {!resultsVisible && !loading && (
-        <section className="flex flex-col gap-3 border-t border-border/70 pt-5 sm:flex-row sm:items-center sm:justify-between">
-          <p role="alert" className="max-w-2xl text-sm leading-6 text-foreground/70">
-            {searchError || "Scholar-E couldn’t refresh suggestions right now. You can still paste a scholarship above or use one of the trusted sources."}
-          </p>
-          <button
-            type="button"
-            onClick={refreshWiki}
-            className="shrink-0 self-start rounded-lg border border-border bg-card px-3 py-2 text-xs font-semibold text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 sm:self-center"
-          >
-            Retry suggestions
-          </button>
-        </section>
-      )}
-
-      {resultsVisible && !loading && directSources.length > 0 && (
-        <section aria-labelledby="scholar-e-suggestions-heading" className="border-t border-border/70 pt-7">
-          <div className="mb-4">
-            <h3 id="scholar-e-suggestions-heading" className="font-display text-2xl font-bold">
-              Scholar-E suggestions
-            </h3>
-            <p className="mt-1 text-[15px] leading-6 text-foreground/70">
-              These are discovery leads only. Eligibility and current deadlines are checked in the next step.
-            </p>
-          </div>
-          <div className="space-y-3">
-            {directSources.map((source) => (
-              <DiscoverySourceCard
-                key={`direct-${source.url || source.name}`}
-                source={source}
-                mode="scholarship"
-                saved={savedIds.has((source.url || source.name || "").toLowerCase())}
-                onExplore={() => selectSourceForExtraction(source)}
-                onSave={() => toggleSaved(source, "scholarship")}
-              />
-            ))}
-          </div>
-        </section>
-      )}
     </div>
-  );
-}
-
-function DiscoverySourceCard({
-  source,
-  saved,
-  onExplore,
-  onSave,
-}: {
-  source: DiscoverySource;
-  mode: "scholarship";
-  saved: boolean;
-  onExplore: () => void;
-  onSave: () => void;
-}) {
-  const deadlineLabel = source.deadline_status === "open"
-    ? "Applications open"
-    : source.deadline_status === "upcoming"
-      ? "Upcoming application cycle"
-      : "Confirm current deadline";
-  const deadlineTone = source.deadline_status === "open"
-    ? "bg-success/10 text-success"
-    : source.deadline_status === "upcoming"
-      ? "bg-primary/10 text-primary"
-      : "bg-amber-100 text-amber-800";
-  return (
-    <article className="group rounded-2xl border border-white/90 bg-white/90 p-5 shadow-sm transition hover:border-primary/20 hover:shadow-md">
-      <div className="flex items-start gap-4">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-start gap-3">
-            <div className="mt-0.5 grid size-10 shrink-0 place-items-center rounded-xl bg-primary/[0.07] font-display text-sm font-bold text-primary">
-              {source.name?.charAt(0) || "S"}
-            </div>
-            <div className="min-w-0">
-              <h4 className="font-display text-xl font-bold leading-tight">{source.name}</h4>
-              {source.category && <p className="mt-1 text-xs text-muted-foreground">{source.category}</p>}
-              {source.why_recommended && <p className="mt-2 max-w-3xl text-sm leading-6 text-foreground/70">{source.why_recommended}</p>}
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${deadlineTone}`}>{deadlineLabel}</span>
-                {source.status_note && <span className="text-xs text-muted-foreground">{source.status_note}</span>}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div className="flex shrink-0 flex-wrap items-center justify-end gap-3">
-          {(source.deadline_window || source.award_amount) && (
-            <div className="mr-1 hidden max-w-52 text-right lg:block">
-              {source.deadline_window && <div className="text-xs font-medium text-foreground">{source.deadline_window}</div>}
-              {source.award_amount && <div className="mt-1 truncate text-xs text-muted-foreground">{source.award_amount}</div>}
-            </div>
-          )}
-          <button onClick={onSave} aria-label={saved ? "Remove from saved" : "Save for later"} className={`rounded-full border p-2.5 ${saved ? "border-primary/30 bg-primary/10 text-primary" : "border-border bg-white text-muted-foreground hover:bg-accent"}`}>
-            {saved ? <Check className="size-4" /> : <Save className="size-4" />}
-          </button>
-          {source.url && (
-            <button onClick={() => window.open(source.url, "_blank", "noopener,noreferrer")} className="rounded-xl border border-border bg-white px-3 py-2.5 text-xs font-medium hover:bg-accent">
-              Official site
-            </button>
-          )}
-        </div>
-      </div>
-      <div className="mt-5 flex flex-col gap-4 rounded-2xl border border-border/70 bg-secondary/35 p-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex min-w-0 items-start gap-3">
-          <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary">
-            <Sparkles className="size-4.5" />
-          </span>
-          <div>
-            <h5 className="font-display text-base font-bold">Worth a closer look?</h5>
-            <p className="mt-1 text-sm leading-5 text-foreground/70">
-              Select this opportunity to collect its official requirements and evaluate how well it aligns with your profile.
-            </p>
-          </div>
-        </div>
-        <button
-          type="button"
-          onClick={onExplore}
-          className="inline-flex min-h-10 shrink-0 items-center justify-center gap-2 rounded-xl border border-primary/30 bg-white px-4 py-2.5 text-sm font-semibold text-primary transition-colors hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
-        >
-          Use this scholarship <ArrowRight className="size-4" />
-        </button>
-      </div>
-    </article>
   );
 }
 
@@ -5126,7 +4787,7 @@ function EditableScholarshipFields({
     updateScholarship({
       essayPromptEntries: normalized,
       essayPrompts: serializeEssayPromptEntries(normalized),
-      selectedEssayPromptIds: selectedPromptIds.filter((id) => remainingIds.has(id)),
+      selectedEssayPromptIds: selectedPromptIds.filter((id) => remainingIds.has(id)).slice(0, 1),
     });
   }
 
@@ -9344,23 +9005,67 @@ function StepApplicationDashboard({ onNavigate }: { onNavigate: (slug: string) =
   const submission = useSubmissionReadiness();
 
   return (
-    <div className="space-y-6">
-      <header>
-        <h1 className="font-display text-3xl font-semibold tracking-tight sm:text-4xl">
-          Application Dashboard
-        </h1>
-        <p className="mt-2 text-sm font-medium text-foreground">{scholarshipName}</p>
-        <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-          Review your saved versions, complete your submission checklist, and track the application.
-        </p>
+    <div className="space-y-5 pb-4">
+      <header className="grid items-end gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(430px,0.9fr)]">
+        <div>
+          <h1 className="font-display text-3xl font-bold tracking-tight">
+            Application Dashboard
+          </h1>
+          <p className="mt-2 text-sm font-medium text-foreground">{scholarshipName}</p>
+          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+            Review your application progress, saved essay versions, and submission materials.
+          </p>
+        </div>
+        <DashboardReadinessHeader submission={submission} />
       </header>
 
-      <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]">
+      <div
+        className="grid items-start gap-5 lg:grid-cols-[minmax(0,65fr)_minmax(320px,35fr)] lg:gap-0"
+        style={{ ["--application-dashboard-column-height" as string]: "660px" } as React.CSSProperties}
+      >
+        <div className="space-y-4 lg:flex lg:h-[var(--application-dashboard-column-height)] lg:min-h-0 lg:flex-col lg:gap-4 lg:space-y-0 lg:pr-5">
+          <ApplicationStatusSection />
+          <FinalChecklistSection submission={submission} onNavigate={onNavigate} />
+        </div>
         <VersionHistorySection onNavigate={onNavigate} />
-        <SubmissionSummarySection submission={submission} onNavigate={onNavigate} />
       </div>
-      <FinalChecklistSection submission={submission} onNavigate={onNavigate} />
-      <ApplicationStatusSection />
+    </div>
+  );
+}
+
+function DashboardReadinessHeader({ submission }: { submission: SubmissionReadinessState }) {
+  const {
+    checklist,
+    done,
+    percent,
+    zipping,
+    zipStatus,
+    downloadSubmissionZip,
+  } = submission;
+
+  return (
+    <div className="min-w-0">
+      <div className="flex flex-wrap items-end gap-3 sm:flex-nowrap sm:justify-end">
+        <div className="min-w-[220px] flex-1">
+          <div className="text-sm font-semibold">{done} of {checklist.length} complete</div>
+          <div className="mt-2 h-2 overflow-hidden rounded-full bg-info/10">
+            <div
+              className="h-full rounded-full bg-info transition-[width] duration-500"
+              style={{ width: `${percent}%` }}
+            />
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => void downloadSubmissionZip()}
+          disabled={zipping}
+          className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg border border-info/35 bg-white px-4 py-2.5 text-xs font-semibold text-info transition-colors hover:border-info/55 hover:bg-info/[0.045] disabled:opacity-50"
+        >
+          <Download className="size-3.5" />
+          {zipping ? "Zipping…" : "Download as ZIP"}
+        </button>
+      </div>
+      {zipStatus && <p className="mt-2 text-right text-xs leading-5 text-muted-foreground" role="status">{zipStatus}</p>}
     </div>
   );
 }
@@ -9397,79 +9102,84 @@ function VersionHistorySection({ onNavigate }: { onNavigate: (slug: string) => v
   }
 
   const currentVersionId = [...drafts].reverse().find((draft) => draft.content === current)?.id;
+  const visibleDrafts = [...drafts].reverse();
 
   return (
-    <section aria-labelledby="version-history-heading">
-      <Card>
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <h2 id="version-history-heading" className="font-display text-xl font-semibold">
-              Version History
-            </h2>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Open any saved version in the Essay Workspace.
-            </p>
-          </div>
+    <section
+      aria-labelledby="version-history-heading"
+      className="flex min-h-0 max-h-[560px] flex-col lg:h-[var(--application-dashboard-column-height)] lg:max-h-none lg:border-l lg:border-info/10 lg:pl-5"
+    >
+        <div className="shrink-0">
+          <h2 id="version-history-heading" className="font-display text-2xl font-bold">
+            Version History
+          </h2>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">
+            Open any saved version in the Essay Workspace.
+          </p>
           <button
             type="button"
             onClick={addVersion}
             disabled={!current.trim()}
-            className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-40"
+            className="mt-4 inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg border border-info/55 bg-white px-3.5 text-xs font-semibold text-info transition-colors hover:border-info/75 hover:bg-info/[0.045] disabled:opacity-40"
           >
             <Plus className="size-4" />
             Save current as new version
           </button>
         </div>
 
-        {drafts.length === 0 ? (
-          <div className="mt-4 rounded-xl border border-dashed border-border px-4 py-5 text-sm text-muted-foreground">
-            No versions saved yet. Save your current Essay Workspace draft to begin version history.
-          </div>
-        ) : (
-          <div className="mt-4 grid gap-3 sm:grid-cols-2 2xl:grid-cols-3">
-            {drafts.map((d) => {
-              const isCurrent = d.id === currentVersionId;
-              const preview = d.content.replace(/\s+/g, " ").trim();
-              const title = d.scholarshipName || "Scholarship essay";
-              return (
-                <div key={d.id} className="relative min-w-0">
-                  <button
-                    type="button"
-                    onClick={() => openVersion(d)}
-                    className={`flex min-h-[190px] w-full min-w-0 flex-col rounded-xl border p-4 pb-11 text-left transition-colors ${
-                      isCurrent ? "border-info/40 bg-info/5" : "border-border hover:bg-accent/60"
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="font-display text-base font-semibold">Version {d.version}</div>
-                      {isCurrent && <Pill tone="info">Current</Pill>}
-                    </div>
-                    <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                      <span>{new Date(d.savedAt).toLocaleString()}</span>
-                      <span>{d.wordCount} words</span>
-                      {typeof d.reviewOverall === "number" && (
-                        <span className="font-medium text-info">{d.reviewOverall}/100</span>
-                      )}
-                    </div>
-                    <div className="mt-3 truncate text-sm font-semibold text-foreground">{title}</div>
-                    <p className="mt-1 line-clamp-3 text-xs leading-5 text-foreground/70">
-                      {preview || "Empty version"}
-                    </p>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => deleteVersion(d.id)}
-                    className="absolute bottom-3 right-3 rounded-md px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-destructive/30"
-                    aria-label={`Delete Version ${d.version}`}
-                  >
-                    Delete draft
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </Card>
+        <div className="mt-4 min-h-0 flex-1 overflow-y-auto overscroll-contain pr-2 [scrollbar-color:var(--border)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar]:w-1.5">
+          {drafts.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-border px-4 py-5 text-sm text-muted-foreground">
+              No versions saved yet. Save your current Essay Workspace draft to begin version history.
+            </div>
+          ) : (
+            <div className="grid auto-rows-max content-start gap-2.5">
+              {visibleDrafts.map((d) => {
+                const isCurrent = d.id === currentVersionId;
+                const preview = d.content.replace(/\s+/g, " ").trim();
+                const savedDate = new Date(d.savedAt);
+                const dateLabel = savedDate.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+                const timeLabel = savedDate.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+                return (
+                  <div key={d.id} className="relative min-w-0">
+                    <button
+                      type="button"
+                      onClick={() => openVersion(d)}
+                      className={`flex h-[112px] w-full min-w-0 flex-col rounded-lg border bg-white p-3 pb-8 text-left transition-[border-color,background-color] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/35 ${
+                        isCurrent ? "border-info/55 bg-info/[0.035]" : "border-info/10 hover:border-info/25 hover:bg-info/[0.015]"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="font-display text-base font-semibold">Version {d.version}</div>
+                        {isCurrent && <Pill tone="info">Current</Pill>}
+                      </div>
+                      <div className="mt-2 truncate text-xs text-muted-foreground">
+                        {dateLabel} <span aria-hidden="true">•</span> {timeLabel} <span aria-hidden="true">•</span>{" "}
+                        {d.wordCount} words
+                        {typeof d.reviewOverall === "number" && (
+                          <> <span aria-hidden="true">•</span> {d.reviewOverall}/100</>
+                        )}
+                      </div>
+                      <p className="mt-2.5 truncate text-xs leading-5 text-foreground">
+                        {preview || "Empty version"}
+                      </p>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => deleteVersion(d.id)}
+                      className="absolute bottom-2 right-2 rounded-md px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-destructive/30"
+                      aria-label={`Delete Version ${d.version}`}
+                    >
+                      <span className="inline-flex items-center gap-1.5">
+                        Delete <Trash2 className="size-3" />
+                      </span>
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
     </section>
   );
 }
@@ -9627,86 +9337,6 @@ function useSubmissionReadiness() {
 
 type SubmissionReadinessState = ReturnType<typeof useSubmissionReadiness>;
 
-function SubmissionSummarySection({
-  submission,
-  onNavigate,
-}: {
-  submission: SubmissionReadinessState;
-  onNavigate: (slug: string) => void;
-}) {
-  const {
-    checklist,
-    done,
-    percent,
-    allDone,
-    nextIncomplete,
-    zipping,
-    zipStatus,
-    downloadSubmissionZip,
-  } = submission;
-
-  return (
-    <section aria-labelledby="submission-readiness-heading">
-      <Card className="border-primary/20 p-5">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <h2 id="submission-readiness-heading" className="font-display text-xl font-semibold">
-              Submission Readiness
-            </h2>
-            <div className="mt-2 text-sm font-semibold">
-              {done} of {checklist.length} complete
-            </div>
-          </div>
-          <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
-            allDone ? "bg-success/15 text-success" : "bg-warning/15 text-foreground"
-          }`}>
-            {percent}%
-          </span>
-        </div>
-
-        <div className="mt-3 h-2 overflow-hidden rounded-full bg-secondary">
-          <div
-            className={`h-full transition-[width] duration-500 ${allDone ? "bg-success" : "bg-warning"}`}
-            style={{ width: `${percent}%` }}
-          />
-        </div>
-
-        <div className="mt-4 rounded-xl bg-secondary/55 px-3 py-3">
-          <div className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
-            Next required action
-          </div>
-          <div className="mt-1 text-sm font-medium">
-            {nextIncomplete?.item || "All submission requirements are complete."}
-          </div>
-        </div>
-
-        <div className="mt-4 flex flex-wrap gap-2">
-          {!allDone && nextIncomplete && (
-            <button
-              type="button"
-              onClick={() => onNavigate(nextIncomplete.targetSlug)}
-              className="inline-flex items-center gap-2 rounded-lg bg-primary px-3.5 py-2 text-xs font-medium text-primary-foreground hover:opacity-90"
-            >
-              Fix next
-              <ArrowRight className="size-3.5" />
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={() => void downloadSubmissionZip()}
-            disabled={zipping}
-            className="inline-flex items-center gap-2 rounded-lg border border-border bg-card px-3.5 py-2 text-xs font-medium text-foreground hover:bg-accent disabled:opacity-50"
-          >
-            <Download className="size-3.5" />
-            {zipping ? "Zipping…" : "Download as ZIP"}
-          </button>
-        </div>
-        {zipStatus && <p className="mt-3 text-xs leading-5 text-muted-foreground" role="status">{zipStatus}</p>}
-      </Card>
-    </section>
-  );
-}
-
 function FinalChecklistSection({
   submission,
   onNavigate,
@@ -9714,34 +9344,57 @@ function FinalChecklistSection({
   submission: SubmissionReadinessState;
   onNavigate: (slug: string) => void;
 }) {
-  const { checklist, allDone } = submission;
+  const { checklist, done, allDone, nextIncomplete } = submission;
 
   return (
-    <section aria-labelledby="final-checklist-heading">
-      <Card className="p-5 sm:p-6">
-        <div>
-          <h2 id="final-checklist-heading" className="font-display text-xl font-semibold">
+    <section aria-labelledby="final-checklist-heading" className="min-h-0 lg:flex-1">
+      <div className="rounded-xl border border-info/10 bg-white p-4 lg:h-full">
+        <div className="flex items-center justify-between gap-4">
+          <h2 id="final-checklist-heading" className="font-display text-2xl font-bold leading-tight">
             Final Checklist
           </h2>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Complete each required item before submitting your application.
-          </p>
+          <span className="shrink-0 text-xs font-semibold text-foreground/65">
+            {done} of {checklist.length} complete
+          </span>
         </div>
-        <ul className="mt-3 divide-y divide-border">
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+          <p className={`inline-flex items-center gap-2 text-xs font-medium ${
+            allDone ? "text-success" : "text-warning"
+          }`}>
+            <span className={`grid size-4 shrink-0 place-items-center rounded-full ${
+              allDone ? "bg-success text-white" : "border border-warning"
+            }`}>
+              {allDone && <Check className="size-2.5" strokeWidth={3} />}
+            </span>
+            {allDone
+              ? "All required materials are ready for submission."
+              : `${checklist.length - done} required ${checklist.length - done === 1 ? "item needs" : "items need"} attention.`}
+          </p>
+          {!allDone && nextIncomplete && (
+            <button
+              type="button"
+              onClick={() => onNavigate(nextIncomplete.targetSlug)}
+              className="inline-flex items-center gap-1.5 text-xs font-semibold text-info hover:text-primary focus-visible:rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/35"
+            >
+              Fix next <ArrowRight className="size-3.5" />
+            </button>
+          )}
+        </div>
+        <ul className="mt-2 divide-y divide-info/10">
           {checklist.map((item) => {
             const canUpload = !!item.documentKind && !item.done;
             const canNavigate = !item.done && !canUpload;
             return (
               <li key={item.item} className="flex flex-wrap items-start gap-x-3 gap-y-2 py-2.5 sm:flex-nowrap">
-                <div className={`mt-0.5 grid size-5 shrink-0 place-items-center rounded-md ${item.done ? "bg-success text-white" : "border-2 border-warning"}`}>
-                  {item.done && <Check className="size-3.5" strokeWidth={3} />}
+                <div className={`mt-0.5 grid size-4.5 shrink-0 place-items-center rounded-full ${item.done ? "bg-success text-white" : "border-2 border-warning"}`}>
+                  {item.done && <Check className="size-3" strokeWidth={3} />}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className={`text-sm ${item.done ? "" : "font-medium text-foreground"}`}>{item.item}</div>
-                  {!item.done && <p className="mt-0.5 text-xs leading-5 text-muted-foreground">{item.hint}</p>}
+                  <div className="text-sm font-medium leading-5 text-foreground">{item.item}</div>
+                  {!item.done && <p className="mt-0.5 text-xs leading-4 text-muted-foreground">{item.hint}</p>}
                 </div>
                 {!item.done && (
-                  <div className="ml-8 flex w-full shrink-0 items-center justify-end gap-2 sm:ml-0 sm:w-auto">
+                  <div className="ml-[34px] flex w-full shrink-0 items-center justify-end gap-1.5 sm:ml-0 sm:w-auto">
                     <Pill tone="warn">action needed</Pill>
                     {canUpload && (
                       <button
@@ -9768,12 +9421,7 @@ function FinalChecklistSection({
             );
           })}
         </ul>
-        {allDone && (
-          <div className="mt-3 rounded-xl border border-success/30 bg-success/10 px-4 py-3 text-sm font-medium text-success">
-            Ready to submit — all checks passed.
-          </div>
-        )}
-      </Card>
+      </div>
     </section>
   );
 }
@@ -9827,17 +9475,25 @@ function ApplicationStatusSection() {
   ];
 
   return (
-    <section aria-labelledby="application-status-heading" className="space-y-4">
+    <section aria-labelledby="application-status-heading" className="shrink-0">
       <div>
-        <h2 id="application-status-heading" className="font-display text-xl font-semibold">
+        <h2 id="application-status-heading" className="font-display text-2xl font-bold">
           Application Status
         </h2>
-        <p className="mt-1 text-xs text-muted-foreground">
+        <p className="mt-1 text-xs text-foreground/65">
           Track each application from drafting through award decisions.
         </p>
       </div>
-      <div className="grid gap-4 md:grid-cols-3">
-        {pipeline.map((column) => <StatusColumn key={column.status} status={column.status} items={column.items} onViewAll={() => setOpenColumn(column.status)} />)}
+      <div className="mt-3 grid gap-2.5 md:grid-cols-3">
+        {pipeline.map((column) => (
+          <StatusColumn
+            key={column.status}
+            status={column.status}
+            items={column.items}
+            currentScholarshipName={scholarship?.name}
+            onViewAll={() => setOpenColumn(column.status)}
+          />
+        ))}
       </div>
 
       <Dialog open={openColumn !== null} onOpenChange={(open) => !open && setOpenColumn(null)}>
@@ -9847,30 +9503,57 @@ function ApplicationStatusSection() {
   );
 }
 
-function StatusColumn({ status, items, onViewAll }: { status: ApplicationStatus; items: TrackedApplication[]; onViewAll: () => void }) {
-  const tone = status === "Drafting" ? "bg-warning/15 text-warning" : status === "Submitted" ? "bg-info/15 text-info" : "bg-success/15 text-success";
+function StatusColumn({
+  status,
+  items,
+  currentScholarshipName,
+  onViewAll,
+}: {
+  status: ApplicationStatus;
+  items: TrackedApplication[];
+  currentScholarshipName?: string;
+  onViewAll: () => void;
+}) {
+  const tone = status === "Drafting" ? "bg-warning" : status === "Submitted" ? "bg-info" : "bg-success";
+  const description = status === "Drafting"
+    ? "Application materials are in progress."
+    : status === "Submitted"
+      ? "Application sent for review."
+      : "Scholarship award received.";
+  const currentApplication = status === "Drafting"
+    ? items.find((application) => application.name === currentScholarshipName)
+    : undefined;
+  const displayedApplication = currentApplication ?? items[0];
+
   return (
-    <Card className="p-5">
+    <button
+      type="button"
+      onClick={items.length ? onViewAll : undefined}
+      disabled={!items.length}
+      className="h-full min-h-[138px] w-full rounded-lg border border-info/10 bg-white p-3 text-left transition-[border-color,background-color] enabled:hover:border-info/25 enabled:hover:bg-info/[0.015] disabled:cursor-default"
+    >
       <div className="flex items-center justify-between gap-3">
-        <h3 className="text-sm font-semibold">{status}</h3>
-        <span className={`rounded-full px-2.5 py-0.5 font-mono text-xs ${tone}`}>{items.length}</span>
+        <div className="flex items-center gap-2">
+          <span className={`size-2 rounded-full ${tone}`} aria-hidden="true" />
+          <h3 className="font-display text-sm font-bold">{status}</h3>
+        </div>
+        <span className="rounded-full bg-secondary px-2 py-0.5 font-mono text-[10px] text-foreground/70">{items.length}</span>
       </div>
-      {items.length > 0 ? (
+      <p className="mt-1 text-[11px] leading-4 text-foreground/60">{description}</p>
+      {displayedApplication ? (
         <>
-          <ul className="mt-3 space-y-2">
-            {items.slice(0, 2).map((application) => (
-              <li key={application.id} className="truncate rounded-lg bg-secondary/50 px-3 py-2 text-sm">
-                {application.name}
-              </li>
-            ))}
-          </ul>
-          <button type="button" onClick={onViewAll} className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-foreground hover:text-info">
-            View all <ChevronRight className="size-3.5" />
-          </button>
+          <div className="mt-2 text-xs font-semibold leading-4 text-foreground">
+            {displayedApplication.name}
+          </div>
+          {currentApplication && (
+            <span className="mt-2 inline-flex rounded-full bg-info/10 px-2 py-0.5 text-[9px] font-semibold text-info">
+              Current stage
+            </span>
+          )}
         </>
       ) : (
-        <p className="mt-3 text-xs text-muted-foreground">No applications in this status.</p>
+        <p className="mt-2 text-[11px] leading-4 text-muted-foreground">No applications in this status.</p>
       )}
-    </Card>
+    </button>
   );
 }

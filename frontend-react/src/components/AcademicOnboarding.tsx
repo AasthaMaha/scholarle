@@ -255,7 +255,7 @@ export function AcademicOnboarding({
 
   return (
     <div
-      className={`min-h-screen overflow-y-auto bg-[radial-gradient(circle_at_50%_24%,rgba(109,93,246,0.08),transparent_34%),linear-gradient(180deg,#f9faff_0%,#f3f5fb_100%)] transition-opacity duration-200 motion-reduce:transition-none ${leaving ? "opacity-0" : "opacity-100"}`}
+      className={`academic-onboarding min-h-screen overflow-y-auto bg-[radial-gradient(circle_at_50%_20%,rgba(109,93,246,0.10),transparent_36%),linear-gradient(180deg,#fbfaff_0%,#f4f2fb_100%)] font-sans text-foreground transition-opacity duration-200 motion-reduce:transition-none ${leaving ? "opacity-0" : "opacity-100"}`}
     >
       <main className="mx-auto flex min-h-screen w-full max-w-3xl flex-col items-center px-3 pb-10 pt-[clamp(1.25rem,4vh,2.5rem)] sm:px-6">
         <div className="mb-3 flex items-center justify-center gap-2">
@@ -264,7 +264,7 @@ export function AcademicOnboarding({
         </div>
 
         <div className="text-center">
-          <h1 className="font-display text-2xl font-bold tracking-tight text-foreground sm:text-3xl">
+          <h1 className="onboarding-heading text-2xl font-bold tracking-tight text-foreground sm:text-3xl">
             Set up your profile
           </h1>
           <p className="mt-1.5 text-base font-medium text-foreground/75 sm:text-lg">
@@ -274,37 +274,27 @@ export function AcademicOnboarding({
 
         <section
           aria-labelledby="academic-onboarding-question"
-          className="mt-7 w-full max-w-xl overflow-hidden rounded-2xl border border-border/80 bg-card shadow-lg motion-reduce:animate-none"
+          className="mt-7 w-full max-w-xl overflow-hidden rounded-2xl border border-info/15 bg-white shadow-[0_24px_64px_-36px_rgba(31,42,68,0.38)] motion-reduce:animate-none"
         >
-        <div className="border-b border-border/70 px-4 pb-3 pt-5 sm:px-5">
+        <div className="border-b border-info/10 px-4 pb-3 pt-5 sm:px-5">
           <div className="flex items-center justify-between">
             <button
               type="button"
               onClick={() => setStep((current) => Math.max(0, current - 1))}
               disabled={step === 0}
               aria-label="Previous question"
-              className="grid size-9 place-items-center rounded-full hover:bg-accent disabled:opacity-30"
+              className="grid size-9 place-items-center rounded-full text-foreground transition-colors hover:bg-info/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/30 disabled:opacity-30"
             >
               <ArrowLeft className="size-4" />
             </button>
             <span className="text-xs font-medium text-muted-foreground">
               Step {step + 1} of {questions.length}
             </span>
-            <button
-              type="button"
-              onClick={next}
-              disabled={!canContinue}
-              aria-label={
-                step === questions.length - 1 ? "Finish academic onboarding" : "Next question"
-              }
-              className="grid size-9 place-items-center rounded-full bg-primary text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-35"
-            >
-              <ArrowRight className="size-4" />
-            </button>
+            <span className="size-9" aria-hidden="true" />
           </div>
-          <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-muted">
+          <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-info/10">
             <div
-              className="h-full rounded-full bg-primary transition-[width]"
+              className="h-full rounded-full bg-info transition-[width]"
               style={{ width: `${((step + 1) / questions.length) * 100}%` }}
             />
           </div>
@@ -315,7 +305,7 @@ export function AcademicOnboarding({
             id="academic-onboarding-question"
             ref={questionHeadingRef}
             tabIndex={-1}
-            className="font-display text-xl font-semibold leading-snug outline-none sm:text-2xl"
+            className="onboarding-heading text-xl font-semibold leading-snug text-foreground outline-none sm:text-2xl"
           >
             {question === "level"
               ? "Which education level are you currently pursuing?"
@@ -337,7 +327,7 @@ export function AcademicOnboarding({
                   type="button"
                   aria-pressed={level === option}
                   onClick={() => chooseLevel(option)}
-                  className={`flex min-h-11 items-center justify-between rounded-xl border px-4 py-2.5 text-left text-sm font-medium transition-colors ${level === option ? "border-primary bg-primary/10 text-primary" : "border-border bg-card hover:bg-accent"}`}
+                  className={`flex min-h-11 items-center justify-between rounded-xl border px-4 py-2.5 text-left text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/30 ${level === option ? "border-info/55 bg-info/[0.08] text-info" : "border-info/15 bg-white text-foreground hover:border-info/35 hover:bg-info/[0.025]"}`}
                 >
                   <span>{option}</span>
                   {level === option && <Check className="size-4 shrink-0" />}
@@ -357,9 +347,9 @@ export function AcademicOnboarding({
                   }}
                   aria-label="Enter your school manually"
                   placeholder="School or institution name"
-                  className="w-full rounded-lg border border-border bg-background px-3 py-3 text-sm outline-none focus:ring-2 focus:ring-primary/40"
+                  className="w-full rounded-lg border border-info/15 bg-white px-3 py-3 text-sm text-foreground outline-none transition-colors hover:border-info/30 focus:border-info/60 focus:ring-2 focus:ring-info/20"
                 />
-                <button type="button" onClick={() => setManualSchool(false)} className="mt-2 text-xs font-medium text-primary hover:underline">
+                <button type="button" onClick={() => setManualSchool(false)} className="mt-2 text-xs font-medium text-info hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/30">
                   Search for my school instead
                 </button>
               </div>
@@ -370,6 +360,7 @@ export function AcademicOnboarding({
                 minimumCharacters={2}
                 ariaLabel="Search for your school"
                 noResultsText="No matching schools found."
+                accent="info"
                 fallbackOption={{ id: "manual-school", label: "I can’t find my school" }}
                 search={async (query, signal) =>
                   (await searchSchools(query, level === "High School" ? "high_school" : "postsecondary", signal)).map((school) => ({
@@ -409,9 +400,9 @@ export function AcademicOnboarding({
                   }}
                   aria-label="Enter your major manually"
                   placeholder="Major, field, or program"
-                  className="w-full rounded-lg border border-border bg-background px-3 py-3 text-sm outline-none focus:ring-2 focus:ring-primary/40"
+                  className="w-full rounded-lg border border-info/15 bg-white px-3 py-3 text-sm text-foreground outline-none transition-colors hover:border-info/30 focus:border-info/60 focus:ring-2 focus:ring-info/20"
                 />
-                <button type="button" onClick={() => setManualMajor(false)} className="mt-2 text-xs font-medium text-primary hover:underline">
+                <button type="button" onClick={() => setManualMajor(false)} className="mt-2 text-xs font-medium text-info hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/30">
                   Search standardized majors instead
                 </button>
               </div>
@@ -420,6 +411,7 @@ export function AcademicOnboarding({
                 value={entry.majorField ?? ""}
                 placeholder="Search for your major"
                 ariaLabel="Search for your major"
+                accent="info"
                 pinnedOptions={[
                   { id: "major-undecided", label: "Undecided" },
                   { id: "major-other", label: "Other" },
@@ -456,7 +448,7 @@ export function AcademicOnboarding({
                       endDate: [event.target.value, graduation.year].filter(Boolean).join(" "),
                     })
                   }
-                  className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-3 text-sm outline-none focus:ring-2 focus:ring-primary/40"
+                  className="mt-1.5 w-full rounded-lg border border-info/15 bg-white px-3 py-3 text-sm text-foreground outline-none transition-colors hover:border-info/30 focus:border-info/60 focus:ring-2 focus:ring-info/20"
                 >
                   <option value="">Select month</option>
                   {MONTHS.map((month) => (
@@ -473,7 +465,7 @@ export function AcademicOnboarding({
                       endDate: [graduation.month, event.target.value].filter(Boolean).join(" "),
                     })
                   }
-                  className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-3 text-sm outline-none focus:ring-2 focus:ring-primary/40"
+                  className="mt-1.5 w-full rounded-lg border border-info/15 bg-white px-3 py-3 text-sm text-foreground outline-none transition-colors hover:border-info/30 focus:border-info/60 focus:ring-2 focus:ring-info/20"
                 >
                   <option value="">Select year</option>
                   {years.map((year) => (
@@ -483,6 +475,19 @@ export function AcademicOnboarding({
               </label>
             </div>
           )}
+        </div>
+        <div className="flex justify-end border-t border-info/10 px-5 py-4 sm:px-6">
+          <button
+            type="button"
+            onClick={next}
+            disabled={!canContinue}
+            aria-label={
+              step === questions.length - 1 ? "Finish academic onboarding" : "Next question"
+            }
+            className="grid size-9 place-items-center rounded-full bg-primary text-primary-foreground shadow-sm transition-[background-color,box-shadow,opacity] hover:bg-primary/90 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/35 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-35 disabled:shadow-none"
+          >
+            <ArrowRight className="size-4" />
+          </button>
         </div>
         </section>
       </main>

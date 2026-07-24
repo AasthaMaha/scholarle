@@ -36,9 +36,9 @@
   --color-success: var(--success);
   --color-warning: var(--warning);
   --color-info: var(--info);
-  --font-display: "Fraunces", ui-serif, Georgia, serif;
+  --font-display: "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --font-mono: "Inter", ui-sans-serif, system-ui, sans-serif;
 }
 
 :root {
@@ -94,7 +94,10 @@
   * { border-color: var(--color-border); }
   /* Slightly smaller rem base → more compact main content (Tailwind text-* / spacing
      are rem-based). Sidebar/topbar text is set in fixed px, so it stays crisp. */
-  html { font-size: 15px; }
+  html {
+    font-family: var(--font-sans);
+    font-size: 15px;
+  }
   body {
     background-color: var(--color-background);
     color: var(--color-foreground);
@@ -105,10 +108,16 @@
       linear-gradient(135deg, #ffffff 0%, #fbfcff 55%, #ffffff 100%);
     background-attachment: fixed;
   }
-  h1, h2, h3, .font-display { font-family: var(--font-display); letter-spacing: -0.02em; }
+  button, input, select, textarea { font-family: inherit; }
+  h1, h2, h3, .font-display { font-family: var(--font-sans); letter-spacing: -0.02em; }
 }
 
 @utility text-balance { text-wrap: balance; }
+
+.onboarding-heading {
+  font-family: "Fraunces", ui-serif, Georgia, serif;
+  letter-spacing: -0.02em;
+}
 
 @keyframes shimmer {
   0% { background-position: -200% 0; }

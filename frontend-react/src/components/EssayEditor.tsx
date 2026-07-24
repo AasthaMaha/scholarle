@@ -63,7 +63,7 @@ type Props = {
 const EDITOR_BOX = "px-[45px] py-4 tracking-normal [overflow-wrap:break-word]";
 
 type EditorAlignment = "left" | "center" | "right" | "justify";
-type EditorFontFamily = "serif" | "sans";
+type EditorFontFamily = "sans";
 
 type EditorTypography = {
   fontSize: number;
@@ -72,7 +72,7 @@ type EditorTypography = {
 
 const DEFAULT_EDITOR_TYPOGRAPHY: EditorTypography = {
   fontSize: 18,
-  fontFamily: "serif",
+  fontFamily: "sans",
 };
 
 const EDITOR_TYPOGRAPHY_STORAGE_KEY = "scholar-e:essay-editor-typography";
@@ -84,9 +84,7 @@ function validEditorTypography(value: unknown): EditorTypography {
   const fontSize = EDITOR_FONT_SIZES.includes(candidate.fontSize as (typeof EDITOR_FONT_SIZES)[number])
     ? candidate.fontSize!
     : DEFAULT_EDITOR_TYPOGRAPHY.fontSize;
-  const fontFamily = candidate.fontFamily === "sans" || candidate.fontFamily === "serif"
-    ? candidate.fontFamily
-    : DEFAULT_EDITOR_TYPOGRAPHY.fontFamily;
+  const fontFamily: EditorFontFamily = "sans";
   return { fontSize, fontFamily };
 }
 
@@ -403,10 +401,7 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
 
   const typographyStyle = useMemo(
     () => ({
-      fontFamily:
-        typography.fontFamily === "serif"
-          ? '"Source Serif 4", "Iowan Old Style", Georgia, serif'
-          : 'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+      fontFamily: 'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
       fontSize: `${typography.fontSize}px`,
       lineHeight: 1.75,
     }),
@@ -991,24 +986,6 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
                   {size}
                 </option>
               ))}
-            </select>
-            <ChevronDown className="pointer-events-none absolute right-0 size-3.5 text-muted-foreground" aria-hidden="true" />
-          </span>
-        </label>
-
-        <label className="inline-flex h-8 items-center rounded-md px-1.5 text-[12px] text-muted-foreground transition-colors hover:bg-accent">
-          <span className="sr-only">Font family</span>
-          <span className="relative inline-flex items-center">
-            <select
-              aria-label="Font family"
-              value={typography.fontFamily}
-              onChange={(event) =>
-                setTypography((current) => ({ ...current, fontFamily: event.target.value as EditorFontFamily }))
-              }
-              className="cursor-pointer appearance-none bg-transparent pr-5 font-medium text-foreground outline-none"
-            >
-              <option value="serif">Serif</option>
-              <option value="sans">Sans serif</option>
             </select>
             <ChevronDown className="pointer-events-none absolute right-0 size-3.5 text-muted-foreground" aria-hidden="true" />
           </span>

@@ -223,7 +223,7 @@ export function normalizeEssayPromptEntries(scholarship?: ActiveScholarship | nu
   });
 }
 
-/** Return only prompts chosen for this application; legacy records fall back to all prompts. */
+/** Return the single prompt chosen for this application; legacy records fall back to all prompts. */
 export function normalizeSelectedEssayPromptEntries(scholarship?: ActiveScholarship | null): EssayPromptEntry[] {
   const entries = normalizeEssayPromptEntries(scholarship);
   if (scholarship?.noEssayPromptSelected) return [];
