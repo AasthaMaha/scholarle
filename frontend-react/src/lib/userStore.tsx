@@ -128,6 +128,8 @@ export type EssayDraft = {
   id: string;
   version: number;
   content: string;
+  contentHtml?: string;
+  promptId?: string;
   wordCount: number;
   savedAt: string;
   scholarshipName?: string;

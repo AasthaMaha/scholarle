@@ -5224,12 +5224,9 @@ function StepRequirementsAndFit() {
                 <FitRubricDialog open={rubricOpen} onOpenChange={setRubricOpen} />
               </Card>
 
-              <Card className="md:col-span-2">
-                <div className="text-xs uppercase tracking-widest text-muted-foreground">Fit summary</div>
-                <p className="mt-3 text-sm leading-relaxed">{fitAnalysis.summary}</p>
-
-                {!!fitAnalysis.eligibility_analysis?.length && (
-                  <div className="mt-5">
+              {!!fitAnalysis.eligibility_analysis?.length && (
+                <Card className="md:col-span-2">
+                  <div>
                     <div className="text-xs uppercase tracking-widest text-muted-foreground">
                       Hard requirements
                     </div>
@@ -5251,8 +5248,8 @@ function StepRequirementsAndFit() {
                       ))}
                     </div>
                   </div>
-                )}
-              </Card>
+                </Card>
+              )}
 
               <Card className="md:col-span-3">
                 <div className="grid md:grid-cols-2 gap-6">
@@ -7282,15 +7279,26 @@ function StepEssayWorkspace() {
     const prev = user?.drafts ?? [];
     const last = prev[prev.length - 1];
     const scholarshipName = user?.activeScholarship?.name || last?.scholarshipName;
-    if (last && last.content === content) {
+    const lastPromptId = last?.promptId ?? activePromptId;
+    if (last && last.content === content && lastPromptId === activePromptId) {
       const merged = [...prev];
-      merged[merged.length - 1] = { ...last, ...patch, scholarshipName, wordCount: contentWordCount, savedAt: new Date().toISOString() };
+      merged[merged.length - 1] = {
+        ...last,
+        promptId: activePromptId,
+        contentHtml: draftHtml || undefined,
+        ...patch,
+        scholarshipName,
+        wordCount: contentWordCount,
+        savedAt: new Date().toISOString(),
+      };
       updateProfile({ drafts: merged });
     } else {
       const newVersion: EssayDraft = {
         id: crypto.randomUUID(),
         version: (last?.version ?? 0) + 1,
         content,
+        contentHtml: draftHtml || undefined,
+        promptId: activePromptId,
         wordCount: contentWordCount,
         savedAt: new Date().toISOString(),
         scholarshipName,
@@ -9065,7 +9073,12 @@ function DashboardReadinessHeader({ submission }: { submission: SubmissionReadin
 function VersionHistorySection({ onNavigate }: { onNavigate: (slug: string) => void }) {
   const { user, updateProfile } = useUser();
   const drafts = user?.drafts ?? [];
-  const current = user?.essayDraft ?? "";
+  const selectedPrompt = normalizeSelectedEssayPromptEntries(user?.activeScholarship)[0];
+  const activePromptId = selectedPrompt?.id ?? "no-essay-prompt";
+  const current = user?.essayDraftsByPromptId?.[activePromptId]
+    ?? (activePromptId !== "no-essay-prompt" ? user?.essayDraft ?? "" : "");
+  const currentHtml = user?.essayDraftHtmlByPromptId?.[activePromptId]
+    ?? (activePromptId !== "no-essay-prompt" ? user?.essayDraftHtml ?? "" : "");
 
   function addVersion() {
     if (!current.trim()) return;
@@ -9075,6 +9088,8 @@ function VersionHistorySection({ onNavigate }: { onNavigate: (slug: string) => v
       id: crypto.randomUUID(),
       version: nextVersion,
       content: current,
+      contentHtml: currentHtml || undefined,
+      promptId: activePromptId,
       wordCount: wc,
       savedAt: new Date().toISOString(),
       scholarshipName: user?.activeScholarship?.name,
@@ -9085,7 +9100,40 @@ function VersionHistorySection({ onNavigate }: { onNavigate: (slug: string) => v
   }
 
   function openVersion(version: EssayDraft) {
-    updateProfile({ essayDraft: version.content });
+    const validPromptIds = new Set(
+      normalizeEssayPromptEntries(user?.activeScholarship).map((prompt) => prompt.id),
+    );
+    const targetPromptId = version.promptId === "no-essay-prompt" || (
+      version.promptId && validPromptIds.has(version.promptId)
+    )
+      ? version.promptId
+      : activePromptId;
+    const draftHtmlByPromptId = { ...(user?.essayDraftHtmlByPromptId ?? {}) };
+    if (version.contentHtml) {
+      draftHtmlByPromptId[targetPromptId] = version.contentHtml;
+    } else {
+      delete draftHtmlByPromptId[targetPromptId];
+    }
+    const activeScholarship = user?.activeScholarship
+      ? {
+          ...user.activeScholarship,
+          selectedEssayPromptIds: targetPromptId === "no-essay-prompt" ? [] : [targetPromptId],
+          noEssayPromptSelected: targetPromptId === "no-essay-prompt",
+          noEssayPromptConflictConfirmed: targetPromptId === "no-essay-prompt"
+            ? user.activeScholarship.noEssayPromptConflictConfirmed
+            : false,
+        }
+      : undefined;
+    updateProfile({
+      activeScholarship,
+      essayDraft: version.content,
+      essayDraftHtml: version.contentHtml ?? "",
+      essayDraftsByPromptId: {
+        ...(user?.essayDraftsByPromptId ?? {}),
+        [targetPromptId]: version.content,
+      },
+      essayDraftHtmlByPromptId: draftHtmlByPromptId,
+    });
     onNavigate("essay-workspace");
   }
 

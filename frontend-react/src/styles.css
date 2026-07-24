@@ -747,38 +747,29 @@
 .workflow-fragment-status-attention span { background: #d99a36; }
 .workflow-fragment-connector {
   z-index: 2;
-  left: -2.25rem;
+  left: calc(0rem - var(--workflow-primary-edge-gap));
   top: auto;
-  bottom: 2.75rem;
-  width: 3.4rem;
-  height: 2.2rem;
-  overflow: hidden;
-  opacity: .68;
-  transform: scaleY(-1);
-  transform-origin: center;
+  bottom: 2.7rem;
+  width: 4rem;
+  height: 3.5rem;
+  overflow: visible;
+  opacity: .76;
   animation: fragmentConnector 2.5s .38s ease both;
 }
-.workflow-fragment-connector::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: .2rem;
-  width: 3rem;
-  height: 1.5rem;
-  border-top: 1.2px solid #7769e7;
-  border-right: 1.2px solid #7769e7;
-  border-radius: 0 1.7rem 0 0;
-  transform: rotate(8deg);
+.workflow-fragment-connector svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
 }
-.workflow-fragment-connector i {
-  position: absolute;
-  right: .13rem;
-  bottom: .18rem;
-  width: .48rem;
-  height: .48rem;
-  border-right: 1.2px solid #7769e7;
-  border-bottom: 1.2px solid #7769e7;
-  transform: rotate(22deg);
+.workflow-fragment-connector path,
+.workflow-fragment-connector polyline {
+  fill: none;
+  stroke: #7769e7;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
 }
 .profile-progress { animation: profileProgress .65s .12s cubic-bezier(.2,.72,.25,1) both; }
 .profile-field, .profile-confirm, .discovery-result, .fit-reveal, .tracking-move { animation: sceneIn .34s cubic-bezier(.2,.72,.25,1) both; }
