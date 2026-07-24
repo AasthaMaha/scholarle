@@ -5,10 +5,12 @@
 //     error logger plugins, and sandbox detection (port/host/strictPort).
 // You can pass additional config via defineConfig({ vite: { ... }, etc... }) if needed.
 import { defineConfig } from "@lovable.dev/vite-tanstack-config";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
+import type { ViteDevServer } from "vite";
 
 const apiBase = "http://127.0.0.1:8000";
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -29,7 +31,7 @@ function resolveBackendPython() {
 }
 
 const backendPython = resolveBackendPython();
-let backendProcess: ChildProcessWithoutNullStreams | null = null;
+let backendProcess: ChildProcess | null = null;
 let backendStartPromise: Promise<void> | null = null;
 
 async function backendIsReady() {
@@ -57,7 +59,7 @@ function startBackendIfNeeded() {
     if (await backendIsReady()) return;
 
     console.log("[scholar-e] Starting FastAPI backend on http://127.0.0.1:8000...");
-    backendProcess = spawn(backendPython, ["server.py"], {
+    const processHandle = spawn(backendPython, ["server.py"], {
       cwd: repoRoot,
       stdio: "inherit",
       shell: false,
@@ -66,8 +68,9 @@ function startBackendIfNeeded() {
         PYTHONUNBUFFERED: "1",
       },
     });
+    backendProcess = processHandle;
 
-    backendProcess.on("exit", (code) => {
+    processHandle.on("exit", (code) => {
       backendProcess = null;
       backendStartPromise = null;
       if (code !== 0 && code !== null) {
@@ -84,8 +87,8 @@ function startBackendIfNeeded() {
 function lazyBackendPlugin() {
   return {
     name: "scholar-e-lazy-backend",
-    configureServer(server) {
-      server.middlewares.use(async (req, res, next) => {
+    configureServer(server: ViteDevServer) {
+      server.middlewares.use(async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
         if (!req.url?.startsWith("/api/")) {
           next();
           return;

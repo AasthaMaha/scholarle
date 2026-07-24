@@ -5,27 +5,32 @@ import hashlib
 import io
 import json
 import re
-from html import unescape
-from html.parser import HTMLParser
+import time
 from pathlib import Path
-from typing import Dict, Optional
-from urllib.error import URLError
-from urllib.parse import parse_qs, quote_plus, unquote, urlparse
-from urllib.request import Request, urlopen
+from typing import Optional
 
 import pypdf
-from langchain_core.documents import Document
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pydantic import BaseModel, Field
 from fastapi import HTTPException, UploadFile
 
 from config import settings
-from essay_coaching_service import run_essay_workspace_coach, run_selection_rewrite
-from graph.builder import build_application_graph
+from essay_context import canonicalize_essay_text
+from essay_editor_service import run_contextual_grammar_check as run_contextual_grammar_check_service
+from essay_editor_service import run_editor_check as run_editor_check_service
+from essay_editor_service import run_outline_coverage_check as run_outline_coverage_check_service
+from essay_editor_service import run_selection_rewrite
+from prompt_adaptation import format_brief_for_prompt, resolve_writing_brief
+from revision_coach_service import run_revision_coach as run_revision_coach_service
 from graph.fit_builder import build_fit_analysis_graph
 from graph.opportunity_builder import build_opportunity_extraction_graph
 from graph.profile_builder import build_profile_extraction_graph
 from graph.wiki_builder import build_wiki_discovery_graph
+from discovery.compatibility import assess_candidate
+from discovery.evidence import candidate_evidence
+from discovery.intent_service import generate_intent_options
+from discovery.normalization import build_discovery_context
+from discovery.ranking import score_candidate
+from discovery.schemas import model_dict
 from llm.client import llm
 from persistence.memory_text import (
     build_feedback_memory_text,
@@ -39,17 +44,8 @@ from persistence.services import (
     run_agent_with_persistence,
 )
 from persistence.vector_service import VectorService
-
-
-class AnalyzeRequest(BaseModel):
-    user_id: str = Field(default="", max_length=100)
-    cv_text: str = Field(..., min_length=1, max_length=50000)
-    essay_text: str = Field(..., min_length=1, max_length=20000)
-    scholarship_name: str = Field(..., min_length=1, max_length=500)
-    scholarship_type: str = Field(..., min_length=1, max_length=200)
-    prompt: str = Field(..., min_length=1, max_length=10000)
-    previous_readiness: Optional[Dict[str, int]] = None
-    draft_number: int = Field(default=1, ge=1, le=50)
+from unified_coaching_service import run_unified_coaching_session
+from utils.opportunity_sources import resolve_opportunity_sources
 
 
 class ProfileAutofillResponse(BaseModel):
@@ -67,11 +63,24 @@ class ProfileAutofillResponse(BaseModel):
     optional: dict = Field(default_factory=dict)
 
 
+OPPORTUNITY_ADDITIONAL_NOTES_MAX_LENGTH = 12_000
+
+
 class OpportunityExtractRequest(BaseModel):
     user_id: str = Field(default="", max_length=100)
     scholarship_name: str = Field(default="", max_length=500)
     scholarship_url: str = Field(default="", max_length=2000)
-    additional_notes: str = Field(default="", max_length=12000)
+    additional_notes: str = Field(default="", max_length=OPPORTUNITY_ADDITIONAL_NOTES_MAX_LENGTH)
+
+
+class EssayPromptResponse(BaseModel):
+    id: str = ""
+    promptNumber: int = Field(default=1, ge=1)
+    promptText: str = ""
+    minimumWords: Optional[int] = Field(default=None, ge=0)
+    maximumWords: Optional[int] = Field(default=None, ge=0)
+    minimumWordsReviewed: bool = False
+    maximumWordsReviewed: bool = False
 
 
 class OpportunityExtractResponse(BaseModel):
@@ -99,17 +108,29 @@ class OpportunityExtractResponse(BaseModel):
     requiredDocumentTypes: list[str] = Field(default_factory=list)
     otherRequiredMaterials: str = ""
     essayPrompts: str = ""
+    essayPromptEntries: list[EssayPromptResponse] = Field(default_factory=list)
+    selectedEssayPromptIds: list[str] = Field(default_factory=list)
+    noEssayPromptSelected: bool = False
+    noEssayPromptConflictConfirmed: bool = False
     eligibilityRequirements: list[str] = Field(default_factory=list)
     requiredApplicationMaterials: list[str] = Field(default_factory=list)
     benefits: list[str] = Field(default_factory=list)
     selectionCriteria: list[str] = Field(default_factory=list)
     applicationProcess: list[str] = Field(default_factory=list)
-    missingInformation: list[str] = Field(default_factory=list)
     importantNotes: list[str] = Field(default_factory=list)
     requirements: list[dict] = Field(default_factory=list)
     requirementsPreview: str = ""
     fullText: str = ""
     sourceUrls: list[str] = Field(default_factory=list)
+    sourceMetadata: list[dict] = Field(default_factory=list)
+    fieldEvidence: list[dict] = Field(default_factory=list)
+    extractionWarnings: list[str] = Field(default_factory=list)
+    validationWarnings: list[str] = Field(default_factory=list)
+    criticalFieldsFound: list[str] = Field(default_factory=list)
+    criticalFieldsMissing: list[str] = Field(default_factory=list)
+    completenessScore: int = Field(default=0, ge=0, le=100)
+    resolutionStatus: str = ""
+    extractedAt: str = ""
 
 
 class FitAnalyzeRequest(BaseModel):
@@ -128,19 +149,121 @@ class FitAnalyzeResponse(BaseModel):
     strengths: list[str] = Field(default_factory=list)
     gaps_or_risks: list[str] = Field(default_factory=list)
     missing_student_information: list[str] = Field(default_factory=list)
-    application_materials_check: list[dict] = Field(default_factory=list)
     selection_criteria_alignment: list[dict] = Field(default_factory=list)
     recommended_next_steps: list[str] = Field(default_factory=list)
-    application_readiness_matrix: dict = Field(default_factory=dict)
+
+
+_INTERNAL_FIT_TEXT_PATTERNS = (
+    re.compile(r"\bdownstream code\b", re.IGNORECASE),
+    re.compile(r"\b(?:fit_score|fit_label|eligibility_weight|criteria_weight)\b", re.IGNORECASE),
+    re.compile(r"\b(?:system|developer) (?:prompt|instruction)s?\b", re.IGNORECASE),
+    re.compile(r"\bscoring (?:formula|logic|algorithm|weight|threshold|band)s?\b", re.IGNORECASE),
+    re.compile(r"\bscore (?:stays|is kept|must stay) (?:below|above)\b", re.IGNORECASE),
+    re.compile(r"\bhard (?:gate|fail(?:ure)?)\b", re.IGNORECASE),
+)
+
+
+def _sanitize_public_fit_text(value: object) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    text = re.sub(
+        r"\bhard requirements?\b",
+        lambda match: "Eligibility requirement" if match.group(0)[0].isupper() else "eligibility requirement",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not text:
+        return ""
+
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    public_sentences = [
+        sentence
+        for sentence in sentences
+        if sentence and not any(pattern.search(sentence) for pattern in _INTERNAL_FIT_TEXT_PATTERNS)
+    ]
+    return " ".join(public_sentences).strip()
+
+
+def _sanitize_public_fit_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    cleaned = [_sanitize_public_fit_text(item) for item in value]
+    return [item for item in cleaned if item]
+
+
+def _sanitize_public_fit_rows(value: object, fields: tuple[str, ...]) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    rows: list[dict] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        cleaned = {field: _sanitize_public_fit_text(item.get(field)) for field in fields}
+        if any(cleaned.values()):
+            rows.append(cleaned)
+    return rows
+
+
+def build_public_fit_analysis_response(result: object) -> FitAnalyzeResponse:
+    data = result if isinstance(result, dict) else {}
+    try:
+        score = int(round(float(data.get("fit_score", 15))))
+    except (TypeError, ValueError):
+        score = 15
+
+    return FitAnalyzeResponse(
+        scholarship_name=_sanitize_public_fit_text(data.get("scholarship_name")),
+        fit_label=_sanitize_public_fit_text(data.get("fit_label")),
+        fit_score=max(15, min(95, score)),
+        likely_eligible=_sanitize_public_fit_text(data.get("likely_eligible")),
+        summary=_sanitize_public_fit_text(data.get("summary")),
+        eligibility_analysis=_sanitize_public_fit_rows(
+            data.get("eligibility_analysis"),
+            ("requirement", "status", "student_evidence", "explanation"),
+        ),
+        strengths=_sanitize_public_fit_list(data.get("strengths")),
+        gaps_or_risks=_sanitize_public_fit_list(data.get("gaps_or_risks")),
+        missing_student_information=_sanitize_public_fit_list(
+            data.get("missing_student_information")
+        ),
+        selection_criteria_alignment=_sanitize_public_fit_rows(
+            data.get("selection_criteria_alignment"),
+            ("criterion", "alignment", "student_evidence", "notes"),
+        ),
+        recommended_next_steps=_sanitize_public_fit_list(data.get("recommended_next_steps")),
+    )
+
+
+class DiscoveryIntentSelection(BaseModel):
+    id: str = Field(default="", max_length=80)
+    label: str = Field(default="", max_length=120)
+    dimension: str = Field(default="", max_length=50)
+    value: str = Field(default="", max_length=200)
+    canonical_values: list[str] = Field(default_factory=list, max_length=10)
+    derived_from: list[str] = Field(default_factory=list, max_length=10)
 
 
 class WikiDiscoverRequest(BaseModel):
     user_id: str = Field(default="", max_length=100)
     student_profile: dict = Field(default_factory=dict)
+    discovery_focus: str = Field(default="", max_length=1000)
+    selected_intents: list[DiscoveryIntentSelection] = Field(default_factory=list, max_length=4)
+    free_text_intent: str = Field(default="", max_length=1000)
+    excluded_urls: list[str] = Field(default_factory=list, max_length=100)
+    feedback: list[dict] = Field(default_factory=list, max_length=100)
+
+
+class WikiBootstrapRequest(BaseModel):
+    student_profile: dict = Field(default_factory=dict)
+
+
+class WikiBootstrapResponse(BaseModel):
+    intent_options: list[dict] = Field(default_factory=list)
+    platform_defaults: list[dict] = Field(default_factory=list)
+    profile_summary: dict = Field(default_factory=dict)
 
 
 class WikiDiscoverResponse(BaseModel):
-    page_title: str = "Scholarship Discovery Wiki"
+    page_title: str = "Scholarship Discovery"
     profile_summary: dict = Field(default_factory=dict)
     recommended_source_groups: list[dict] = Field(default_factory=list)
     top_free_platforms: list[dict] = Field(default_factory=list)
@@ -149,20 +272,42 @@ class WikiDiscoverResponse(BaseModel):
     personalized_search_queries: list[str] = Field(default_factory=list)
     next_steps: list[str] = Field(default_factory=list)
     missing_profile_fields: list[str] = Field(default_factory=list)
+    discovery_focus: str = ""
+    selected_intents: list[dict] = Field(default_factory=list)
+    free_text_intent: str = ""
+    generated_at: str = ""
+    result_note: str = ""
 
 
-class EssayCoachRequest(BaseModel):
+class EditorCheckRequest(BaseModel):
+    essay_draft: str = Field(default="", max_length=20000)
+    user_notes: str = Field(default="", max_length=5000)
+    protected_terms: list[str] = Field(default_factory=list, max_length=500)
+    draft_revision: str = Field(default="", max_length=100)
+
+
+class OutlineCoverageRequest(BaseModel):
+    clean_scholarship_record: dict = Field(default_factory=dict)
+    essay_draft: str = Field(default="", max_length=20000)
+    outline_points: list[dict] = Field(default_factory=list)
+
+
+class CoachingSessionRequest(BaseModel):
+    """One-button Page 4 session: evaluate the submitted draft without rewriting it."""
+
     user_id: str = Field(default="", max_length=100)
+    cv_text: str = Field(default="", max_length=50000)
+    essay_text: str = Field(default="", max_length=20000)
+    scholarship_name: str = Field(default="", max_length=500)
+    scholarship_type: str = Field(default="", max_length=200)
+    prompt: str = Field(default="", max_length=10000)
+    previous_manager_plan: Optional[dict] = None
+    previous_review: Optional[dict] = None
     student_profile: dict = Field(default_factory=dict)
     clean_scholarship_record: dict = Field(default_factory=dict)
     essay_prompt: str = Field(default="", max_length=12000)
-    essay_draft: str = Field(default="", max_length=20000)
-    personalized_outline: dict = Field(default_factory=dict)
-    user_notes: str = Field(default="", max_length=5000)
     word_limit: str = Field(default="", max_length=120)
     outline_points: list[dict] = Field(default_factory=list)
-    mode: str = Field(default="full", max_length=40)
-    writing_support_level: str = Field(default="sentence_polish", max_length=40)
 
 
 class RewriteRequest(BaseModel):
@@ -172,6 +317,19 @@ class RewriteRequest(BaseModel):
     essay_prompt: str = Field(default="", max_length=12000)
     clean_scholarship_record: dict = Field(default_factory=dict)
     student_profile: dict = Field(default_factory=dict)
+
+
+class RevisionCoachRequest(BaseModel):
+    priority: dict = Field(default_factory=dict)
+    essay_text: str = Field(..., min_length=1, max_length=20000)
+    target_start: int = Field(..., ge=0)
+    target_end: int = Field(..., ge=1)
+    draft_revision: str = Field(default="", max_length=100)
+    essay_prompt: str = Field(default="", max_length=12000)
+    clean_scholarship_record: dict = Field(default_factory=dict)
+    student_profile: dict = Field(default_factory=dict)
+    current_word_count: int = Field(default=0, ge=0, le=20000)
+    word_limit: int | None = Field(default=None, ge=1, le=20000)
 
 
 class OutlineGenerateRequest(BaseModel):
@@ -186,50 +344,63 @@ class OutlineGenerateRequest(BaseModel):
 
 
 class OutlineSection(BaseModel):
-    section_name: str = ""
-    purpose: str = ""
-    suggested_content: list[str] = Field(default_factory=list)
-    profile_evidence_to_use: list[str] = Field(default_factory=list)
-    scholarship_requirement_addressed: list[str] = Field(default_factory=list)
-    estimated_word_count: str = ""
-    coaching_notes: list[str] = Field(default_factory=list)
+    section_name: str = Field(
+        default="",
+        description=(
+            "A short descriptive noun phrase for the section, never a question, prompt directive, or copy of the "
+            "question in scholarship_requirement_addressed. Do not add 'Introduction:' or 'Conclusion:' prefixes; "
+            "the interface adds those structural labels."
+        ),
+    )
+    purpose: str = Field(
+        default="",
+        description="One concise coaching paragraph, no more than 60 words.",
+    )
+    suggested_content: list[str] = Field(
+        default_factory=list,
+        description="Concise content suggestions; scholarship-guided sections use no more than two.",
+    )
+    profile_evidence_to_use: list[str] = Field(
+        default_factory=list,
+        description="Relevant profile evidence; scholarship-guided sections use no more than two.",
+    )
+    scholarship_requirement_addressed: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Concise, standalone questions from the essay prompt or scholarship focus that this section answers. "
+            "Every item must be phrased as a direct question ending in a question mark, without category headings."
+        ),
+    )
+    estimated_word_count: str = Field(
+        default="",
+        description="A compact section-level word allocation that fits within the overall word limit.",
+    )
+    coaching_notes: list[str] = Field(
+        default_factory=list,
+        description="Brief coaching notes; scholarship-guided sections use no more than two.",
+    )
 
 
 class PersonalizedOutline(BaseModel):
-    outline_title: str = ""
-    thesis_or_core_message: str = ""
     sections: list[OutlineSection] = Field(default_factory=list)
-    recommended_opening: str = ""
-    recommended_conclusion: str = ""
-    questions_for_student: list[str] = Field(default_factory=list)
 
 
 class OutlineStrategy(BaseModel):
-    recommended_strategy: str = ""
-    central_message: str = ""
-    tone_guidance: str = ""
-
-
-class CoverageCheck(BaseModel):
-    requirement: str = ""
-    covered: bool = False
-    where_covered: str = ""
-    notes: str = ""
+    tone_guidance: str = Field(
+        default="",
+        description=(
+            "Exactly one concise sentence recommending a tone tailored to the student, essay prompt, and scholarship. "
+            "Do not include a label such as 'Tone' or 'Recommended tip'."
+        ),
+    )
 
 
 class OutlineGenerateResponse(BaseModel):
     status: str = "success"
     outline: PersonalizedOutline = Field(default_factory=PersonalizedOutline)
     strategy: OutlineStrategy = Field(default_factory=OutlineStrategy)
-    coverage_check: list[CoverageCheck] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     missing_profile_info: list[str] = Field(default_factory=list)
-
-
-def _text_to_chunks(text: str, source: str) -> list:
-    doc = Document(page_content=text.strip(), metadata={"source": source})
-    splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
-    return splitter.split_documents([doc])
 
 
 def _stable_source_id(prefix: str, value: object) -> str:
@@ -274,27 +445,6 @@ def _persist_domain_record(save_fn, *args, **kwargs):
         return None
 
 
-def _build_opportunity_text(
-    scholarship_name: str,
-    scholarship_type: str,
-    prompt: str,
-) -> str:
-    return (
-        f"Scholarship: {scholarship_name}\n"
-        f"Type: {scholarship_type}\n\n"
-        f"{prompt.strip()}"
-    )
-
-
-def _profile_store_path(profile_text: str) -> Path:
-    profile_hash = hashlib.sha256(profile_text.strip().encode("utf-8")).hexdigest()[:16]
-    return Path(settings.profile_vector_db_path) / profile_hash
-
-
-def _has_existing_chroma_store(path: Path) -> bool:
-    return (path / "chroma.sqlite3").exists()
-
-
 def extract_text_from_pdf(file_bytes: bytes) -> str:
     try:
         reader = pypdf.PdfReader(io.BytesIO(file_bytes))
@@ -311,279 +461,121 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
         ) from exc
 
 
-class _ReadableTextParser(HTMLParser):
-    def __init__(self):
-        super().__init__()
-        self._skip_depth = 0
-        self.parts = []
-
-    def handle_starttag(self, tag, attrs):
-        if tag in {"script", "style", "noscript", "svg"}:
-            self._skip_depth += 1
-        if tag in {"p", "br", "div", "li", "tr", "h1", "h2", "h3", "h4"}:
-            self.parts.append("\n")
-
-    def handle_endtag(self, tag):
-        if tag in {"script", "style", "noscript", "svg"} and self._skip_depth:
-            self._skip_depth -= 1
-        if tag in {"p", "div", "li", "tr", "h1", "h2", "h3", "h4"}:
-            self.parts.append("\n")
-
-    def handle_data(self, data):
-        if not self._skip_depth:
-            text = data.strip()
-            if text:
-                self.parts.append(text)
-
-    def text(self) -> str:
-        raw = " ".join(self.parts)
-        raw = re.sub(r"[ \t]+", " ", raw)
-        raw = re.sub(r"\n\s*\n+", "\n\n", raw)
-        return unescape(raw).strip()
+def _safe_upload_filename(filename: str) -> str:
+    basename = Path(filename or "scholarship.pdf").name
+    sanitized = re.sub(r"[^A-Za-z0-9._ -]+", "_", basename).strip(" ._")
+    return sanitized or "scholarship.pdf"
 
 
-def _looks_like_url(value: str) -> bool:
-    text = value.strip()
-    return text.startswith(("http://", "https://")) or "." in text and " " not in text
-
-
-def _normalize_url(value: str) -> str:
-    text = value.strip()
-    if text and not text.startswith(("http://", "https://")):
-        return f"https://{text}"
-    return text
-
-
-def _is_fetchable_url(value: str) -> bool:
-    parsed = urlparse(_normalize_url(value))
-    host = parsed.hostname or ""
-    return parsed.scheme in {"http", "https"} and "." in host
-
-
-def _candidate_urls_from_clues(*values: str) -> list[str]:
-    candidates = []
-
-    def add(url: str) -> None:
-        if _is_fetchable_url(url) and url not in candidates:
-            candidates.append(_normalize_url(url))
-
-    for value in values:
-        text = value.strip()
-        if not text:
-            continue
-        parsed = urlparse(_normalize_url(text))
-        host = parsed.hostname or ""
-        if host and "." not in host and re.fullmatch(r"[a-zA-Z0-9-]{3,40}", host):
-            for suffix in (".org", ".edu", ".com", ".gov"):
-                add(f"https://{host}{suffix}/")
-                add(f"https://www.{host}{suffix}/")
-
-        words = re.findall(r"\b[A-Z][A-Z0-9]{2,}\b", text)
-        for word in words:
-            slug = word.lower()
-            for suffix in (".org", ".edu", ".com", ".gov"):
-                add(f"https://{slug}{suffix}/")
-                add(f"https://www.{slug}{suffix}/")
-
-    return candidates
-
-
-def _fetch_page_text(url: str, timeout: int = 12) -> str:
-    request = Request(
-        _normalize_url(url),
-        headers={
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 Scholar-E/0.1"
-            )
-        },
-    )
-    with urlopen(request, timeout=timeout) as response:
-        content_type = response.headers.get("content-type", "")
-        body = response.read(1_500_000)
-    if "pdf" in content_type.lower() or url.lower().endswith(".pdf"):
-        return extract_text_from_pdf(body)
-    html = body.decode("utf-8", errors="ignore")
-    parser = _ReadableTextParser()
-    parser.feed(html)
-    return parser.text()
-
-
-def _search_opportunity_urls(query: str, limit: int = 3) -> list[str]:
-    if not query.strip():
-        return []
-    search_url = f"https://duckduckgo.com/html/?q={quote_plus(query + ' scholarship requirements deadline')}"
-    try:
-        html = _fetch_raw(search_url)
-    except Exception:
-        return []
-    urls = []
-    for match in re.finditer(r'href="([^"]+)"[^>]*class="result__a"', html):
-        href = unescape(match.group(1))
-        parsed = urlparse(href)
-        if parsed.netloc.endswith("duckduckgo.com"):
-            target = parse_qs(parsed.query).get("uddg", [""])[0]
-            href = unquote(target) if target else href
-        if href.startswith("http") and href not in urls:
-            urls.append(href)
-        if len(urls) >= limit:
-            break
-    return urls
-
-
-def _fetch_raw(url: str, timeout: int = 12) -> str:
-    request = Request(
-        url,
-        headers={"User-Agent": "Mozilla/5.0 Scholar-E/0.1"},
-    )
-    with urlopen(request, timeout=timeout) as response:
-        return response.read(1_500_000).decode("utf-8", errors="ignore")
-
-
-def _gather_opportunity_source_text(request: OpportunityExtractRequest) -> tuple[str, list[str]]:
-    source_urls = []
-    chunks = []
-
-    def add_search_results(query: str) -> None:
-        for url in _search_opportunity_urls(query):
-            if _is_fetchable_url(url) and url not in source_urls:
-                source_urls.append(url)
-
-    def add_candidate_urls(*values: str) -> None:
-        for url in _candidate_urls_from_clues(*values):
-            if url not in source_urls:
-                source_urls.append(url)
-
-    def search_from_clues(include_broken_link: bool = False) -> None:
-        queries = [
-            request.scholarship_name.strip(),
-            " ".join([request.scholarship_name.strip(), request.additional_notes.strip()[:500]]).strip(),
-        ]
-        if include_broken_link:
-            queries.append(" ".join([request.scholarship_name.strip(), request.scholarship_url.strip()]).strip())
-        for query in queries:
-            if query and not source_urls:
-                add_search_results(query)
-
-    if request.scholarship_url.strip():
-        if _is_fetchable_url(request.scholarship_url):
-            source_urls.append(_normalize_url(request.scholarship_url))
-        else:
-            chunks.append(
-                "USER LINK WARNING: The scholarship link/source is incomplete or malformed. "
-                f"Use it only as a search clue, not as the official website: {request.scholarship_url.strip()}"
-            )
-            search_from_clues(include_broken_link=True)
-            add_candidate_urls(request.scholarship_url, request.scholarship_name)
-    elif _looks_like_url(request.scholarship_name):
-        if _is_fetchable_url(request.scholarship_name):
-            source_urls.append(_normalize_url(request.scholarship_name))
-        else:
-            chunks.append(
-                "USER LINK WARNING: The scholarship name/query looks like an incomplete URL. "
-                f"Use it only as a search clue, not as the official website: {request.scholarship_name.strip()}"
-            )
-            add_search_results(request.scholarship_name.strip())
-            add_candidate_urls(request.scholarship_name)
-    else:
-        search_from_clues()
-        add_candidate_urls(request.scholarship_name)
-
-    for url in source_urls[:8]:
-        try:
-            text = _fetch_page_text(url)
-        except (HTTPException, OSError, URLError, TimeoutError, ValueError) as exc:
-            chunks.append(f"SOURCE FETCH WARNING: Could not read {url}. Use the user-provided name, link, and notes instead. Error: {exc}")
-            continue
-        if text:
-            chunks.append(f"SOURCE URL: {url}\n{text[:12000]}")
-
-    if request.additional_notes.strip():
-        chunks.append(f"USER NOTES:\n{request.additional_notes.strip()}")
-    if request.scholarship_name.strip():
-        chunks.append(f"USER SCHOLARSHIP NAME/QUERY:\n{request.scholarship_name.strip()}")
-    if request.scholarship_url.strip():
-        chunks.append(f"USER SCHOLARSHIP URL/SOURCE:\n{request.scholarship_url.strip()}")
-
-    return "\n\n---\n\n".join(chunks).strip(), source_urls
-
-
-def run_application_pipeline(
-    user_id: str,
-    opportunity_text: str,
-    student_draft: str,
-    profile_text: str,
-    previous_readiness: Optional[Dict[str, int]] = None,
-    draft_number: int = 1,
-) -> dict:
-    vector_service = _safe_vector_service()
-    profile_docs = _text_to_chunks(profile_text, "uploaded_cv")
-
-    _upsert_memory(
-        vector_service,
-        user_id=user_id,
-        source_type="profile_summary",
-        source_id="current-profile",
-        title="Current student profile",
-        canonical_text=profile_text,
-        structured_json={"profile_text": profile_text},
-        collection_name="user_profile_memory",
-    )
-    _upsert_memory(
-        vector_service,
-        user_id=user_id,
-        source_type="opportunity",
-        source_id=_stable_source_id("opportunity", opportunity_text),
-        title="Current scholarship opportunity",
-        canonical_text=opportunity_text,
-        structured_json={"opportunity_text": opportunity_text},
-        collection_name="user_opportunity_memory",
-    )
-    if student_draft.strip():
-        _upsert_memory(
-            vector_service,
-            user_id=user_id,
-            source_type="essay_draft",
-            source_id=_stable_source_id(f"essay-draft-{draft_number}", student_draft),
-            title=f"Essay draft {draft_number}",
-            canonical_text=student_draft,
-            structured_json={"draft_number": draft_number, "essay_text": student_draft},
-            collection_name="user_application_memory",
+def validate_scholarship_pdf_upload(
+    *,
+    filename: str,
+    content_type: str,
+    file_bytes: bytes,
+) -> str:
+    """Validate an in-memory scholarship PDF and return its safe display name."""
+    safe_filename = _safe_upload_filename(filename)
+    if Path(safe_filename).suffix.lower() != ".pdf" or content_type.lower() != "application/pdf":
+        raise HTTPException(status_code=400, detail="Upload a PDF file.")
+    max_bytes = max(1, settings.scholarship_pdf_max_bytes)
+    if len(file_bytes) > max_bytes:
+        max_megabytes = max_bytes / (1024 * 1024)
+        display_limit = f"{max_megabytes:g} MB"
+        raise HTTPException(
+            status_code=413,
+            detail=f"This PDF exceeds the {display_limit} file limit.",
         )
+    if not file_bytes.startswith(b"%PDF-"):
+        raise HTTPException(status_code=400, detail="Upload a PDF file.")
+    return safe_filename
 
-    graph = build_application_graph(vector_service, user_id)
-    result = graph.invoke(
-        {
-            "opportunity_text": opportunity_text,
-            "student_profile_docs": profile_docs,
-            "student_draft": student_draft,
-            "previous_readiness": previous_readiness or {},
-            "draft_number": draft_number,
-        }
+
+async def extract_scholarship_pdf_text(file: UploadFile) -> dict:
+    """Read scholarship PDF text in memory without retaining the uploaded file."""
+    max_bytes = max(1, settings.scholarship_pdf_max_bytes)
+    try:
+        file_bytes = await file.read(max_bytes + 1)
+        safe_filename = validate_scholarship_pdf_upload(
+            filename=file.filename or "scholarship.pdf",
+            content_type=file.content_type or "",
+            file_bytes=file_bytes,
+        )
+        try:
+            text = extract_text_from_pdf(file_bytes)
+        except HTTPException as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="We couldn’t upload this PDF. Try again.",
+            ) from exc
+    finally:
+        await file.close()
+    if len(text) < 80:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "We couldn’t read enough text from this PDF. "
+                "Try a webpage link or paste the scholarship text instead."
+            ),
+        )
+    # The existing extraction request accepts 12,000 characters of user-provided
+    # source text. Preserve that contract while keeping the most relevant lead text.
+    text_limit = OPPORTUNITY_ADDITIONAL_NOTES_MAX_LENGTH
+    extracted_text = text[:text_limit]
+    return {
+        "filename": safe_filename,
+        "size_bytes": len(file_bytes),
+        "text": extracted_text,
+        "truncated": len(text) > len(extracted_text),
+        "max_size_bytes": max_bytes,
+    }
+
+
+def _gather_opportunity_source_text(request: OpportunityExtractRequest):
+    """Resolve the pasted page, recover through search, and collect supporting official pages."""
+    return resolve_opportunity_sources(
+        scholarship_name=request.scholarship_name,
+        scholarship_url=request.scholarship_url,
+        additional_notes=request.additional_notes,
     )
-    feedback_text = build_feedback_memory_text(
-        {
-            "summary": result.get("feedback", ""),
-            "strengths": result.get("revision_priorities", []),
-            "recommended_next_steps": result.get("essay_alignment_matrix", {}).get("recommended_revision_tasks", []),
-        }
+
+
+SCHOLARSHIP_GUIDED_DEFAULT_WORD_LIMIT = "Maximum 500 words"
+
+
+def _effective_outline_word_limit(request: OutlineGenerateRequest) -> str:
+    explicit_limit = request.word_limit.strip()
+    if explicit_limit:
+        return explicit_limit
+    if not request.essay_prompt.strip():
+        return SCHOLARSHIP_GUIDED_DEFAULT_WORD_LIMIT
+    return ""
+
+
+def _outline_section_word_budgets(word_limit: str) -> tuple[str, str, str]:
+    counts = [int(value) for value in re.findall(r"\d{1,5}", word_limit)]
+    if not counts:
+        return ("Opening section", "Middle section", "Closing section")
+    if len(counts) >= 2:
+        lower, upper = min(counts[0], counts[1]), max(counts[0], counts[1])
+        target = round(lower + ((upper - lower) * 0.35))
+    else:
+        target = counts[0]
+    opening = max(1, round(target * 0.2))
+    middle = max(1, round(target * 0.5))
+    closing = max(1, target - opening - middle)
+    return (
+        f"About {opening} words",
+        f"About {middle} words",
+        f"About {closing} words",
     )
-    _upsert_memory(
-        vector_service,
-        user_id=user_id,
-        source_type="coaching_feedback",
-        source_id=_stable_source_id(f"coaching-{draft_number}", result.get("feedback", "")),
-        title=f"Coaching feedback draft {draft_number}",
-        canonical_text=feedback_text,
-        structured_json=result,
-        collection_name="user_feedback_memory",
-    )
-    return result
 
 
 def _outline_fallback(request: OutlineGenerateRequest, message: str = "") -> dict:
     scholarship = request.clean_scholarship_record or {}
     prompt = request.essay_prompt.strip() or scholarship.get("essayPrompts") or scholarship.get("requirementsPreview") or ""
+    effective_word_limit = _effective_outline_word_limit(request)
+    section_word_budgets = _outline_section_word_budgets(effective_word_limit)
+    scholarship_guided = not request.essay_prompt.strip()
     warnings = []
     if message:
         warnings.append(message)
@@ -594,54 +586,188 @@ def _outline_fallback(request: OutlineGenerateRequest, message: str = "") -> dic
     if not prompt:
         warnings.append("Add an essay prompt or scholarship writing requirement to generate a more personalized outline.")
 
-    name = request.scholarship_name or scholarship.get("name") or "this scholarship"
     return {
         "status": "success",
         "outline": {
-            "outline_title": f"Essay plan for {name}",
-            "thesis_or_core_message": "Connect your strongest real profile evidence to the scholarship prompt and stated selection priorities.",
             "sections": [
                 {
-                    "section_name": "Opening motivation tied to the prompt",
-                    "purpose": "Introduce the specific motivation or problem that makes this opportunity relevant.",
+                    "section_name": "Personal Motivation and Connection" if scholarship_guided else "Opening Motivation",
+                    "purpose": "Open with a specific real moment, project, question, or responsibility that introduces the motivation or problem connecting you to this opportunity. This would place the reader in a concrete context and help them quickly understand why the opportunity matters to you.",
                     "suggested_content": ["Use one concrete real experience from your profile.", "Name the academic, service, or career direction the essay will explain."],
                     "profile_evidence_to_use": ["Use a real profile detail you have already provided."],
-                    "scholarship_requirement_addressed": ["Essay prompt or writing requirement"],
-                    "estimated_word_count": request.word_limit or "Adjust to the final word limit.",
+                    "scholarship_requirement_addressed": [
+                        "What experience or motivation connects you to this opportunity?"
+                    ],
+                    "estimated_word_count": section_word_budgets[0],
                     "coaching_notes": ["Do not invent a dramatic story. Avoid generic openings."],
                 },
                 {
-                    "section_name": "Evidence of preparation and fit",
-                    "purpose": "Show the experiences, skills, coursework, research, work, or leadership that support your claim.",
+                    "section_name": "Evidence of Fit and Contribution",
+                    "purpose": "Use two or three strong experiences, skills, courses, research projects, work responsibilities, or leadership examples from your profile, then explain what each one demonstrates. This would give the reader concrete reasons to trust your preparation and recognize your fit with the scholarship.",
                     "suggested_content": ["Choose two or three strongest facts from your profile.", "Explain what each fact proves about readiness or alignment."],
-                    "profile_evidence_to_use": ["Academic background", "Skills", "Leadership, research, work, or projects if provided"],
-                    "scholarship_requirement_addressed": ["Selection criteria", "Eligibility or application themes"],
-                    "estimated_word_count": "Middle section",
+                    "profile_evidence_to_use": ["Academic background and skills", "Strongest leadership, research, work, or project example"],
+                    "scholarship_requirement_addressed": [
+                        "What evidence demonstrates your preparation and fit?"
+                    ],
+                    "estimated_word_count": section_word_budgets[1],
                     "coaching_notes": ["Use evidence, not a list of achievements."],
                 },
                 {
                     "section_name": "Future goals and scholarship alignment",
-                    "purpose": "Explain how the scholarship connects to your next step and the impact you want to make.",
+                    "purpose": "Connect the scholarship to your next step, reflect on the impact you want to make, and close by explaining why that direction matters. This would leave the reader with a clear understanding of your future purpose and how the scholarship would help you pursue it.",
                     "suggested_content": ["Tie goals to the scholarship mission or benefits.", "End with a contribution-focused statement."],
                     "profile_evidence_to_use": ["Career goal or academic goal if provided"],
-                    "scholarship_requirement_addressed": ["Career goals", "Community impact", "Scholarship purpose"],
-                    "estimated_word_count": "Closing section",
+                    "scholarship_requirement_addressed": [
+                        "How would this scholarship support your future goals and intended impact?"
+                    ],
+                    "estimated_word_count": section_word_budgets[2],
                     "coaching_notes": ["Keep the ending specific to the scholarship."],
                 },
             ],
-            "recommended_opening": "Begin with a specific real moment, project, question, or responsibility that connects to the prompt.",
-            "recommended_conclusion": "Close by reinforcing what the scholarship would help you do next and why that matters.",
-            "questions_for_student": ["What real experience best proves your fit for this scholarship?", "What detail from your profile should the essay definitely include?"],
         },
         "strategy": {
-            "recommended_strategy": "Use a profile-grounded, scholarship-specific argument rather than a broad personal statement.",
-            "central_message": "Your preparation and goals match the opportunity's purpose.",
-            "tone_guidance": "Specific, reflective, confident, and evidence-based.",
+            "tone_guidance": "Maintain a reflective and sincere tone, emphasizing your personal growth and commitment to community engagement.",
         },
-        "coverage_check": [],
         "warnings": warnings,
         "missing_profile_info": [],
     }
+
+
+_DIRECT_QUESTION_START = re.compile(
+    r"^(?:what|when|where|why|how|which|who|whose|is|are|was|were|do|does|did|can|could|will|would|"
+    r"has|have|had|to what extent|in what ways)\b",
+    flags=re.IGNORECASE,
+)
+_IMPERATIVE_PROMPT_START = re.compile(
+    r"^(?:describe|explain|discuss|share|identify|tell|write|provide|outline|reflect)\b",
+    flags=re.IGNORECASE,
+)
+
+
+def _is_direct_question(value: object) -> bool:
+    text = " ".join(str(value or "").split())
+    return bool(
+        text.endswith("?")
+        and _DIRECT_QUESTION_START.match(text)
+        and not _IMPERATIVE_PROMPT_START.match(text)
+    )
+
+
+def _coerce_direct_question(value: object) -> str:
+    """Last-resort grammatical repair after the model's correction pass."""
+    text = " ".join(str(value or "").split()).strip()
+    if not text:
+        return "What does this section need to address?"
+    if ":" in text:
+        heading, remainder = text.split(":", 1)
+        if len(heading.split()) <= 10 and _IMPERATIVE_PROMPT_START.match(remainder.strip()):
+            text = remainder.strip()
+    clean = text.rstrip(".?!").strip()
+    if _DIRECT_QUESTION_START.match(clean) and not _IMPERATIVE_PROMPT_START.match(clean):
+        return f"{clean}?"
+    experience_match = re.match(
+        r"describe\s+(?:a|an)\s+(?:time|occasion|instance)\s+when\s+you\s+(.+)",
+        clean,
+        re.IGNORECASE,
+    )
+    if experience_match:
+        return f"What experience shows how you {experience_match.group(1).strip()}?"
+    directive_match = re.match(
+        r"(?:describe|explain|discuss|share|identify|provide|outline|reflect on)\s+(.+)",
+        clean,
+        re.IGNORECASE,
+    )
+    if directive_match:
+        return f"What would you explain about {directive_match.group(1).strip()}?"
+    return f"What does this section need to address about {clean[0].lower()}{clean[1:]}?"
+
+
+def _word_limit_upper_bound(word_limit: str) -> int | None:
+    counts = [int(value) for value in re.findall(r"\d{1,5}", word_limit)]
+    if not counts:
+        return None
+    normalized = word_limit.casefold()
+    minimum_only = len(counts) == 1 and any(
+        phrase in normalized
+        for phrase in ("at least", "minimum", "no fewer than")
+    )
+    if minimum_only:
+        return None
+    return max(counts[:2])
+
+
+def _outline_contract_violations(
+    data: dict,
+    writing_brief: dict,
+    word_limit: str = "",
+) -> list[str]:
+    sections = ((data or {}).get("outline") or {}).get("sections") or []
+    violations: list[str] = []
+    prompt_driven = writing_brief.get("mode") == "prompt_driven"
+    scholarship_guided = writing_brief.get("mode") == "scholarship_guided"
+    expected_asks = writing_brief.get("prompt_asks") or []
+    word_limit_upper_bound = _word_limit_upper_bound(word_limit)
+    guided_max_sections = 3 if word_limit_upper_bound and word_limit_upper_bound <= 300 else 4
+    guided_estimated_counts: list[int] = []
+    if prompt_driven and len(sections) != len(expected_asks):
+        violations.append(f"Expected {len(expected_asks)} ordered sections but received {len(sections)}.")
+    if scholarship_guided and not 3 <= len(sections) <= guided_max_sections:
+        section_rule = "exactly 3" if guided_max_sections == 3 else "3 to 4"
+        violations.append(
+            f"Scholarship-guided outlines must contain {section_rule} concise sections; "
+            f"received {len(sections)}."
+        )
+    for index, section in enumerate(sections):
+        title = " ".join(str(section.get("section_name") or "").split())
+        questions = section.get("scholarship_requirement_addressed") or []
+        purpose = " ".join(str(section.get("purpose") or "").split())
+        suggested_content = section.get("suggested_content") or []
+        profile_evidence = section.get("profile_evidence_to_use") or []
+        coaching_notes = section.get("coaching_notes") or []
+        if title.endswith("?"):
+            violations.append(f"Section {index + 1} title is a question instead of a descriptive phrase.")
+        if prompt_driven and len(questions) != 1:
+            violations.append(f"Section {index + 1} must contain exactly one prompt question.")
+        if scholarship_guided:
+            if len(questions) != 1:
+                violations.append(f"Section {index + 1} must contain exactly one scholarship-focus question.")
+            if len(purpose.split()) > 60:
+                violations.append(f"Section {index + 1} purpose exceeds the 60-word concise limit.")
+            if len(suggested_content) > 2:
+                violations.append(f"Section {index + 1} has more than two content suggestions.")
+            if len(profile_evidence) > 2:
+                violations.append(f"Section {index + 1} has more than two profile-evidence suggestions.")
+            if len(coaching_notes) > 2:
+                violations.append(f"Section {index + 1} has more than two coaching notes.")
+            estimated_counts = re.findall(r"\d{1,5}", str(section.get("estimated_word_count") or ""))
+            if not estimated_counts:
+                violations.append(f"Section {index + 1} is missing a numeric estimated word count.")
+            else:
+                guided_estimated_counts.append(int(estimated_counts[-1]))
+        for question in questions:
+            if not _is_direct_question(question):
+                violations.append(f"Section {index + 1} contains a malformed prompt question: {question!r}.")
+            if title.rstrip("?").casefold() == str(question).strip().rstrip("?").casefold():
+                violations.append(f"Section {index + 1} title duplicates its prompt question.")
+    if (
+        scholarship_guided
+        and word_limit_upper_bound
+        and len(guided_estimated_counts) == len(sections)
+        and sum(guided_estimated_counts) > word_limit_upper_bound
+    ):
+        violations.append(
+            f"Section word allocations total {sum(guided_estimated_counts)} words, exceeding the "
+            f"{word_limit_upper_bound}-word limit."
+        )
+    return violations
+
+
+def _normalize_outline_requirement_questions(data: dict) -> dict:
+    sections = ((data or {}).get("outline") or {}).get("sections") or []
+    for section in sections:
+        questions = section.get("scholarship_requirement_addressed") or []
+        section["scholarship_requirement_addressed"] = [_coerce_direct_question(question) for question in questions]
+    return data
 
 
 def generate_personalized_outline(request: OutlineGenerateRequest) -> dict:
@@ -649,26 +775,60 @@ def generate_personalized_outline(request: OutlineGenerateRequest) -> dict:
         return _outline_fallback(request, "AI outline generation is unavailable because OPENAI_API_KEY is missing.")
 
     scholarship = request.clean_scholarship_record or {}
-    essay_prompt = (
-        request.essay_prompt.strip()
-        or str(scholarship.get("essayPrompts") or "").strip()
-        or str(scholarship.get("otherRequiredMaterials") or "").strip()
-        or str(scholarship.get("requirementsPreview") or "").strip()
+    # Prefer the explicitly selected/edited prompt; do not silently swap in
+    # materials text unless the student left the prompt empty on purpose.
+    essay_prompt = (request.essay_prompt or "").strip()
+    writing_brief = resolve_writing_brief(
+        essay_prompt=essay_prompt,
+        clean_scholarship_record=scholarship,
+        allow_scholarship_fallback=True,
     )
-    if not essay_prompt and not scholarship:
+    effective_word_limit = _effective_outline_word_limit(request)
+    if writing_brief.get("mode") == "empty" and not scholarship:
         return _outline_fallback(request)
 
     model = llm._get_client().with_structured_output(OutlineGenerateResponse)
-    try:
-        result = model.invoke(
-            [
+    messages = [
                 (
                     "system",
                     "You are an AI scholarship essay planning team coaching a student. Create a personalized, "
-                    "read-only essay outline for a student applying to a specific scholarship. Use only the provided "
-                    "student profile, cleaned scholarship requirements, essay prompt, selection criteria, and word limit. "
+                    "read-only essay outline that is ADAPTIVE to the writing brief for this specific opportunity. "
+                    "Use only the provided student profile, cleaned scholarship requirements, essay prompt / writing "
+                    "brief, selection criteria, and word limit. "
+                    "Treat WORD LIMIT as a hard planning constraint whenever it states an exact count or maximum. "
+                    "Keep the outline compact, and make all section estimated_word_count values add up to no more than "
+                    "that maximum. For a range, target the shorter half of the range. For a minimum-only requirement, "
+                    "stay close to the minimum unless the scholarship requires more. "
                     "Do not invent student experiences or scholarship requirements. Do not write the full essay. Do not "
                     "make the outline generic. "
+                    "If WRITING MODE is prompt_driven: every section must map to one distinct ask in the selected essay prompt. "
+                    "Create exactly one section for each distinct item in PROMPT / FOCUS ASKS, preserve their order, and "
+                    "never merge two asks into one section. Each section must contain exactly one corresponding "
+                    "scholarship_requirement_addressed question. "
+                    "If WRITING MODE is scholarship_guided: there is no formal prompt — structure the outline around the "
+                    "scholarship mission, selection criteria, and materials, and say so in coaching notes. Return only "
+                    "3 or 4 compact sections; when the maximum is 300 words or fewer, return exactly 3. Cover, in a tailored "
+                    "order, the student's motivation and connection, strongest evidence of fit or contribution, goals and "
+                    "scholarship alignment, and a brief future-impact close. Merge the close into the goals section when "
+                    "using 3 sections. These are structural roles, not required titles: create short opportunity-specific "
+                    "headings and do not copy scholarship language verbatim. Each section must have exactly one concise "
+                    "scholarship-focus question, a purpose of no more than 60 words, no more than two suggested_content "
+                    "items, no more than two profile_evidence_to_use items, and no more than two coaching_notes. "
+                    "Write each section_name as a short descriptive noun phrase, such as 'Outcome and Impact' or "
+                    "'Reflection and Growth'. A section name must never be a question, end in '?', or repeat its purple "
+                    "scholarship_requirement_addressed question. Do not prefix a section name with 'Introduction:' or "
+                    "'Conclusion:' because the interface adds those labels. "
+                    "For each section, write purpose as one cohesive guidance paragraph. Begin with a direct coaching action "
+                    "that explains what the student could include and how to present it, then explain the intended effect on "
+                    "the reader or scholarship reviewer using 'would'. Never use the word 'should' in a section purpose. "
+                    "Incorporate opening guidance directly into the first section's purpose and closing guidance directly "
+                    "into the final section's purpose. "
+                    "Return tone_guidance as exactly one concise sentence tailored to the student, prompt, and scholarship. "
+                    "Do not prefix it with 'Tone:' or 'Recommended tip:'. "
+                    "For scholarship_requirement_addressed, rewrite every mapped prompt ask or scholarship focus as a "
+                    "concise, standalone direct question ending in '?'. Remove category names, numbered-option labels, and "
+                    "instructional prefixes such as 'Describe' or 'Explain'. For example, convert 'Leadership: Describe a "
+                    "time you led a team' to 'When did you lead a team?'. Use the same question format in every section. "
                     "VOICE: Address the student directly in the second person ('you', 'your'). Never write in the first "
                     "person from the student's point of view — do not use 'I', 'me', 'my', or 'we'. For example, write "
                     "'Open with your experience tutoring…' or 'Use your research on…', never 'Open with my experience' or "
@@ -678,25 +838,61 @@ def generate_personalized_outline(request: OutlineGenerateRequest) -> dict:
                 (
                     "human",
                     "Generate the final personalized outline through these internal steps: identify relevant profile evidence, "
-                    "analyze essay requirements, choose an essay strategy, draft a structured outline, then review coverage. "
-                    "Keep confirmed requirements separate from suggestions. Use meaningful section names, not generic paragraph labels. "
+                    "analyze the writing brief / prompt asks, choose an essay strategy adapted to those asks, draft a structured "
+                    "outline, and ensure every prompt ask is assigned to at least one specific section. "
+                    "In prompt-driven mode, return one section per distinct prompt ask in the supplied order; do not combine "
+                    "asks even when the source prompt places them in the same sentence. "
+                    "In scholarship-guided mode, keep the result as compact as a prompt-driven outline: use only the "
+                    "3 or 4 structural roles needed for this scholarship, paraphrase its priorities, avoid repeated advice, "
+                    "and assign a numeric word budget to every section without exceeding WORD LIMIT. "
+                    "Keep confirmed requirements separate from suggestions. Use meaningful section names tied to the brief. "
+                    "Make every section purpose a single, specific coaching paragraph that combines the writing action with "
+                    "what it would help the reader understand, feel, or conclude. Do not return separate opening or closing tips. "
+                    "Phrase every scholarship_requirement_addressed item as a short question, never as a heading, label, "
+                    "statement, or copied directive. "
                     "Write ALL guidance addressed to the student in the second person ('you', 'your') — never first person ('I', 'my', 'me', 'we').\n\n"
+                    f"{format_brief_for_prompt(writing_brief)}\n\n"
                     f"Scholarship name:\n{request.scholarship_name or scholarship.get('name', '')}\n\n"
                     f"Clean scholarship record:\n{json.dumps(scholarship, indent=2, default=str)}\n\n"
-                    f"Essay prompt or writing requirement:\n{essay_prompt}\n\n"
+                    f"Selected essay prompt text (may be empty if scholarship-guided):\n{essay_prompt or '(none provided)'}\n\n"
                     f"Essay type:\n{request.essay_type}\n\n"
-                    f"Word limit:\n{request.word_limit or 'Not stated'}\n\n"
+                    f"Word limit:\n{effective_word_limit or 'Not stated'}\n\n"
                     f"Student profile:\n{json.dumps(request.student_profile or {}, indent=2, default=str)}\n\n"
                     f"User notes:\n{request.user_notes}",
                 ),
             ]
-        )
+    try:
+        result = model.invoke(messages)
         data = result.model_dump() if hasattr(result, "model_dump") else result.dict()
+        violations = _outline_contract_violations(data, writing_brief, effective_word_limit)
+        if violations:
+            violation_list = "\n- ".join(violations)
+            repair_result = model.invoke(
+                [
+                    *messages,
+                    (
+                        "human",
+                        "Correct the candidate outline below and return the complete structured outline again. "
+                        "Resolve every listed contract violation without changing supported student facts or scholarship "
+                        "requirements. A direct question must use interrogative grammar; never turn an instruction such as "
+                        "'Describe a time...' into 'Describe a time...?'.\n\n"
+                        f"CONTRACT VIOLATIONS:\n- {violation_list}\n\n"
+                        f"CANDIDATE OUTLINE:\n{json.dumps(data, indent=2, default=str)}",
+                    ),
+                ]
+            )
+            data = repair_result.model_dump() if hasattr(repair_result, "model_dump") else repair_result.dict()
+        data = _normalize_outline_requirement_questions(data)
     except Exception as exc:
         fallback = _outline_fallback(request, f"Outline generation failed, so Scholar-E created a basic guide instead: {exc}")
         fallback["status"] = "error"
         fallback["message"] = str(exc)
         fallback["fallback_outline"] = fallback.get("outline")
+        fallback["writing_brief"] = {
+            "mode": writing_brief.get("mode"),
+            "has_formal_prompt": writing_brief.get("has_formal_prompt"),
+            "prompt_asks": writing_brief.get("prompt_asks") or [],
+        }
         return fallback
 
     data["status"] = data.get("status") or "success"
@@ -705,17 +901,64 @@ def generate_personalized_outline(request: OutlineGenerateRequest) -> dict:
         return _outline_fallback(request, "The generated outline was incomplete, so Scholar-E created a safe fallback guide.")
 
     warnings = list(data.get("warnings") or [])
-    if not request.word_limit:
+    if writing_brief.get("mode") == "scholarship_guided":
+        warnings.append(
+            "No formal essay prompt was provided, so this outline adapts to the scholarship mission and selection criteria. "
+            "Add an official prompt anytime to regenerate a prompt-specific outline."
+        )
+    elif writing_brief.get("mode") == "empty":
+        warnings.append("Add an essay prompt or more scholarship details to personalize this outline further.")
+    if not effective_word_limit:
         warnings.append("No word limit was found. Adjust section lengths after confirming the official limit.")
     if not request.student_profile:
         warnings.append("Add your student profile to make this outline more personalized.")
     if not request.clean_scholarship_record:
-        warnings.append("Scholarship requirements are limited, so this outline is based mainly on the essay prompt and profile.")
+        warnings.append("Scholarship requirements are limited, so this outline is based mainly on the writing brief and profile.")
     data["warnings"] = list(dict.fromkeys(warnings))
+    data["writing_brief"] = {
+        "mode": writing_brief.get("mode"),
+        "has_formal_prompt": writing_brief.get("has_formal_prompt"),
+        "prompt_asks": writing_brief.get("prompt_asks") or [],
+    }
     return data
 
 
-def analyze_application(request: AnalyzeRequest) -> dict:
+def run_editor_check(request: EditorCheckRequest) -> dict:
+    return run_editor_check_service(
+        essay_draft=request.essay_draft,
+        user_notes=request.user_notes,
+        protected_terms=request.protected_terms,
+        draft_revision=request.draft_revision,
+    )
+
+
+def run_contextual_grammar_check(request: EditorCheckRequest) -> dict:
+    return run_contextual_grammar_check_service(
+        essay_draft=request.essay_draft,
+        user_notes=request.user_notes,
+        protected_terms=request.protected_terms,
+        draft_revision=request.draft_revision,
+    )
+
+
+def run_outline_coverage_check(request: OutlineCoverageRequest) -> dict:
+    if not settings.openai_api_key:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Missing OPENAI_API_KEY. Add a .env file in the project root "
+                "with OPENAI_API_KEY=your_key, then restart the server."
+            ),
+        )
+    return run_outline_coverage_check_service(
+        essay_draft=request.essay_draft,
+        clean_scholarship_record=request.clean_scholarship_record,
+        outline_points=request.outline_points,
+    )
+
+
+def run_workspace_coaching_session(request: CoachingSessionRequest) -> dict:
+    """Run one Manager-led criterion review graph on the submitted draft."""
     if not settings.openai_api_key:
         raise HTTPException(
             status_code=400,
@@ -725,73 +968,51 @@ def analyze_application(request: AnalyzeRequest) -> dict:
             ),
         )
 
-    opportunity_text = _build_opportunity_text(
-        request.scholarship_name,
-        request.scholarship_type,
-        request.prompt,
-    )
+    started_at = time.perf_counter()
+    essay_draft = request.essay_text
+    canonical_draft = canonicalize_essay_text(essay_draft)
+    draft_hash = hashlib.sha256(canonical_draft.encode("utf-8")).hexdigest()
+    session_seed = f"{request.user_id}:{time.time_ns()}:{draft_hash}"
+    session_id = f"coach_{hashlib.sha256(session_seed.encode('utf-8')).hexdigest()[:16]}"
+    essay_prompt = (request.essay_prompt or request.prompt or "").strip()
 
-    result, _ = run_agent_with_persistence(
-        user_id=request.user_id,
-        agent_name="essay_application_coaching",
-        input_json={
-            "cv_text_chars": len(request.cv_text),
-            "essay_text_chars": len(request.essay_text),
-            "scholarship_name": request.scholarship_name,
-            "scholarship_type": request.scholarship_type,
-            "prompt_chars": len(request.prompt),
-            "draft_number": request.draft_number,
-        },
-        run_fn=lambda _: run_application_pipeline(
-            user_id=default_user_id(request.user_id),
-            opportunity_text=opportunity_text,
-            student_draft=request.essay_text,
-            profile_text=request.cv_text,
-            previous_readiness=request.previous_readiness,
-            draft_number=request.draft_number,
-        ),
-    )
-
-    return {
-        "coaching_brief": result.get("coaching_brief", {}),
-        "readiness_index": result.get("readiness_index", {}),
-        "growth_report": result.get("growth_report", {}),
-        "reviewer_comments": result.get("reviewer_comments", []),
-        "coaching_reports": result.get("coaching_reports", {}),
-        "eligibility_matrix": result.get("eligibility_matrix", {}),
-        "essay_alignment_matrix": result.get("essay_alignment_matrix", {}),
-        "feedback": result.get("feedback", ""),
-        "section_coaching": result.get("section_coaching", {}),
-        "opportunity_analysis": result.get("opportunity_analysis", {}),
-        "critique": result.get("critique", {}),
-        "final_application_package": result.get("final_application_package", ""),
-        "revision_priorities": result.get("revision_priorities", []),
-        "draft_number": result.get("draft_number", request.draft_number),
-    }
-
-
-def run_essay_coach(request: EssayCoachRequest) -> dict:
-    if not settings.openai_api_key:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Missing OPENAI_API_KEY. Add a .env file in the project root "
-                "with OPENAI_API_KEY=your_key, then restart the server."
-            ),
-        )
-
-    return run_essay_workspace_coach(
+    merged = run_unified_coaching_session(
         student_profile=request.student_profile,
         clean_scholarship_record=request.clean_scholarship_record,
-        essay_prompt=request.essay_prompt,
-        essay_draft=request.essay_draft,
-        personalized_outline=request.personalized_outline,
-        user_notes=request.user_notes,
+        essay_prompt=essay_prompt,
+        essay_draft=essay_draft,
         word_limit=request.word_limit,
         outline_points=request.outline_points,
-        mode=request.mode or "full",
-        writing_support_level=request.writing_support_level or "sentence_polish",
+        profile_text=request.cv_text,
+        scholarship_name=request.scholarship_name,
+        scholarship_type=request.scholarship_type,
+        opportunity_prompt=request.prompt,
+        previous_manager_plan=request.previous_manager_plan,
+        previous_review=request.previous_review,
     )
+    review = merged.get("review")
+    warnings = list(merged.get("warnings") or [])
+    status = str((review or {}).get("status") or "error").lower()
+    if status not in {
+        "success",
+        "scoring_success_coaching_partial",
+        "partial",
+        "error",
+        "insufficient_to_assess",
+        "evaluation_unavailable",
+    }:
+        status = "partial"
+
+    return {
+        "session_id": session_id,
+        "draft_hash": draft_hash,
+        "status": status,
+        "review": review,
+        "outline_coverage": merged.get("outline_coverage") or {},
+        "agents": merged.get("agent_status", {}),
+        "warnings": list(dict.fromkeys(warnings)),
+        "duration_ms": round((time.perf_counter() - started_at) * 1000),
+    }
 
 
 def rewrite_selection(request: RewriteRequest) -> dict:
@@ -811,6 +1032,27 @@ def rewrite_selection(request: RewriteRequest) -> dict:
         essay_prompt=request.essay_prompt,
         clean_scholarship_record=request.clean_scholarship_record,
         student_profile=request.student_profile,
+    )
+
+
+def run_revision_coach(request: RevisionCoachRequest) -> dict:
+    if not settings.openai_api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="Coaching suggestions are unavailable right now. Please try again later.",
+        )
+
+    return run_revision_coach_service(
+        priority=request.priority,
+        essay_text=request.essay_text,
+        target_start=request.target_start,
+        target_end=request.target_end,
+        draft_revision=request.draft_revision,
+        essay_prompt=request.essay_prompt,
+        clean_scholarship_record=request.clean_scholarship_record,
+        student_profile=request.student_profile,
+        current_word_count=request.current_word_count,
+        word_limit=request.word_limit,
     )
 
 
@@ -899,7 +1141,11 @@ def extract_scholarship_opportunity(request: OpportunityExtractRequest) -> dict:
             detail="Enter a scholarship name, link, source, or notes before extracting requirements.",
         )
 
-    source_text, source_urls = _gather_opportunity_source_text(request)
+    resolution_started = time.perf_counter()
+    resolution = _gather_opportunity_source_text(request)
+    source_text = resolution.source_text
+    source_urls = resolution.source_urls
+    resolution_ms = int((time.perf_counter() - resolution_started) * 1000)
     if not source_text:
         source_text = "\n\n".join(
             [
@@ -911,11 +1157,15 @@ def extract_scholarship_opportunity(request: OpportunityExtractRequest) -> dict:
 
     graph = build_opportunity_extraction_graph()
     payload = {
-            "scholarship_name": request.scholarship_name,
-            "scholarship_url": request.scholarship_url,
-            "additional_notes": request.additional_notes,
-            "source_text": source_text,
-            "source_urls": source_urls,
+        "scholarship_name": request.scholarship_name,
+        "scholarship_url": request.scholarship_url,
+        "additional_notes": request.additional_notes,
+        "source_text": source_text,
+        "source_urls": source_urls,
+        "source_metadata": resolution.source_metadata,
+        "extraction_warnings": resolution.warnings,
+        "resolution_status": resolution.resolution_status,
+        "primary_url": resolution.primary_url,
     }
     result, agent_run_id = run_agent_with_persistence(
         user_id=request.user_id,
@@ -926,6 +1176,8 @@ def extract_scholarship_opportunity(request: OpportunityExtractRequest) -> dict:
             "additional_notes_chars": len(request.additional_notes),
             "source_text_chars": len(source_text),
             "source_url_count": len(source_urls),
+            "source_resolution_ms": resolution_ms,
+            "resolution_status": resolution.resolution_status,
         },
         run_fn=lambda _: graph.invoke(payload),
     )
@@ -1026,13 +1278,17 @@ def analyze_scholarship_fit(request: FitAnalyzeRequest) -> dict:
         },
         run_fn=lambda _: graph.invoke(payload),
     )
-    response = FitAnalyzeResponse(**result)
+    response = build_public_fit_analysis_response(result)
     fit_data = response.model_dump() if hasattr(response, "model_dump") else response.dict()
+    stored_fit_data = dict(fit_data)
+    for internal_field in ("application_materials_check", "application_readiness_matrix"):
+        if internal_field in result:
+            stored_fit_data[internal_field] = result[internal_field]
     _persist_domain_record(
         ScholarshipService.save_fit_analysis,
         user_id,
         request.scholarship_record.get("name") or fit_data.get("scholarship_name") or "",
-        fit_data,
+        stored_fit_data,
         profile_id,
         clean_record_id,
         agent_run_id,
@@ -1053,14 +1309,69 @@ def analyze_scholarship_fit(request: FitAnalyzeRequest) -> dict:
 
 
 def _load_wiki_source_library() -> list[dict]:
-    library_path = Path(__file__).resolve().parent.parent / "data" / "scholarship_source_library.json"
+    library_path = Path(__file__).resolve().parent.parent / "data" / "discovery_platform_library.json"
     try:
-        return json.loads(library_path.read_text(encoding="utf-8"))
+        items = json.loads(library_path.read_text(encoding="utf-8"))
+        return [item for item in items if str(item.get("kind") or "").lower() == "platform"]
     except Exception as exc:
-        raise HTTPException(status_code=500, detail="Scholarship source library could not be loaded.") from exc
+        raise HTTPException(status_code=500, detail="Discovery platform library could not be loaded.") from exc
+
+
+def get_scholarship_discovery_bootstrap(request: WikiBootstrapRequest) -> dict:
+    context = build_discovery_context(request.student_profile)
+    platforms = []
+    for index, raw in enumerate(_load_wiki_source_library()):
+        if str(raw.get("kind") or "").lower() != "platform":
+            continue
+        item = {**raw, "origin": "library", "candidate_id": str(raw.get("url") or raw.get("name") or index).lower()}
+        assessment = assess_candidate(item, context)
+        if not assessment.compatible:
+            continue
+        item["source_evidence"] = candidate_evidence(item)
+        score, components = score_candidate(item, context)
+        field = context.profile.field.canonical_label
+        student_type = context.profile.student_type.value
+        reason = (
+            f"Selected for {field} and related opportunities."
+            if field
+            else f"Selected for {student_type} scholarship discovery."
+            if student_type != "unknown"
+            else "Selected as a trusted place to continue scholarship discovery."
+        )
+        platforms.append((score, index, {
+            "name": item.get("name", ""),
+            "url": item.get("url", ""),
+            "category": item.get("category", ""),
+            "best_for": item.get("best_for") or [],
+            "search_tips": item.get("search_tips") or [],
+            "why_recommended": reason,
+            "source_authority": "Curated discovery platform",
+            "score_components": components,
+        }))
+    platforms.sort(key=lambda value: (-value[0], value[1]))
+    profile = context.profile
+    response = WikiBootstrapResponse(
+        intent_options=generate_intent_options(request.student_profile, limit=4),
+        platform_defaults=[item for _, _, item in platforms[:3]],
+        profile_summary={
+            "education_level": profile.education.current_level.value,
+            "field_of_study": profile.field.canonical_label,
+            "student_type": profile.student_type.value,
+        },
+    )
+    return response.model_dump() if hasattr(response, "model_dump") else response.dict()
 
 
 def discover_scholarship_wiki(request: WikiDiscoverRequest) -> dict:
+    if not settings.openai_api_key:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Missing OPENAI_API_KEY. Add a .env file in the project root "
+                "with OPENAI_API_KEY=your_key, then restart the server."
+            ),
+        )
+
     user_id = default_user_id(request.user_id)
     profile_text = build_profile_memory_text(request.student_profile)
     _persist_domain_record(ProfileService.save_current_profile, user_id, request.student_profile, profile_text, None)
@@ -1076,8 +1387,16 @@ def discover_scholarship_wiki(request: WikiDiscoverRequest) -> dict:
     )
     graph = build_wiki_discovery_graph()
     payload = {
-            "student_profile": request.student_profile,
-            "source_library": _load_wiki_source_library(),
+        "student_profile": request.student_profile,
+        "source_library": _load_wiki_source_library(),
+        "discovery_focus": request.discovery_focus,
+        "selected_intents": [
+            intent.model_dump() if hasattr(intent, "model_dump") else intent.dict()
+            for intent in request.selected_intents
+        ],
+        "free_text_intent": request.free_text_intent or request.discovery_focus,
+        "excluded_urls": request.excluded_urls,
+        "discovery_feedback": request.feedback,
     }
     result, _ = run_agent_with_persistence(
         user_id=request.user_id,
@@ -1086,6 +1405,10 @@ def discover_scholarship_wiki(request: WikiDiscoverRequest) -> dict:
             "profile_keys": sorted(request.student_profile.keys()),
             "education_level": request.student_profile.get("educationLevel", ""),
             "has_opportunity_preferences": bool(request.student_profile.get("opportunityPreferences")),
+            "has_discovery_focus": bool(request.discovery_focus.strip()),
+            "selected_intent_count": len(request.selected_intents),
+            "has_free_text_intent": bool((request.free_text_intent or request.discovery_focus).strip()),
+            "excluded_url_count": len(request.excluded_urls),
         },
         run_fn=lambda _: graph.invoke(payload),
     )

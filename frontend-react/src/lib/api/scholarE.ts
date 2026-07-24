@@ -1,16 +1,6 @@
-import type { ActiveScholarship, AnalysisResult, FitAnalysisResult, PersonalizedOutlineResult, UserProfile, WikiDiscoveryResult } from "@/lib/userStore";
+import type { ActiveScholarship, DiscoveryIntent, EssayPromptEntry, EssayReviewResult, EssayRevisionPriority, FitAnalysisResult, PersonalizedOutlineResult, UserProfile, WikiDiscoveryResult } from "@/lib/userStore";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
-
-export type AnalyzePayload = {
-  cv_text: string;
-  essay_text: string;
-  scholarship_name: string;
-  scholarship_type: string;
-  prompt: string;
-  previous_readiness?: Record<string, number>;
-  draft_number?: number;
-};
 
 export type ResumeAutofillResult = {
   name: string;
@@ -38,6 +28,18 @@ export type OpportunityExtractResult = ActiveScholarship & {
   sourceUrls?: string[];
 };
 
+export type ScholarshipPdfTextResult = {
+  filename: string;
+  size_bytes: number;
+  text: string;
+  truncated: boolean;
+  max_size_bytes: number;
+};
+
+export type ScholarshipPdfUploadConfig = {
+  max_size_bytes: number;
+};
+
 export type FitAnalyzePayload = {
   scholarship_record: ActiveScholarship;
   student_profile: Record<string, unknown>;
@@ -45,6 +47,21 @@ export type FitAnalyzePayload = {
 
 export type WikiDiscoverPayload = {
   student_profile: Record<string, unknown>;
+  discovery_focus?: string;
+  selected_intents?: DiscoveryIntent[];
+  free_text_intent?: string;
+  excluded_urls?: string[];
+  feedback?: Array<{ url?: string; reason?: string; name?: string }>;
+};
+
+export type WikiDiscoveryBootstrapResult = {
+  intent_options: DiscoveryIntent[];
+  platform_defaults: NonNullable<WikiDiscoveryResult["top_free_platforms"]>;
+  profile_summary: {
+    education_level?: string;
+    field_of_study?: string;
+    student_type?: string;
+  };
 };
 
 export type OutlineGeneratePayload = {
@@ -103,56 +120,184 @@ export function profileToText(user: UserProfile | null) {
   ]);
 }
 
-export function buildAnalyzePayload(user: UserProfile | null): AnalyzePayload {
-  const scholarship = user?.activeScholarship;
-  const previousReadiness: Record<string, number> = {};
-  Object.entries(user?.lastAnalysis?.readiness_index ?? {}).forEach(([key, value]) => {
-    if (typeof value?.score === "number") previousReadiness[key] = value.score;
-  });
+/** Split a scholarship prompt blob into choosable essay prompts. */
+export function splitEssayPrompts(raw: string): string[] {
+  const text = (raw || "").trim();
+  if (!text) return [];
 
+  const byLabel = text
+    .split(/(?=(?:^|\n)\s*(?:Prompt|Essay|Question)\s*\d+\s*[:.)])/i)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (byLabel.length > 1) return byLabel;
+
+  const byNumber = text
+    .split(/(?=(?:^|\n)\s*\d+[.)]\s+\S)/)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 20);
+  if (byNumber.length > 1) return byNumber;
+
+  const byBlank = text
+    .split(/\n\s*\n/)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 40);
+  if (byBlank.length > 1) return byBlank;
+
+  return [text];
+}
+
+function nonnegativeWordCount(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = typeof value === "number" ? value : Number.parseInt(String(value), 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed) : null;
+}
+
+/** Extract only word limits explicitly present in text. A lone count is a maximum. */
+export function extractPromptWordLimits(text: string): Pick<EssayPromptEntry, "minimumWords" | "maximumWords"> {
+  const normalized = (text || "").replace(/,/g, " ").replace(/\s+/g, " ");
+  const exact = normalized.match(/\bexactly\s+(\d{1,5})\s*words?\b/i);
+  if (exact) {
+    const count = Number(exact[1]);
+    return { minimumWords: count, maximumWords: count };
+  }
+  const range = normalized.match(/\b(?:between\s+)?(\d{1,5})\s*(?:-|–|—|to|and)\s*(\d{1,5})\s*words?\b/i);
+  if (range) {
+    return { minimumWords: Number(range[1]), maximumWords: Number(range[2]) };
+  }
+
+  const minimum = normalized.match(/\b(?:minimum|min\.?|at least|no fewer than)\s*(?:of\s*)?(\d{1,5})\s*words?\b/i)?.[1];
+  const maximum = normalized.match(/\b(?:maximum|max\.?|up to|no more than|not more than)\s*(?:of\s*)?(\d{1,5})\s*words?\b/i)?.[1]
+    ?? normalized.match(/\b(\d{1,5})[- ]word\s+(?:maximum|limit)\b/i)?.[1]
+    ?? normalized.match(/\b(\d{1,5})\s*words?\s*(?:or less|maximum|max\.?)\b/i)?.[1];
+  if (minimum || maximum) {
+    return {
+      minimumWords: minimum ? Number(minimum) : null,
+      maximumWords: maximum ? Number(maximum) : null,
+    };
+  }
+
+  const loneCount = normalized.match(/\b(\d{1,5})\s*words?\b/i)?.[1];
+  return { minimumWords: null, maximumWords: loneCount ? Number(loneCount) : null };
+}
+
+/** Normalize new structured prompts and migrate legacy single-string prompt data on read. */
+export function normalizeEssayPromptEntries(scholarship?: ActiveScholarship | null): EssayPromptEntry[] {
+  const structured = Array.isArray(scholarship?.essayPromptEntries) ? scholarship.essayPromptEntries : [];
+  const source = structured.length > 0
+    ? structured
+    : splitEssayPrompts(scholarship?.essayPrompts ?? "").map((promptText, index) => ({
+        id: `prompt-${index + 1}`,
+        promptNumber: index + 1,
+      promptText,
+      minimumWords: null,
+      maximumWords: null,
+      minimumWordsReviewed: false,
+      maximumWordsReviewed: false,
+    }));
+
+  return source.map((entry, index) => {
+    const promptText = String(entry.promptText ?? "")
+      .trim()
+      .replace(/^(?:Prompt|Essay|Question)\s*\d+\s*[:.)]\s*/i, "");
+    const inferred = extractPromptWordLimits(promptText);
+    const hasExplicitLimit = /\b\d{1,5}\s*(?:-|–|—|to|and)?\s*\d{0,5}\s*words?\b/i.test(promptText);
+    const rawMinimum = nonnegativeWordCount(entry.minimumWords);
+    const rawMaximum = nonnegativeWordCount(entry.maximumWords);
+    const minimumReviewedWasStored = typeof entry.minimumWordsReviewed === "boolean";
+    const maximumReviewedWasStored = typeof entry.maximumWordsReviewed === "boolean";
+    const minimumWords = entry.minimumWordsReviewed === true
+      ? rawMinimum
+      : hasExplicitLimit ? inferred.minimumWords : rawMinimum;
+    const maximumWords = entry.maximumWordsReviewed === true
+      ? rawMaximum
+      : hasExplicitLimit ? inferred.maximumWords : rawMaximum;
+    return {
+      id: String(entry.id || `prompt-${index + 1}`),
+      promptNumber: Number.isFinite(entry.promptNumber) && entry.promptNumber > 0 ? entry.promptNumber : index + 1,
+      promptText,
+      minimumWords,
+      maximumWords,
+      minimumWordsReviewed: minimumReviewedWasStored ? entry.minimumWordsReviewed : minimumWords !== null,
+      maximumWordsReviewed: maximumReviewedWasStored ? entry.maximumWordsReviewed : maximumWords !== null,
+    };
+  });
+}
+
+/** Return the single prompt chosen for this application; legacy records fall back to all prompts. */
+export function normalizeSelectedEssayPromptEntries(scholarship?: ActiveScholarship | null): EssayPromptEntry[] {
+  const entries = normalizeEssayPromptEntries(scholarship);
+  if (scholarship?.noEssayPromptSelected) return [];
+  if (!Array.isArray(scholarship?.selectedEssayPromptIds)) return entries.slice(0, 1);
+  const selectedIds = new Set(scholarship.selectedEssayPromptIds);
+  return entries.filter((entry) => selectedIds.has(entry.id)).slice(0, 1);
+}
+
+export function serializeEssayPromptEntries(entries: EssayPromptEntry[]): string {
+  return entries
+    .filter((entry) => entry.promptText.trim())
+    .map((entry, index) => `Prompt ${index + 1}: ${entry.promptText.trim()}`)
+    .join("\n\n");
+}
+
+export function formatEssayPromptWordLimit(entry?: EssayPromptEntry): string {
+  if (!entry) return "";
+  if (entry.minimumWords !== null && entry.maximumWords !== null) return `${entry.minimumWords}-${entry.maximumWords} words`;
+  if (entry.minimumWords !== null) return `At least ${entry.minimumWords} words`;
+  if (entry.maximumWords !== null) return `Maximum ${entry.maximumWords} words`;
+  return "";
+}
+
+function promptEntryFor(scholarship: ActiveScholarship, promptOverride?: string) {
+  const entries = promptOverride ? normalizeEssayPromptEntries(scholarship) : normalizeSelectedEssayPromptEntries(scholarship);
+  const selected = (promptOverride || "").trim().toLocaleLowerCase();
+  return (selected ? entries.find((entry) => entry.promptText.trim().toLocaleLowerCase() === selected) : entries[0]) ?? undefined;
+}
+
+function scholarshipForEssayWorkflow(scholarship: ActiveScholarship): ActiveScholarship {
+  const selectedEssayPromptEntries = normalizeSelectedEssayPromptEntries(scholarship);
   return {
-    cv_text: profileToText(user),
-    essay_text: user?.essayDraft ?? "",
-    scholarship_name: scholarship?.name ?? "",
-    scholarship_type: scholarship?.type ?? "",
-    prompt: compact([
+    ...scholarship,
+    essayPromptEntries: selectedEssayPromptEntries,
+    essayPrompts: serializeEssayPromptEntries(selectedEssayPromptEntries),
+    selectedEssayPromptEntries,
+    selectedEssayPrompts: serializeEssayPromptEntries(selectedEssayPromptEntries),
+  };
+}
+
+function hasEssayPromptDecision(scholarship?: ActiveScholarship | null) {
+  return Array.isArray(scholarship?.selectedEssayPromptIds)
+    || typeof scholarship?.noEssayPromptSelected === "boolean";
+}
+
+function buildOpportunityPrompt(user: UserProfile | null, essayPromptOverride?: string): string {
+  const scholarship = user?.activeScholarship;
+  const selectedEntry = scholarship ? promptEntryFor(scholarship, essayPromptOverride) : undefined;
+  const selectedPrompt = (essayPromptOverride
+    || selectedEntry?.promptText
+    || (!hasEssayPromptDecision(scholarship) ? scholarship?.essayPrompts : "")
+    || (!hasEssayPromptDecision(scholarship) ? scholarship?.otherRequiredMaterials : "")
+    || (!hasEssayPromptDecision(scholarship) ? scholarship?.requirementsPreview : "")
+    || "").trim();
+
+  return compact([
+      selectedPrompt && `Selected essay prompt:\n${selectedPrompt}`,
+      scholarship?.description && `Scholarship description:\n${scholarship.description}`,
+      scholarship?.requirementsPreview && `Student-edited scholarship requirements preview:\n${scholarship.requirementsPreview}`,
+      scholarship?.financialNeedRequirement && `Financial need requirement: ${scholarship.financialNeedRequirement}`,
+      scholarship?.otherRequiredMaterials && `Other required materials:\n${scholarship.otherRequiredMaterials}`,
       scholarship?.url && `Scholarship URL/source: ${scholarship.url}`,
       scholarship?.awardAmount && `Award amount: ${scholarship.awardAmount}`,
       scholarship?.applicationDeadline && `Application deadline: ${scholarship.applicationDeadline}`,
-      scholarship?.description && `Scholarship description:\n${scholarship.description}`,
       scholarship?.minimumGpa && `Minimum GPA: ${scholarship.minimumGpa}`,
       scholarship?.enrollmentLevel && `Enrollment level: ${scholarship.enrollmentLevel}`,
       scholarship?.citizenshipRequirement && `Citizenship/residency requirement: ${scholarship.citizenshipRequirement}`,
-      scholarship?.financialNeedRequirement && `Financial need requirement: ${scholarship.financialNeedRequirement}`,
       scholarship?.locationRequirement && `Location/residency requirement: ${scholarship.locationRequirement}`,
       scholarship?.eligibleMajors && `Eligible majors/fields of study:\n${scholarship.eligibleMajors}`,
       scholarship?.otherEligibilityRules && `Other eligibility rules:\n${scholarship.otherEligibilityRules}`,
       !!scholarship?.requiredDocumentTypes?.length && `Required documents/materials: ${scholarship.requiredDocumentTypes.join(", ")}`,
-      scholarship?.otherRequiredMaterials && `Other required materials:\n${scholarship.otherRequiredMaterials}`,
-      scholarship?.essayPrompts && `Essay prompt(s):\n${scholarship.essayPrompts}`,
-      scholarship?.requirementsPreview && `Student-edited scholarship requirements preview:\n${scholarship.requirementsPreview}`,
       scholarship?.additionalNotes && `Additional notes:\n${scholarship.additionalNotes}`,
       scholarship?.fullText && `Full scholarship page text:\n${scholarship.fullText}`,
-    ]),
-    previous_readiness: previousReadiness,
-    draft_number: (user?.drafts?.length ?? 0) + 1,
-  };
-}
-
-export async function analyzeApplication(payload: AnalyzePayload): Promise<AnalysisResult> {
-  const response = await fetch(`${API_BASE}/api/analyze`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-
-  const data = await response.json().catch(() => null);
-  if (!response.ok) {
-    const detail = data?.detail;
-    throw new Error(typeof detail === "string" ? detail : "Scholar-E analysis failed.");
-  }
-
-  return data as AnalysisResult;
+    ]).slice(0, 10_000);
 }
 
 export async function autofillProfileFromResume(file: File): Promise<ResumeAutofillResult> {
@@ -191,13 +336,49 @@ export async function extractScholarshipOpportunity(
   return data as OpportunityExtractResult;
 }
 
+export async function extractScholarshipTextFromPdf(file: File): Promise<ScholarshipPdfTextResult> {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const response = await fetch(`${API_BASE}/api/opportunity/pdf-text`, {
+    method: "POST",
+    body: formData,
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    const detail = data?.detail;
+    const validationResponse = response.status === 400 || response.status === 413 || response.status === 422;
+    throw new Error(
+      validationResponse && typeof detail === "string"
+        ? detail
+        : "We couldn’t upload this PDF. Try again.",
+    );
+  }
+  return data as ScholarshipPdfTextResult;
+}
+
+export async function getScholarshipPdfUploadConfig(): Promise<ScholarshipPdfUploadConfig> {
+  const response = await fetch(`${API_BASE}/api/opportunity/pdf-upload-config`);
+  if (!response.ok) throw new Error("Scholarship PDF upload configuration is unavailable.");
+  return response.json() as Promise<ScholarshipPdfUploadConfig>;
+}
+
 export function buildFitPayload(user: UserProfile | null): FitAnalyzePayload {
-  const { lastAnalysis, fitAnalysis, ...studentProfile } = user ?? { name: "", email: "" };
-  void lastAnalysis;
+  const { fitAnalysis, ...studentProfile } = user ?? { name: "", email: "" };
   void fitAnalysis;
+  const scholarship = user?.activeScholarship ?? {};
+  const allEssayPromptEntries = normalizeEssayPromptEntries(scholarship);
+  const selectedEssayPromptEntries = normalizeSelectedEssayPromptEntries(scholarship);
 
   return {
-    scholarship_record: user?.activeScholarship ?? {},
+    scholarship_record: {
+      ...scholarship,
+      allEssayPromptEntries,
+      essayPromptEntries: selectedEssayPromptEntries,
+      essayPrompts: serializeEssayPromptEntries(selectedEssayPromptEntries),
+      selectedEssayPromptEntries,
+      selectedEssayPrompts: serializeEssayPromptEntries(selectedEssayPromptEntries),
+    },
     student_profile: {
       ...studentProfile,
       profile_text: profileToText(user),
@@ -228,24 +409,38 @@ export async function analyzeScholarshipFit(payload: FitAnalyzePayload): Promise
 
 export function buildWikiPayload(user: UserProfile | null): WikiDiscoverPayload {
   const {
-    lastAnalysis,
     fitAnalysis,
     wikiDiscovery,
     savedWikiSources,
     activeScholarship,
+    discoveryFocus,
+    discoveryIntents,
+    discoveryIntentOptions,
+    discoveryPlatformDefaults,
+    dismissedDiscoveryUrls,
+    discoveryFeedback,
     ...studentProfile
   } = user ?? { name: "", email: "" };
-  void lastAnalysis;
   void fitAnalysis;
   void wikiDiscovery;
   void savedWikiSources;
   void activeScholarship;
+  void discoveryFocus;
+  void discoveryIntents;
+  void discoveryIntentOptions;
+  void discoveryPlatformDefaults;
+  void dismissedDiscoveryUrls;
+  void discoveryFeedback;
 
   return {
     student_profile: {
       ...studentProfile,
       profile_text: profileToText(user),
     },
+    selected_intents: user?.discoveryIntents ?? [],
+    free_text_intent: user?.discoveryFocus ?? "",
+    excluded_urls: user?.dismissedDiscoveryUrls ?? [],
+    feedback: user?.discoveryFeedback ?? [],
   };
 }
 
@@ -265,17 +460,66 @@ export async function discoverScholarshipWiki(payload: WikiDiscoverPayload): Pro
   return data as WikiDiscoveryResult;
 }
 
-function findWordLimit(text: string) {
-  const match = text.match(/(\d{2,5})\s*(?:-|to)?\s*(?:word|words)/i);
-  return match?.[0] ?? "";
+export async function getScholarshipDiscoveryBootstrap(
+  studentProfile: Record<string, unknown>,
+): Promise<WikiDiscoveryBootstrapResult> {
+  const response = await fetch(`${API_BASE}/api/wiki/bootstrap`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ student_profile: studentProfile }),
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    const detail = data?.detail;
+    throw new Error(typeof detail === "string" ? detail : "Discovery suggestions could not be prepared.");
+  }
+  return data as WikiDiscoveryBootstrapResult;
 }
 
-export function buildOutlinePayload(user: UserProfile | null): OutlineGeneratePayload {
+function findWordLimit(text: string) {
+  const limits = extractPromptWordLimits(text);
+  return formatEssayPromptWordLimit({ id: "fallback", promptNumber: 1, promptText: text, ...limits });
+}
+
+const SCHOLARSHIP_GUIDED_DEFAULT_WORD_LIMIT = "Maximum 500 words";
+
+function resolveWorkflowWordLimit(
+  scholarship: ActiveScholarship,
+  selectedEntry: EssayPromptEntry | undefined,
+  essayPrompt: string,
+) {
+  const selectedPromptLimit = formatEssayPromptWordLimit(selectedEntry)
+    || findWordLimit(essayPrompt);
+  if (selectedPromptLimit) return selectedPromptLimit;
+
+  const scholarshipRequirementsText = [
+    scholarship.otherRequiredMaterials,
+    scholarship.requirementsPreview,
+    ...(scholarship.requiredApplicationMaterials ?? []),
+    ...(scholarship.requiredDocumentTypes ?? []),
+    ...(scholarship.importantNotes ?? []),
+    scholarship.fullText,
+  ].filter(Boolean).join("\n");
+  const publishedScholarshipLimit = findWordLimit(scholarshipRequirementsText);
+  if (publishedScholarshipLimit) return publishedScholarshipLimit;
+
+  return scholarship.noEssayPromptSelected
+    ? SCHOLARSHIP_GUIDED_DEFAULT_WORD_LIMIT
+    : "";
+}
+
+export function buildOutlinePayload(user: UserProfile | null, essayPromptOverride?: string): OutlineGeneratePayload {
   const scholarship = user?.activeScholarship ?? {};
-  const essayPrompt = scholarship.essayPrompts || scholarship.otherRequiredMaterials || scholarship.requirementsPreview || "";
-  const { lastAnalysis, fitAnalysis, wikiDiscovery, savedWikiSources, activeScholarship, personalizedOutline, ...studentProfile } =
+  const workflowScholarship = scholarshipForEssayWorkflow(scholarship);
+  const selectedEntry = promptEntryFor(scholarship, essayPromptOverride);
+  const essayPrompt = (essayPromptOverride
+    || selectedEntry?.promptText
+    || (!hasEssayPromptDecision(scholarship) ? scholarship.essayPrompts : "")
+    || (!hasEssayPromptDecision(scholarship) ? scholarship.otherRequiredMaterials : "")
+    || (!hasEssayPromptDecision(scholarship) ? scholarship.requirementsPreview : "")
+    || "").trim();
+  const { fitAnalysis, wikiDiscovery, savedWikiSources, activeScholarship, personalizedOutline, ...studentProfile } =
     user ?? { name: "", email: "" };
-  void lastAnalysis;
   void fitAnalysis;
   void wikiDiscovery;
   void savedWikiSources;
@@ -283,12 +527,14 @@ export function buildOutlinePayload(user: UserProfile | null): OutlineGeneratePa
   void personalizedOutline;
 
   return {
-    opportunity_id: scholarship.url || scholarship.name || "",
+    // This is an identifier, not a source URL. Tracking-heavy scholarship URLs
+    // can exceed the backend's 200-character limit and cause a 422 response.
+    opportunity_id: (scholarship.name || scholarship.url || "").slice(0, 200),
     scholarship_name: scholarship.name || "",
-    clean_scholarship_record: scholarship,
+    clean_scholarship_record: workflowScholarship,
     essay_prompt: essayPrompt,
     essay_type: scholarship.type || "Scholarship essay",
-    word_limit: findWordLimit([essayPrompt, scholarship.otherRequiredMaterials, scholarship.requirementsPreview].filter(Boolean).join("\n")),
+    word_limit: resolveWorkflowWordLimit(scholarship, selectedEntry, essayPrompt),
     student_profile: {
       ...studentProfile,
       profile_text: profileToText(user),
@@ -297,163 +543,279 @@ export function buildOutlinePayload(user: UserProfile | null): OutlineGeneratePa
   };
 }
 
-export type EssayCoachMode = "full" | "grammar_tone" | "prompt_alignment" | "structure" | "reviewer" | "final_check" | "auto_check";
-export type WritingSupportLevel = "grammar_only" | "sentence_polish" | "rewrite_help";
-
-export type EssayCoachSentenceSuggestion = {
+export type EditorSentenceSuggestion = {
   original_text: string;
   suggested_text: string;
   suggestion_type: string;
   reason: string;
   severity: "low" | "medium" | "high" | string;
+  risk_tier?: "C0" | "C1" | "C2" | "C3" | string;
+  source?: "language_tool" | "contextual_grammar" | string;
+  confidence?: "low" | "medium" | "high" | string;
+  replacement_available?: boolean;
+  start_offset?: number | null;
+  end_offset?: number | null;
 };
 
-export type PromptAlignmentFeedback = {
-  alignment_score?: number;
-  covered_requirements?: string[];
-  missing_requirements?: string[];
-  weakly_covered_requirements?: string[];
-  comments?: string[];
+export type GrammarFeedback = {
+  grammar_score?: number;
+  spelling_issues?: string[];
+  punctuation_issues?: string[];
+  capitalization_issues?: string[];
+  verb_tense_issues?: string[];
+  agreement_issues?: string[];
+  other_grammar_issues?: string[];
+  sentence_level_correctness_issues?: string[];
   revision_tasks?: string[];
 };
 
-export type ProfileGroundingFeedback = {
-  grounding_score?: number;
-  supported_claims?: string[];
-  unsupported_or_risky_claims?: string[];
-  unused_relevant_profile_evidence?: string[];
-  recommendations?: string[];
-};
-
-export type ParagraphFeedback = {
-  paragraph_number?: number;
-  main_issue?: string;
-  strength?: string;
-  suggestion?: string;
-  priority?: string;
-};
-
-export type StructureFeedback = {
-  structure_score?: number;
-  paragraph_feedback?: ParagraphFeedback[];
-  flow_issues?: string[];
-  recommended_reordering?: string[];
-  revision_tasks?: string[];
-};
-
-export type SpecificityFeedback = {
-  specificity_score?: number;
-  vague_statements?: string[];
-  places_to_add_detail?: string[];
-  impact_opportunities?: string[];
-  recommended_questions?: string[];
-};
-
-export type ToneFeedback = {
-  authenticity_score?: number;
-  tone_score?: number;
-  ai_like_phrases?: string[];
-  generic_phrases?: string[];
-  voice_preservation_notes?: string[];
-  tone_improvement_suggestions?: string[];
-};
-
-export type ReviewerSimulation = {
-  reviewer_reaction?: string;
-  competitiveness_score?: number;
-  likely_strengths_seen_by_reviewer?: string[];
-  likely_concerns_seen_by_reviewer?: string[];
-  questions_reviewer_may_have?: string[];
-  competitiveness_notes?: string[];
-};
-
-export type RevisionPriority = {
-  priority?: string;
-  why_it_matters?: string;
-  how_to_fix?: string;
-  estimated_effort?: string;
-  impact?: string;
-};
-
-export type EssayCoachResult = {
+export type EditorCheckResult = {
   status: string;
-  overall_scores?: Record<string, number>;
-  sentence_suggestions?: EssayCoachSentenceSuggestion[];
-  paragraph_feedback?: ParagraphFeedback[];
-  prompt_alignment?: PromptAlignmentFeedback;
-  profile_grounding?: ProfileGroundingFeedback;
-  structure_feedback?: StructureFeedback;
-  specificity_feedback?: SpecificityFeedback;
-  tone_feedback?: ToneFeedback;
-  reviewer_simulation?: ReviewerSimulation;
-  revision_priorities?: RevisionPriority[];
-  quick_fixes?: string[];
-  deeper_revision_tasks?: string[];
-  outline_coverage?: { covered_point_ids?: string[] };
-  guardrail?: GuardrailAudit;
-  final_check?: FinalCheck;
+  sentence_suggestions?: EditorSentenceSuggestion[];
+  grammar_feedback?: GrammarFeedback;
   warnings?: string[];
-  coach_summary?: string;
-  ready_for_final_review?: boolean;
-  message?: string;
+  draft_revision?: string;
+  language_tool_status?: "idle" | "warming" | "ready" | "error" | string;
+  retry_after_ms?: number;
+  replaces_language_tool?: boolean;
+  contextual_route?: "local_only" | "single_pass" | "verified" | string;
+  ai_passes?: number;
+  fix_pipeline_version?: string;
 };
 
-export type EssayCoachPayload = {
+export type EditorCheckPayload = {
+  essay_draft: string;
+  user_notes: string;
+  protected_terms: string[];
+  draft_revision: string;
+};
+
+function protectedTermsForFixes(user: UserProfile | null): string[] {
+  const terms = new Set<string>(user?.personalDictionary ?? []);
+  const addCapitalizedTerms = (value: unknown) => {
+    if (typeof value !== "string") return;
+    const matches = value.match(/\b(?:[A-Z]{2,}|[A-Z][A-Za-z'’-]{2,})\b/g) ?? [];
+    matches.forEach((term) => terms.add(term));
+  };
+  const addTrustedFields = (value: unknown) => {
+    if (typeof value === "string") {
+      addCapitalizedTerms(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach(addTrustedFields);
+      return;
+    }
+    if (value && typeof value === "object") {
+      Object.values(value).forEach(addTrustedFields);
+    }
+  };
+  addCapitalizedTerms(user?.name);
+  addCapitalizedTerms(user?.location);
+  addCapitalizedTerms(user?.nationality);
+  addCapitalizedTerms(user?.activeScholarship?.name);
+  addCapitalizedTerms(user?.activeScholarship?.organization);
+  addCapitalizedTerms(user?.activeScholarship?.country);
+  addCapitalizedTerms(user?.activeScholarship?.locationRequirement);
+  addTrustedFields(user?.highSchool);
+  addTrustedFields(user?.undergrad);
+  addTrustedFields(user?.graduate);
+  addTrustedFields(user?.educationHistory);
+  addTrustedFields(user?.researchExperience);
+  addTrustedFields(user?.workExperience);
+  addTrustedFields(user?.optional);
+  return [...terms].filter(Boolean).slice(0, 500);
+}
+
+export function buildEditorCheckPayload(
+  user: UserProfile | null,
+  essayDraft = user?.essayDraft ?? "",
+  draftRevision = "",
+): EditorCheckPayload {
+  return {
+    essay_draft: essayDraft,
+    user_notes: user?.activeScholarship?.additionalNotes || "",
+    protected_terms: protectedTermsForFixes(user),
+    draft_revision: draftRevision,
+  };
+}
+
+export async function runEditorCheck(payload: EditorCheckPayload, signal?: AbortSignal): Promise<EditorCheckResult> {
+  const response = await fetch(`${API_BASE}/api/apply/editor-check`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    signal,
+  });
+
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    const detail = data?.detail;
+    throw new Error(typeof detail === "string" ? detail : "Scholar-E editor check failed.");
+  }
+
+  return data as EditorCheckResult;
+}
+
+export async function warmEditorTools(signal?: AbortSignal): Promise<void> {
+  const response = await fetch(`${API_BASE}/api/apply/editor-warmup`, {
+    method: "POST",
+    signal,
+  });
+  if (!response.ok) {
+    throw new Error("Scholar-E editor tools could not be warmed.");
+  }
+}
+
+export async function runContextualGrammarCheck(payload: EditorCheckPayload, signal?: AbortSignal): Promise<EditorCheckResult> {
+  const response = await fetch(`${API_BASE}/api/apply/contextual-grammar`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    signal,
+  });
+
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    const detail = data?.detail;
+    throw new Error(typeof detail === "string" ? detail : "Scholar-E contextual grammar check failed.");
+  }
+
+  return data as EditorCheckResult;
+}
+
+export type OutlineCoverageResult = {
+  status: string;
+  outline_coverage?: { covered_point_ids?: string[] };
+  warnings?: string[];
+};
+
+export type OutlineCoveragePayload = {
+  clean_scholarship_record: ActiveScholarship;
+  essay_draft: string;
+  outline_points: Array<{ id: string; label: string }>;
+};
+
+export function buildOutlineCoveragePayload(user: UserProfile | null, essayDraft = user?.essayDraft ?? ""): OutlineCoveragePayload {
+  return {
+    clean_scholarship_record: scholarshipForEssayWorkflow(user?.activeScholarship ?? {}),
+    essay_draft: essayDraft,
+    outline_points: buildOutlinePoints(user?.personalizedOutline).map((point) => ({ id: point.id, label: point.label })),
+  };
+}
+
+export async function runOutlineCoverageCheck(payload: OutlineCoveragePayload): Promise<OutlineCoverageResult> {
+  const response = await fetch(`${API_BASE}/api/apply/outline-coverage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    const detail = data?.detail;
+    throw new Error(typeof detail === "string" ? detail : "Scholar-E outline coverage check failed.");
+  }
+  return data as OutlineCoverageResult;
+}
+
+export type CoachingSessionPayload = {
+  user_id: string;
+  cv_text: string;
+  essay_text: string;
+  scholarship_name: string;
+  scholarship_type: string;
+  prompt: string;
+  previous_manager_plan?: EssayReviewResult["manager_plan"];
+  previous_review?: EssayReviewResult;
   student_profile: Record<string, unknown>;
   clean_scholarship_record: ActiveScholarship;
   essay_prompt: string;
-  essay_draft: string;
-  personalized_outline: Record<string, unknown>;
-  user_notes: string;
   word_limit: string;
   outline_points: Array<{ id: string; label: string }>;
-  mode: EssayCoachMode;
-  writing_support_level?: WritingSupportLevel;
 };
 
-export type GuardrailAudit = {
-  approved?: boolean;
-  issues_found?: string[];
-  removed_or_revised_suggestions?: string[];
-  final_notes?: string[];
+export type CoachingSessionResult = {
+  session_id?: string;
+  draft_hash?: string;
+  status:
+    | "success"
+    | "scoring_success_coaching_partial"
+    | "partial"
+    | "error"
+    | "insufficient_to_assess"
+    | "evaluation_unavailable";
+  review?: EssayReviewResult | null;
+  outline_coverage?: { covered_point_ids?: string[] };
+  agents?: Record<string, string>;
+  warnings?: string[];
+  duration_ms?: number;
 };
 
-export type FinalCheck = {
-  ready_for_final_review?: boolean;
-  remaining_blockers?: string[];
-  final_polish_notes?: string[];
-  submission_warning?: string;
-};
-
-export function buildEssayCoachPayload(user: UserProfile | null, mode: EssayCoachMode = "full", writingSupportLevel?: WritingSupportLevel): EssayCoachPayload {
+/** Build the single request used by the Essay Workspace's one-button session. */
+export function buildCoachingSessionPayload(
+  user: UserProfile | null,
+  essayPromptOverride?: string,
+): CoachingSessionPayload {
   const scholarship = user?.activeScholarship ?? {};
-  const essayPrompt = scholarship.essayPrompts || scholarship.otherRequiredMaterials || scholarship.requirementsPreview || "";
-  const { lastAnalysis, fitAnalysis, wikiDiscovery, savedWikiSources, activeScholarship, personalizedOutline, drafts, ...studentProfile } =
-    user ?? { name: "", email: "" };
-  void lastAnalysis;
+  const workflowScholarship = scholarshipForEssayWorkflow(scholarship);
+  const selectedEntry = promptEntryFor(scholarship, essayPromptOverride);
+  const essayPrompt = (essayPromptOverride
+    || selectedEntry?.promptText
+    || (!hasEssayPromptDecision(scholarship) ? scholarship.essayPrompts : "")
+    || (!hasEssayPromptDecision(scholarship) ? scholarship.otherRequiredMaterials : "")
+    || (!hasEssayPromptDecision(scholarship) ? scholarship.requirementsPreview : "")
+    || "").trim();
+  const {
+    fitAnalysis,
+    wikiDiscovery,
+    savedWikiSources,
+    activeScholarship,
+    personalizedOutline,
+    drafts,
+    essayReviewResult,
+    essayReviewUpdatedAt,
+    essayReviewDraftAtRun,
+    essayReviewPromptAtRun,
+    essayReviewProfileFingerprintAtRun,
+    ...studentProfile
+  } = user ?? { name: "", email: "" };
   void fitAnalysis;
   void wikiDiscovery;
   void savedWikiSources;
   void activeScholarship;
   void personalizedOutline;
   void drafts;
+  void essayReviewResult;
+  void essayReviewUpdatedAt;
+  void essayReviewDraftAtRun;
+  void essayReviewPromptAtRun;
+  void essayReviewProfileFingerprintAtRun;
+  const prompt = buildOpportunityPrompt(user, essayPromptOverride)
+    || "No formal essay prompt was provided; evaluate against the scholarship context.";
 
   return {
+    user_id: user?.email ?? "",
+    cv_text: profileToText(user).slice(0, 50_000),
+    essay_text: (user?.essayDraft ?? "").slice(0, 20_000),
+    scholarship_name: (scholarship.name ?? "").slice(0, 500),
+    scholarship_type: (scholarship.type ?? "").slice(0, 200),
+    prompt,
+    previous_manager_plan: user?.essayReviewResult?.manager_plan,
+    previous_review: user?.essayReviewResult?.schema_version === 5
+      ? user.essayReviewResult
+      : undefined,
     student_profile: { ...studentProfile, profile_text: profileToText(user) },
-    clean_scholarship_record: scholarship,
+    clean_scholarship_record: workflowScholarship,
     essay_prompt: essayPrompt,
-    essay_draft: user?.essayDraft ?? "",
-    personalized_outline: (user?.personalizedOutline as Record<string, unknown>) ?? {},
-    user_notes: scholarship.additionalNotes || "",
-    word_limit: findWordLimit([essayPrompt, scholarship.otherRequiredMaterials, scholarship.requirementsPreview].filter(Boolean).join("\n")),
+    word_limit: resolveWorkflowWordLimit(scholarship, selectedEntry, essayPrompt),
     outline_points: buildOutlinePoints(user?.personalizedOutline).map((p) => ({ id: p.id, label: p.label })),
-    mode,
-    ...(writingSupportLevel ? { writing_support_level: writingSupportLevel } : {}),
   };
 }
 
-export async function runEssayCoach(payload: EssayCoachPayload): Promise<EssayCoachResult> {
-  const response = await fetch(`${API_BASE}/api/apply/essay-coach`, {
+export async function runWorkspaceCoachingSession(
+  payload: CoachingSessionPayload,
+): Promise<CoachingSessionResult> {
+  const response = await fetch(`${API_BASE}/api/apply/coaching-session`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -461,45 +823,32 @@ export async function runEssayCoach(payload: EssayCoachPayload): Promise<EssayCo
 
   const data = await response.json().catch(() => null);
   if (!response.ok) {
-    const detail = data?.detail;
-    throw new Error(typeof detail === "string" ? detail : "Scholar-E essay coach failed.");
+    void data;
+    throw new Error(
+      response.status === 422
+        ? "Essay Review could not start because some information is incomplete. Check the prompt and draft, then try again."
+        : "Essay Review is unavailable right now. Your draft is safe; please try again.",
+    );
   }
 
-  return data as EssayCoachResult;
+  return data as CoachingSessionResult;
 }
 
-export type OutlinePointGroup = "core" | "strategy" | "structure" | "keypoints";
-export type OutlinePoint = { id: string; label: string; detail?: string; group: OutlinePointGroup };
+export type OutlinePoint = { id: string; label: string; detail?: string };
 
 /**
- * Deterministic flat list of checkable outline points ({id,label,group}). Single
- * source of truth for point ids — used by the outline panel (render + progress),
- * the coach payload (sent to the coverage agent), and coverage mapping.
+ * Deterministic flat list of checkable essay-section points ({id,label}).
+ * Single source of truth for point ids used by the coach payload and coverage
+ * mapping. Global tone guidance is advice, not a checkable coverage point.
  */
 export function buildOutlinePoints(outline?: PersonalizedOutlineResult): OutlinePoint[] {
   const data = outline?.outline;
   if (!data) return [];
-  const points: OutlinePoint[] = [
-    { id: "p-core", label: data.outline_title || "Core message", detail: data.thesis_or_core_message, group: "core" },
-  ];
-  if (outline?.strategy?.recommended_strategy) points.push({ id: "p-strat", label: outline.strategy.recommended_strategy, group: "strategy" });
-  if (outline?.strategy?.central_message) points.push({ id: "p-central", label: outline.strategy.central_message, group: "strategy" });
-  if (outline?.strategy?.tone_guidance) points.push({ id: "p-tone", label: `Tone: ${outline.strategy.tone_guidance}`, group: "strategy" });
   const sections = data.sections ?? [];
-  sections.forEach((s, i) => points.push({ id: `p-sec-${i}`, label: s.section_name || `Section ${i + 1}`, group: "structure" }));
-  let keyPoints: OutlinePoint[] = (outline?.coverage_check ?? []).map((c, i) => ({
-    id: `p-kp-${i}`,
-    label: c.requirement || `Requirement ${i + 1}`,
-    detail: c.where_covered || c.notes || undefined,
-    group: "keypoints",
+  return sections.map((section, index) => ({
+    id: `p-sec-${index}`,
+    label: section.section_name || `Section ${index + 1}`,
   }));
-  if (!keyPoints.length) keyPoints = (data.questions_for_student ?? []).map((q, i) => ({ id: `p-q-${i}`, label: q, group: "keypoints" }));
-  if (!keyPoints.length) {
-    const reqs = Array.from(new Set(sections.flatMap((s) => s.scholarship_requirement_addressed ?? [])));
-    keyPoints = reqs.map((r, i) => ({ id: `p-req-${i}`, label: r, group: "keypoints" }));
-  }
-  points.push(...keyPoints);
-  return points;
 }
 
 export type SelectionRewritePayload = {
@@ -518,12 +867,19 @@ export function buildRewritePayload(
   action: string,
   selectedText: string,
   surroundingText: string,
+  essayPromptOverride?: string,
 ): SelectionRewritePayload {
   const scholarship = user?.activeScholarship ?? {};
-  const essayPrompt = scholarship.essayPrompts || scholarship.otherRequiredMaterials || scholarship.requirementsPreview || "";
-  const { lastAnalysis, fitAnalysis, wikiDiscovery, savedWikiSources, activeScholarship, personalizedOutline, drafts, ...studentProfile } =
+  const workflowScholarship = scholarshipForEssayWorkflow(scholarship);
+  const selectedEntry = promptEntryFor(scholarship, essayPromptOverride);
+  const essayPrompt = essayPromptOverride
+    || selectedEntry?.promptText
+    || (!hasEssayPromptDecision(scholarship) ? scholarship.essayPrompts : "")
+    || (!hasEssayPromptDecision(scholarship) ? scholarship.otherRequiredMaterials : "")
+    || (!hasEssayPromptDecision(scholarship) ? scholarship.requirementsPreview : "")
+    || "";
+  const { fitAnalysis, wikiDiscovery, savedWikiSources, activeScholarship, personalizedOutline, drafts, ...studentProfile } =
     user ?? { name: "", email: "" };
-  void lastAnalysis;
   void fitAnalysis;
   void wikiDiscovery;
   void savedWikiSources;
@@ -535,7 +891,7 @@ export function buildRewritePayload(
     selected_text: selectedText,
     surrounding_text: surroundingText,
     essay_prompt: essayPrompt,
-    clean_scholarship_record: scholarship,
+    clean_scholarship_record: workflowScholarship,
     student_profile: { ...studentProfile, profile_text: profileToText(user) },
   };
 }
@@ -552,6 +908,203 @@ export async function runSelectionRewrite(payload: SelectionRewritePayload): Pro
     throw new Error(typeof detail === "string" ? detail : "Rewrite failed.");
   }
   return data as SelectionRewriteResult;
+}
+
+export type RevisionCoachPayload = {
+  priority: EssayRevisionPriority;
+  essay_text: string;
+  target_start: number;
+  target_end: number;
+  draft_revision: string;
+  essay_prompt: string;
+  clean_scholarship_record: ActiveScholarship;
+  student_profile: Record<string, unknown>;
+  current_word_count: number;
+  word_limit?: number;
+};
+
+export type RevisionCoachSelectedFact = {
+  fact_id: string;
+  category?: string;
+  field?: string;
+  fact?: string;
+  value?: string;
+  source?: string;
+  confirmation_status?: string;
+  sensitivity?: "standard" | "sensitive" | string;
+  relevance?: string;
+};
+
+export type RevisionCoachResult = {
+  status: "success" | "error";
+  version?: string;
+  assistance_type?: "edit" | "advice" | string;
+  mode?: "exact_edit" | "evidence_grounded_edit" | "structural_guidance" | string;
+  edit_action?: "replace" | "insert_before" | "insert_after" | string;
+  scope?: "sentence_group" | "paragraph" | string;
+  development_goal?: string;
+  original_text?: string;
+  suggested_text?: string;
+  reason?: string;
+  selected_profile_facts?: RevisionCoachSelectedFact[];
+  evidence_sources?: Array<{
+    source: "essay" | "profile" | "scholarship" | string;
+    label?: string;
+    detail?: string;
+    sensitivity?: string;
+  }>;
+  can_apply?: boolean;
+  advice?: string;
+  placement?: string;
+  evidence_needed?: string;
+  target_length?: string;
+  completion_condition?: string;
+  word_delta?: number;
+  projected_word_count?: number;
+  word_limit?: number | null;
+  target?: { start: number; end: number };
+  draft_revision?: string;
+  profile_inventory_hash?: string;
+  guardrail?: { approved?: boolean; issues?: string[] };
+  message?: string;
+  issues?: string[];
+};
+
+export const REVISION_COACH_VERSION = "revision-coach-v2.0-generalized";
+
+const REVISION_INSTRUCTION_PATTERN =
+  /^\s*(add|insert|write|replace|revise|develop|clarify|describe|explain|include|use)\b|two[- ]to[- ]four[- ]sentence|one real example|your own real detail|this passage|this paragraph|placeholder|replace this with|the student should/i;
+
+export function revisionCoachResultIssue(
+  result: RevisionCoachResult,
+): string | null {
+  if (result.status !== "success") {
+    return result.message || "The coaching suggestion could not be completed. Please try again.";
+  }
+  if (result.version !== REVISION_COACH_VERSION) {
+    return "This suggestion is out of date. Create a new suggestion for the current draft.";
+  }
+  if (result.assistance_type === "advice") {
+    return result.advice?.trim()
+      ? null
+      : "The coaching advice could not be completed. Please try again.";
+  }
+  if (
+    result.can_apply !== true
+    || !result.suggested_text?.trim()
+    || !result.target
+  ) {
+    return "The complete edit could not be prepared. Please try again.";
+  }
+  if (
+    /\[[^\]]+\]/.test(result.suggested_text)
+    || result.suggested_text.includes("?")
+    || REVISION_INSTRUCTION_PATTERN.test(result.suggested_text)
+  ) {
+    return "The edit needs to be prepared again before it can be added to your essay.";
+  }
+  return null;
+}
+
+function revisionCoachProfile(user: UserProfile | null): Record<string, unknown> {
+  if (!user) return {};
+  const {
+    id,
+    email,
+    activeScholarship,
+    applications,
+    documents,
+    drafts,
+    essayDraft,
+    essayDraftHtml,
+    essayDraftsByPromptId,
+    essayDraftHtmlByPromptId,
+    essayFixesByPromptId,
+    ignoredEssayFixesByPromptId,
+    essayReviewResult,
+    essayReviewUpdatedAt,
+    essayReviewDraftAtRun,
+    essayReviewPromptAtRun,
+    essayReviewProfileFingerprintAtRun,
+    fitAnalysis,
+    wikiDiscovery,
+    savedWikiSources,
+    personalizedOutline,
+    personalDictionary,
+    ...profile
+  } = user;
+  void id;
+  void email;
+  void activeScholarship;
+  void applications;
+  void documents;
+  void drafts;
+  void essayDraft;
+  void essayDraftHtml;
+  void essayDraftsByPromptId;
+  void essayDraftHtmlByPromptId;
+  void essayFixesByPromptId;
+  void ignoredEssayFixesByPromptId;
+  void essayReviewResult;
+  void essayReviewUpdatedAt;
+  void essayReviewDraftAtRun;
+  void essayReviewPromptAtRun;
+  void essayReviewProfileFingerprintAtRun;
+  void fitAnalysis;
+  void wikiDiscovery;
+  void savedWikiSources;
+  void personalizedOutline;
+  void personalDictionary;
+  return profile;
+}
+
+export function buildRevisionCoachPayload(
+  user: UserProfile | null,
+  priority: EssayRevisionPriority,
+  essayText: string,
+  target: { start: number; end: number },
+  draftRevision: string,
+  essayPromptOverride?: string,
+  wordLimit?: number | null,
+): RevisionCoachPayload {
+  const scholarship = user?.activeScholarship ?? {};
+  const selectedEntry = promptEntryFor(scholarship, essayPromptOverride);
+  const essayPrompt = essayPromptOverride
+    || selectedEntry?.promptText
+    || (!hasEssayPromptDecision(scholarship) ? scholarship.essayPrompts : "")
+    || (!hasEssayPromptDecision(scholarship) ? scholarship.otherRequiredMaterials : "")
+    || (!hasEssayPromptDecision(scholarship) ? scholarship.requirementsPreview : "")
+    || "";
+  return {
+    priority,
+    essay_text: essayText,
+    target_start: target.start,
+    target_end: target.end,
+    draft_revision: draftRevision,
+    essay_prompt: essayPrompt,
+    clean_scholarship_record: scholarshipForEssayWorkflow(scholarship),
+    student_profile: revisionCoachProfile(user),
+    current_word_count: essayText.trim()
+      ? essayText.trim().split(/\s+/).filter(Boolean).length
+      : 0,
+    ...(wordLimit && wordLimit > 0 ? { word_limit: wordLimit } : {}),
+  };
+}
+
+export async function runRevisionCoach(
+  payload: RevisionCoachPayload,
+): Promise<RevisionCoachResult> {
+  const response = await fetch(`${API_BASE}/api/apply/revision-coach`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    void data;
+    throw new Error("The coaching suggestion could not be completed. Please try again.");
+  }
+  return data as RevisionCoachResult;
 }
 
 export async function generatePersonalizedOutline(payload: OutlineGeneratePayload): Promise<PersonalizedOutlineResult> {

@@ -1,24 +1,41 @@
 # nodes/coaching/readiness.py
 
 READINESS_DIMENSIONS = [
-    "opportunity_fit",
+    "alignment",
     "evidence_strength",
-    "narrative_quality",
-    "authenticity",
-    "competitiveness",
+    "insight",
+    "narrative_structure_flow_coherence",
+    "tone_authenticity",
+    "clarity_concision",
 ]
 
 READINESS_LABELS = {
-    "opportunity_fit": "Opportunity Fit",
+    "alignment": "Alignment",
     "evidence_strength": "Evidence Strength",
-    "narrative_quality": "Narrative Quality",
-    "authenticity": "Authenticity",
-    "competitiveness": "Competitiveness",
+    "insight": "Insight",
+    "narrative_structure_flow_coherence": "Narrative Structure, Flow & Coherence",
+    "tone_authenticity": "Tone & Authenticity",
+    "clarity_concision": "Clarity & Concision",
     "revision_progress": "Revision Progress",
 }
 
 
-def clamp_score(value, lo=0, hi=100) -> int:
+def _previous_dimension_score(previous: dict, dimension: str) -> int | None:
+    """Read current keys and bridge the former split narrative dimensions."""
+    if dimension in previous:
+        return clamp_score(previous.get(dimension), hi=100)
+    if dimension == "narrative_structure_flow_coherence":
+        legacy = [
+            previous.get(key)
+            for key in ("coherence_continuity", "flow_narrative_arc")
+            if key in previous
+        ]
+        if legacy:
+            return round(sum(clamp_score(value, hi=100) for value in legacy) / len(legacy))
+    return None
+
+
+def clamp_score(value, lo=0, hi=97) -> int:
     try:
         value = int(round(float(value)))
     except (TypeError, ValueError):
@@ -67,11 +84,15 @@ def compute_growth_report(
 
     changes = []
     total_delta = 0
+    comparable_dimensions = 0
     for dim in READINESS_DIMENSIONS:
-        prev_score = clamp_score(previous.get(dim, 0))
-        curr_score = clamp_score(current.get(dim, {}).get("score", 0))
+        prev_score = _previous_dimension_score(previous, dim)
+        if prev_score is None:
+            continue
+        curr_score = clamp_score(current.get(dim, {}).get("score", 0), hi=100)
         delta = curr_score - prev_score
         total_delta += delta
+        comparable_dimensions += 1
         if delta != 0:
             changes.append({
                 "dimension": READINESS_LABELS[dim],
@@ -83,7 +104,7 @@ def compute_growth_report(
                 "delta": delta,
             })
 
-    avg_delta = round(total_delta / max(len(READINESS_DIMENSIONS), 1))
+    avg_delta = round(total_delta / max(comparable_dimensions, 1))
 
     improved = [c for c in changes if c["delta"] > 0]
     declined = [c for c in changes if c["delta"] < 0]

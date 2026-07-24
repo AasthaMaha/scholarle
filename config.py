@@ -13,6 +13,7 @@ class Settings:
     # API Keys
     openai_api_key: str = os.getenv("OPENAI_API_KEY")
     google_api_key: str = os.getenv("GOOGLE_API_KEY", "")
+    tavily_api_key: str = os.getenv("TAVILY_API_KEY", "")
     llm_provider: str = os.getenv("LLM_PROVIDER", "openai")
     secret_key: str = os.getenv("SECRET_KEY", "")
     environment: str = os.getenv("ENVIRONMENT", "development")
@@ -21,5 +22,8 @@ class Settings:
     chroma_persist_directory: str = os.getenv("CHROMA_PERSIST_DIRECTORY", "./chroma_db")
     database_url: str = os.getenv("DATABASE_URL", "sqlite:///scholar_e.db")
     default_user_id: str = os.getenv("DEFAULT_USER_ID", "demo-user")
+    scholarship_pdf_max_bytes: int = int(
+        os.getenv("SCHOLARSHIP_PDF_MAX_BYTES", str(10 * 1024 * 1024))
+    )
 
 settings = Settings()

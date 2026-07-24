@@ -15,7 +15,10 @@ CURRENT_AGENT_DEFINITIONS = [
     {
         "agent_name": "scholarship_discovery_wiki",
         "display_name": "Scholarship Discovery Wiki Agents",
-        "description": "Recommends curated platforms and specific scholarship sources from the saved profile.",
+        "description": (
+            "Four-agent wiki discovery: interpret profile, search+verify+rank grounded "
+            "candidates, normalize Wiki fields, and always run a grounding critic."
+        ),
         "agent_type": "discovery",
         "uses_rag": True,
         "rag_sources": ["scholarship_sources", "global_wiki_memory"],
@@ -49,19 +52,6 @@ CURRENT_AGENT_DEFINITIONS = [
         "display_name": "Essay/Application Coaching Agents",
         "description": "Runs strategy, eligibility, discovery, narrative, reviewer, critic, and package agents.",
         "agent_type": "coaching",
-        "uses_rag": True,
-        "rag_sources": [
-            "user_profile_memory",
-            "user_opportunity_memory",
-            "user_application_memory",
-            "user_feedback_memory",
-        ],
-    },
-    {
-        "agent_name": "essay_alignment_matrix",
-        "display_name": "Essay Alignment Matrix Agent",
-        "description": "Checks whether the current essay draft answers the prompt, stated themes, criteria, and length guidance.",
-        "agent_type": "analysis",
         "uses_rag": True,
         "rag_sources": [
             "user_profile_memory",

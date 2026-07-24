@@ -1,15 +1,20 @@
 ## Setup
 
-1. Create / activate your environment, then install dependencies:
+1. Install Python 3.10+, Node 20+, and Java 17+.
+
+2. Create / activate your environment, then install dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-2. Add a `.env` file at the project root.
-3. ``` conda activate <your_virtual_enviroment>```
-4. ``` cd ./frontend-react ```
-5. ``` npm run dev ```
+   The first backend start downloads and warms the local LanguageTool runtime;
+   later spelling and grammar checks reuse that process.
+
+3. Add a `.env` file at the project root.
+4. ``` conda activate <your_virtual_enviroment>```
+5. ``` cd ./frontend-react ```
+6. ``` npm run dev ```
 
 
 
@@ -101,9 +106,12 @@ POST /api/profile/autofill-resume
 POST /api/opportunity/extract
 POST /api/fit/analyze
 POST /api/apply/generate-outline
-POST /api/apply/essay-coach
+POST /api/apply/coaching-session
+POST /api/apply/editor-warmup
+POST /api/apply/editor-check
+POST /api/apply/contextual-grammar
+POST /api/apply/outline-coverage
 POST /api/apply/rewrite-selection
-POST /api/analyze
 ```
 
 `server.py` is intentionally thin. Most validation, request shaping, and
@@ -403,26 +411,27 @@ The payload includes:
 
 The backend returns:
 
-- outline title
-- core message
 - sections
 - suggested content
 - profile evidence to use
-- scholarship requirements addressed
+- prompt or scholarship-focus questions addressed
+- section guidance that explains the intended effect on the reader
 - coaching notes
-- opening and conclusion guidance
-- questions for the student
 - warnings
 
 The essay prompt is used internally for generation but is not displayed in the
 personalized outline output.
 
+For a formal essay prompt, the outline keeps each distinct prompt ask in its
+original order and assigns it to its own section. Section titles are short
+descriptive phrases; the purple requirement labels are concise questions.
+
 ---
 
-## 9. Essay Workspace Coach
+## 9. Essay Workspace Evaluation
 
-The Essay Workspace Coach is the interactive writing coach used while the
-student is drafting.
+The Essay Workspace uses one primary evaluation path while the student is
+drafting.
 
 Frontend:
 
@@ -432,88 +441,96 @@ frontend-react/src/lib/api/scholarE.ts
 frontend-react/src/lib/suggestions.ts
 ```
 
-Frontend function:
+Primary frontend function:
 
 ```ts
-runEssayCoach(buildEssayCoachPayload(user, mode))
+runWorkspaceCoachingSession(buildCoachingSessionPayload(user, essayPrompt))
 ```
 
-Backend endpoint:
+Primary backend endpoint:
 
 ```text
-POST /api/apply/essay-coach
+POST /api/apply/coaching-session
 ```
 
 Backend route function:
 
 ```python
-run_essay_coach(...)
+run_workspace_coaching_session(...)
 ```
 
 Backend service:
 
 ```text
-essay_coaching_service.py
+unified_coaching_service.py
 ```
 
 Main service function:
 
 ```python
-run_essay_workspace_coach(...)
+run_unified_coaching_session(...)
 ```
 
-This coach supports modes:
-
-```text
-full
-grammar_tone
-prompt_alignment
-structure
-reviewer
-final_check
-auto_check
-```
-
-It can run these specialists:
-
-- Sentence Corrector
-- Prompt Alignment Coach
-- Profile Grounding Coach
-- Structure & Flow Coach
-- Specificity Coach
-- Tone & Authenticity Coach
-- Reviewer Simulation
-- Outline Coverage
-- Guardrail Critic
-- Final Check
-- Combiner
-
-The UI displays:
-
-- sentence-level suggestions
-- coach summary
-- warnings
-- top revision priorities
-- quick fixes
-- deeper revision tasks
-- scores
-- prompt alignment
-- profile grounding
-- structure and flow feedback
-- specificity and impact feedback
-- tone and authenticity feedback
-- reviewer simulation
-- final check status
-
-This system is designed for live writing and revision inside the essay
-workspace.
+The full review returns the schema-v4 Essay Review only: one weighted overall
+score, six criterion packages, Manager plan, QA/Guardrail audit, optional
+outline coverage, agent statuses, and warnings.
 
 ---
 
-## 10. Sentence Suggestions
+## 10. Background Editor Check
 
-Sentence suggestions are returned by the Essay Workspace Coach as text anchors,
-not raw character offsets.
+Background editor support is intentionally narrow. After the student pauses
+typing, the changed paragraph is checked through:
+
+```text
+POST /api/apply/editor-check
+```
+
+The backend starts LanguageTool asynchronously as soon as the API launches, so
+other endpoints become available immediately. Entering the Journey also sends
+an idempotent early warm-up request:
+
+```text
+POST /api/apply/editor-warmup
+```
+
+If a check arrives during the one-time warm-up, the frontend quietly retries
+while keeping the editor usable and its immediate browser mechanics active.
+
+This endpoint runs the reusable local LanguageTool service as a candidate
+generator for spelling, grammar, and punctuation. It never calls
+`LanguageTool.correct(...)` and never mutates the draft. It returns exact text
+offsets, and every change requires the student's individual approval. Profile
+terms plus the student's personal dictionary are protected.
+
+The slower meaning-dependent pass is separate so it cannot delay LanguageTool:
+
+```text
+POST /api/apply/contextual-grammar
+```
+
+The contextual endpoint routes work by risk. Incremental checks containing only
+high-confidence C0 spelling findings use no model calls. Ordinary ambiguous
+grammar receives one structured adjudication pass. A second verifier runs only
+when the first pass proposes a LanguageTool-independent correction, leaves an
+uncertain candidate, touches names/numbers/protected terms, makes a substantial
+edit, or diagnoses an issue without an actionable anchor. Each segment is capped
+at two model calls.
+
+The frontend merges the two result streams. Validated contextual findings replace
+overlapping provisional LanguageTool grammar, while unaffected underlines remain
+visible as the changed paragraph is rechecked. Neither endpoint runs the
+six-criterion evaluation.
+
+Conditional outline coverage is kept separate:
+
+```text
+POST /api/apply/outline-coverage
+```
+
+Sentence suggestions include their text anchors and character offsets for the
+checked draft revision. The frontend discards a response if the text has changed
+before that response arrives.
 
 Backend returns each suggestion with:
 
@@ -523,6 +540,12 @@ suggested_text
 suggestion_type
 reason
 severity
+risk_tier
+source
+confidence
+replacement_available
+start_offset
+end_offset
 ```
 
 Frontend anchoring happens in:
@@ -552,7 +575,7 @@ the tone of selected text.
 Frontend function:
 
 ```ts
-rewriteSelection(...)
+runSelectionRewrite(buildRewritePayload(...))
 ```
 
 Backend endpoint:
@@ -576,154 +599,114 @@ run_selection_rewrite(...)
 Location:
 
 ```text
-essay_coaching_service.py
+essay_editor_service.py
 ```
 
-This rewrite path only works on selected text. It has guardrails to avoid large,
-fabricated expansions.
+This rewrite path only works on explicitly selected text. It has guardrails to
+avoid large, fabricated expansions and returns structured output. The editor
+shows the original and suggested passages side by side; the rewrite is applied
+only after the student presses **Accept**, and can be discarded with **Reject**.
 
 ---
 
-## 12. Deep Application Coach
+## 12. Unified Coaching Session and Targeted Tools
 
-The Deep Application Coach is the larger application-evaluation graph.
-
-It is separate from the Essay Workspace Coach.
-
-Frontend trigger:
+The Essay Workspace's primary **Evaluate** button runs one merged
+agent graph through:
 
 ```text
-frontend-react/src/components/CoachRunButton.tsx
+POST /api/apply/coaching-session
 ```
 
-Frontend function:
+The endpoint evaluates the submitted draft exactly as written, then runs one
+Manager-first review. Grammar corrections remain optional fixes. The Manager sees the scholarship and essay
+prompt—but not the student's draft—and creates a tailored rubric plus six
+criterion weights totaling 100. The rubric and weights are then supplied to
+these parallel criterion-review lanes:
 
-```ts
-analyzeApplication(...)
-```
+The Manager plan carries a scholarship/prompt fingerprint. Revised drafts reuse
+the locked plan; changing the scholarship, prompt, writing brief, or word limit
+regenerates it.
 
-Backend endpoint:
+- **Content:** Alignment (Prompt + Scholarship Values) Coach, Evidence Strength
+  Coach, and Insight (Depth + Meaning + Reflection) Coach.
+- **Structure:** Narrative Structure, Flow & Coherence Coach.
+- **Voice:** Tone & Authenticity Coach and Clarity & Concision Coach.
+- **Conditional:** Outline Coverage Coach.
+
+Eligibility is intentionally handled
+by the earlier Fit Assessment page and is not recalculated by Essay Workspace.
+Alignment replaces the former Prompt
+Alignment and Opportunity Strategy calls; it checks every prompt part and the
+essay's evidence-backed connection to the scholarship's stated values and
+priorities. Evidence Strength is one model call that replaces the
+former Profile Grounding, Specificity, and Experience Discovery calls; it checks
+claim support, usable profile experiences, concrete detail, and measurable
+impact together. Narrative Structure, Flow & Coherence is one model call that
+replaces the former Structure & Flow and Narrative calls; it checks paragraph
+organization, transitions, context-to-takeaway progression, logical continuity,
+timeline consistency, contradictions, and missing reasoning. The Insight (Depth
++ Meaning + Reflection) Coach is a separate model call that owns reflection depth, lessons,
+realizations, changes in mindset or behavior, personal/community significance,
+and future direction. Narrative Structure only judges whether reflection is
+present, positioned effectively, and logically connected.
+
+Each of the six criterion agents is one Scholarship Coach that speaks from an
+experienced scholarship reviewer's perspective. Inside one model call, it first
+completes a detailed, criterion-specific structured audit. It then selects the
+strongest grounded positive finding and the single most consequential gap,
+assigns the tailored-rubric score, and gives exactly one specific revision action
+that directly fixes that gap. Evidence Strength compares the full relevant
+profile with the draft, identifies the strongest prompt-relevant experience and
+whether the essay uses it well, and surfaces an omitted experience only when that
+omission is the most consequential evidence gap. The private audits are available
+to backend quality control but are stripped from the public API response. The
+student sees concise feedback with evidence woven into its praise and gap, not a
+separate evidence inventory. There is no separate Specialist Assessment,
+Evaluator, or Reviewer Simulation agent in the Page 4 session. The six lanes
+run in parallel; conditional Outline Coverage may run beside them but is not scored.
+
+After the criterion wave, QA Critic and Guardrail Critic run in parallel. QA
+checks the evidence → private audit → coach feedback → score → action chain.
+Guardrail checks that all six actions trace back to their audits and submission
+context and do not invent facts, replace the student's voice, make unsafe
+assumptions, or give vague instructions. Only failed criteria receive one bounded
+repair attempt. Python validates the complete audit and visible fields, then
+calculates the sole overall score as the Manager-weighted average; an LLM never
+estimates that aggregate.
+
+The Page 4 endpoint has one canonical schema-v4 review contract. It returns the
+overall score, six criterion packages, Manager plan, and quality audit, plus
+optional outline coverage, agent statuses, and warnings.
+It does not return the former `evaluation`, `coach_pack`, or `components`
+compatibility envelopes.
+
+Page 4 displays the overall score and all six criterion packages together in
+one **Essay Review** tab. The former separate Evaluation tab is removed. Each
+criterion card shows its score, weight, unified Essay Coach feedback, and
+one aligned how-to-fix action. Outline and editor Fixes remain
+separate tools because they are not duplicate evaluation outputs.
+
+Primary implementation:
 
 ```text
-POST /api/analyze
+unified_coaching_service.py
+nodes/coaching/criterion_review.py
 ```
 
-Backend function:
-
-```python
-analyze_application(...)
-```
-
-Location:
+The only supporting Page 4 endpoints are:
 
 ```text
-api/routes.py
+POST /api/apply/editor-check
+POST /api/apply/outline-coverage
+POST /api/apply/rewrite-selection
 ```
 
-The backend invokes:
+`editor-check` is background-only spelling and contextual grammar. It does not
+evaluate the essay. `outline-coverage` updates outline checkmarks independently,
+and `rewrite-selection` only transforms selected text.
 
-```text
-graph/builder.py
-```
-
-That graph runs:
-
-- analyzer
-- retriever
-- strategy coach
-- eligibility matrix coach
-- discovery coach
-- narrative coach
-- section coach
-- reviewer simulation
-- combiner
-- critic
-- essay alignment matrix
-- final package assembler
-
-Important files:
-
-```text
-nodes/coaching/agents.py
-nodes/coach_sections.py
-nodes/combine.py
-nodes/critic.py
-nodes/assemble_package.py
-```
-
-The response includes:
-
-- readiness index
-- coaching brief
-- growth report
-- reviewer comments
-- coaching reports
-- eligibility matrix
-- essay alignment matrix
-- section-by-section coaching
-- final application package
-- revision priorities
-
-This system is designed for full application evaluation, not live editing.
-
----
-
-## 13. Two Coaching Systems
-
-Scholar-E currently has two coaching systems.
-
-### Essay Workspace Coach
-
-```text
-POST /api/apply/essay-coach
-essay_coaching_service.py
-```
-
-Purpose:
-
-```text
-How do I improve this draft right now?
-```
-
-Used for:
-
-- sentence fixes
-- prompt alignment
-- grounding checks
-- structure feedback
-- tone feedback
-- reviewer-style feedback
-- final check
-- live editing support
-
-### Deep Application Coach
-
-```text
-POST /api/analyze
-graph/builder.py
-```
-
-Purpose:
-
-```text
-How strong is my full application for this scholarship?
-```
-
-Used for:
-
-- readiness scoring
-- full coaching brief
-- eligibility matrix
-- essay alignment matrix
-- reviewer simulation
-- final application package
-
-In short:
-
-```text
-Essay Workspace Coach = live writing coach inside the editor
-Deep Application Coach = full application review board
-```
+The retired analyze and essay-coach routes are removed.
 
 ---
 
@@ -773,7 +756,6 @@ Frontend:
 frontend-react/src/routes/journey.tsx
 frontend-react/src/lib/api/scholarE.ts
 frontend-react/src/lib/suggestions.ts
-frontend-react/src/components/CoachRunButton.tsx
 frontend-react/vite.config.ts
 ```
 
@@ -784,10 +766,12 @@ server.py
 api/routes.py
 ```
 
-Essay workspace coach:
+Essay workspace evaluation:
 
 ```text
-essay_coaching_service.py
+unified_coaching_service.py
+essay_editor_service.py
+essay_context.py
 templates/essay_coach.py
 ```
 
@@ -806,7 +790,6 @@ Nodes:
 nodes/profile_extraction.py
 nodes/opportunity_extraction.py
 nodes/coaching/agents.py
-nodes/coach_sections.py
 nodes/combine.py
 nodes/critic.py
 nodes/assemble_package.py
@@ -827,7 +810,7 @@ persistence/vector_service.py
 
 Scholar-E uses several agent groups. Some are registered in the persistence
 registry, some are LangGraph nodes, and some are specialist functions inside the
-Essay Workspace Coach.
+Essay Workspace Evaluation.
 
 ### Registered Agents
 
@@ -845,7 +828,6 @@ persistence/agent_registry.py
 | `scholarship_information_cleaner` | cleaning | Normalizes extracted scholarship information for editable UI display. |
 | `scholarship_fit_analysis` | analysis | Compares the student profile against the cleaned scholarship record. |
 | `essay_application_coaching` | coaching | Runs the deep application coaching graph. |
-| `essay_alignment_matrix` | analysis | Checks whether the essay answers the prompt, themes, criteria, and length guidance. |
 
 ### Profile Agents
 
@@ -943,14 +925,12 @@ generate_personalized_outline(...)
 
 This is not a LangGraph node, but it is an LLM agent-style flow. It creates:
 
-- thesis/core message
 - essay sections
 - suggested content
 - profile evidence to use
-- requirements addressed
+- prompt or scholarship-focus questions addressed
+- section guidance that combines a writing action with its intended effect on the reader
 - coaching notes
-- opening/conclusion guidance
-- questions for the student
 
 Used by:
 
@@ -958,115 +938,77 @@ Used by:
 POST /api/apply/generate-outline
 ```
 
-### Essay Workspace Coach Agents
+### Essay Workspace Evaluation Agents
 
 File:
 
 ```text
-essay_coaching_service.py
+unified_coaching_service.py
+nodes/coaching/criterion_review.py
 ```
 
 Main coordinator:
 
 ```python
-run_essay_workspace_coach(...)
+run_unified_coaching_session(...)
 ```
 
-| Specialist | Function |
+| Stage | Agent | Function |
+| --- | --- | --- |
+| Serial setup | Manager Agent | Assigns six scholarship/prompt-specific weights totaling 100 and creates the locked tailored rubric without seeing the draft. |
+| Content | Alignment (Prompt + Scholarship Values) Coach | Combines full prompt coverage with evidence-backed fit to the scholarship's stated values, selection priorities, and opportunity-specific goals. |
+| Content | Evidence Strength Coach | Combines profile grounding, experience discovery, specificity, and impact; flags unsupported or unverifiable details and surfaces stronger real profile evidence. |
+| Content | Insight (Depth + Meaning + Reflection) Coach | Evaluates reflection depth, lessons and realizations, personal change, significance to self or others, and grounded connections to future direction. |
+| Structure | Narrative Structure, Flow & Coherence Coach | Combines paragraph organization, transitions, narrative arc, logical continuity, timeline consistency, contradictions, and missing reasoning. |
+| Voice | Tone & Authenticity Coach | Protects the student's voice; evaluates sincerity, thoughtfulness, confidence, respect, and genuinely student-written language; flags generic, overly polished, corporate, formulaic, performative, and AI-like phrasing. |
+| Voice | Clarity & Concision Coach | Evaluates whether sentences are understandable, direct, and free of filler, repetition, wordiness, unclear phrasing, and tangled construction. |
+| Every criterion lane | Scholarship Coach role | Combines criterion expertise with the scholarship reviewer's perspective, giving grounded praise, one main gap, a score, and one directly aligned action. |
+| Conditional | Outline Coverage Coach | Checks which personalized outline points are covered by the draft. |
+| Parallel quality control | QA Critic | Audits evidence grounding, unified coach feedback, rubric score, and action consistency across all six criteria. |
+| Parallel quality control | Guardrail Critic | Rejects criterion actions that invent facts, replace the student's voice, make unsafe assumptions, or lack specific instructions. |
+| Deterministic finalizer | Backend code | Validates all fields and calculates one weighted overall score from the Manager's weights. |
+
+Used by:
+
+```text
+POST /api/apply/coaching-session
+```
+
+### Targeted Editor Tools
+
+File:
+
+```text
+essay_editor_service.py
+```
+
+| Tool | Function |
 | --- | --- |
-| Sentence Corrector | Produces sentence-level clarity, grammar, flow, concision, and word choice suggestions. |
-| Prompt Alignment Coach | Checks whether the essay answers the scholarship prompt and requirements. |
-| Profile Grounding Coach | Checks whether claims are supported by the student profile. |
-| Structure & Flow Coach | Reviews paragraph order, flow, transitions, and structure. |
-| Specificity Coach | Finds vague claims and places to add concrete detail or impact. |
-| Tone & Authenticity Coach | Checks voice, authenticity, generic phrasing, and AI-like language. |
-| Reviewer Simulation | Simulates likely reviewer reaction, strengths, concerns, and questions. |
-| Outline Coverage Agent | Checks which personalized outline points are covered by the draft. |
-| Guardrail Critic | Removes unsafe sentence suggestions that risk adding unsupported claims. |
-| Final Check Agent | Checks whether the essay is ready for final review or submission. |
-| Revision Combiner | Synthesizes specialist outputs into priorities, quick fixes, deeper tasks, and summary. |
+| LanguageTool editor check | Returns individually reviewable spelling, grammar, and punctuation suggestions with exact offsets. |
+| Contextual grammar check | Adds slower, meaning-dependent grammar suggestions without delaying LanguageTool. |
+| Outline coverage check | Updates outline checkmarks independently from sentence Fixes. |
 | Selection Rewrite Agent | Rewrites, shortens, expands, or improves tone for selected text only. |
 
 Used by:
 
 ```text
-POST /api/apply/essay-coach
+POST /api/apply/editor-check
+POST /api/apply/editor-warmup
+POST /api/apply/contextual-grammar
+POST /api/apply/outline-coverage
 POST /api/apply/rewrite-selection
 ```
 
-### Deep Application Coach Graph
+### Retained Essay-Section Templates
 
-File:
-
-```text
-graph/builder.py
-```
-
-Used by:
+These template definitions are retained for possible future reuse but are not
+wired into either coaching graph or any API response:
 
 ```text
-POST /api/analyze
-```
-
-| Agent/node | Function |
-| --- | --- |
-| `insufficient_input` | Short-circuits if profile/draft content is too empty to coach. |
-| `analyze_opportunity` | Extracts opportunity type, requirements, deadlines, and evaluation themes. |
-| `retrieve_profile` | Retrieves relevant profile/application memory from vector storage. |
-| `prepare_context` | Builds shared grounded context for all downstream coaching agents. |
-| `strategy_agent` | Explains what the opportunity actually evaluates. |
-| `eligibility_agent` | Builds requirement-by-requirement eligibility comparison. |
-| `discovery_agent` | Finds useful student strengths from profile evidence. |
-| `narrative_agent` | Reviews essay story structure: beginning, middle, end, reflection. |
-| `coach_sections` | Gives section-by-section coaching using essay templates. |
-| `reviewer_agent` | Simulates reviewer reactions to the draft. |
-| `combine_coaching` | Combines all specialist outputs into readiness index, brief, feedback, and priorities. |
-| `critic_review` | Audits the combined coaching for grounding and hallucinations. |
-| `essay_alignment_matrix` | Checks whether the draft covers the prompt, requirements, criteria, evidence, and word guidance. |
-| `assemble_package` | Builds the final markdown coaching package. |
-
-### Deep Coaching Functions
-
-File:
-
-```text
-nodes/coaching/agents.py
-```
-
-| Function | Agent role |
-| --- | --- |
-| `run_strategy_coach` | Opportunity Strategy Coach |
-| `run_discovery_coach` | Experience Discovery Coach |
-| `run_eligibility_matrix` | Eligibility & Requirements Matrix Coach |
-| `run_narrative_coach` | Narrative Coach |
-| `run_reviewer_simulation_coach` | Reviewer Simulation Coach |
-| `run_combiner` | Combiner Coach |
-| `run_critic_review` | Critic / quality-control agent |
-
-### Section Coach
-
-File:
-
-```text
-nodes/coach_sections.py
-```
-
-Function:
-
-```python
-coach_sections(state)
-```
-
-It runs one batched LLM call over three templates:
-
-- Personal Statement
-- Leadership & Impact
-- Experience & Achievements
-
-It returns:
-
-```python
-section_coaching
+templates/base.py
+templates/personal_statement.py
+templates/leadership_impact.py
+templates/experience_achievements.py
 ```
 
 ### Python-Only Helper Coach
@@ -1086,6 +1028,6 @@ nodes/coaching/readiness.py
 
 - Profile agents build the student profile.
 - Scholarship agents discover, extract, clean, and analyze opportunities.
-- Essay Workspace Coach agents help the student revise live inside the editor.
-- Deep Application Coach agents evaluate the whole application package.
+- Essay Workspace Evaluation agents score the draft with the Manager-led schema-v4 review.
+- Targeted editor tools support grammar checks, outline coverage, and selected-text rewrites.
 - Critic and guardrail agents protect against hallucinated or unsupported coaching.

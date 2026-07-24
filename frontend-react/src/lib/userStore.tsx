@@ -8,10 +8,21 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import type { EssayFixCacheEntry } from "@/lib/fixCache";
 
 export type EducationLevel = "high_school" | "undergrad" | "grad" | "phd";
 
+export type DiscoveryIntent = {
+  id: string;
+  label: string;
+  dimension: "opportunity_type" | "field" | "funding_outcome" | "student_context" | "career_direction";
+  value: string;
+  canonical_values?: string[];
+  derived_from: string[];
+};
+
 export type HighSchoolProfile = {
+  institution?: string;
   currentGrade?: string;
   gradMonth?: string;
   gradYear?: string;
@@ -59,10 +70,16 @@ export type GradProfile = {
 
 export type EducationHistoryEntry = {
   id: string;
+  source?: "onboarding" | "resume" | "manual";
+  isCurrent?: boolean;
   educationLevel?: string;
   institution?: string;
+  institutionId?: string;
+  institutionType?: "high_school" | "postsecondary" | "manual";
+  institutionLocation?: string;
   degreeProgram?: string;
   majorField?: string;
+  majorCipCode?: string;
   department?: string;
   gpa?: string;
   startDate?: string;
@@ -93,6 +110,7 @@ export type WorkExperienceEntry = {
 
 export type OptionalSections = {
   resumeFileName?: string;
+  volunteering?: string;
   societyInvolvement?: string;
   leadership?: string;
   sports?: string;
@@ -110,15 +128,37 @@ export type EssayDraft = {
   id: string;
   version: number;
   content: string;
+  contentHtml?: string;
+  promptId?: string;
   wordCount: number;
-  score?: number;
   savedAt: string;
-  // Per-version evaluation snapshots (progress tracking).
-  coachScores?: Record<string, number>;
-  coachOverall?: number;
-  coachSummary?: string;
-  readinessScores?: Record<string, number>;
-  readinessOverall?: number;
+  scholarshipName?: string;
+  // Per-version snapshots of the canonical Essay Review.
+  reviewScores?: Record<string, number>;
+  reviewOverall?: number;
+  reviewLevels?: Record<string, string>;
+  reviewOverallLevel?: string;
+};
+
+export type ApplicationStatus = "Drafting" | "Submitted" | "Awarded";
+
+export type TrackedApplication = {
+  id: string;
+  name: string;
+  type?: string;
+  status: ApplicationStatus;
+  scoreHistory?: number[];
+  updatedAt?: string;
+};
+
+export type EssayPromptEntry = {
+  id: string;
+  promptNumber: number;
+  promptText: string;
+  minimumWords: number | null;
+  maximumWords: number | null;
+  minimumWordsReviewed?: boolean;
+  maximumWordsReviewed?: boolean;
 };
 
 export type ActiveScholarship = {
@@ -146,18 +186,50 @@ export type ActiveScholarship = {
   requiredDocumentTypes?: string[];
   otherRequiredMaterials?: string;
   essayPrompts?: string;
+  essayPromptEntries?: EssayPromptEntry[];
+  allEssayPromptEntries?: EssayPromptEntry[];
+  selectedEssayPromptIds?: string[];
+  selectedEssayPromptEntries?: EssayPromptEntry[];
+  selectedEssayPrompts?: string;
+  noEssayPromptSelected?: boolean;
+  noEssayPromptConflictConfirmed?: boolean;
   eligibilityRequirements?: string[];
   requiredApplicationMaterials?: string[];
   benefits?: string[];
   selectionCriteria?: string[];
   applicationProcess?: string[];
-  missingInformation?: string[];
   importantNotes?: string[];
   requirements?: Array<{ category?: string; requirement?: string; source?: string }>;
   requirementsPreview?: string;
   additionalNotes?: string;
   fullText?: string;
   sourceUrls?: string[];
+  sourceMetadata?: Array<{
+    url?: string;
+    title?: string;
+    content_type?: string;
+    authority?: string;
+    fetched?: boolean;
+    error?: string;
+    textChars?: number;
+  }>;
+  fieldEvidence?: Array<{
+    field?: string;
+    value?: string;
+    sourceUrl?: string;
+    evidence?: string;
+    confidence?: number;
+    authority?: string;
+  }>;
+  extractionWarnings?: string[];
+  validationWarnings?: string[];
+  criticalFieldsFound?: string[];
+  criticalFieldsMissing?: string[];
+  completenessScore?: number;
+  resolutionStatus?: string;
+  extractedAt?: string;
+  discoverySource?: string;
+  discoverySourceKind?: "scholarship" | "platform" | "user_entry" | string;
   extractionCompletedAt?: string;
 };
 
@@ -165,7 +237,211 @@ export type AnalysisScore = {
   score?: number;
   level?: string;
   coaching?: string;
+  justification?: string;
+  feedback?: string;
+  revision_actions?: Array<{
+    priority?: string;
+    why_it_matters?: string;
+    how_to_fix?: string;
+    impact?: string;
+    estimated_effort?: string;
+  }>;
+  rubric?: {
+    description?: string;
+    excellent?: string;
+    developing?: string;
+    weak?: string;
+  };
   delta?: number;
+};
+
+export type EssayCriterionReview = {
+  criterion?: string;
+  label?: string;
+  short_label?: string;
+  weight?: number;
+  raw_score?: number | null;
+  score?: number | null;
+  level?: string;
+  applied_safeguards?: string[];
+  answers?: Array<{
+    question_id?: string;
+    question?: string;
+    value?: 0 | 0.5 | 1;
+    answer_label?: string;
+    evidence?: Array<{ paragraph_id?: string; quote?: string }>;
+    explanation?: string;
+  }>;
+  normalized_question_weights?: Record<string, number>;
+  coach_feedback?: {
+    grounded_praise?: string;
+    main_gap?: string;
+  };
+  criterion_specific_gap?: {
+    statement?: string;
+    root_cause_tag?: string;
+    severity?: "high" | "medium" | "low" | string;
+    evidence?: Array<{ paragraph_id?: string; quote?: string }>;
+  };
+  candidate_actions?: Array<{
+    action_type?: string;
+    location?: string;
+    instruction?: string;
+    completion_condition?: string;
+    estimated_effort?: string;
+  }>;
+  related_priority_ids?: string[];
+  rubric?: {
+    version?: string;
+    description?: string;
+    levels?: Array<{ label?: string; minimum?: number; maximum?: number }>;
+    questions?: Array<{
+      id?: string;
+      question?: string;
+      weight?: number;
+      normalized_weight?: number;
+      anchors?: Record<string, string>;
+      applicable?: boolean;
+      not_applicable?: {
+        reason?: string;
+        reason_code?: string;
+        source_quote?: string;
+      } | null;
+    }>;
+  };
+  available?: boolean;
+};
+
+export type EssayManagerPlan = {
+  rubric_version?: string;
+  weight_policy_version?: string;
+  manager_summary?: string;
+  weight_source?: "published" | "deterministic_source_signals" | string;
+  weight_total?: number;
+  base_weights?: Record<string, number>;
+  evidence_points?: Record<string, number>;
+  source_signals?: Array<{
+    criterion?: string;
+    signal_type?: string;
+    source_field?: string;
+    source_quote?: string;
+    construct?: string;
+    points?: number;
+  }>;
+  published_weights?: Array<Record<string, unknown>>;
+  context_hash?: string;
+  criteria?: Record<string, {
+    label?: string;
+    short_label?: string;
+    weight?: number;
+    base_weight?: number;
+    weight_adjustment?: number;
+    evidence_points?: number;
+    weight_rationale?: string;
+    description?: string;
+    reviewer_lens?: string;
+    questions?: EssayCriterionReview["rubric"] extends infer R
+      ? R extends { questions?: infer Q }
+        ? Q
+        : never
+      : never;
+  }>;
+};
+
+export type EssayRevisionPriority = {
+  id?: string;
+  title?: string;
+  action?: string;
+  location?: string;
+  completion_condition?: string;
+  primary_criterion?: string;
+  also_improves?: string[];
+  source_gap_criteria?: string[];
+  impact?: "High" | "Medium" | "Low" | string;
+  estimated_effort?: "Quick" | "Moderate" | "Deep" | string;
+  evidence_safety?: string;
+  requirement_source?: "prompt_requirement" | "scholarship_criterion" | "essay_quality" | string;
+  requirement_quote?: string;
+  priority_reason?: string;
+  evidence_status?: "sufficient" | "partial" | "missing" | string;
+  suggestion_readiness?: "complete_edit" | "advice_if_needed" | string;
+  profile_opportunity?: {
+    used?: boolean;
+    fact?: string;
+    included_in_score?: false;
+  };
+};
+
+export type EssayReviewResult = {
+  schema_version: 5;
+  status:
+    | "success"
+    | "scoring_success_coaching_partial"
+    | "partial"
+    | "error"
+    | "insufficient_to_assess"
+    | "evaluation_unavailable";
+  status_message?: string;
+  reason_code?: string;
+  overall_score?: number | null;
+  overall_raw_score?: number | null;
+  overall_level?: string;
+  overall_safeguards?: string[];
+  criteria: Record<string, EssayCriterionReview>;
+  revision_priorities?: EssayRevisionPriority[];
+  revision_plan?: {
+    version?: string;
+    priorities?: EssayRevisionPriority[];
+    available?: boolean;
+  };
+  manager_plan: EssayManagerPlan;
+  quality_review: {
+    approved?: boolean;
+    scoring_approved?: boolean;
+    coaching_approved?: boolean;
+    qa?: Record<string, unknown>;
+    guardrail?: Record<string, unknown>;
+    programmatic_failed_criteria?: string[];
+    planner_available?: boolean;
+  };
+  diagnostics?: {
+    failure_stage?: string;
+    failed_components?: string[];
+    error_codes?: string[];
+    criterion_errors?: Array<{
+      criterion?: string;
+      error_code?: string;
+      question_id?: string;
+    }>;
+    retry_attempts?: Record<string, number>;
+    agent_status?: Record<string, string>;
+    warnings?: string[];
+  };
+  draft_progress?: {
+    has_previous_draft?: boolean;
+    overall_change?: number;
+    resolved_gap_count?: number;
+    criterion_changes?: Array<{
+      criterion?: string;
+      label?: string;
+      previous_score?: number;
+      current_score?: number;
+      score_change?: number;
+      previous_level?: string;
+      current_level?: string;
+      level_changed?: boolean;
+      previous_gap_changed?: boolean;
+    }>;
+  };
+  metadata?: {
+    rubric_version?: string;
+    evaluator_version?: string;
+    revision_planner_version?: string;
+    scoring_fingerprint?: string;
+    coaching_fingerprint?: string;
+    scoring_reused?: boolean;
+    cache_hit?: boolean;
+  };
 };
 
 export type EligibilityStatus = "met" | "not_met" | "missing";
@@ -207,66 +483,6 @@ export type ApplicationReadinessMatrix = {
   blockers?: Array<Record<string, string>>;
   preparation_tasks?: string[];
   summary?: string;
-};
-
-export type EssayAlignmentMatrix = {
-  essay_id?: string;
-  essay_version_id?: string;
-  opportunity_id?: string;
-  overall_alignment_status?: "Ready" | "Mostly ready" | "Needs revision" | "Major gaps" | "Insufficient information" | string;
-  completion_percent?: number;
-  word_count?: number;
-  word_limit_status?: "Within limit" | "Over limit" | "Underdeveloped" | "No limit provided" | string;
-  matrix?: Array<{
-    requirement?: string;
-    requirement_type?: string;
-    essay_evidence?: string;
-    essay_location?: string;
-    status?: "Met" | "Partially met" | "Missing" | "Unclear" | "Not applicable" | string;
-    risk_level?: "Low" | "Medium" | "High" | string;
-    revision_needed?: string;
-    notes?: string;
-  }>;
-  missing_or_weak_items?: string[];
-  unsupported_claims?: string[];
-  strengths?: string[];
-  recommended_revision_tasks?: string[];
-  final_submission_readiness?: string;
-};
-
-export type AnalysisResult = {
-  coaching_brief?: {
-    recommended_action?: string;
-    current_strength_level?: string;
-    biggest_opportunity?: string;
-    expected_improvement?: string;
-    coach_message?: string;
-  };
-  readiness_index?: Record<string, AnalysisScore>;
-  growth_report?: {
-    has_previous_draft?: boolean;
-    improvements?: string[];
-    growth_message?: string;
-  };
-  reviewer_comments?: Array<{ persona?: string; comment?: string }>;
-  coaching_reports?: Record<string, Record<string, string>>;
-  eligibility_matrix?: EligibilityMatrix;
-  essay_alignment_matrix?: EssayAlignmentMatrix;
-  feedback?: string;
-  section_coaching?: Record<string, unknown>;
-  opportunity_analysis?: Record<string, unknown>;
-  critique?: {
-    verdict?: string;
-    confidence?: number;
-    grounding_pass?: boolean;
-    guardrail_pass?: boolean;
-    issues?: string[];
-    revision_guidance?: string;
-    attempt?: number;
-  };
-  final_application_package?: string;
-  revision_priorities?: string[];
-  draft_number?: number;
 };
 
 export type FitAnalysisResult = {
@@ -333,6 +549,9 @@ export type WikiDiscoveryResult = {
     category?: string;
     best_for?: string[];
     search_tips?: string[];
+    why_recommended?: string;
+    access_note?: string;
+    source_authority?: string;
   }>;
   specific_opportunities?: Array<{
     name?: string;
@@ -344,9 +563,14 @@ export type WikiDiscoveryResult = {
     status_note?: string;
     award_amount?: string;
     deadline_window?: string;
+    deadline_status?: "open" | "upcoming" | "unknown" | "closed" | string;
+    deadline_verified?: boolean;
+    deadline_checked_at?: string;
+    deadline_source_url?: string;
     competitiveness?: string;
     search_tips?: string[];
     suggested_queries?: string[];
+    source_authority?: string;
   }>;
   funding_categories?: Array<{
     category_name?: string;
@@ -358,14 +582,17 @@ export type WikiDiscoveryResult = {
   personalized_search_queries?: string[];
   next_steps?: string[];
   missing_profile_fields?: string[];
+  discovery_focus?: string;
+  selected_intents?: DiscoveryIntent[];
+  free_text_intent?: string;
+  generated_at?: string;
+  result_note?: string;
 };
 
 export type PersonalizedOutlineResult = {
   status?: "success" | "error" | string;
   message?: string;
   outline?: {
-    outline_title?: string;
-    thesis_or_core_message?: string;
     sections?: Array<{
       section_name?: string;
       purpose?: string;
@@ -375,21 +602,10 @@ export type PersonalizedOutlineResult = {
       estimated_word_count?: string;
       coaching_notes?: string[];
     }>;
-    recommended_opening?: string;
-    recommended_conclusion?: string;
-    questions_for_student?: string[];
   };
   strategy?: {
-    recommended_strategy?: string;
-    central_message?: string;
     tone_guidance?: string;
   };
-  coverage_check?: Array<{
-    requirement?: string;
-    covered?: boolean;
-    where_covered?: string;
-    notes?: string;
-  }>;
   warnings?: string[];
   missing_profile_info?: string[];
   generatedForKey?: string;
@@ -421,6 +637,13 @@ export type UserProfile = {
   undergrad?: UndergradProfile;
   graduate?: GradProfile;
   educationHistory?: EducationHistoryEntry[];
+  academicOnboardingCompleted?: boolean;
+  profileStartChoiceCompleted?: boolean;
+  profileSetupCompleted?: boolean;
+  journeyTutorialPending?: boolean;
+  journeyTutorialCompleted?: boolean;
+  journeyTutorialSkipped?: boolean;
+  essayWorkspaceTutorialCompleted?: boolean;
   researchExperience?: ResearchExperienceEntry[];
   workExperience?: WorkExperienceEntry[];
   // optional
@@ -430,26 +653,49 @@ export type UserProfile = {
   // essay (current working draft)
   essayTitle?: string;
   essayDraft?: string;
+  essayDraftHtml?: string;
+  essayDraftsByPromptId?: Record<string, string>;
+  essayDraftHtmlByPromptId?: Record<string, string>;
+  // Student-approved words that sentence-level spelling checks must preserve.
+  personalDictionary?: string[];
+  // Prompt-scoped, locally persisted Fixes results and student ignore choices.
+  essayFixesByPromptId?: Record<string, EssayFixCacheEntry>;
+  ignoredEssayFixesByPromptId?: Record<string, string[]>;
   // last journey step index, so the student resumes where they left off
   lastStep?: number;
+  // furthest journey step reached, so first-time navigation unlocks sequentially
+  highestJourneyStep?: number;
   // scholarship currently being analyzed
   activeScholarship?: ActiveScholarship;
-  // latest result returned by the Scholar-E AI coach
-  lastAnalysis?: AnalysisResult;
+  // latest schema-v5 six-criterion Essay Review, persisted across remounts
+  essayReviewResult?: EssayReviewResult;
+  essayReviewUpdatedAt?: number;
+  essayReviewDraftAtRun?: string;
+  essayReviewPromptAtRun?: string;
+  essayReviewProfileFingerprintAtRun?: string;
   // latest dedicated scholarship fit analysis
   fitAnalysis?: FitAnalysisResult;
   // latest discovery wiki recommendations
   wikiDiscovery?: WikiDiscoveryResult;
+  discoveryFocus?: string;
+  discoveryIntents?: DiscoveryIntent[];
+  discoveryIntentOptions?: DiscoveryIntent[];
+  discoveryPlatformDefaults?: NonNullable<WikiDiscoveryResult["top_free_platforms"]>;
+  dismissedDiscoveryUrls?: string[];
+  discoveryFeedback?: Array<{ url?: string; reason?: string; name?: string }>;
   personalizedOutline?: PersonalizedOutlineResult;
   savedWikiSources?: SavedWikiSource[];
   // versioned drafts
   drafts?: EssayDraft[];
   // documents
   documents?: { name: string; kind: string }[];
+  // scholarship and internship applications shown in Journey Step 7
+  applications?: TrackedApplication[];
 };
 
 type Ctx = {
   user: UserProfile | null;
+  isHydrated: boolean;
   updateProfile: (patch: Partial<UserProfile>) => void;
   resetProfile: () => void;
   signIn: (email: string, name?: string) => void;
@@ -464,6 +710,68 @@ const STORAGE_KEY = "scholar-e:state:v2";
 const MAX_VERSIONS = 20;
 
 type PersistShape = { currentEmail: string; accounts: Record<string, UserProfile> };
+
+/** Drop retired Page 4 review fields instead of carrying them forward forever. */
+function withoutLegacyEssayReviewData(user: UserProfile): UserProfile {
+  const legacyUser = user as UserProfile & {
+    lastAnalysis?: unknown;
+    essayCoachResult?: unknown;
+    essayCoachSummary?: unknown;
+    essayCoachUpdatedAt?: unknown;
+  };
+  const {
+    lastAnalysis: _lastAnalysis,
+    essayCoachResult: _essayCoachResult,
+    essayCoachSummary: _essayCoachSummary,
+    essayCoachUpdatedAt: _essayCoachUpdatedAt,
+    ...current
+  } = legacyUser;
+  void _lastAnalysis;
+  void _essayCoachResult;
+  void _essayCoachSummary;
+  void _essayCoachUpdatedAt;
+
+  const drafts = current.drafts?.map((draft) => {
+    const legacyDraft = draft as EssayDraft & {
+      score?: unknown;
+      coachScores?: unknown;
+      coachOverall?: unknown;
+      coachSummary?: unknown;
+      readinessScores?: unknown;
+      readinessOverall?: unknown;
+    };
+    const {
+      score: _score,
+      coachScores: _coachScores,
+      coachOverall: _coachOverall,
+      coachSummary: _coachSummary,
+      readinessScores: _readinessScores,
+      readinessOverall: _readinessOverall,
+      ...currentDraft
+    } = legacyDraft;
+    void _score;
+    void _coachScores;
+    void _coachOverall;
+    void _coachSummary;
+    void _readinessScores;
+    void _readinessOverall;
+    return currentDraft;
+  });
+
+  const reviewSchema = (current.essayReviewResult as { schema_version?: number } | undefined)?.schema_version;
+  const currentReview = reviewSchema === 5
+    ? current
+    : {
+        ...current,
+        essayReviewResult: undefined,
+        essayReviewUpdatedAt: undefined,
+        essayReviewDraftAtRun: undefined,
+        essayReviewPromptAtRun: undefined,
+        essayReviewProfileFingerprintAtRun: undefined,
+      };
+
+  return drafts ? { ...currentReview, drafts } : currentReview;
+}
 
 function readStore(): PersistShape {
   if (typeof window === "undefined") return { currentEmail: "", accounts: {} };
@@ -488,27 +796,32 @@ function writeStore(shape: PersistShape) {
 
 // Bound stored size: keep only the most recent draft versions.
 function forStorage(user: UserProfile): UserProfile {
-  if (user.drafts && user.drafts.length > MAX_VERSIONS) {
-    return { ...user, drafts: user.drafts.slice(-MAX_VERSIONS) };
+  const current = withoutLegacyEssayReviewData(user);
+  if (current.drafts && current.drafts.length > MAX_VERSIONS) {
+    return { ...current, drafts: current.drafts.slice(-MAX_VERSIONS) };
   }
-  return user;
+  return current;
 }
 
 const UserContext = createContext<Ctx | null>(null);
 
 export function UserProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<UserProfile | null>(null);
+  const [isHydrated, setIsHydrated] = useState(false);
   const hydrated = useRef(false);
 
   // Hydrate once on the client from the saved account for the current email.
   useEffect(() => {
     try {
       window.localStorage.removeItem(LEGACY_STORAGE_KEY);
-    } catch {}
+    } catch {
+      // Storage may be disabled; hydration can still continue in memory.
+    }
     const store = readStore();
     const saved = store.accounts[store.currentEmail] ?? store.accounts[""];
-    if (saved) setUser(saved);
+    if (saved) setUser(withoutLegacyEssayReviewData(saved));
     hydrated.current = true;
+    setIsHydrated(true);
   }, []);
 
   // Persist (debounced) whenever the profile changes, keyed by email.
@@ -546,7 +859,8 @@ export function UserProvider({ children }: { children: ReactNode }) {
       const existing = store.accounts[key];
       if (existing) {
         // Resume this account exactly where it left off.
-        return { ...existing, email: key, name: existing.name || name };
+        const current = withoutLegacyEssayReviewData(existing);
+        return { ...current, email: key, name: current.name || name };
       }
       // New account: carry over any guest edits made before signing in.
       const guest = prev && !prev.email ? prev : null;
@@ -565,8 +879,8 @@ export function UserProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo<Ctx>(
-    () => ({ user, updateProfile, resetProfile, signIn, signOut }),
-    [user, updateProfile, resetProfile, signIn, signOut],
+    () => ({ user, isHydrated, updateProfile, resetProfile, signIn, signOut }),
+    [user, isHydrated, updateProfile, resetProfile, signIn, signOut],
   );
 
   return <UserContext.Provider value={value}>{children}</UserContext.Provider>;

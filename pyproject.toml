@@ -21,4 +21,5 @@ dependencies = [
   "uvicorn[standard]",
   "pypdf",
   "python-multipart",
+  "language_tool_python==3.4.0",
 ]

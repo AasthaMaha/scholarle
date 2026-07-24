@@ -1,49 +1,41 @@
-# Scholar-E Backend Integration
+# Backend Integration
 
-This React/Lovable UI is a frontend shell only. AI analysis, LangGraph orchestration, retrieval, embeddings, and Chroma vector-store reuse stay in the Python/FastAPI backend.
+The Essay Workspace uses one canonical evaluation path:
 
-## Local Development
+- `POST /api/apply/coaching-session`
+  - evaluates the submitted draft without rewriting it
+  - runs the Manager-led six-criterion Essay Review
+  - returns `review.schema_version === 4`
 
-Run the Python backend from the project root:
+Background editor support is intentionally narrow:
 
-```bash
-.venv/bin/python server.py
-```
+- `POST /api/apply/editor-warmup`
+  - starts the reusable LanguageTool Java service without blocking API startup
+  - is called idempotently when the Journey loads as a cold-start fallback
+  - lets the editor quietly retry while warm-up is still in progress
 
-Run the React frontend from this folder:
+- `POST /api/apply/editor-check`
+  - returns LanguageTool spelling, grammar, and punctuation suggestions
+  - protects profile terms and the student's personal dictionary
+  - requires the student to accept or ignore each fix individually
+  - does not run the full evaluation pipeline
 
-```bash
-cd frontend-react
-npm install
-npm run dev
-```
+- `POST /api/apply/contextual-grammar`
+  - runs after a longer typing pause for meaning-dependent grammar
+  - skips the model for incremental, high-confidence spelling-only findings
+  - uses one model pass to adjudicate ordinary ambiguous grammar candidates
+  - adds one selective verifier pass only for novel, uncertain, sensitive, or substantial edits
+  - returns structured, exactly anchored suggestions; contextual findings win when they overlap provisional LanguageTool grammar
+  - fails independently so the faster Fixes remain available
 
-The Vite dev server proxies `/api/*` to `http://127.0.0.1:8000`, so the frontend can call:
+- `POST /api/apply/outline-coverage`
+  - updates outline checkmarks independently from sentence Fixes
 
-```text
-POST /api/analyze
-```
+Selected-text tools are separate:
 
-without moving backend logic into React.
+- `POST /api/apply/rewrite-selection`
+  - rewrites, expands, shortens, or adjusts tone for selected text only
+  - returns a structured preview that the student must explicitly accept or reject
 
-## Wired Backend Flow
-
-The journey route now:
-
-- stores the active scholarship in `user.activeScholarship`
-- converts the student profile into backend-ready text
-- sends profile, essay, scholarship name/type, and prompt to `/api/analyze`
-- stores the FastAPI response in `user.lastAnalysis`
-- renders backend readiness scores, reviewer comments, revision priorities, and final readiness checks
-
-The integration helper is:
-
-```text
-src/lib/api/scholarE.ts
-```
-
-The shared frontend state additions are in:
-
-```text
-src/lib/userStore.tsx
-```
+The frontend stores the latest full evaluation in `user.essayReviewResult`.
+Legacy `lastAnalysis` data is ignored and removed during store hydration.

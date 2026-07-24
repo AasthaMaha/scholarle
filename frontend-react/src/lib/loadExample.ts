@@ -9,7 +9,6 @@ function formatExperiences(): string {
     ["Research", experiences.research],
     ["Leadership", experiences.leadership],
     ["Work", experiences.work],
-    ["Volunteer", experiences.volunteer],
   ] as const;
 
   for (const [label, items] of sections) {
@@ -32,6 +31,7 @@ export function loadExampleProfile(
   account?: Pick<UserProfile, "name" | "email" | "id">,
 ): Partial<UserProfile> {
   const shpe = scholarships[0];
+  const { experiences } = persona;
 
   return {
     name: account?.name ?? persona.name,
@@ -60,6 +60,9 @@ export function loadExampleProfile(
     },
     optional: {
       resumeFileName: "Resume_Maya_Rodriguez_Fall2026.pdf",
+      volunteering: experiences.volunteer
+        .map((item) => `${item.title} (${item.when})\n${item.bullets.join("\n")}`)
+        .join("\n\n"),
       societyInvolvement: "Society of Hispanic Professional Engineers — Rice Chapter",
       leadership: "VP Outreach organizing Code-with-Me nights for McAllen ISD high schoolers",
       projects:
@@ -89,7 +92,44 @@ export function loadExampleProfile(
       additionalNotes: `Sponsor: ${shpe.sponsor}. Tags: ${shpe.tags.join(", ")}.`,
     },
     essayDraft,
-    lastAnalysis: undefined,
     drafts: undefined,
+    applications: [
+      {
+        id: "shpe-2026",
+        name: "SHPE Foundation Scholarship",
+        type: "Merit-based",
+        status: "Drafting",
+        scoreHistory: [32, 48, 61, 70, 78],
+        updatedAt: daysAgo(2),
+      },
+      {
+        id: "hsf-2026",
+        name: "Hispanic Scholarship Fund — General",
+        type: "Need-based",
+        status: "Drafting",
+        scoreHistory: [40, 45],
+        updatedAt: daysAgo(6),
+      },
+      {
+        id: "google-wts-2026",
+        name: "Generation Google Scholarship",
+        type: "Merit-based",
+        status: "Submitted",
+        scoreHistory: [55, 66, 82],
+        updatedAt: daysAgo(10),
+      },
+      {
+        id: "texas-first-gen-2026",
+        name: "Texas First-Gen Excellence Award",
+        type: "Merit-based",
+        status: "Awarded",
+        scoreHistory: [60, 74, 88],
+        updatedAt: daysAgo(30),
+      },
+    ],
   };
+}
+
+function daysAgo(days: number): string {
+  return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
 }

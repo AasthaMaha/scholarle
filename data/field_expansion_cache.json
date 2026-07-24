@@ -1,0 +1,158 @@
+{
+  "ethnomusicology": {
+    "canonical_label": "Ethnomusicology",
+    "synonyms": [
+      "Ethnomusicology"
+    ],
+    "parent_disciplines": [],
+    "umbrella_terms": [
+      "Humanities",
+      "Social Sciences"
+    ],
+    "funder_vocabulary": [
+      "music research grants",
+      "ethnomusicology fellowships",
+      "cultural studies funding"
+    ]
+  },
+  "materials science": {
+    "canonical_label": "Materials Science",
+    "synonyms": [
+      "Materials Engineering",
+      "Materials Technology",
+      "Material Science"
+    ],
+    "parent_disciplines": [
+      "Engineering",
+      "Physical Sciences"
+    ],
+    "umbrella_terms": [
+      "Science and Technology",
+      "Engineering"
+    ],
+    "funder_vocabulary": [
+      "materials research grants",
+      "engineering fellowships",
+      "science funding opportunities"
+    ]
+  },
+  "political science": {
+    "canonical_label": "Political Science",
+    "synonyms": [
+      "Poli Sci",
+      "Political Studies",
+      "Government Studies"
+    ],
+    "parent_disciplines": [],
+    "umbrella_terms": [
+      "Social Sciences",
+      "Humanities"
+    ],
+    "funder_vocabulary": [
+      "political science scholarships",
+      "government studies funding",
+      "social sciences grants"
+    ]
+  },
+  "computer science": {
+    "canonical_label": "Computer Science",
+    "synonyms": [
+      "CS",
+      "Computing",
+      "Software Engineering"
+    ],
+    "parent_disciplines": [
+      "Engineering",
+      "Information Technology"
+    ],
+    "umbrella_terms": [
+      "STEM",
+      "Technology"
+    ],
+    "funder_vocabulary": [
+      "computer science scholarships",
+      "STEM funding opportunities",
+      "technology grants",
+      "technology fellowships"
+    ]
+  },
+  "cs": {
+    "canonical_label": "Computer Science",
+    "synonyms": [
+      "CS",
+      "Computing",
+      "Information Technology"
+    ],
+    "parent_disciplines": [
+      "Computer Science",
+      "Information Systems"
+    ],
+    "umbrella_terms": [
+      "STEM",
+      "Technology"
+    ],
+    "funder_vocabulary": [
+      "computer science scholarships",
+      "STEM funding opportunities",
+      "technology fellowships"
+    ]
+  },
+  "political science and government other": {
+    "canonical_label": "Political Science and Government, Other",
+    "synonyms": [
+      "Political Science",
+      "Government Studies",
+      "Political Studies"
+    ],
+    "parent_disciplines": [
+      "Political Science"
+    ],
+    "umbrella_terms": [
+      "Social Sciences",
+      "Humanities"
+    ],
+    "funder_vocabulary": [
+      "political science scholarships",
+      "government studies grants",
+      "law school funding opportunities"
+    ]
+  },
+  "bachelor s degree": {
+    "canonical_label": "Bachelor's Degree",
+    "synonyms": [
+      "Undergraduate Degree",
+      "Baccalaureate Degree"
+    ],
+    "parent_disciplines": [],
+    "umbrella_terms": [
+      "Higher Education",
+      "Undergraduate Studies"
+    ],
+    "funder_vocabulary": [
+      "undergraduate scholarships",
+      "bachelor's degree funding",
+      "college grants for undergraduates"
+    ]
+  },
+  "early childhood development": {
+    "canonical_label": "Early Childhood Development",
+    "synonyms": [
+      "Child Development",
+      "Early Childhood Education",
+      "Preschool Education"
+    ],
+    "parent_disciplines": [
+      "Education",
+      "Child Development"
+    ],
+    "umbrella_terms": [
+      "Education",
+      "Social Sciences"
+    ],
+    "funder_vocabulary": [
+      "early childhood education grants",
+      "child development scholarships",
+      "preschool education funding"
+    ]
+  }
+}

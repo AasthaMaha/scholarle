@@ -12,11 +12,11 @@ def build_opportunity_extraction_graph():
     builder = StateGraph(OpportunityExtractionState)
     builder.add_node("opportunity_extraction_agent", extract_opportunity_fields)
     builder.add_node("opportunity_cleanup", clean_opportunity_fields)
-    builder.add_node("information_cleaner_agent", clean_scholarship_output)
+    builder.add_node("deterministic_extraction_finalizer", clean_scholarship_output)
 
     builder.set_entry_point("opportunity_extraction_agent")
     builder.add_edge("opportunity_extraction_agent", "opportunity_cleanup")
-    builder.add_edge("opportunity_cleanup", "information_cleaner_agent")
-    builder.add_edge("information_cleaner_agent", END)
+    builder.add_edge("opportunity_cleanup", "deterministic_extraction_finalizer")
+    builder.add_edge("deterministic_extraction_finalizer", END)
 
     return builder.compile()
