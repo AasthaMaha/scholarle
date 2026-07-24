@@ -47,7 +47,7 @@ function Header() {
         </nav>
         <div className="flex items-center gap-2 sm:gap-3">
           <Link to="/auth" className="hidden rounded-xl px-3 py-2 text-sm font-semibold text-[#4b5368] transition-colors hover:text-[#111b36] sm:block">Sign in</Link>
-          <Link to="/auth" className="group inline-flex items-center gap-2 rounded-xl bg-[#111b36] px-4 py-2.5 text-sm font-semibold text-white shadow-[0_8px_24px_-10px_#111b36] transition-all hover:-translate-y-0.5 hover:bg-[#202d50]">
+          <Link to="/auth" className="group inline-flex items-center gap-2 rounded-xl bg-[#6757e8] px-4 py-2.5 text-sm font-semibold text-white shadow-[0_8px_24px_-10px_#6757e8] transition-all hover:-translate-y-0.5 hover:bg-[#5949d8]">
             Get started <ArrowRight className="size-3.5 transition-transform group-hover:translate-x-0.5" />
           </Link>
         </div>
@@ -330,7 +330,12 @@ function WorkflowFloaters({ active }: { active: number }) {
         <span />
         {status.label}
       </div>
-      <div key={`connector-${active}`} className={`workflow-fragment-connector fragment-connector-${active + 1}`}><i /></div>
+      <div key={`connector-${active}`} className={`workflow-fragment-connector fragment-connector-${active + 1}`}>
+        <svg viewBox="0 0 64 56" preserveAspectRatio="none">
+          <path d="M 2 48 C 23 48, 43 37, 47 13" />
+          <polyline points="39,17 48,10 53,20" />
+        </svg>
+      </div>
     </div>
   );
 }
@@ -403,7 +408,7 @@ function SubmitScene() { return <><SceneHead icon={<Check className="size-5" />}
 
 function Benefits() {
   const data=[{n:"01",t:"Everything stays connected",d:"Your profile, requirements, drafts, and deadlines move together—so you never start from zero."},{n:"02",t:"Guidance you can verify",d:"See the source behind extracted requirements and understand why an opportunity fits your profile."},{n:"03",t:"Your voice stays yours",d:"Scholar-E points to what can be stronger. The choices and the final words always belong to you."}];
-  return <section id="benefits" className="scroll-mt-16 bg-white px-5 py-16 lg:px-8 lg:py-20"><div className="mx-auto max-w-[1120px]"><div className="grid gap-5 md:grid-cols-[1fr_.9fr] md:items-end"><div><div className="text-xs font-bold uppercase tracking-[.15em] text-[#7164df]">Built for the whole journey</div><h2 className="mt-3 max-w-2xl text-balance text-[clamp(2.6rem,5vw,4.8rem)] font-bold leading-[.98] tracking-[-.055em]">Less guesswork.<br />More momentum.</h2></div><p className="max-w-md text-lg leading-8 text-[#646b7d] md:justify-self-end">Scholar-E turns a scattered, stressful process into one clear path forward.</p></div><div className="mt-10 grid gap-px overflow-hidden rounded-3xl border border-[#e3e3e8] bg-[#e3e3e8] md:grid-cols-3">{data.map((x)=><article key={x.n} className="benefit-card bg-white p-7"><h3 className="text-xl font-bold tracking-[-.035em]">{x.t}</h3><p className="mt-3 text-sm leading-6 text-[#687083]">{x.d}</p></article>)}</div></div></section>;
+  return <section id="benefits" className="scroll-mt-16 bg-white px-5 pb-28 pt-20 lg:px-8 lg:pb-32 lg:pt-24"><div className="mx-auto max-w-[1120px]"><div className="grid gap-5 md:grid-cols-[1fr_.9fr] md:items-end"><div><div className="text-xs font-bold uppercase tracking-[.15em] text-[#7164df]">Built for the whole journey</div><h2 className="mt-3 max-w-2xl text-balance text-[clamp(2.6rem,5vw,4.8rem)] font-bold leading-[.98] tracking-[-.055em]">Less guesswork.<br />More momentum.</h2></div><p className="max-w-md text-lg leading-8 text-[#646b7d] md:justify-self-end">Scholar-E turns a scattered, stressful process into one clear path forward.</p></div><div className="mt-10 grid gap-px overflow-hidden rounded-3xl border border-[#e3e3e8] bg-[#e3e3e8] md:grid-cols-3">{data.map((x)=><article key={x.n} className="benefit-card flex min-h-[190px] flex-col items-center justify-center bg-white p-8 text-center"><h3 className="text-xl font-bold tracking-[-.035em]">{x.t}</h3><p className="mt-3 text-sm leading-6 text-[#687083]">{x.d}</p></article>)}</div></div></section>;
 }
 
 function FinalCTA() { return <section className="px-5 pb-10 lg:px-8"><div className="cta-glow mx-auto max-w-[1120px] overflow-hidden rounded-[32px] border border-[#ddd9ff] px-6 py-14 text-center shadow-[0_30px_80px_-48px_#6757e8] sm:px-10 sm:py-16"><h2 className="mx-auto max-w-3xl text-balance text-[clamp(2.5rem,5vw,4.8rem)] font-bold leading-[.98] tracking-[-.055em]">Your best application is still your story.</h2><p className="mx-auto mt-4 max-w-xl text-base leading-7 text-[#62677c]">Bring the ambition. Scholar-E will help you find the opportunity, understand the path, and do your strongest work.</p><Link to="/auth" className="button-lift group mt-7 inline-flex items-center gap-2 rounded-xl bg-[#6757e8] px-6 py-3.5 text-sm font-bold text-white shadow-[0_16px_35px_-14px_#6757e8]">Create your free account <ArrowRight className="size-4 transition-transform group-hover:translate-x-1" /></Link></div></section>; }

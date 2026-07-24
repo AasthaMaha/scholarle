@@ -64,7 +64,7 @@ const FLOW = ["Profile", "Opportunity", "Fit Score", "Writing Support", "Submiss
 
 function StudentDemoPage() {
   return (
-    <div className="min-h-screen bg-gradient-to-br from-[#F9FAFF] via-[#EEF2FF] to-[#F5EFFF] font-['Roboto',ui-sans-serif,system-ui,sans-serif] text-[#1F2A44] [&_.font-display]:font-['Roboto',ui-sans-serif,system-ui,sans-serif]">
+    <div className="min-h-screen bg-gradient-to-br from-[#F9FAFF] via-[#EEF2FF] to-[#F5EFFF] font-['Inter',ui-sans-serif,system-ui,sans-serif] text-[#1F2A44] [&_.font-display]:font-['Inter',ui-sans-serif,system-ui,sans-serif]">
       <header className="border-b border-white/70 backdrop-blur sticky top-0 z-30 bg-white/80">
         <div className="mx-auto max-w-6xl px-6 h-16 flex items-center justify-between">
           <Link to="/" className="flex items-center gap-2">

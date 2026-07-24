@@ -128,6 +128,8 @@ export type EssayDraft = {
   id: string;
   version: number;
   content: string;
+  contentHtml?: string;
+  promptId?: string;
   wordCount: number;
   savedAt: string;
   scholarshipName?: string;
@@ -641,6 +643,7 @@ export type UserProfile = {
   journeyTutorialPending?: boolean;
   journeyTutorialCompleted?: boolean;
   journeyTutorialSkipped?: boolean;
+  essayWorkspaceTutorialCompleted?: boolean;
   researchExperience?: ResearchExperienceEntry[];
   workExperience?: WorkExperienceEntry[];
   // optional
@@ -660,6 +663,8 @@ export type UserProfile = {
   ignoredEssayFixesByPromptId?: Record<string, string[]>;
   // last journey step index, so the student resumes where they left off
   lastStep?: number;
+  // furthest journey step reached, so first-time navigation unlocks sequentially
+  highestJourneyStep?: number;
   // scholarship currently being analyzed
   activeScholarship?: ActiveScholarship;
   // latest schema-v5 six-criterion Essay Review, persisted across remounts

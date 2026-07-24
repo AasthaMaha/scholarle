@@ -20,6 +20,7 @@ export function EducationAutocomplete({
   pinnedOptions = [],
   noResultsText = "No matches found.",
   ariaLabel,
+  accent = "primary",
 }: {
   value: string;
   placeholder: string;
@@ -30,6 +31,7 @@ export function EducationAutocomplete({
   pinnedOptions?: AutocompleteOption[];
   noResultsText?: string;
   ariaLabel: string;
+  accent?: "primary" | "info";
 }) {
   const [query, setQuery] = useState(value);
   const [results, setResults] = useState<AutocompleteOption[]>([]);
@@ -85,6 +87,13 @@ export function EducationAutocomplete({
 
   const resultLimit = Math.max(0, 10 - pinnedOptions.length - (fallbackOption ? 1 : 0));
   const options = [...pinnedOptions, ...results.slice(0, resultLimit), ...(fallbackOption ? [fallbackOption] : [])];
+  const inputTone = accent === "info"
+    ? "border-info/15 bg-white hover:border-info/30 focus:border-info/60 focus:ring-info/20"
+    : "border-border bg-background focus:ring-primary/40";
+  const menuTone = accent === "info" ? "border-info/15 shadow-[0_18px_44px_-28px_rgba(31,42,68,0.38)]" : "border-border shadow-xl";
+  const optionTone = (active: boolean) => accent === "info"
+    ? active ? "bg-info/[0.08] text-foreground" : "hover:bg-info/[0.05]"
+    : active ? "bg-accent" : "hover:bg-accent";
 
   function choose(option: AutocompleteOption) {
     onSelect(option, query);
@@ -130,7 +139,7 @@ export function EducationAutocomplete({
             }
           }}
           placeholder={placeholder}
-          className="w-full rounded-lg border border-border bg-background py-3 pl-9 pr-10 text-sm outline-none focus:ring-2 focus:ring-primary/40"
+          className={`w-full rounded-lg border py-3 pl-9 pr-10 text-sm text-foreground outline-none transition-colors focus:ring-2 ${inputTone}`}
         />
         <button
           type="button"
@@ -146,7 +155,7 @@ export function EducationAutocomplete({
       </div>
 
       {open && (
-        <div id={listboxId} role="listbox" className="relative z-50 mt-1 max-h-72 w-full overflow-y-auto rounded-xl border border-border bg-popover p-1.5 shadow-xl">
+        <div id={listboxId} role="listbox" className={`relative z-50 mt-1 max-h-72 w-full overflow-y-auto rounded-xl border bg-popover p-1.5 ${menuTone}`}>
           {query.trim().length < minimumCharacters && (
             <p className="px-3 py-2.5 text-sm text-muted-foreground">
               Enter at least {minimumCharacters} character{minimumCharacters === 1 ? "" : "s"} to search.
@@ -175,7 +184,7 @@ export function EducationAutocomplete({
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={() => choose(option)}
                   onMouseEnter={() => setActiveIndex(index)}
-                  className={`flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-left text-sm ${activeIndex === index ? "bg-accent" : "hover:bg-accent"}`}
+                  className={`flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-left text-sm transition-colors ${optionTone(activeIndex === index)}`}
                 >
                   <span className="min-w-0">
                     <span className="block truncate font-medium">
@@ -183,7 +192,7 @@ export function EducationAutocomplete({
                       {option.secondary && <span className="font-normal text-muted-foreground"> — {option.secondary}</span>}
                     </span>
                   </span>
-                  {value === option.label && <Check className="size-4 shrink-0 text-primary" aria-hidden="true" />}
+                  {value === option.label && <Check className={`size-4 shrink-0 ${accent === "info" ? "text-info" : "text-primary"}`} aria-hidden="true" />}
                 </button>
               ))}
             </div>
