@@ -53,12 +53,12 @@ export function incompleteReviewMessage(
     .filter((component) => !!CRITERION_LABELS[component])
     .map((component) => CRITERION_LABELS[component]);
   const reason = diagnostics?.failure_stage === "criterion_validation" && failedCriteria.length
-    ? `${failedCriteria.join(", ")} could not verify required rubric evidence after retry. No new score was saved.`
+    ? `${failedCriteria.join(", ")} could not be reviewed reliably. No new score was saved.`
     : diagnostics?.failure_stage === "scoring_qa"
-      ? "The scoring quality check could not verify the evaluation after retry. No new score was saved."
+      ? "The essay review could not be completed reliably. No new score was saved."
       : review?.status_message?.trim()
-        || "The evaluation could not verify all six criteria.";
+        || "The essay review could not be completed across every area.";
   return hasPreviousCompleteReview
     ? `${reason} Your previous complete review remains displayed.`
-    : `${reason} Please evaluate again; no score was saved.`;
+    : `${reason} Please run Essay Review again; no score was saved.`;
 }

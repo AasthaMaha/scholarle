@@ -9,6 +9,7 @@ from nodes.coaching.criterion_review import (
     calculate_overall_result,
     normalize_criterion_review,
     normalize_manager_plan,
+    normalize_revision_plan,
 )
 from nodes.coaching.readiness import READINESS_DIMENSIONS
 from rubrics.essay_rubric_v1 import (
@@ -447,6 +448,93 @@ def test_planner_and_critics_use_zero_temperature_structured_output(monkeypatch)
     assert qa["scoring_approved"] is True
     assert qa["planner_approved"] is True
     assert guardrail["approved"] is True
+
+
+def test_revision_plan_drops_unstated_financial_need_priority():
+    import nodes.coaching.criterion_review as criterion_review
+
+    manager_plan = normalize_manager_plan({})
+    reviews = {
+        key: _zero_review(
+            criterion_review,
+            key,
+            manager_plan["criteria"][key],
+        )
+        for key in READINESS_DIMENSIONS
+    }
+    plan = normalize_revision_plan(
+        {
+            "priorities": [
+                {
+                    "title": "Clarify Financial Need",
+                    "action": "Explain the student’s financial hardship.",
+                    "location": "Conclusion",
+                    "completion_condition": "The financial need is explicit.",
+                    "primary_criterion": "alignment",
+                    "impact": "High",
+                    "estimated_effort": "Moderate",
+                    "requirement_source": "essay_quality",
+                }
+            ]
+        },
+        reviews,
+        official_signals=[
+            {
+                "signal_type": "prompt_ask",
+                "source_quote": "Describe who you are and what this scholarship means to you.",
+            }
+        ],
+    )
+
+    assert plan["priorities"] == []
+    assert plan["available"] is False
+
+
+def test_revision_plan_preserves_exact_verified_requirement_quote():
+    import nodes.coaching.criterion_review as criterion_review
+
+    manager_plan = normalize_manager_plan({})
+    reviews = {
+        key: _zero_review(
+            criterion_review,
+            key,
+            manager_plan["criteria"][key],
+        )
+        for key in READINESS_DIMENSIONS
+    }
+    quote = "Explain how financial need affects your education plans."
+    plan = normalize_revision_plan(
+        {
+            "priorities": [
+                {
+                    "title": "Explain the Scholarship’s Financial Impact",
+                    "action": "Connect a verified education cost to what the award would enable.",
+                    "location": "Conclusion",
+                    "completion_condition": "The essay names a real cost and a specific next step.",
+                    "primary_criterion": "alignment",
+                    "impact": "High",
+                    "estimated_effort": "Moderate",
+                    "requirement_source": "prompt_requirement",
+                    "requirement_quote": quote,
+                    "priority_reason": "This directly answers a required part of the prompt.",
+                    "evidence_status": "missing",
+                    "suggestion_readiness": "advice_if_needed",
+                }
+            ]
+        },
+        reviews,
+        official_signals=[
+            {
+                "signal_type": "prompt_ask",
+                "source_quote": quote,
+            }
+        ],
+    )
+
+    priority = plan["priorities"][0]
+    assert priority["requirement_quote"] == quote
+    assert priority["requirement_source"] == "prompt_requirement"
+    assert priority["suggestion_readiness"] == "advice_if_needed"
 
 
 def test_invalid_criterion_repair_cannot_replace_valid_review():

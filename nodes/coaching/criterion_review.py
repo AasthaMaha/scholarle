@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -33,7 +34,7 @@ from utils.parsing import safe_json_parse
 
 
 EVALUATOR_VERSION = "criterion-evaluator-v5.2-stable"
-REVISION_PLANNER_VERSION = "revision-planner-v1.1-structured"
+REVISION_PLANNER_VERSION = "revision-planner-v2.0-requirement-grounded"
 
 CRITERION_AUDIT_PLAYBOOKS = {
     criterion: {
@@ -139,6 +140,11 @@ class RevisionPriorityOutput(BaseModel):
     impact: str
     estimated_effort: str
     evidence_safety: str = ""
+    requirement_source: str = "essay_quality"
+    requirement_quote: str = ""
+    priority_reason: str = ""
+    evidence_status: str = "partial"
+    suggestion_readiness: str = "complete_edit"
     profile_opportunity: RevisionProfileOpportunityOutput = Field(
         default_factory=RevisionProfileOpportunityOutput
     )
@@ -541,8 +547,65 @@ def _public_review_for_planner(review: dict) -> dict:
     }
 
 
-def normalize_revision_plan(raw: Any, reviews: dict) -> dict:
+def _canonical_source_text(value: object) -> str:
+    return " ".join(str(value or "").casefold().split())
+
+
+def _official_requirement_quote(
+    quote: str,
+    official_signals: list[dict[str, Any]],
+) -> str:
+    canonical_quote = _canonical_source_text(quote)
+    if not canonical_quote:
+        return ""
+    for signal in official_signals:
+        source_quote = _as_text(_as_dict(signal).get("source_quote"))
+        if canonical_quote == _canonical_source_text(source_quote):
+            return source_quote
+    return ""
+
+
+def _priority_value_score(
+    priority: dict[str, Any],
+    reviews: dict,
+) -> tuple[int, int, int, int]:
+    """Keep the most consequential, actionable revisions first."""
+    impact_points = {"High": 3, "Medium": 2, "Low": 1}
+    effort_points = {"Quick": 3, "Moderate": 2, "Deep": 1}
+    primary_review = _as_dict(reviews.get(priority.get("primary_criterion")))
+    gap = _as_dict(primary_review.get("criterion_specific_gap"))
+    root_cause = _as_text(gap.get("root_cause_tag"))
+    critical_points = 3 if root_cause == "missing_prompt_requirement" else 2 if root_cause in {
+        "weak_scholarship_connection",
+        "unsupported_claim",
+        "missing_specific_example",
+        "missing_result",
+        "missing_impact",
+        "illogical_order",
+        "timeline_confusion",
+    } else 1
+    evidence_points = {
+        "sufficient": 3,
+        "partial": 2,
+        "missing": 1,
+    }.get(_as_text(priority.get("evidence_status")).lower(), 2)
+    return (
+        critical_points,
+        impact_points.get(_as_text(priority.get("impact")).title(), 2),
+        evidence_points,
+        effort_points.get(_as_text(priority.get("estimated_effort")).title(), 2),
+    )
+
+
+def normalize_revision_plan(
+    raw: Any,
+    reviews: dict,
+    official_signals: list[dict[str, Any]] | None = None,
+) -> dict:
     raw = _as_dict(raw)
+    official_signals = [
+        _as_dict(signal) for signal in (official_signals or []) if _as_dict(signal)
+    ]
     for review in reviews.values():
         if isinstance(review, dict):
             review["related_priority_ids"] = []
@@ -571,6 +634,59 @@ def normalize_revision_plan(raw: Any, reviews: dict) -> dict:
         if effort not in {"Quick", "Moderate", "Deep"}:
             effort = "Moderate"
         profile_opportunity = _as_dict(item.get("profile_opportunity"))
+        requirement_source = _as_text(item.get("requirement_source")).lower()
+        if requirement_source not in {
+            "prompt_requirement",
+            "scholarship_criterion",
+            "essay_quality",
+        }:
+            requirement_source = "essay_quality"
+        requirement_quote = _official_requirement_quote(
+            _as_text(item.get("requirement_quote")),
+            official_signals,
+        )
+        if requirement_source != "essay_quality" and not requirement_quote:
+            requirement_source = "essay_quality"
+
+        public_priority_text = " ".join(
+            [
+                _as_text(item.get("title")),
+                action,
+                _as_text(item.get("completion_condition")),
+            ]
+        )
+        official_financial_signal = any(
+            re.search(
+                r"\b(financial need|need-based|financial hardship|cost|tuition|afford)\b",
+                _as_text(signal.get("source_quote")),
+                re.IGNORECASE,
+            )
+            for signal in official_signals
+        )
+        if (
+            re.search(
+                r"\b(financial need|financial hardship|need-based)\b",
+                public_priority_text,
+                re.IGNORECASE,
+            )
+            and not official_financial_signal
+        ):
+            # First-generation status and other scholarship categories never
+            # imply that financial disclosure belongs in the essay.
+            continue
+
+        evidence_status = _as_text(item.get("evidence_status")).lower()
+        if evidence_status not in {"sufficient", "partial", "missing"}:
+            evidence_status = (
+                "sufficient"
+                if bool(profile_opportunity.get("used"))
+                else "partial"
+            )
+        suggestion_readiness = _as_text(item.get("suggestion_readiness")).lower()
+        if suggestion_readiness not in {"complete_edit", "advice_if_needed"}:
+            suggestion_readiness = (
+                "advice_if_needed" if evidence_status == "missing" else "complete_edit"
+            )
         priorities.append(
             {
                 "id": f"priority_{index}",
@@ -585,6 +701,16 @@ def normalize_revision_plan(raw: Any, reviews: dict) -> dict:
                 "impact": impact,
                 "estimated_effort": effort,
                 "evidence_safety": _as_text(item.get("evidence_safety")),
+                "requirement_source": requirement_source,
+                "requirement_quote": requirement_quote,
+                "priority_reason": _as_text(item.get("priority_reason"))
+                or (
+                    f"This change addresses the scholarship’s stated focus: {requirement_quote}"
+                    if requirement_quote
+                    else "This change addresses a visible weakness in the current draft."
+                ),
+                "evidence_status": evidence_status,
+                "suggestion_readiness": suggestion_readiness,
                 "profile_opportunity": {
                     "used": bool(profile_opportunity.get("used")),
                     "fact": _as_text(profile_opportunity.get("fact")),
@@ -592,6 +718,13 @@ def normalize_revision_plan(raw: Any, reviews: dict) -> dict:
                 },
             }
         )
+
+    priorities.sort(
+        key=lambda priority: _priority_value_score(priority, reviews),
+        reverse=True,
+    )
+    for index, priority in enumerate(priorities, start=1):
+        priority["id"] = f"priority_{index}"
 
     for priority in priorities:
         for key in {priority["primary_criterion"], *priority["also_improves"]}:
@@ -610,6 +743,7 @@ def run_revision_planner(
     coaching_context: str,
     reviews: dict,
     *,
+    official_signals: list[dict[str, Any]] | None = None,
     correction_guidance: str = "",
     prior_plan: dict | None = None,
 ) -> dict:
@@ -620,11 +754,12 @@ def run_revision_planner(
             for key, review in reviews.items()
             if key in READINESS_DIMENSIONS
         },
+        official_signals=official_signals or [],
         correction_guidance=correction_guidance,
         prior_plan=prior_plan,
     )
     raw = _structured_response(prompt, RevisionPlanOutput)
-    return normalize_revision_plan(raw, reviews)
+    return normalize_revision_plan(raw, reviews, official_signals)
 
 
 def run_criterion_qa(
@@ -671,6 +806,12 @@ SCORING QA checks only:
 PLANNER QA checks only:
 - final priorities are distinct, grounded, atomic, and correctly consolidate overlap;
 - primary and secondary ownership is plausible.
+- every prompt_requirement or scholarship_criterion priority includes an exact
+  verified source quote; essay_quality priorities do not pretend to be official requirements;
+- financial-need coaching appears only when an official prompt or selection
+  criterion explicitly supports it;
+- evidence_status and suggestion_readiness accurately distinguish a ready edit
+  from advice that needs a personal detail.
 
 Return ONLY valid JSON:
 {{
@@ -740,6 +881,12 @@ supplies missing reflection or emotions, pressures sensitive disclosure,
 replaces the student's voice, ghostwrites, is too vague to execute, or cannot
 be traced to a verified gap. Profile facts are coaching opportunities only and
 must always state included_in_score=false.
+Also reject a prompt_requirement or scholarship_criterion priority when its
+requirement_quote is not an exact statement in the supplied scholarship
+context. Never treat first-generation status, demographic eligibility, or a
+scholarship title as proof that the essay must discuss financial need. A
+missing personal fact must use evidence_status=missing and
+suggestion_readiness=advice_if_needed.
 
 Return ONLY valid JSON:
 {{

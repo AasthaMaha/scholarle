@@ -26,7 +26,8 @@ COACHING_GUARDRAILS = """COACHING RULES:
 - Never invent or exaggerate an experience, role, result, number, identity detail,
   hardship, motivation, emotion, or scholarship requirement.
 - Use a profile fact only when it is explicitly present and relevant.
-- Ask the student for a truthful missing detail rather than supplying it.
+- When a personal detail is missing, mark the priority as advice_if_needed so
+  the suggestion layer can give precise guidance without inventing the detail.
 - Consolidate overlapping interventions instead of manufacturing distinct tasks.
 - Produce exactly three priorities when three grounded priorities exist; never pad
   the plan with a low-value or duplicate action.
@@ -142,6 +143,11 @@ CRITERION-SPECIFIC CONTEXT:
 Complete the fixed questions first. Then derive one grounded strength, one
 criterion-specific main gap, a controlled root-cause tag, and up to two candidate
 revision actions. Praise and the gap must follow from the question answers.
+Write grounded_praise, main_gap, instructions, and completion conditions in a
+warm, direct scholarship-coach voice suitable for a student. Do not expose
+rubric mechanics, evidence IDs, agents, models, prompts as software, schemas,
+validators, guardrails, backend logic, or scoring rules in those visible fields.
+Be encouraging without exaggerating, and never guarantee scholarship success.
 
 Allowed root-cause tags:
 missing_prompt_requirement, weak_scholarship_connection, unsupported_claim,
@@ -189,6 +195,7 @@ def build_revision_planner_prompt(
     *,
     coaching_context: str,
     verified_reviews: dict[str, Any],
+    official_signals: list[dict[str, Any]] | None = None,
     correction_guidance: str = "",
     prior_plan: dict[str, Any] | None = None,
 ) -> str:
@@ -209,12 +216,41 @@ You are the Revision Planner for Scholar-E.
 VERIFIED, LOCKED CRITERION FINDINGS:
 {json.dumps(verified_reviews, indent=2, default=str)}
 
+VERIFIED OFFICIAL REQUIREMENT SIGNALS:
+{json.dumps(official_signals or [], indent=2, default=str)}
+
 PROFILE-AWARE COACHING CONTEXT:
 {coaching_context}
 
 Create the smallest high-impact portfolio of up to three distinct revisions.
 Cluster findings that cite the same location, share a root cause, or can be
 resolved by the same edit. Keep diagnoses distinct while unifying interventions.
+
+Priority order:
+1. an unanswered material prompt component or explicit scholarship criterion;
+2. a broken, incomplete, contradictory, or structurally unusable passage;
+3. missing evidence, outcome, or reflection;
+4. organization, transition, voice, or clarity.
+
+Requirement discipline:
+- A prompt_requirement or scholarship_criterion priority must copy one exact
+  source_quote from VERIFIED OFFICIAL REQUIREMENT SIGNALS.
+- If no exact official signal supports the priority, classify it as essay_quality
+  and leave requirement_quote empty.
+- Never infer financial need from first-generation status, a scholarship title,
+  demographic eligibility, or general scholarship context.
+- Recommend financial disclosure only when an official source quote explicitly
+  asks for financial need, hardship, education costs, or use of funds.
+- Use evidence_status=sufficient when the essay/profile can support a finished
+  edit, partial when a useful evidence-safe edit is possible, and missing when a
+  personal fact is required.
+- Use suggestion_readiness=complete_edit for sufficient or partial evidence and
+  advice_if_needed when evidence is missing.
+- Write every visible field in a warm, specific scholarship-coach voice. Do not
+  mention agents, models, prompts as software, schemas, validators, guardrails,
+  grounding thresholds, backend logic, or scoring rules.
+- Never guarantee scholarship success or pressure the student to disclose a
+  sensitive experience.
 
 Primary ownership:
 - missing prompt requirement or fit -> alignment
@@ -239,6 +275,11 @@ Return ONLY valid JSON:
       "impact": "High|Medium|Low",
       "estimated_effort": "Quick|Moderate|Deep",
       "evidence_safety": "truthfulness constraint when relevant",
+      "requirement_source": "prompt_requirement|scholarship_criterion|essay_quality",
+      "requirement_quote": "exact verified source quote or empty",
+      "priority_reason": "plain-language explanation of why this revision matters now",
+      "evidence_status": "sufficient|partial|missing",
+      "suggestion_readiness": "complete_edit|advice_if_needed",
       "profile_opportunity": {{
         "used": false,
         "fact": "exact relevant profile fact or empty",

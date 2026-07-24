@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { EssayReviewResult, EssayRevisionPriority } from "@/lib/userStore";
 import {
+  containingParagraphRange,
   containingSentenceRange,
+  fallbackRevisionCoachingRange,
+  revisionCoachingRange,
   revisionPriorityRange,
 } from "./revisionPriorityTarget";
 
@@ -77,5 +80,82 @@ describe("containingSentenceRange", () => {
     const original = { start, end: start + "Complete sentence.".length };
 
     expect(containingSentenceRange(draft, original)).toEqual(original);
+  });
+});
+
+describe("revisionCoachingRange", () => {
+  it("expands evidence-development priorities to the complete paragraph", () => {
+    const draft = (
+      "Opening context.\n\n"
+      + "I helped students. The experience shaped my goals.\n\n"
+      + "Closing reflection."
+    );
+    const phraseStart = draft.indexOf("helped students");
+    const citedRange = {
+      start: phraseStart,
+      end: phraseStart + "helped students".length,
+    };
+    const range = revisionCoachingRange(
+      {
+        title: "Add a concrete example",
+        action: "Develop this evidence and show the result.",
+      },
+      draft,
+      citedRange,
+    );
+
+    expect(draft.slice(range.start, range.end)).toBe(
+      "I helped students. The experience shaped my goals.",
+    );
+  });
+
+  it("can retain sentence scope for a focused non-development priority", () => {
+    const draft = "Opening. I led the weekly program. Closing.";
+    const phraseStart = draft.indexOf("led the weekly program");
+    const range = revisionCoachingRange(
+      { title: "Clarify the timeline", action: "State when this occurred." },
+      draft,
+      {
+        start: phraseStart,
+        end: phraseStart + "led the weekly program".length,
+      },
+    );
+
+    expect(draft.slice(range.start, range.end)).toBe(
+      "I led the weekly program.",
+    );
+  });
+
+  it("finds the paragraph containing a cited sentence", () => {
+    const draft = "First paragraph.\n\nSecond sentence. More context.";
+    const start = draft.indexOf("Second sentence.");
+    expect(
+      containingParagraphRange(draft, {
+        start,
+        end: start + "Second sentence.".length,
+      }),
+    ).toEqual({
+      start,
+      end: draft.length,
+    });
+  });
+
+  it("chooses the most relevant paragraph when review citations are unavailable", () => {
+    const draft = (
+      "I am interested in education.\n\n"
+      + "During weekly tutoring, I supported students with difficult math problems and tracked their progress.\n\n"
+      + "This scholarship would support my degree."
+    );
+    const range = fallbackRevisionCoachingRange(
+      {
+        title: "Develop the tutoring evidence",
+        action: "Add a specific tutoring example and result.",
+      },
+      draft,
+    );
+
+    expect(range && draft.slice(range.start, range.end)).toContain(
+      "During weekly tutoring",
+    );
   });
 });

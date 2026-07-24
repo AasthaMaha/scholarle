@@ -823,11 +823,12 @@ export async function runWorkspaceCoachingSession(
 
   const data = await response.json().catch(() => null);
   if (!response.ok) {
-    const detail = data?.detail;
-    const validationMessage = Array.isArray(detail)
-      ? detail.map((issue) => `${issue?.loc?.join(".") ?? "request"}: ${issue?.msg ?? "invalid value"}`).join("; ")
-      : null;
-    throw new Error(typeof detail === "string" ? detail : validationMessage || "Scholar-E coaching session failed.");
+    void data;
+    throw new Error(
+      response.status === 422
+        ? "Essay Review could not start because some information is incomplete. Check the prompt and draft, then try again."
+        : "Essay Review is unavailable right now. Your draft is safe; please try again.",
+    );
   }
 
   return data as CoachingSessionResult;
@@ -918,6 +919,8 @@ export type RevisionCoachPayload = {
   essay_prompt: string;
   clean_scholarship_record: ActiveScholarship;
   student_profile: Record<string, unknown>;
+  current_word_count: number;
+  word_limit?: number;
 };
 
 export type RevisionCoachSelectedFact = {
@@ -935,12 +938,30 @@ export type RevisionCoachSelectedFact = {
 export type RevisionCoachResult = {
   status: "success" | "error";
   version?: string;
-  mode?: "exact_edit" | "evidence_grounded_edit" | "student_input_scaffold" | "structural_guidance" | string;
+  assistance_type?: "edit" | "advice" | string;
+  mode?: "exact_edit" | "evidence_grounded_edit" | "structural_guidance" | string;
+  edit_action?: "replace" | "insert_before" | "insert_after" | string;
+  scope?: "sentence_group" | "paragraph" | string;
+  development_goal?: string;
   original_text?: string;
   suggested_text?: string;
   reason?: string;
   selected_profile_facts?: RevisionCoachSelectedFact[];
-  student_input_required?: boolean;
+  evidence_sources?: Array<{
+    source: "essay" | "profile" | "scholarship" | string;
+    label?: string;
+    detail?: string;
+    sensitivity?: string;
+  }>;
+  can_apply?: boolean;
+  advice?: string;
+  placement?: string;
+  evidence_needed?: string;
+  target_length?: string;
+  completion_condition?: string;
+  word_delta?: number;
+  projected_word_count?: number;
+  word_limit?: number | null;
   target?: { start: number; end: number };
   draft_revision?: string;
   profile_inventory_hash?: string;
@@ -948,6 +969,42 @@ export type RevisionCoachResult = {
   message?: string;
   issues?: string[];
 };
+
+export const REVISION_COACH_VERSION = "revision-coach-v2.0-generalized";
+
+const REVISION_INSTRUCTION_PATTERN =
+  /^\s*(add|insert|write|replace|revise|develop|clarify|describe|explain|include|use)\b|two[- ]to[- ]four[- ]sentence|one real example|your own real detail|this passage|this paragraph|placeholder|replace this with|the student should/i;
+
+export function revisionCoachResultIssue(
+  result: RevisionCoachResult,
+): string | null {
+  if (result.status !== "success") {
+    return result.message || "The coaching suggestion could not be completed. Please try again.";
+  }
+  if (result.version !== REVISION_COACH_VERSION) {
+    return "This suggestion is out of date. Create a new suggestion for the current draft.";
+  }
+  if (result.assistance_type === "advice") {
+    return result.advice?.trim()
+      ? null
+      : "The coaching advice could not be completed. Please try again.";
+  }
+  if (
+    result.can_apply !== true
+    || !result.suggested_text?.trim()
+    || !result.target
+  ) {
+    return "The complete edit could not be prepared. Please try again.";
+  }
+  if (
+    /\[[^\]]+\]/.test(result.suggested_text)
+    || result.suggested_text.includes("?")
+    || REVISION_INSTRUCTION_PATTERN.test(result.suggested_text)
+  ) {
+    return "The edit needs to be prepared again before it can be added to your essay.";
+  }
+  return null;
+}
 
 function revisionCoachProfile(user: UserProfile | null): Record<string, unknown> {
   if (!user) return {};
@@ -1008,6 +1065,7 @@ export function buildRevisionCoachPayload(
   target: { start: number; end: number },
   draftRevision: string,
   essayPromptOverride?: string,
+  wordLimit?: number | null,
 ): RevisionCoachPayload {
   const scholarship = user?.activeScholarship ?? {};
   const selectedEntry = promptEntryFor(scholarship, essayPromptOverride);
@@ -1026,6 +1084,10 @@ export function buildRevisionCoachPayload(
     essay_prompt: essayPrompt,
     clean_scholarship_record: scholarshipForEssayWorkflow(scholarship),
     student_profile: revisionCoachProfile(user),
+    current_word_count: essayText.trim()
+      ? essayText.trim().split(/\s+/).filter(Boolean).length
+      : 0,
+    ...(wordLimit && wordLimit > 0 ? { word_limit: wordLimit } : {}),
   };
 }
 
@@ -1039,12 +1101,8 @@ export async function runRevisionCoach(
   });
   const data = await response.json().catch(() => null);
   if (!response.ok) {
-    const detail = data?.detail;
-    throw new Error(
-      typeof detail === "string"
-        ? detail
-        : "Scholar-E could not create a grounded revision suggestion.",
-    );
+    void data;
+    throw new Error("The coaching suggestion could not be completed. Please try again.");
   }
   return data as RevisionCoachResult;
 }

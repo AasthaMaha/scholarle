@@ -358,6 +358,11 @@ export type EssayRevisionPriority = {
   impact?: "High" | "Medium" | "Low" | string;
   estimated_effort?: "Quick" | "Moderate" | "Deep" | string;
   evidence_safety?: string;
+  requirement_source?: "prompt_requirement" | "scholarship_criterion" | "essay_quality" | string;
+  requirement_quote?: string;
+  priority_reason?: string;
+  evidence_status?: "sufficient" | "partial" | "missing" | string;
+  suggestion_readiness?: "complete_edit" | "advice_if_needed" | string;
   profile_opportunity?: {
     used?: boolean;
     fact?: string;

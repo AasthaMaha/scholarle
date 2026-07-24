@@ -130,12 +130,145 @@ ESSAY PROMPT AND WRITING BRIEF:
 {prompt_for_agents or "(none provided)"}
 
 WORD LIMIT:
-{word_limit or "(not stated)"}""".strip()
+    {word_limit or "(not stated)"}""".strip()
+
+
+def _planner_requirement_signals(
+    manager_plan: dict,
+    selected_prompt: str,
+    record: dict,
+) -> list[dict[str, Any]]:
+    """Provide the planner an auditable set of official prompt/criteria quotes."""
+    signals = [
+        dict(signal)
+        for signal in manager_plan.get("source_signals") or []
+        if isinstance(signal, dict) and str(signal.get("source_quote") or "").strip()
+    ]
+    prompt_parts = [
+        part.strip()
+        for part in re.split(r"(?<=[.!?])\s+|\n+", selected_prompt)
+        if len(part.strip().split()) >= 3
+    ]
+    for part in prompt_parts:
+        signals.append(
+            {
+                "criterion": "alignment",
+                "signal_type": "prompt_ask",
+                "source_field": "selected essay prompt",
+                "source_quote": part,
+                "construct": "A material part of the selected essay prompt.",
+            }
+        )
+    criteria = record.get("selectionCriteria") or []
+    if not isinstance(criteria, list):
+        criteria = [criteria] if criteria else []
+    for criterion in criteria:
+        quote = str(criterion or "").strip()
+        if quote:
+            signals.append(
+                {
+                    "criterion": "alignment",
+                    "signal_type": "selection_criterion",
+                    "source_field": "selection criteria",
+                    "source_quote": quote,
+                    "construct": "An explicitly stated scholarship selection criterion.",
+                }
+            )
+    unique: list[dict[str, Any]] = []
+    seen = set()
+    for signal in signals:
+        identity = (
+            str(signal.get("signal_type") or ""),
+            " ".join(str(signal.get("source_quote") or "").casefold().split()),
+        )
+        if identity[1] and identity not in seen:
+            seen.add(identity)
+            unique.append(signal)
+    return unique
 
 
 def _hash_payload(value: Any) -> str:
     canonical = json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+_INTERNAL_COACH_LANGUAGE = re.compile(
+    r"\b(agent|backend|guardrail|grounding threshold|model output|pipeline|"
+    r"prompt version|schema|structured output|validator|validation rule)\b",
+    re.IGNORECASE,
+)
+
+
+def _public_coach_text(value: object, fallback: str = "") -> str:
+    """Keep implementation language out of student-facing coaching copy."""
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not text:
+        return fallback
+    replacements = (
+        (re.compile(r"\bprofile facts?\b", re.IGNORECASE), "profile details"),
+        (re.compile(r"\bgrounded evidence\b", re.IGNORECASE), "specific evidence"),
+        (re.compile(r"\bgrounded\b", re.IGNORECASE), "supported"),
+        (re.compile(r"\bcriterion-specific\b", re.IGNORECASE), "focused"),
+    )
+    for pattern, replacement in replacements:
+        text = pattern.sub(replacement, text)
+    sentences = [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?])\s+", text)
+        if sentence.strip() and not _INTERNAL_COACH_LANGUAGE.search(sentence)
+    ]
+    return " ".join(sentences).strip() or fallback
+
+
+def _public_criteria(reviews: dict[str, dict]) -> dict[str, dict]:
+    public = json.loads(json.dumps(reviews, default=str))
+    for review in public.values():
+        feedback = review.get("coach_feedback") or {}
+        feedback["grounded_praise"] = _public_coach_text(
+            feedback.get("grounded_praise"),
+            "The draft contains a useful foundation in this area.",
+        )
+        feedback["main_gap"] = _public_coach_text(
+            feedback.get("main_gap"),
+            "This area needs a more specific connection or example.",
+        )
+        gap = review.get("criterion_specific_gap") or {}
+        gap["statement"] = _public_coach_text(
+            gap.get("statement"),
+            feedback["main_gap"],
+        )
+        for action in review.get("candidate_actions") or []:
+            action["instruction"] = _public_coach_text(action.get("instruction"))
+            action["completion_condition"] = _public_coach_text(
+                action.get("completion_condition")
+            )
+        for answer in review.get("answers") or []:
+            answer["explanation"] = _public_coach_text(answer.get("explanation"))
+    return public
+
+
+def _public_priorities(priorities: list[dict]) -> list[dict]:
+    public = json.loads(json.dumps(priorities, default=str))
+    for priority in public:
+        priority["title"] = _public_coach_text(
+            priority.get("title"), "Strengthen this passage"
+        )
+        priority["action"] = _public_coach_text(
+            priority.get("action"),
+            "Develop this passage with a specific, truthful detail.",
+        )
+        priority["completion_condition"] = _public_coach_text(
+            priority.get("completion_condition"),
+            "The passage directly and specifically addresses this priority.",
+        )
+        priority["priority_reason"] = _public_coach_text(
+            priority.get("priority_reason"),
+            "This change addresses a visible weakness in the current draft.",
+        )
+        priority["evidence_safety"] = _public_coach_text(
+            priority.get("evidence_safety")
+        )
+    return public
 
 
 def _quality_approved(review: dict) -> bool:
@@ -469,6 +602,10 @@ def _build_review_result(
         if coaching_approved
         else {"version": REVISION_PLANNER_VERSION, "priorities": [], "available": False}
     )
+    public_reviews = _public_criteria(reviews)
+    public_priorities = _public_priorities(
+        published_revision_plan.get("priorities") or []
+    )
     criterion_errors = [
         error
         for key in READINESS_DIMENSIONS
@@ -529,13 +666,13 @@ def _build_review_result(
             ""
             if status == "success"
             else (
-                "Your evaluation scores were verified, but revision priorities "
-                "are temporarily unavailable."
+                "Your essay review is ready, but the personalized revision "
+                "suggestions could not be completed. Try Essay Review again."
             )
             if status == "scoring_success_coaching_partial"
             else (
-                "The evaluation could not be completed because one or more "
-                "criterion results could not be verified. No new score was saved."
+                "We could not complete a reliable review of every area, so no "
+                "new score was saved."
             )
             if status == "partial"
             else "Evaluation is currently unavailable."
@@ -544,9 +681,12 @@ def _build_review_result(
         "overall_raw_score": published_overall.get("raw_score"),
         "overall_level": published_overall.get("level") or "Unavailable",
         "overall_safeguards": published_overall.get("applied_safeguards") or [],
-        "criteria": reviews,
-        "revision_priorities": published_revision_plan.get("priorities") or [],
-        "revision_plan": published_revision_plan,
+        "criteria": public_reviews,
+        "revision_priorities": public_priorities,
+        "revision_plan": {
+            **published_revision_plan,
+            "priorities": public_priorities,
+        },
         "manager_plan": manager_plan,
         "quality_review": {
             "approved": approved,
@@ -734,6 +874,11 @@ def run_unified_coaching_session(
             agent_status["manager"] = "fallback"
             warnings.append(f"manager failed; deterministic base rubric used: {exc}")
     manager_plan["context_hash"] = manager_context_hash
+    planner_requirement_signals = _planner_requirement_signals(
+        manager_plan,
+        selected_prompt,
+        record,
+    )
 
     scoring_hash = evaluation_fingerprint(
         canonical_essay,
@@ -877,7 +1022,11 @@ def run_unified_coaching_session(
         agent_status["revision_planner"] = "blocked_by_invalid_scoring"
     else:
         try:
-            revision_plan = run_revision_planner(coaching_context, reviews)
+            revision_plan = run_revision_planner(
+                coaching_context,
+                reviews,
+                official_signals=planner_requirement_signals,
+            )
             agent_status["revision_planner"] = "success"
         except Exception as exc:  # noqa: BLE001
             revision_plan = {"priorities": [], "available": False}
@@ -960,7 +1109,11 @@ def run_unified_coaching_session(
             )
         if not _programmatic_failed_criteria(reviews, canonical_essay):
             try:
-                revision_plan = run_revision_planner(coaching_context, reviews)
+                revision_plan = run_revision_planner(
+                    coaching_context,
+                    reviews,
+                    official_signals=planner_requirement_signals,
+                )
                 agent_status["revision_planner"] = "success"
             except Exception as exc:  # noqa: BLE001
                 warnings.append(f"revision planner repair failed: {exc}")
@@ -980,6 +1133,7 @@ def run_unified_coaching_session(
             revision_plan = run_revision_planner(
                 coaching_context,
                 reviews,
+                official_signals=planner_requirement_signals,
                 correction_guidance=planner_correction_guidance(qa, guardrail)
                 or "Make all priorities grounded, distinct, atomic, and safe.",
                 prior_plan=revision_plan,

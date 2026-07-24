@@ -149,10 +149,88 @@ class FitAnalyzeResponse(BaseModel):
     strengths: list[str] = Field(default_factory=list)
     gaps_or_risks: list[str] = Field(default_factory=list)
     missing_student_information: list[str] = Field(default_factory=list)
-    application_materials_check: list[dict] = Field(default_factory=list)
     selection_criteria_alignment: list[dict] = Field(default_factory=list)
     recommended_next_steps: list[str] = Field(default_factory=list)
-    application_readiness_matrix: dict = Field(default_factory=dict)
+
+
+_INTERNAL_FIT_TEXT_PATTERNS = (
+    re.compile(r"\bdownstream code\b", re.IGNORECASE),
+    re.compile(r"\b(?:fit_score|fit_label|eligibility_weight|criteria_weight)\b", re.IGNORECASE),
+    re.compile(r"\b(?:system|developer) (?:prompt|instruction)s?\b", re.IGNORECASE),
+    re.compile(r"\bscoring (?:formula|logic|algorithm|weight|threshold|band)s?\b", re.IGNORECASE),
+    re.compile(r"\bscore (?:stays|is kept|must stay) (?:below|above)\b", re.IGNORECASE),
+    re.compile(r"\bhard (?:gate|fail(?:ure)?)\b", re.IGNORECASE),
+)
+
+
+def _sanitize_public_fit_text(value: object) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    text = re.sub(
+        r"\bhard requirements?\b",
+        lambda match: "Eligibility requirement" if match.group(0)[0].isupper() else "eligibility requirement",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not text:
+        return ""
+
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    public_sentences = [
+        sentence
+        for sentence in sentences
+        if sentence and not any(pattern.search(sentence) for pattern in _INTERNAL_FIT_TEXT_PATTERNS)
+    ]
+    return " ".join(public_sentences).strip()
+
+
+def _sanitize_public_fit_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    cleaned = [_sanitize_public_fit_text(item) for item in value]
+    return [item for item in cleaned if item]
+
+
+def _sanitize_public_fit_rows(value: object, fields: tuple[str, ...]) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    rows: list[dict] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        cleaned = {field: _sanitize_public_fit_text(item.get(field)) for field in fields}
+        if any(cleaned.values()):
+            rows.append(cleaned)
+    return rows
+
+
+def build_public_fit_analysis_response(result: object) -> FitAnalyzeResponse:
+    data = result if isinstance(result, dict) else {}
+    try:
+        score = int(round(float(data.get("fit_score", 15))))
+    except (TypeError, ValueError):
+        score = 15
+
+    return FitAnalyzeResponse(
+        scholarship_name=_sanitize_public_fit_text(data.get("scholarship_name")),
+        fit_label=_sanitize_public_fit_text(data.get("fit_label")),
+        fit_score=max(15, min(95, score)),
+        likely_eligible=_sanitize_public_fit_text(data.get("likely_eligible")),
+        summary=_sanitize_public_fit_text(data.get("summary")),
+        eligibility_analysis=_sanitize_public_fit_rows(
+            data.get("eligibility_analysis"),
+            ("requirement", "status", "student_evidence", "explanation"),
+        ),
+        strengths=_sanitize_public_fit_list(data.get("strengths")),
+        gaps_or_risks=_sanitize_public_fit_list(data.get("gaps_or_risks")),
+        missing_student_information=_sanitize_public_fit_list(
+            data.get("missing_student_information")
+        ),
+        selection_criteria_alignment=_sanitize_public_fit_rows(
+            data.get("selection_criteria_alignment"),
+            ("criterion", "alignment", "student_evidence", "notes"),
+        ),
+        recommended_next_steps=_sanitize_public_fit_list(data.get("recommended_next_steps")),
+    )
 
 
 class DiscoveryIntentSelection(BaseModel):
@@ -250,6 +328,8 @@ class RevisionCoachRequest(BaseModel):
     essay_prompt: str = Field(default="", max_length=12000)
     clean_scholarship_record: dict = Field(default_factory=dict)
     student_profile: dict = Field(default_factory=dict)
+    current_word_count: int = Field(default=0, ge=0, le=20000)
+    word_limit: int | None = Field(default=None, ge=1, le=20000)
 
 
 class OutlineGenerateRequest(BaseModel):
@@ -958,11 +1038,8 @@ def rewrite_selection(request: RewriteRequest) -> dict:
 def run_revision_coach(request: RevisionCoachRequest) -> dict:
     if not settings.openai_api_key:
         raise HTTPException(
-            status_code=400,
-            detail=(
-                "Missing OPENAI_API_KEY. Add a .env file in the project root "
-                "with OPENAI_API_KEY=your_key, then restart the server."
-            ),
+            status_code=503,
+            detail="Coaching suggestions are unavailable right now. Please try again later.",
         )
 
     return run_revision_coach_service(
@@ -974,6 +1051,8 @@ def run_revision_coach(request: RevisionCoachRequest) -> dict:
         essay_prompt=request.essay_prompt,
         clean_scholarship_record=request.clean_scholarship_record,
         student_profile=request.student_profile,
+        current_word_count=request.current_word_count,
+        word_limit=request.word_limit,
     )
 
 
@@ -1199,13 +1278,17 @@ def analyze_scholarship_fit(request: FitAnalyzeRequest) -> dict:
         },
         run_fn=lambda _: graph.invoke(payload),
     )
-    response = FitAnalyzeResponse(**result)
+    response = build_public_fit_analysis_response(result)
     fit_data = response.model_dump() if hasattr(response, "model_dump") else response.dict()
+    stored_fit_data = dict(fit_data)
+    for internal_field in ("application_materials_check", "application_readiness_matrix"):
+        if internal_field in result:
+            stored_fit_data[internal_field] = result[internal_field]
     _persist_domain_record(
         ScholarshipService.save_fit_analysis,
         user_id,
         request.scholarship_record.get("name") or fit_data.get("scholarship_name") or "",
-        fit_data,
+        stored_fit_data,
         profile_id,
         clean_record_id,
         agent_run_id,

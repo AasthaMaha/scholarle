@@ -127,16 +127,22 @@
 .highlight-pulse { animation: highlightPulse 2.4s ease-in-out infinite; }
 
 @keyframes essayFlashAccept {
-  0% { background-color: rgb(22 163 74 / 0.28); }
-  100% { background-color: rgb(22 163 74 / 0); }
+  0%, 55% {
+    background-color: rgb(22 163 74 / 0.24);
+    box-shadow: 0 0 0 2px rgb(22 163 74 / 0.32);
+  }
+  100% {
+    background-color: rgb(22 163 74 / 0);
+    box-shadow: 0 0 0 2px rgb(22 163 74 / 0);
+  }
 }
-.essay-flash-accept { animation: essayFlashAccept 0.7s ease-out forwards; }
+.essay-flash-accept { animation: essayFlashAccept 4.2s ease-out forwards; }
 
 @keyframes essayFlashPulse {
   0%, 100% { background-color: rgb(109 93 246 / 0); }
   40% { background-color: rgb(109 93 246 / 0.3); }
 }
-.essay-flash-pulse { animation: essayFlashPulse 0.7s ease-in-out; }
+.essay-flash-pulse { animation: essayFlashPulse 1.4s ease-in-out; }
 
 /* Modern "AI working" affordance: a light band sweeps across a button while its
    agent runs. Colour-adaptive (uses currentColor) so it reads on both filled and

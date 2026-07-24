@@ -7,6 +7,7 @@ import re
 import sqlite3
 import threading
 import zipfile
+from contextlib import closing
 from pathlib import Path
 
 
@@ -164,7 +165,7 @@ class EducationCatalogRepository:
         if not expression or institution_type not in {"high_school", "postsecondary"}:
             return []
         self.ensure_index()
-        with sqlite3.connect(self.database_path) as connection:
+        with closing(sqlite3.connect(self.database_path)) as connection:
             rows = connection.execute(
                 """
                 SELECT stable_id, display_name, city, state, institution_type
@@ -199,7 +200,7 @@ class EducationCatalogRepository:
         if not expression:
             return []
         self.ensure_index()
-        with sqlite3.connect(self.database_path) as connection:
+        with closing(sqlite3.connect(self.database_path)) as connection:
             rows = connection.execute(
                 """
                 SELECT cip_code, display_name

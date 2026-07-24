@@ -10,10 +10,12 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings
+from revision_coach_service import REVISION_COACH_VERSION
 from api.routes import (
     CoachingSessionRequest,
     EditorCheckRequest,
     FitAnalyzeRequest,
+    FitAnalyzeResponse,
     OpportunityExtractRequest,
     OutlineGenerateRequest,
     OutlineCoverageRequest,
@@ -65,7 +67,10 @@ app.add_middleware(
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "revision_coach_version": REVISION_COACH_VERSION,
+    }
 
 
 @app.get("/api/education/schools")
@@ -129,14 +134,17 @@ def opportunity_pdf_upload_config():
     return {"max_size_bytes": max(1, settings.scholarship_pdf_max_bytes)}
 
 
-@app.post("/api/fit/analyze")
+@app.post("/api/fit/analyze", response_model=FitAnalyzeResponse)
 def analyze_fit(request: FitAnalyzeRequest):
     try:
         return analyze_scholarship_fit(request)
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=500,
+            detail="Scholarship fit analysis could not be completed. Please try again.",
+        ) from exc
 
 
 @app.post("/api/wiki/discover")
@@ -237,4 +245,9 @@ def revision_coach_endpoint(request: RevisionCoachRequest):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("server:app", host="127.0.0.1", port=8000, reload=False)
+    uvicorn.run(
+        "server:app",
+        host="127.0.0.1",
+        port=8000,
+        reload=settings.environment.casefold() == "development",
+    )

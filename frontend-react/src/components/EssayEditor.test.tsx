@@ -126,3 +126,52 @@ describe("EssayEditor suggestion reveal", () => {
     });
   });
 });
+
+describe("EssayEditor accepted edit history", () => {
+  it("allows the latest accepted suggestion to be undone safely", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    mountedRoots.push({ root, host });
+    const handle = createRef<EssayEditorHandle>();
+    const onChange = vi.fn();
+    const suggestion: Suggestion = {
+      id: "coach-1",
+      category: "engagement",
+      start: 6,
+      end: 10,
+      original: "mist",
+      title: "Develop the passage",
+      explanation: "Adds the grounded outcome.",
+      replacement: "clear result",
+      source: "coach",
+    };
+
+    const render = (value: string) => {
+      root.render(
+        <EssayEditor
+          ref={handle}
+          value={value}
+          richValue=""
+          onChange={onChange}
+          onRichChange={vi.fn()}
+          suggestions={[]}
+          onDismiss={vi.fn()}
+        />,
+      );
+    };
+
+    act(() => render("Start mist end"));
+    act(() => handle.current?.accept(suggestion));
+    expect(onChange).toHaveBeenLastCalledWith("Start clear result end");
+
+    act(() => render("Start clear result end"));
+    let undone = false;
+    act(() => {
+      undone = handle.current?.undoLastAccept() ?? false;
+    });
+
+    expect(undone).toBe(true);
+    expect(onChange).toHaveBeenLastCalledWith("Start mist end");
+  });
+});

@@ -57,6 +57,74 @@ function essayParagraphRanges(draft: string): EssayTextRange[] {
   return ranges;
 }
 
+export function containingParagraphRange(
+  draft: string,
+  range: EssayTextRange,
+): EssayTextRange {
+  const start = Math.max(0, Math.min(range.start, draft.length));
+  const end = Math.max(start, Math.min(range.end, draft.length));
+  return essayParagraphRanges(draft).find(
+    (paragraph) => paragraph.start <= start && paragraph.end >= end,
+  ) ?? containingSentenceRange(draft, range);
+}
+
+const PARAGRAPH_DEVELOPMENT_PATTERN =
+  /\b(add|connect|context|develop|evidence|example|explain|impact|motivation|outcome|paragraph|reflect|result|show|specific|story|transition|why)\b/i;
+
+function contentWords(value: string) {
+  return new Set(
+    value
+      .toLowerCase()
+      .match(/[a-z0-9]+/g)
+      ?.filter((word) => word.length > 2) ?? [],
+  );
+}
+
+export function fallbackRevisionCoachingRange(
+  priority: EssayRevisionPriority,
+  draft: string,
+): EssayTextRange | null {
+  const paragraphs = essayParagraphRanges(draft);
+  if (!paragraphs.length) return null;
+  const priorityWords = contentWords([
+    priority.title,
+    priority.action,
+    priority.completion_condition,
+    priority.primary_criterion,
+  ].filter(Boolean).join(" "));
+  return [...paragraphs].sort((left, right) => {
+    const score = (range: EssayTextRange) => {
+      const paragraph = draft.slice(range.start, range.end);
+      const overlap = [...contentWords(paragraph)]
+        .filter((word) => priorityWords.has(word)).length;
+      const usefulLength = Math.min(80, paragraph.split(/\s+/).filter(Boolean).length);
+      return (overlap * 100) + usefulLength;
+    };
+    return score(right) - score(left);
+  })[0];
+}
+
+export function revisionCoachingRange(
+  priority: EssayRevisionPriority,
+  draft: string,
+  citedRange: EssayTextRange,
+): EssayTextRange {
+  const priorityText = [
+    priority.title,
+    priority.action,
+    priority.completion_condition,
+    priority.location,
+    priority.estimated_effort,
+  ].filter(Boolean).join(" ");
+  if (
+    priority.estimated_effort?.toLowerCase() === "deep"
+    || PARAGRAPH_DEVELOPMENT_PATTERN.test(priorityText)
+  ) {
+    return containingParagraphRange(draft, citedRange);
+  }
+  return containingSentenceRange(draft, citedRange);
+}
+
 function quoteRangeInDraft(draft: string, quote?: string): EssayTextRange | null {
   const target = quote?.trim();
   if (!target) return null;

@@ -34,6 +34,7 @@ import { applySuggestion, CATEGORY_META, isInlineSuggestion, type Suggestion } f
 export type EssayEditorHandle = {
   accept: (s: Suggestion) => void;
   reveal: (s: Suggestion) => void;
+  undoLastAccept: () => boolean;
 };
 
 export type RewriteAction = "rewrite" | "shorten" | "expand" | "improve_tone";
@@ -208,6 +209,7 @@ const ESSAY_HIGHLIGHT_NAMES = [
   "essay-fix-engagement",
   "essay-fix-tone",
   "essay-fix-selected",
+  "essay-coach-focus",
 ] as const;
 
 const ESSAY_HIGHLIGHT_STYLES = `
@@ -216,6 +218,7 @@ const ESSAY_HIGHLIGHT_STYLES = `
 ::highlight(essay-fix-engagement) { text-decoration: underline wavy #16a34abf 1.5px; text-decoration-skip-ink: none; text-underline-offset: 3px; }
 ::highlight(essay-fix-tone) { text-decoration: underline wavy #8b5cf6bf 1.5px; text-decoration-skip-ink: none; text-underline-offset: 3px; }
 ::highlight(essay-fix-selected) { text-decoration: underline wavy #6d5df6 2px; text-decoration-skip-ink: none; text-underline-offset: 3px; }
+::highlight(essay-coach-focus) { background-color: rgb(109 93 246 / 0.18); text-decoration: underline solid #6d5df6 2px; text-underline-offset: 4px; }
 `;
 
 function locate(nodes: Text[], offset: number): { node: Text; pos: number } | null {
@@ -353,10 +356,13 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
   const [mounted, setMounted] = useState(false);
   const [nativeHighlightsSupported, setNativeHighlightsSupported] = useState(false);
   const [nativeHighlightsReady, setNativeHighlightsReady] = useState(false);
+  const [focusRange, setFocusRange] = useState<{ start: number; end: number } | null>(null);
   const [typography, setTypography] = useState<EditorTypography>(DEFAULT_EDITOR_TYPOGRAPHY);
   const [activeAlignment, setActiveAlignment] = useState<EditorAlignment>("left");
   const [typographyLoaded, setTypographyLoaded] = useState(false);
   const pendingFlash = useRef<{ start: number; len: number; pulse: boolean } | null>(null);
+  const focusTimer = useRef<number | null>(null);
+  const lastAcceptedEdit = useRef<{ before: string; after: string; start: number; originalLength: number } | null>(null);
   const lastSyncedHtml = useRef("");
   const gutterFrame = useRef<number | null>(null);
   const documentHydrated = useRef(false);
@@ -436,6 +442,7 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
   useEffect(
     () => () => {
       if (gutterFrame.current !== null) window.cancelAnimationFrame(gutterFrame.current);
+      if (focusTimer.current !== null) window.clearTimeout(focusTimer.current);
     },
     [],
   );
@@ -507,6 +514,15 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
       ranges.push(range);
       grouped.set(name, ranges);
     });
+    if (focusRange) {
+      const range = editorRangeForValueOffsets(
+        editor,
+        value,
+        focusRange.start,
+        focusRange.end,
+      );
+      if (range) grouped.set("essay-coach-focus", [range]);
+    }
     if (mappedSuggestionCount !== inlineSuggestions.length) {
       setNativeHighlightsReady(false);
       return;
@@ -517,7 +533,7 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
     return () => {
       ESSAY_HIGHLIGHT_NAMES.forEach((name) => registry.delete(name));
     };
-  }, [card?.sugg.id, inlineSuggestions, nativeHighlightsSupported, richValue, value]);
+  }, [card?.sugg.id, focusRange, inlineSuggestions, nativeHighlightsSupported, richValue, value]);
 
   function syncFromEditor() {
     const editor = editorRef.current;
@@ -537,7 +553,10 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
     if (!rect) return;
     const id = ++flashSeq;
     setFlashes((prev) => [...prev, { id, top: rect.top, left: rect.left, width: rect.width, height: rect.height, pulse }]);
-    window.setTimeout(() => setFlashes((prev) => prev.filter((f) => f.id !== id)), 700);
+    window.setTimeout(
+      () => setFlashes((prev) => prev.filter((f) => f.id !== id)),
+      pulse ? 1400 : 4200,
+    );
   }
 
   // After an accepted edit re-renders, measure the new range and flash it.
@@ -545,7 +564,10 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
     if (!pendingFlash.current) return;
     const { start, len, pulse } = pendingFlash.current;
     pendingFlash.current = null;
-    requestAnimationFrame(() => addFlash(start, len, pulse));
+    requestAnimationFrame(() => {
+      scrollOffsetIntoView(start, start + len);
+      addFlash(start, len, pulse);
+    });
   }, [value]);
 
   function scrollOffsetIntoView(start: number, end: number) {
@@ -632,6 +654,12 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
   useImperativeHandle(ref, () => ({
     accept(s: Suggestion) {
       const next = applySuggestion(value, s);
+      lastAcceptedEdit.current = {
+        before: value,
+        after: next,
+        start: s.start,
+        originalLength: s.original.length,
+      };
       pendingFlash.current = { start: s.start, len: s.replacement.length, pulse: false };
       onChange(next);
       setCard(null);
@@ -642,11 +670,29 @@ export const EssayEditor = forwardRef<EssayEditorHandle, Props>(function EssayEd
       // range on the next frame so one Fixes-card click always lands correctly.
       editorRef.current?.focus({ preventScroll: true });
       setSelectionByOffsets(s.start, s.end);
+      setFocusRange({ start: s.start, end: s.end });
+      if (focusTimer.current !== null) window.clearTimeout(focusTimer.current);
+      focusTimer.current = window.setTimeout(() => {
+        setFocusRange(null);
+        focusTimer.current = null;
+      }, 4200);
       requestAnimationFrame(() => {
         scrollOffsetIntoView(s.start, s.end);
         addFlash(s.start, s.end - s.start, true);
         scheduleGutterUpdate();
       });
+    },
+    undoLastAccept() {
+      const accepted = lastAcceptedEdit.current;
+      if (!accepted || value !== accepted.after) return false;
+      lastAcceptedEdit.current = null;
+      pendingFlash.current = {
+        start: accepted.start,
+        len: accepted.originalLength,
+        pulse: true,
+      };
+      onChange(accepted.before);
+      return true;
     },
   }));
 
