@@ -9313,14 +9313,12 @@ function useSubmissionReadiness() {
   const done = checklist.filter((x) => x.done).length;
   const percent = Math.round((done / checklist.length) * 100);
   const allDone = done === checklist.length;
-  const nextIncomplete = checklist.find((item) => !item.done);
 
   return {
     checklist,
     done,
     percent,
     allDone,
-    nextIncomplete,
     zipping,
     zipStatus,
     downloadSubmissionZip,
@@ -9329,6 +9327,40 @@ function useSubmissionReadiness() {
 
 type SubmissionReadinessState = ReturnType<typeof useSubmissionReadiness>;
 
+function ChecklistUploadButton({
+  documentKind,
+  onUpload,
+}: {
+  documentKind: string;
+  onUpload: (documentKind: string, file: File) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => inputRef.current?.click()}
+        className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
+      >
+        <FileUp className="size-3.5" /> Upload
+      </button>
+      <input
+        ref={inputRef}
+        type="file"
+        accept=".pdf,.doc,.docx,.png,.jpg,.jpeg"
+        className="sr-only"
+        aria-label={`Upload ${documentKind}`}
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          if (file) onUpload(documentKind, file);
+          event.target.value = "";
+        }}
+      />
+    </>
+  );
+}
+
 function FinalChecklistSection({
   submission,
   onNavigate,
@@ -9336,7 +9368,19 @@ function FinalChecklistSection({
   submission: SubmissionReadinessState;
   onNavigate: (slug: string) => void;
 }) {
-  const { checklist, done, allDone, nextIncomplete } = submission;
+  const { user, updateProfile } = useUser();
+  const { checklist, done, allDone } = submission;
+
+  function uploadChecklistDocument(documentKind: string, file: File) {
+    storeFile(file.name, file);
+    const documents = user?.documents ?? [];
+    const withoutDuplicate = documents.filter(
+      (document) => !(document.name === file.name && document.kind === documentKind),
+    );
+    updateProfile({
+      documents: [...withoutDuplicate, { name: file.name, kind: documentKind }],
+    });
+  }
 
   return (
     <section aria-labelledby="final-checklist-heading" className="min-h-0 lg:flex-1">
@@ -9349,7 +9393,7 @@ function FinalChecklistSection({
             {done} of {checklist.length} complete
           </span>
         </div>
-        <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+        <div className="mt-2">
           <p className={`inline-flex items-center gap-2 text-xs font-medium ${
             allDone ? "text-success" : "text-warning"
           }`}>
@@ -9362,15 +9406,6 @@ function FinalChecklistSection({
               ? "All required materials are ready for submission."
               : `${checklist.length - done} required ${checklist.length - done === 1 ? "item needs" : "items need"} attention.`}
           </p>
-          {!allDone && nextIncomplete && (
-            <button
-              type="button"
-              onClick={() => onNavigate(nextIncomplete.targetSlug)}
-              className="inline-flex items-center gap-1.5 text-xs font-semibold text-info hover:text-primary focus-visible:rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/35"
-            >
-              Fix next <ArrowRight className="size-3.5" />
-            </button>
-          )}
         </div>
         <ul className="mt-2 divide-y divide-info/10">
           {checklist.map((item) => {
@@ -9389,13 +9424,10 @@ function FinalChecklistSection({
                   <div className="ml-[34px] flex w-full shrink-0 items-center justify-end gap-1.5 sm:ml-0 sm:w-auto">
                     <Pill tone="warn">action needed</Pill>
                     {canUpload && (
-                      <button
-                        type="button"
-                        onClick={() => onNavigate(item.targetSlug)}
-                        className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
-                      >
-                        <FileUp className="size-3.5" /> Upload
-                      </button>
+                      <ChecklistUploadButton
+                        documentKind={item.documentKind!}
+                        onUpload={uploadChecklistDocument}
+                      />
                     )}
                     {canNavigate && (
                       <button
