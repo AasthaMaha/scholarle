@@ -51,6 +51,7 @@ _EXCLUDED_PROFILE_KEYS = {
     "journeyTutorialPending",
     "journeyTutorialCompleted",
     "journeyTutorialSkipped",
+    "essayWorkspaceTutorialCompleted",
     "profileStartChoiceCompleted",
     "profileSetupCompleted",
     "academicOnboardingCompleted",

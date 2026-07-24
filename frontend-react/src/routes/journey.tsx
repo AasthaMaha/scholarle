@@ -836,8 +836,6 @@ function JourneyNavigationTutorial({
   );
 }
 
-const ESSAY_WORKSPACE_TUTORIAL_KEY = "scholar-e:essay-workspace-tutorial:v1";
-
 const ESSAY_WORKSPACE_TUTORIAL_STEPS = [
   {
     target: "upload",
@@ -6463,30 +6461,24 @@ function StepEssayWorkspace() {
     if (
       workspaceTutorialHandled.current
       || outlineLoading
+      || user?.essayWorkspaceTutorialCompleted
       || !user?.personalizedOutline?.outline
     ) return;
-    try {
-      if (window.localStorage.getItem(ESSAY_WORKSPACE_TUTORIAL_KEY) === "complete") {
-        workspaceTutorialHandled.current = true;
-        return;
-      }
-    } catch {
-      // The tour can still run once in this visit when storage is unavailable.
-    }
     const timer = window.setTimeout(() => {
       workspaceTutorialHandled.current = true;
       setWorkspaceTutorialActive(true);
     }, 500);
     return () => window.clearTimeout(timer);
-  }, [outlineLoading, user?.personalizedOutline?.generatedForKey, user?.personalizedOutline?.outline]);
+  }, [
+    outlineLoading,
+    user?.essayWorkspaceTutorialCompleted,
+    user?.personalizedOutline?.generatedForKey,
+    user?.personalizedOutline?.outline,
+  ]);
 
   function closeWorkspaceTutorial() {
     workspaceTutorialHandled.current = true;
-    try {
-      window.localStorage.setItem(ESSAY_WORKSPACE_TUTORIAL_KEY, "complete");
-    } catch {
-      // Dismissing the tour should still work when storage is unavailable.
-    }
+    updateProfile({ essayWorkspaceTutorialCompleted: true });
     setWorkspaceTutorialActive(false);
   }
 

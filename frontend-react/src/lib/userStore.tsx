@@ -636,6 +636,7 @@ export type UserProfile = {
   journeyTutorialPending?: boolean;
   journeyTutorialCompleted?: boolean;
   journeyTutorialSkipped?: boolean;
+  essayWorkspaceTutorialCompleted?: boolean;
   researchExperience?: ResearchExperienceEntry[];
   workExperience?: WorkExperienceEntry[];
   // optional
